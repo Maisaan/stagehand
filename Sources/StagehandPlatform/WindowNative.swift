@@ -13,6 +13,7 @@ public final class RibbonWindow: NSWindow {
 @MainActor
 final class NativeWindowRegistry: NSObject {
     var onChange: (() -> Void)?
+    var onFrameChange: ((String, CGRect) -> Void)?
 
     private final class Registration {
         weak var window: NSWindow?
@@ -143,6 +144,12 @@ final class NativeWindowRegistry: NSObject {
         return false
     }
 
+    func focusObservation(windowID: String) -> WindowFocusReport.NativeObservation {
+        WindowFocusReport.NativeObservation(applicationActive: NSApp?.isActive == true,
+                                             windowKey: windows[windowID]?.window?.isKeyWindow == true,
+                                             frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+    }
+
     private func accessibilityFrame(_ frame: CGRect) -> CGRect {
         let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
         return CGRect(x: frame.minX, y: primaryTop - frame.maxY, width: frame.width, height: frame.height)
@@ -155,6 +162,8 @@ final class NativeWindowRegistry: NSObject {
             entry.closed = true
             entry.parked = false
             entry.originalFrame = nil
+        } else if notification.name == NSWindow.didMoveNotification || notification.name == NSWindow.didResizeNotification {
+            onFrameChange?(entry.id, accessibilityFrame(window.frame))
         }
         onChange?()
     }

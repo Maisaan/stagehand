@@ -11,7 +11,7 @@ struct SettingsView: View {
     init(model: StagehandModel, initialTab: String = "Workspace") {
         self.model = model
         _tab = State(initialValue: initialTab)
-        _gapInput = State(initialValue: model.gap)
+        _gapInput = State(initialValue: GapInput.clamped(model.gap))
     }
 
     var body: some View {
@@ -107,14 +107,24 @@ struct SettingsView: View {
                 HStack(spacing: 10) {
                     Text("Window gap").font(.system(size: 12))
                     Spacer()
-                    TextField("Points", value: $gapInput, format: .number.precision(.fractionLength(0)))
-                        .textFieldStyle(.roundedBorder).frame(width: 76)
-                        .accessibilityLabel("Gap between windows in points")
-                        .onSubmit { if gapInput.isFinite { model.gap = gapInput } }
+                    GapInput(value: $gapInput) { model.gap = $0 }
+                        .frame(width: 76, height: 24)
                     Text("pt").font(.system(size: 11)).foregroundStyle(.secondary)
-                    Button("Apply") { if gapInput.isFinite { model.gap = gapInput } }
                 }
+                Slider(value: Binding(get: { gapInput }, set: { gapInput = $0.rounded() }), in: GapInput.bounds) { editing in
+                    if !editing, gapInput != model.gap { model.gap = gapInput }
+                }
+                .accessibilityLabel("Gap between windows")
+                HStack {
+                    Text("−200 pt overlap")
+                    Spacer()
+                    Text("40 pt gap")
+                }
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.secondary)
                 Text("Positive values add space. Negative values overlap windows horizontally, with the active window on top.")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                Text("↑ / ↓ adjusts by 1 pt, Shift by 10 pt. Typed values apply on Return or when you leave the field.")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 12) {

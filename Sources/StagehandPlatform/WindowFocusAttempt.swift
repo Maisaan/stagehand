@@ -41,12 +41,30 @@ public struct WindowFocusReport: Codable, Equatable, Sendable {
         }
     }
 
+    public struct NativeObservation: Codable, Equatable, Sendable {
+        public let applicationActive: Bool
+        public let windowKey: Bool
+        public let frontmostPID: Int32?
+    }
+
     public let targetPID: Int32?
     public let outcome: Outcome
     public let elapsedMilliseconds: Int
     public let operations: [Operation]
     public let initialObservation: Observation?
     public let observations: [Observation]
+    public let nativeObservation: NativeObservation?
+
+    init(targetPID: Int32?, outcome: Outcome, elapsedMilliseconds: Int, operations: [Operation],
+         initialObservation: Observation?, observations: [Observation], nativeObservation: NativeObservation? = nil) {
+        self.targetPID = targetPID
+        self.outcome = outcome
+        self.elapsedMilliseconds = elapsedMilliseconds
+        self.operations = operations
+        self.initialObservation = initialObservation
+        self.observations = observations
+        self.nativeObservation = nativeObservation
+    }
 
     public var summary: String {
         let encoder = JSONEncoder()

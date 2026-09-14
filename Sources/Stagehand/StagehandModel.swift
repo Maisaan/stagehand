@@ -26,7 +26,7 @@ final class StagehandModel: ObservableObject {
     @Published var gap: Double {
         didSet {
             UserDefaults.standard.set(gap, forKey: "windowGap")
-            if isRunning && !isSuspended { enqueue(.refresh) }
+            if isRunning && !isSuspended { enqueue(.preferences) }
         }
     }
 
@@ -49,6 +49,9 @@ final class StagehandModel: ObservableObject {
     private var lastLayoutMilliseconds = 0
     private var lastFocusTokenExpired = false
     private var pointerInteraction: PointerInteraction?
+    private var borderWindowID: String?
+    private var borderCornerRadius: CGFloat?
+    private var preferencesNeedLayout = false
 
     private struct PointerInteraction {
         let windowID: String
@@ -56,23 +59,42 @@ final class StagehandModel: ObservableObject {
         var needsLayout: Bool
     }
 
-    private enum Change {
+    private enum Change: Equatable {
         case action(NavigationAction)
         case maximize(Bool)
         case remove(String)
         case focus(String)
         case refresh
+        case preferences
+
+        var policy: LayoutRequestPolicy {
+            switch self {
+            case .maximize, .preferences: .preferences
+            default: .navigation
+            }
+        }
     }
 
     init() {
         let defaults = UserDefaults.standard
         gesturesEnabled = defaults.object(forKey: "gesturesEnabled") as? Bool ?? false
-        gap = defaults.object(forKey: "windowGap") as? Double ?? 8
+        gap = GapInput.clamped(defaults.object(forKey: "windowGap") as? Double ?? 8)
         state.maximizeWindows = defaults.object(forKey: "maximizeWindows") as? Bool
             ?? (defaults.string(forKey: "layoutMode") == "monocle")
         input.onAction = { [weak self] action in self?.navigate(action) }
         input.onStatusChange = { [weak self] in self?.updateInputStatus() }
         windowSystem.onChange = { [weak self] in self?.scheduleRefresh() }
+        windowSystem.onFrameChange = { [weak self] id, frame in
+            guard let self, self.isRunning, !self.isSuspended,
+                  self.borderWindowID == id, self.state.focusedWindowID == id else { return }
+            guard self.desktopScope.refresh() == .home else {
+                self.nativeDesktopChanged()
+                return
+            }
+            // Geometry follows native notifications immediately. Do not scan windows,
+            // query corner metadata, or wait for layout reconciliation during a resize.
+            self.overlays.updateBorder(frame: frame, visible: true, cornerRadius: self.borderCornerRadius)
+        }
         windowSystem.onNativeDesktopChange = { [weak self] in
             self?.nativeDesktopChanged()
         }
@@ -168,9 +190,12 @@ final class StagehandModel: ObservableObject {
         desktopScope.reset()
         transitionRollback = nil
         pointerInteraction = nil
+        preferencesNeedLayout = false
         focusGate.cancelAll()
         focusGate.stop()
         input.stop()
+        borderWindowID = nil
+        borderCornerRadius = nil
         overlays.hide()
         emptySpace.hide()
         windowSystem.stop()
@@ -255,6 +280,7 @@ final class StagehandModel: ObservableObject {
         Managed window count: \(windows.count)
         Layout preparation: \(lastLayoutMilliseconds) ms
         Focus token expired: \(lastFocusTokenExpired)
+        Border corner radius: \(borderCornerRadius.map { String(describing: $0) } ?? "fallback")
         Warning: \(warning ?? "none")
         \(focusChecks.joined(separator: "\n"))
         \(sizing.joined(separator: "\n"))
@@ -322,7 +348,7 @@ final class StagehandModel: ObservableObject {
                 pointerInteraction?.needsLayout = true
             }
             if let focused = focusedWindow {
-                overlays.updateBorder(frame: focused.frame, visible: true)
+                updateFocusBorder(windowID: focused.id, frame: focused.frame)
             }
             scheduleRefresh()
             return
@@ -363,9 +389,13 @@ final class StagehandModel: ObservableObject {
                 }
             }
         }
-        if oldState != state || needsLayout { enqueue(.refresh) }
-        else if let id = state.focusedWindowID, let frame = windowSystem.frame(windowID: id) {
-            overlays.updateBorder(frame: frame, visible: true)
+        if oldState != state || needsLayout {
+            enqueue(preferencesNeedLayout ? .preferences : .refresh)
+        } else if preferencesNeedLayout,
+                  LayoutRequestPolicy.preferences.prepare(state: state, focusedWindowID: windowSystem.focusedWindowID()) != nil {
+            enqueue(.preferences)
+        } else if let id = state.focusedWindowID, let frame = windowSystem.frame(windowID: id) {
+            updateFocusBorder(windowID: id, frame: frame)
         }
         onStateChange?()
     }
@@ -376,8 +406,11 @@ final class StagehandModel: ObservableObject {
             nativeDesktopChanged()
             return
         }
+        if change == .preferences, pending.contains(where: { $0.0 == .preferences }) { return }
         // Capture typing before the asynchronous AX activation starts.
-        let token = focusGate.isAvailable ? focusGate.beginTransfer() : nil
+        let token = change.policy.beginInputTransfer {
+            focusGate.isAvailable ? focusGate.beginTransfer() : nil
+        }
         pending.append((change, token))
         guard worker == nil else { return }
         workerGeneration += 1
@@ -393,9 +426,19 @@ final class StagehandModel: ObservableObject {
                 case .maximize(let enabled): self.state.maximizeWindows = enabled
                 case .remove(let id): self.state.removeFromCurrentSpace(windowID: id)
                 case .focus(let id): self.state.focus(windowID: id)
-                case .refresh: break
+                case .refresh, .preferences: break
                 }
-                let succeeded = await self.applyLayout(token: token)
+                if change.policy == .preferences {
+                    self.preferencesNeedLayout = true
+                    guard let prepared = change.policy.prepare(
+                        state: self.state, focusedWindowID: self.windowSystem.focusedWindowID()
+                    ) else {
+                        self.transitionRollback = nil
+                        continue
+                    }
+                    self.state = prepared
+                }
+                let succeeded = await self.applyLayout(token: token, request: change.policy)
                 guard generation == self.workerGeneration, !Task.isCancelled else { return }
                 if !succeeded {
                     self.state = previousState
@@ -421,7 +464,7 @@ final class StagehandModel: ObservableObject {
         return CGRect(x: frame.minX, y: primary.frame.maxY - frame.maxY, width: frame.width, height: frame.height)
     }
 
-    private func applyLayout(token: UInt64?) async -> Bool {
+    private func applyLayout(token: UInt64?, request: LayoutRequestPolicy) async -> Bool {
         let layoutStart = ContinuousClock.now
         guard desktopScope.refresh() == .home else {
             nativeDesktopChanged()
@@ -439,11 +482,13 @@ final class StagehandModel: ObservableObject {
         // the input gate's deadline also applies to the whole transition.
         let maximumPass = state.currentSpace.windowIDs.count
         for pass in 0...maximumPass {
+            guard preferenceFocusStillMatches(request) else { return true }
             placements = WindowLayout.placements(for: state, availableFrame: availableFrame, gap: gap,
                                                  observedWidths: observedWidths)
             let visible = placements.filter(\.isVisible)
             // Position neighbors first. Raising the focused real window last keeps clamped neighbors behind it.
             for placement in visible.sorted(by: { !$0.isFocused && $1.isFocused }) {
+                guard preferenceFocusStillMatches(request) else { return true }
                 guard desktopScope.refresh() == .home else {
                     nativeDesktopChanged()
                     return false
@@ -457,12 +502,17 @@ final class StagehandModel: ObservableObject {
                let record = windows.first(where: { $0.id == focusedID }) {
                 let preparation = layoutStart.duration(to: .now).components
                 lastLayoutMilliseconds = Int(preparation.seconds * 1_000 + preparation.attoseconds / 1_000_000_000_000_000)
-                emptySpace.hide()
+                if request == .navigation { emptySpace.hide() }
                 guard desktopScope.refresh() == .home else {
                     nativeDesktopChanged()
                     return false
                 }
-                let focused = await windowSystem.focus(windowID: focusedID)
+                let focused = await request.confirmFocus(
+                    windowID: focusedID,
+                    currentFocus: { windowSystem.focusedWindowID() },
+                    activate: { await windowSystem.focus(windowID: focusedID) }
+                )
+                if request == .preferences, !focused { return true }
                 lastFocusTokenExpired = token.map { expiredTokens.contains($0) } ?? false
                 guard desktopScope.refresh() == .home else {
                     nativeDesktopChanged()
@@ -498,6 +548,7 @@ final class StagehandModel: ObservableObject {
                 }
                 destinationPID = record.pid
             } else {
+                guard request == .navigation else { return true }
                 // An empty space owns a real blank window so typing cannot leak to a parked app.
                 guard desktopScope.refresh() == .home else {
                     nativeDesktopChanged()
@@ -525,6 +576,7 @@ final class StagehandModel: ObservableObject {
         }
         let visibleIDs = Set(placements.filter(\.isVisible).map(\.windowID))
         for window in windows where !visibleIDs.contains(window.id) {
+            guard preferenceFocusStillMatches(request) else { return true }
             guard desktopScope.refresh() == .home else {
                 nativeDesktopChanged()
                 return false
@@ -534,15 +586,34 @@ final class StagehandModel: ObservableObject {
                 return false
             }
         }
+        guard preferenceFocusStillMatches(request) else { return true }
+        preferencesNeedLayout = false
         lastTransition = Date()
         if let focused = state.focusedWindowID, let frame = windowSystem.frame(windowID: focused) {
-            overlays.updateBorder(frame: frame, visible: true)
+            updateFocusBorder(windowID: focused, frame: frame)
         } else {
+            borderWindowID = nil
+            borderCornerRadius = nil
             overlays.updateBorder(frame: .zero, visible: false)
         }
-        overlays.showNavigation(state: state, windows: windows)
+        if request == .navigation { overlays.showNavigation(state: state, windows: windows) }
         onStateChange?()
         return true
+    }
+
+    private func preferenceFocusStillMatches(_ request: LayoutRequestPolicy) -> Bool {
+        request == .navigation || (state.focusedWindowID != nil && windowSystem.focusedWindowID() == state.focusedWindowID)
+    }
+
+    private func updateFocusBorder(windowID: String, frame: CGRect) {
+        let changed = borderWindowID != windowID
+        if changed {
+            borderWindowID = windowID
+            borderCornerRadius = windows.first(where: { $0.id == windowID }).flatMap {
+                WindowCornerRadius.cornerRadius(processID: $0.pid, frame: frame)
+            }
+        }
+        overlays.updateBorder(frame: frame, visible: true, cornerRadius: borderCornerRadius, focusChanged: changed)
     }
 
     private func nativeDesktopChanged(remainingChecks: Int = 5) {
@@ -573,6 +644,8 @@ final class StagehandModel: ObservableObject {
                 focusGate.cancelAll()
                 focusGate.stop()
                 input.stop()
+                borderWindowID = nil
+                borderCornerRadius = nil
                 overlays.hide()
                 emptySpace.hide()
                 updateInputStatus()

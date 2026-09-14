@@ -12,10 +12,11 @@ public struct WindowRecord: Identifiable, Equatable, Sendable {
     public let isResizable: Bool
 }
 
-/// Controls real application windows. It never activates a Stagehand window.
+/// Controls external windows through Accessibility and registered Stagehand windows through AppKit.
 @MainActor
 public final class WindowSystem {
     public var onChange: (() -> Void)?
+    public var onFrameChange: ((String, CGRect) -> Void)?
     public var onNativeDesktopChange: (() -> Void)?
     public var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
     public var focusDiagnosticsEnabled = false
@@ -43,6 +44,10 @@ public final class WindowSystem {
         nativeWindows.onChange = { [weak self] in
             guard let self, self.started else { return }
             self.onChange?()
+        }
+        nativeWindows.onFrameChange = { [weak self] id, frame in
+            guard let self, self.started else { return }
+            self.onFrameChange?(id, frame)
         }
     }
 
@@ -334,7 +339,8 @@ public final class WindowSystem {
                                                     outcome: success ? .focused : .timedOut,
                                                     elapsedMilliseconds: Int(elapsed.seconds * 1_000 + elapsed.attoseconds / 1_000_000_000_000_000),
                                                     operations: [.init("nativeWindowFocus", accepted: success)],
-                                                    initialObservation: nil, observations: [])
+                                                    initialObservation: nil, observations: [],
+                                                    nativeObservation: nativeWindows.focusObservation(windowID: windowID))
             }
             return success
         }
@@ -474,12 +480,20 @@ public final class WindowSystem {
     private func observeApplication(_ element: AXUIElement, pid: pid_t) {
         guard observers[pid] == nil else { return }
         var created: AXObserver?
-        let callback: AXObserverCallback = { _, _, _, context in
+        let callback: AXObserverCallback = { _, changedWindow, notification, context in
             guard let context else { return }
             // This observer is attached exclusively to the main run loop.
             MainActor.assumeIsolated {
                 let owner = Unmanaged<WindowSystem>.fromOpaque(context).takeUnretainedValue()
-                if owner.started { owner.onChange?() }
+                guard owner.started else { return }
+                let name = notification as String
+                if owner.onFrameChange != nil,
+                   name == kAXMovedNotification || name == kAXResizedNotification,
+                   let tracked = owner.windows.first(where: { CFEqual($0.value.element, changedWindow) }),
+                   let frame = owner.readFrame(changedWindow) {
+                    owner.onFrameChange?(tracked.key, frame)
+                }
+                owner.onChange?()
             }
         }
         guard AXObserverCreate(pid, callback, &created) == .success, let observer = created else { return }

@@ -10,9 +10,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var activationObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let arguments = ProcessInfo.processInfo.arguments
+        // Diagnostics need the same completed AppKit launch as normal operation.
+        // A main-actor Task created before NSApplication.run can execute earlier.
+        if let index = arguments.firstIndex(of: "--diagnose-focus"), arguments.indices.contains(index + 1) {
+            Task { @MainActor in
+                await FocusDiagnostics.run(bundleIdentifier: arguments[index + 1])
+                NSApp.terminate(nil)
+            }
+            return
+        }
         let model = StagehandModel()
         self.model = model
-        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--diagnose-permissions") {
+            print("Accessibility: \(model.accessibilityGranted)")
+            print("Input Monitoring: \(CGPreflightListenEventAccess())")
+            NSApp.terminate(nil)
+            return
+        }
+        if arguments.contains("--diagnose-start") || arguments.contains("--diagnose-ribbon") {
+            Task { @MainActor in
+                print(await model.diagnoseStartup(includeSettings: arguments.contains("--diagnose-ribbon")))
+                NSApp.terminate(nil)
+            }
+            return
+        }
         if let index = arguments.firstIndex(of: "--render-previews"), arguments.indices.contains(index + 1) {
             renderPreviews(directory: arguments[index + 1], model: model)
             return

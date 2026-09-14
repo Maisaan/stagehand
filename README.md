@@ -24,6 +24,7 @@ The build script makes a local, ad-hoc-signed app. Rebuilding can require removi
 - With it on, windows request the full available width. Turning it off restores the individual widths. This is window resizing, not native fullscreen.
 - Apps can constrain their size. Settings shows their actual width, and the ribbon packs to the accepted size instead of leaving an unused slot.
 - Gap is measured in points. Positive values separate windows; negative values overlap them horizontally. The active window stays on top. Maximized windows do not reserve neighboring strips.
+- Adjust the gap with the slider or number field, from −200 to 40 points. Return or leaving the field applies a typed value. Up/Down changes it by 1 point; Shift changes it by 10. The slider applies on release.
 
 The maximize toggle and gap apply to all nine spaces. Settings and the menu show only occupied spaces and the current space. Use a numbered shortcut to enter an unused space. Navigation stops at the ends, without wrapping. Drag a window by its title bar and release it to reorder within the ribbon; it does not become free-floating. Resize a window with maximization off to change its individual width.
 
@@ -32,6 +33,8 @@ Each space remembers its order, scrolling widths, and focused window. Move remov
 New windows enter after the current window. Stagehand's own settings window joins the ribbon too. Empty spaces display a Stagehand placeholder so typing cannot reach a hidden application. Stagehand's menus appear only while its settings or empty-space window is active. Switching to another window restores that application's menus.
 
 The settings window is resizable. Settings save maximization, gap, and the gesture preference. Space membership is session-only in this MVP.
+
+The navigation bar stays visible through successive changes and moves its selection indicator in place. It enters and exits toward the top using short scale and opacity transitions. Reduce Motion removes movement. Border focus feedback uses opacity only; window movement and resizing are tracked immediately, without geometry animation. These overlays never wait on or take ownership of keyboard focus.
 
 ## Controls
 
@@ -88,6 +91,8 @@ For explicit focus diagnostics, launch the installed app through `open` so macOS
 ```sh
 open -n -W -g --stdout /tmp/stagehand-focus.log /Applications/Stagehand.app --args --diagnose-focus com.linear
 ```
+
+`--diagnose-permissions` only reports the installed app's Accessibility and Input Monitoring grants. It does not request access, start management, or activate another window.
 
 ## Source map
 

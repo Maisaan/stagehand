@@ -50,6 +50,10 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 ## Interface
 
 - The temporary app bar appears beneath the notch and disappears after navigation stops.
+- Navigate repeatedly while the bar is entering, visible, and exiting. It stays present during successive changes, moves its active indicator, and dismisses only after the latest change. An old dismissal must never hide a refreshed bar.
+- Enable Reduce Motion. The bar uses a fade without drop/scale movement; indicator changes do not travel between icons.
+- Resize the active window continuously. The border follows its actual frame without easing behind it, and its corners match the target window.
+- Adjust the gap with the slider, typed values, Up/Down, and Shift+Up/Down while running. Input focus remains in the number field; no keys reach another app. Invalid values restore the previous value and out-of-range values clamp.
 - Neither bar nor border shifts or resizes any window.
 - The current application owns the macOS menu bar, except while Stagehand settings or an empty-space placeholder is active.
 - Settings stay usable at the built-in display's current scaling.

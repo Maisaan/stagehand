@@ -65,4 +65,38 @@ struct NativeWindowTests {
         #expect(settings.isVisible)
         #expect(!settings.isKeyWindow)
     }
+
+    @Test func frameChangesArriveDuringEachResizeWithoutWaitingForATimer() {
+        let registry = NativeWindowRegistry()
+        let settings = makeWindow()
+        defer { settings.close() }
+        settings.orderFront(nil)
+        let id = registry.register(window: settings)
+        var changes: [(String, CGRect)] = []
+        registry.onFrameChange = { changes.append(($0, $1)) }
+
+        for width in [710.0, 730.0, 750.0] {
+            let previousCount = changes.count
+            var frame = settings.frame
+            frame.size.width = width
+            settings.setFrame(frame, display: false, animate: false)
+            // No await or run-loop spin: the latest outline frame must already
+            // be available before AppKit returns from this resize operation.
+            #expect(changes.count > previousCount)
+            #expect(changes.last?.0 == id)
+            #expect(changes.last?.1 == registry.frame(windowID: id))
+        }
+    }
+
+    @Test func frameChangesIgnoreUnregisteredWindows() {
+        let registry = NativeWindowRegistry()
+        let overlay = makeWindow()
+        defer { overlay.close() }
+        var changeCount = 0
+        registry.onFrameChange = { _, _ in changeCount += 1 }
+        var frame = overlay.frame
+        frame.size.width += 50
+        overlay.setFrame(frame, display: false, animate: false)
+        #expect(changeCount == 0)
+    }
 }
