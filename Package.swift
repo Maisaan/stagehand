@@ -10,6 +10,7 @@ let package = Package(
         .target(name: "StagehandPlatform", dependencies: ["StagehandCore"]),
         .executableTarget(name: "Stagehand", dependencies: ["StagehandCore", "StagehandPlatform"]),
         .testTarget(name: "StagehandCoreTests", dependencies: ["StagehandCore"]),
-        .testTarget(name: "StagehandPlatformTests", dependencies: ["StagehandPlatform", "StagehandCore"])
+        .testTarget(name: "StagehandPlatformTests", dependencies: ["StagehandPlatform", "StagehandCore"]),
+        .testTarget(name: "StagehandTests", dependencies: ["Stagehand"])
     ]
 )

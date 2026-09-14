@@ -2,6 +2,20 @@ import AppKit
 
 let application = NSApplication.shared
 let delegate = AppDelegate()
-application.delegate = delegate
 application.setActivationPolicy(.accessory)
+if CommandLine.arguments.contains("--diagnose-start") {
+    Task { @MainActor in
+        let model = StagehandModel()
+        print(await model.diagnoseStartup())
+        application.terminate(nil)
+    }
+} else if let index = CommandLine.arguments.firstIndex(of: "--diagnose-focus"),
+          CommandLine.arguments.indices.contains(index + 1) {
+    Task { @MainActor in
+        await FocusDiagnostics.run(bundleIdentifier: CommandLine.arguments[index + 1])
+        application.terminate(nil)
+    }
+} else {
+    application.delegate = delegate
+}
 application.run()

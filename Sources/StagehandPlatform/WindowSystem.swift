@@ -18,6 +18,8 @@ public final class WindowSystem {
     public var onChange: (() -> Void)?
     public var onNativeDesktopChange: (() -> Void)?
     public var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
+    public var focusDiagnosticsEnabled = false
+    public private(set) var lastFocusReport: WindowFocusReport?
 
     private struct TrackedWindow {
         let element: AXUIElement
@@ -276,7 +278,18 @@ public final class WindowSystem {
     }
 
     public func focusedWindowID() -> String? {
-        guard let focusedApp = elementAttribute(systemElement, kAXFocusedApplicationAttribute) else { return nil }
+        let result = copyAttribute(systemElement, kAXFocusedApplicationAttribute)
+        let focusedApp: AXUIElement
+        if let value = result.value, CFGetTypeID(value) == AXUIElementGetTypeID() {
+            focusedApp = unsafeDowncast(value, to: AXUIElement.self)
+        } else if result.error == .noValue,
+                  let frontmost = NSWorkspace.shared.frontmostApplication, frontmost.isActive {
+            // Match focus()'s narrow fallback. A remembered window in a background
+            // app is not evidence of keyboard focus.
+            focusedApp = AXUIElementCreateApplication(frontmost.processIdentifier)
+        } else {
+            return nil
+        }
         AXUIElementSetMessagingTimeout(focusedApp, 0.1)
         guard let focusedWindow = elementAttribute(focusedApp, kAXFocusedWindowAttribute) else { return nil }
         return windows.first { CFEqual($0.value.element, focusedWindow) }?.key
@@ -285,38 +298,132 @@ public final class WindowSystem {
     /// Returns success only after the target application and its exact window own focus.
     /// Callers must not report a successful transition before this confirmation.
     public func focus(windowID: String) async -> Bool {
+        lastFocusReport = nil
         guard let tracked = windows[windowID],
               let app = NSRunningApplication(processIdentifier: tracked.record.pid),
-              !app.isTerminated,
-              restore(windowID: windowID) else { return false }
-        let appElement = AXUIElementCreateApplication(tracked.record.pid)
-        AXUIElementSetMessagingTimeout(appElement, 0.1)
-        var canSetFocusedWindow: DarwinBoolean = false
-        AXUIElementIsAttributeSettable(appElement, kAXFocusedWindowAttribute as CFString, &canSetFocusedWindow)
-        if app.isHidden { app.unhide() }
-        _ = AXUIElementPerformAction(tracked.element, kAXRaiseAction as CFString)
-        _ = AXUIElementSetAttributeValue(tracked.element, kAXMainAttribute as CFString, kCFBooleanTrue)
-        if canSetFocusedWindow.boolValue {
-            _ = AXUIElementSetAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, tracked.element)
+              !app.isTerminated else {
+            if focusDiagnosticsEnabled { lastFocusReport = WindowFocusReport(targetPID: windows[windowID]?.record.pid,
+                                                outcome: .unavailable, elapsedMilliseconds: 0,
+                                                operations: [.init("resolveTarget", accepted: false)],
+                                                initialObservation: nil, observations: []) }
+            return false
         }
-        _ = AXUIElementSetAttributeValue(appElement, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
-        _ = app.activate(options: [])
-        let deadline = ContinuousClock.now.advanced(by: .milliseconds(180))
-        var attempt = 0
-        repeat {
-            guard !Task.isCancelled else { return false }
+        guard restore(windowID: windowID) else {
+            if focusDiagnosticsEnabled { lastFocusReport = WindowFocusReport(targetPID: tracked.record.pid, outcome: .unavailable,
+                                                elapsedMilliseconds: 0,
+                                                operations: [.init("restoreTarget", accepted: false)],
+                                                initialObservation: nil, observations: []) }
+            return false
+        }
+        let driver = FocusDriver(system: self, tracked: tracked, app: app, recordsDiagnostics: focusDiagnosticsEnabled)
+        let report = await WindowFocusAttempt.run(driver: driver, recordDiagnostics: focusDiagnosticsEnabled)
+        if focusDiagnosticsEnabled { lastFocusReport = report }
+        return report.outcome == .focused
+    }
+
+    @MainActor
+    private final class FocusDriver: WindowFocusDriving {
+        let targetPID: Int32
+        private let system: WindowSystem
+        private let target: AXUIElement
+        private let app: NSRunningApplication
+        private let appElement: AXUIElement
+        private let start = ContinuousClock.now
+        private let recordsDiagnostics: Bool
+        private var canSetFocusedWindow = false
+
+        init(system: WindowSystem, tracked: TrackedWindow, app: NSRunningApplication, recordsDiagnostics: Bool) {
+            self.system = system
+            self.target = tracked.element
+            self.targetPID = tracked.record.pid
+            self.app = app
+            self.recordsDiagnostics = recordsDiagnostics
+            self.appElement = AXUIElementCreateApplication(tracked.record.pid)
+            AXUIElementSetMessagingTimeout(appElement, 0.1)
+        }
+
+        var elapsedMilliseconds: Int {
+            let duration = start.duration(to: .now).components
+            return Int(duration.seconds * 1_000 + duration.attoseconds / 1_000_000_000_000_000)
+        }
+
+        func prepare() -> [WindowFocusReport.Operation] {
+            var writable: DarwinBoolean = false
+            let status = AXUIElementIsAttributeSettable(appElement, kAXFocusedWindowAttribute as CFString, &writable)
+            canSetFocusedWindow = writable.boolValue
+            var operations: [WindowFocusReport.Operation] = []
+            record("isFocusedWindowSettable", status: status.rawValue, accepted: writable.boolValue, into: &operations)
+            if app.isHidden { record("unhide", accepted: app.unhide(), into: &operations) }
+            record("raise", status: AXUIElementPerformAction(target, kAXRaiseAction as CFString).rawValue, into: &operations)
+            record("setMain", status:
+                AXUIElementSetAttributeValue(target, kAXMainAttribute as CFString, kCFBooleanTrue).rawValue, into: &operations)
+            if canSetFocusedWindow {
+                record("setFocusedWindow", status:
+                    AXUIElementSetAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, target).rawValue, into: &operations)
+            }
+            record("setFrontmost", status:
+                AXUIElementSetAttributeValue(appElement, kAXFrontmostAttribute as CFString, kCFBooleanTrue).rawValue, into: &operations)
+            record("activate", accepted: app.activate(options: []), into: &operations)
+            return operations
+        }
+
+        func requestFocus(attempt: Int) -> [WindowFocusReport.Operation] {
+            var operations: [WindowFocusReport.Operation] = []
             if attempt % 4 == 0 {
-                _ = AXUIElementPerformAction(tracked.element, kAXRaiseAction as CFString)
-                if canSetFocusedWindow.boolValue {
-                    _ = AXUIElementSetAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, tracked.element)
+                record("raise", status: AXUIElementPerformAction(target, kAXRaiseAction as CFString).rawValue, into: &operations)
+                if canSetFocusedWindow {
+                    record("setFocusedWindow", status:
+                        AXUIElementSetAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, target).rawValue, into: &operations)
                 }
             }
-            _ = AXUIElementSetAttributeValue(tracked.element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-            if app.isActive && focusedWindowID() == windowID { return true }
-            attempt += 1
-            do { try await Task.sleep(for: .milliseconds(8)) } catch { return false }
-        } while ContinuousClock.now < deadline
-        return false
+            record("setFocused", status:
+                AXUIElementSetAttributeValue(target, kAXFocusedAttribute as CFString, kCFBooleanTrue).rawValue, into: &operations)
+            return operations
+        }
+
+        private func record(_ name: String, status: Int32? = nil, accepted: Bool? = nil,
+                            into operations: inout [WindowFocusReport.Operation]) {
+            guard recordsDiagnostics else { return }
+            operations.append(.init(name, accessibilityStatus: status, accepted: accepted))
+        }
+
+        func observe() -> WindowFocusReport.Observation {
+            let application = system.copyAttribute(system.systemElement, kAXFocusedApplicationAttribute)
+            // The extra direct-app read is needed only for the noValue fallback
+            // or an explicitly requested diagnostic comparison.
+            let directWindow = recordsDiagnostics || application.error == .noValue
+                ? system.copyAttribute(appElement, kAXFocusedWindowAttribute)
+                : (value: nil, error: AXError.attributeUnsupported)
+            let directMatches = directWindow.value.map {
+                CFGetTypeID($0) == AXUIElementGetTypeID() && CFEqual($0, target)
+            } ?? false
+            var focusedPID: pid_t?
+            var windowStatus: Int32?
+            var matches = false
+            if let value = application.value, CFGetTypeID(value) == AXUIElementGetTypeID() {
+                let focusedApp = unsafeDowncast(value, to: AXUIElement.self)
+                AXUIElementSetMessagingTimeout(focusedApp, 0.1)
+                var pid: pid_t = 0
+                if AXUIElementGetPid(focusedApp, &pid) == .success { focusedPID = pid }
+                let window = system.copyAttribute(focusedApp, kAXFocusedWindowAttribute)
+                windowStatus = window.error.rawValue
+                if let focusedWindow = window.value, CFGetTypeID(focusedWindow) == AXUIElementGetTypeID() {
+                    matches = CFEqual(focusedWindow, target)
+                }
+            }
+            return WindowFocusReport.Observation(
+                frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                focusedApplicationPID: focusedPID,
+                focusedApplicationStatus: application.error.rawValue,
+                focusedWindowStatus: windowStatus,
+                directFocusedWindowStatus: directWindow.error.rawValue,
+                directTargetWindowMatches: directMatches,
+                targetApplicationActive: app.isActive,
+                targetWindowMatches: matches
+            )
+        }
+
+        func wait() async throws { try await Task.sleep(for: .milliseconds(8)) }
     }
 
     private func observeApplication(_ element: AXUIElement, pid: pid_t) {

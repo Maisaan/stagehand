@@ -46,14 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func openSettings() {
         guard let model else { return }
         if settingsWindow == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 610),
-                                  styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-            window.title = "Stagehand"
-            window.titlebarAppearsTransparent = true
-            window.isReleasedWhenClosed = false
+            let window = SettingsWindow.make(model: model)
             window.delegate = self
-            window.contentView = NSHostingView(rootView: SettingsView(model: model))
-            window.center()
             settingsWindow = window
         }
         model.refreshPermissions()
@@ -96,10 +90,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Render the real native settings views without starting window management or input monitoring.
     private func renderPreviews(directory: String, model: StagehandModel) {
         let originalApp = NSWorkspace.shared.frontmostApplication
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 610),
-                              styleMask: [.titled], backing: .buffered, defer: false)
+        let window = SettingsWindow.make(model: model)
         window.title = "Stagehand Preview"
-        window.isReleasedWhenClosed = false
         settingsWindow = window
         window.center()
         window.orderFrontRegardless()
@@ -107,23 +99,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             do {
                 let output = URL(fileURLWithPath: directory, isDirectory: true)
                 try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+                let sizes = [
+                    (suffix: "", size: NSSize(width: 680, height: 610)),
+                    (suffix: "-compact", size: NSSize(width: 520, height: 480)),
+                    (suffix: "-expanded", size: NSSize(width: 900, height: 760))
+                ]
                 for section in ["Workspace", "Controls", "Setup"] {
-                    let view = NSHostingView(rootView: SettingsView(model: model, initialTab: section))
-                    window.contentView = view
-                    window.setContentSize(NSSize(width: 680, height: 610))
-                    view.layoutSubtreeIfNeeded()
-                    window.displayIfNeeded()
-                    try await Task.sleep(for: .milliseconds(250))
-                    let destination = output.appendingPathComponent("\(section.lowercased()).png")
-                    guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
-                        throw CocoaError(.fileWriteUnknown)
+                    for variant in sizes {
+                        let view = NSHostingView(rootView: SettingsView(model: model, initialTab: section))
+                        window.contentView = view
+                        window.setContentSize(variant.size)
+                        view.layoutSubtreeIfNeeded()
+                        window.displayIfNeeded()
+                        try await Task.sleep(for: .milliseconds(250))
+                        let destination = output.appendingPathComponent("\(section.lowercased())\(variant.suffix).png")
+                        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+                            throw CocoaError(.fileWriteUnknown)
+                        }
+                        view.cacheDisplay(in: view.bounds, to: bitmap)
+                        guard let data = bitmap.representation(using: .png, properties: [:]) else {
+                            throw CocoaError(.fileWriteUnknown)
+                        }
+                        try data.write(to: destination)
+                        print("Rendered \(destination.path)")
                     }
-                    view.cacheDisplay(in: view.bounds, to: bitmap)
-                    guard let data = bitmap.representation(using: .png, properties: [:]) else {
-                        throw CocoaError(.fileWriteUnknown)
-                    }
-                    try data.write(to: destination)
-                    print("Rendered \(destination.path)")
                 }
                 print("Preview rendering passed. Window management was not started.")
             } catch {
@@ -138,17 +137,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func updateMenu() {
         guard let model else { return }
         let menu = NSMenu()
-        let title = NSMenuItem(title: model.isRunning ? "Space \(model.state.activeSpaceIndex + 1) · \(model.state.layoutMode.rawValue.capitalized)" : "Stagehand is paused", action: nil, keyEquivalent: "")
+        menu.autoenablesItems = false
+        let title = NSMenuItem(title: model.isSuspended ? "Waiting on its Desktop" : model.isRunning ? "Space \(model.state.activeSpaceIndex + 1) · \(model.state.layoutMode.rawValue.capitalized)" : "Stagehand is paused", action: nil, keyEquivalent: "")
+        title.isEnabled = false
         menu.addItem(title)
         menu.addItem(.separator())
         if model.isRunning {
-            for index in model.state.spaces.indices {
+            for index in model.state.displayedSpaceIndices {
                 let count = model.state.spaces[index].windowIDs.count
                 let item = NSMenuItem(title: "Space \(index + 1)  ·  \(count) \(count == 1 ? "window" : "windows")",
                                       action: #selector(changeSpace(_:)), keyEquivalent: "")
                 item.target = self
                 item.tag = index
                 item.state = index == model.state.activeSpaceIndex ? .on : .off
+                item.isEnabled = !model.isSuspended
                 menu.addItem(item)
             }
             menu.addItem(.separator())

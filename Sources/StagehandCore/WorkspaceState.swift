@@ -94,6 +94,9 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
 
     public var currentSpace: SpaceState { spaces[activeSpaceIndex] }
     public var focusedWindowID: String? { currentSpace.focusedWindowID }
+    public var displayedSpaceIndices: [Int] {
+        spaces.indices.filter { $0 == activeSpaceIndex || !spaces[$0].windowIDs.isEmpty }
+    }
 
     public init(
         layoutMode: LayoutMode = .scrolling,

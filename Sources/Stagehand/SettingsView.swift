@@ -27,8 +27,10 @@ struct SettingsView: View {
                 }
                 Spacer()
                 HStack(spacing: 6) {
-                    Circle().fill(model.isRunning ? Color.mint : .secondary).frame(width: 6, height: 6)
-                    Text(model.isRunning ? "Running" : "Paused").font(.system(size: 11, weight: .medium))
+                    Circle().fill(model.isSuspended ? Color.orange : model.isRunning ? .mint : .secondary)
+                        .frame(width: 6, height: 6)
+                    Text(model.isSuspended ? "Waiting on its Desktop" : model.isRunning ? "Running" : "Paused")
+                        .font(.system(size: 11, weight: .medium))
                 }
                 .padding(.horizontal, 10).padding(.vertical, 6)
                 .background(.quaternary.opacity(0.5), in: Capsule())
@@ -70,7 +72,7 @@ struct SettingsView: View {
             }
             Divider()
             HStack {
-                Text(model.isRunning ? "Pause returns windows to their original positions." : "Window management starts only when you press Start.")
+                Text(model.isSuspended ? "Stagehand resumes when you return to its macOS Desktop." : model.isRunning ? "Pause returns windows to their original positions." : "Window management starts only when you press Start.")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                 Spacer()
                 Button(model.isRunning ? "Pause & Restore" : "Start Stagehand") {
@@ -84,7 +86,7 @@ struct SettingsView: View {
             }
             .padding(.horizontal, 24).padding(.vertical, 16)
         }
-        .frame(width: 680, height: 610)
+        .frame(minWidth: 520, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
@@ -113,8 +115,8 @@ struct SettingsView: View {
                     Text("Independent order · shared windows")
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                 }
-                HStack(spacing: 7) {
-                    ForEach(model.state.spaces.indices, id: \.self) { index in
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 52, maximum: 76), spacing: 7)], alignment: .leading, spacing: 7) {
+                    ForEach(model.state.displayedSpaceIndices, id: \.self) { index in
                         Button { model.navigate(.goToSpace(index: index)) } label: {
                             VStack(spacing: 5) {
                                 Text("\(index + 1)").font(.system(size: 13, weight: .semibold, design: .monospaced))
@@ -130,10 +132,12 @@ struct SettingsView: View {
                             }
                         }
                         .buttonStyle(.plain)
-                        .disabled(!model.isRunning)
+                        .disabled(!model.isRunning || model.isSuspended)
                         .accessibilityLabel("Space \(index + 1), \(model.state.spaces[index].windowIDs.count) windows")
                     }
                 }
+                Text("Open another space with ⌃⌥ and its number.")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
                 if model.state.currentSpace.windowIDs.isEmpty {
                     Text(model.isRunning ? "This space is empty. Move or add a window from another space." : "Start Stagehand to arrange your open windows.")
                         .font(.system(size: 12)).foregroundStyle(.secondary)
@@ -210,7 +214,7 @@ struct SettingsView: View {
                 }
             } label: { Image(systemName: "ellipsis") }
             .menuStyle(.borderlessButton).frame(width: 22)
-            .disabled(!model.isRunning)
+            .disabled(!model.isRunning || model.isSuspended)
             .accessibilityLabel("Actions for \(window.appName)")
         }
         .padding(.vertical, 7)

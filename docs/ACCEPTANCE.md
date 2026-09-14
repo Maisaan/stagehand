@@ -9,7 +9,8 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 - Start with several ordinary windows on one native macOS Desktop.
 - Pause and Quit independently. Verify every managed window returns to its pre-Start frame and every Stagehand-minimized window is restored.
 - Repeatedly pause/start during navigation. No stale operation should move windows after pause.
-- Change native macOS Desktop. Stagehand should pause and restore, without pulling windows into the new Desktop.
+- Change native macOS Desktop. Stagehand should stay enabled but suspend input and layout work, without pulling windows into the new Desktop. Return and verify automatic resume with order and widths preserved.
+- Repeat Desktop switching during window navigation. No buffered typing should be replayed on the away Desktop.
 
 ## Scrolling and monocle
 
@@ -49,3 +50,5 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 - Neither bar nor border shifts or resizes any window.
 - The current application owns the macOS menu bar, except while Stagehand settings or an empty-space placeholder is active.
 - Settings stay usable at the built-in display's current scaling.
+- Resize settings to its minimum size and enlarge it. Content should adapt and scroll without clipping controls.
+- Only occupied spaces and the current space appear in settings and the menu. Numbered shortcuts can still reach unused spaces.

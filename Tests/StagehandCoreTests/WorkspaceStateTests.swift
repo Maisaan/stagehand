@@ -140,3 +140,19 @@ import Testing
     #expect(restored.spaces[0].focusedWindowID == "a")
     #expect(restored.spaces[0].widthFractions == ["a": 0.95, "b": 0.25])
 }
+
+@Test func displayedSpacesContainOnlyOccupiedSpacesAndTheActiveSpace() {
+    var state = WorkspaceState()
+    #expect(state.displayedSpaceIndices == [0])
+    state.reconcile(windowIDs: ["a"])
+    state.apply(.shareToSpace(index: 4))
+    #expect(state.displayedSpaceIndices == [0, 4])
+    state.apply(.goToSpace(index: 8))
+    #expect(state.displayedSpaceIndices == [0, 4, 8])
+    state.reconcile(windowIDs: [])
+    #expect(state.displayedSpaceIndices == [8])
+    #expect(state.spaces.count == 9)
+    state.apply(.goToSpace(index: 2))
+    #expect(state.activeSpaceIndex == 2)
+    #expect(state.displayedSpaceIndices == [2])
+}

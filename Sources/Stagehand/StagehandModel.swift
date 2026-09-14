@@ -8,30 +8,32 @@ final class StagehandModel: ObservableObject {
     @Published private(set) var state = WorkspaceState()
     @Published private(set) var windows: [WindowRecord] = []
     @Published private(set) var isRunning = false
+    @Published private(set) var isSuspended = false
     @Published private(set) var accessibilityGranted = false
     @Published private(set) var inputIssues: [String] = []
     @Published private(set) var warning: String? {
         didSet {
-            if let warning { overlays.showWarning(warning) }
+            if let warning, !isSuspended { overlays.showWarning(warning) }
             onStateChange?()
         }
     }
     @Published var gesturesEnabled: Bool {
         didSet {
             UserDefaults.standard.set(gesturesEnabled, forKey: "gesturesEnabled")
-            input.gesturesEnabled = gesturesEnabled
+            input.gesturesEnabled = gesturesEnabled && !isSuspended
         }
     }
     @Published var gap: Double {
         didSet {
             UserDefaults.standard.set(gap, forKey: "windowGap")
-            if isRunning { enqueue(.refresh) }
+            if isRunning && !isSuspended { enqueue(.refresh) }
         }
     }
 
     var showSettings: (() -> Void)?
     var onStateChange: (() -> Void)?
     private let windowSystem = WindowSystem()
+    private let desktopScope = DesktopScope()
     private let input = InputController()
     private let focusGate = FocusInputGate()
     private let overlays = NavigationOverlays()
@@ -42,6 +44,10 @@ final class StagehandModel: ObservableObject {
     private var lastAppliedFrames: [String: CGRect] = [:]
     private var lastTransition = Date.distantPast
     private var workerGeneration = 0
+    private var desktopCheckTask: Task<Void, Never>?
+    private var transitionRollback: WorkspaceState?
+    private var lastLayoutMilliseconds = 0
+    private var lastFocusTokenExpired = false
 
     private enum Change {
         case action(NavigationAction)
@@ -62,9 +68,7 @@ final class StagehandModel: ObservableObject {
         input.onStatusChange = { [weak self] in self?.updateInputStatus() }
         windowSystem.onChange = { [weak self] in self?.scheduleRefresh() }
         windowSystem.onNativeDesktopChange = { [weak self] in
-            guard let self, self.isRunning else { return }
-            self.pause()
-            self.warning = "Paused because the native macOS Desktop changed. Return to your Desktop and press Start to continue."
+            self?.nativeDesktopChanged()
         }
         focusGate.onNavigationAction = { [weak self] action in self?.navigate(action) }
         focusGate.onAvailabilityChanged = { [weak self] in self?.updateInputStatus() }
@@ -113,12 +117,17 @@ final class StagehandModel: ObservableObject {
             return
         }
         guard !isRunning else { return }
+        guard desktopScope.bindToCurrentDesktop() else {
+            warning = "Could not identify this macOS Desktop. Stagehand has not changed any windows."
+            return
+        }
         warning = nil
         windowSystem.start()
         windows = windowSystem.scanWindows()
         state.reconcile(windowIDs: windows.map(\.id))
         if let focused = windowSystem.focusedWindowID() { state.focus(windowID: focused) }
         isRunning = true
+        isSuspended = false
         state.isPaused = false
         input.gesturesEnabled = gesturesEnabled
         focusGate.start()
@@ -131,6 +140,7 @@ final class StagehandModel: ObservableObject {
     func pause() {
         guard isRunning else { return }
         isRunning = false
+        isSuspended = false
         state.isPaused = true
         workerGeneration += 1
         worker?.cancel()
@@ -138,6 +148,9 @@ final class StagehandModel: ObservableObject {
         pending.removeAll()
         expiredTokens.removeAll()
         refreshTask?.cancel()
+        desktopCheckTask?.cancel()
+        desktopScope.reset()
+        transitionRollback = nil
         focusGate.cancelAll()
         focusGate.stop()
         input.stop()
@@ -156,32 +169,58 @@ final class StagehandModel: ObservableObject {
         case .showSettings: showSettings?()
         case .togglePause: isRunning ? pause() : start()
         default:
-            guard isRunning else { return }
+            guard isRunning, !isSuspended else { return }
             enqueue(.action(action))
         }
     }
 
     func setLayout(_ mode: LayoutMode) {
         UserDefaults.standard.set(mode.rawValue, forKey: "layoutMode")
-        if isRunning { enqueue(.layout(mode)) }
+        if isRunning && !isSuspended { enqueue(.layout(mode)) }
         else { state.layoutMode = mode }
     }
 
     func removeMembership(windowID: String) {
-        guard isRunning else { return }
+        guard isRunning, !isSuspended else { return }
         enqueue(.remove(windowID))
     }
 
     func focusWindow(_ id: String) {
-        guard isRunning else { return }
+        guard isRunning, !isSuspended else { return }
         enqueue(.focus(id))
     }
 
     func dismissWarning() { warning = nil }
 
+    /// Runs the actual Start path, prints no window titles or input, then restores all frames.
+    func diagnoseStartup() async -> String {
+        windowSystem.focusDiagnosticsEnabled = true
+        guard accessibilityGranted else {
+            return "Accessibility permission is missing for this build. No windows were changed."
+        }
+        let previousApp = NSWorkspace.shared.frontmostApplication
+        let began = ContinuousClock.now
+        start()
+        let deadline = began.advanced(by: .seconds(4))
+        while worker != nil && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        let result = """
+        Startup running: \(isRunning), suspended: \(isSuspended)
+        Managed window count: \(windows.count)
+        Layout preparation: \(lastLayoutMilliseconds) ms
+        Focus token expired: \(lastFocusTokenExpired)
+        Warning: \(warning ?? "none")
+        \(windowSystem.lastFocusReport?.summary ?? "No focus report")
+        """
+        pause()
+        _ = previousApp?.activate(options: [])
+        return result
+    }
+
     private func updateInputStatus() {
         var issues = input.issues
-        if isRunning && !focusGate.isAvailable {
+        if isRunning && !isSuspended && !focusGate.isAvailable {
             issues.append(focusGate.isSecureInputEnabled
                           ? "Secure Input is active. macOS prevents keyboard handoff protection in this mode."
                           : "Keyboard handoff protection is unavailable. Check Accessibility and Input Monitoring permissions.")
@@ -192,16 +231,21 @@ final class StagehandModel: ObservableObject {
     }
 
     private func scheduleRefresh() {
+        guard isRunning, !isSuspended else { return }
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(100))
-            guard !Task.isCancelled, let self, self.isRunning else { return }
+            guard !Task.isCancelled, let self, self.isRunning, !self.isSuspended else { return }
             if self.worker != nil { return }
             self.refreshWindows()
         }
     }
 
     private func refreshWindows() {
+        guard desktopScope.refresh() == .home else {
+            nativeDesktopChanged()
+            return
+        }
         let current = windowSystem.scanWindows()
         let oldState = state
         let oldIDs = Set(windows.map(\.id))
@@ -228,7 +272,7 @@ final class StagehandModel: ObservableObject {
                 refreshTask?.cancel()
                 refreshTask = Task { [weak self] in
                     try? await Task.sleep(for: .milliseconds(450))
-                    guard !Task.isCancelled, let self, self.isRunning, self.worker == nil else { return }
+                    guard !Task.isCancelled, let self, self.isRunning, !self.isSuspended, self.worker == nil else { return }
                     self.refreshWindows()
                 }
             }
@@ -241,7 +285,11 @@ final class StagehandModel: ObservableObject {
     }
 
     private func enqueue(_ change: Change) {
-        guard isRunning else { return }
+        guard isRunning, !isSuspended else { return }
+        guard desktopScope.refresh() == .home else {
+            nativeDesktopChanged()
+            return
+        }
         // Capture typing before the asynchronous AX activation starts.
         let token = focusGate.isAvailable ? focusGate.beginTransfer() : nil
         pending.append((change, token))
@@ -250,9 +298,10 @@ final class StagehandModel: ObservableObject {
         let generation = workerGeneration
         worker = Task { [weak self] in
             guard let self else { return }
-            while self.isRunning && !Task.isCancelled && !self.pending.isEmpty {
+            while self.isRunning && !self.isSuspended && !Task.isCancelled && !self.pending.isEmpty {
                 let (change, token) = self.pending.removeFirst()
                 let previousState = self.state
+                self.transitionRollback = previousState
                 switch change {
                 case .action(let action): self.state.apply(action)
                 case .layout(let mode): self.state.layoutMode = mode
@@ -267,6 +316,7 @@ final class StagehandModel: ObservableObject {
                     self.pause()
                     return
                 }
+                self.transitionRollback = nil
             }
             guard generation == self.workerGeneration, !Task.isCancelled else { return }
             self.worker = nil
@@ -286,6 +336,11 @@ final class StagehandModel: ObservableObject {
     }
 
     private func applyLayout(token: UInt64?) async -> Bool {
+        let layoutStart = ContinuousClock.now
+        guard desktopScope.refresh() == .home else {
+            nativeDesktopChanged()
+            return false
+        }
         guard let availableFrame else {
             if let token { focusGate.cancelTransfer(token: token) }
             return false
@@ -294,6 +349,10 @@ final class StagehandModel: ObservableObject {
         let visible = placements.filter(\.isVisible)
         // Position neighbors first. Raising the focused real window last keeps clamped neighbors behind it.
         for placement in visible.sorted(by: { !$0.isFocused && $1.isFocused }) {
+            guard desktopScope.refresh() == .home else {
+                nativeDesktopChanged()
+                return false
+            }
             if !windowSystem.setFrame(windowID: placement.windowID, frame: placement.frame), placement.isFocused {
                 warning = "This app constrained its window size. Stagehand will use the size it allows."
             }
@@ -301,9 +360,20 @@ final class StagehandModel: ObservableObject {
         }
         if let focusedID = state.focusedWindowID,
            let record = windows.first(where: { $0.id == focusedID }) {
+            let preparation = layoutStart.duration(to: .now).components
+            lastLayoutMilliseconds = Int(preparation.seconds * 1_000 + preparation.attoseconds / 1_000_000_000_000_000)
             emptySpace.hide()
+            guard desktopScope.refresh() == .home else {
+                nativeDesktopChanged()
+                return false
+            }
             let focused = await windowSystem.focus(windowID: focusedID)
-            guard isRunning, !Task.isCancelled else {
+            lastFocusTokenExpired = token.map { expiredTokens.contains($0) } ?? false
+            guard desktopScope.refresh() == .home else {
+                nativeDesktopChanged()
+                return false
+            }
+            guard isRunning, !isSuspended, !Task.isCancelled else {
                 if let token { focusGate.cancelTransfer(token: token) }
                 return false
             }
@@ -318,12 +388,20 @@ final class StagehandModel: ObservableObject {
                 // before another queued switch, especially between windows in the same app.
                 // This is not an OS delivery acknowledgement; live acceptance testing is required.
                 try? await Task.sleep(for: .milliseconds(12))
-                guard isRunning, !Task.isCancelled else { return false }
+                guard isRunning, !isSuspended, !Task.isCancelled else { return false }
             }
         } else {
             // An empty space owns a real blank window so typing cannot leak to a parked app.
+            guard desktopScope.refresh() == .home else {
+                nativeDesktopChanged()
+                return false
+            }
             let focused = await emptySpace.show(space: state.activeSpaceIndex + 1, frame: availableFrame)
-            guard focused, isRunning, !Task.isCancelled else {
+            guard desktopScope.refresh() == .home else {
+                nativeDesktopChanged()
+                return false
+            }
+            guard focused, isRunning, !isSuspended, !Task.isCancelled else {
                 if let token { focusGate.cancelTransfer(token: token) }
                 warning = "Could not activate the empty space. Stagehand paused and restored your windows."
                 return false
@@ -332,6 +410,10 @@ final class StagehandModel: ObservableObject {
         }
         let visibleIDs = Set(visible.map(\.windowID))
         for window in windows where !visibleIDs.contains(window.id) {
+            guard desktopScope.refresh() == .home else {
+                nativeDesktopChanged()
+                return false
+            }
             guard windowSystem.park(windowID: window.id) else {
                 warning = "\(window.appName) would not move out of this space. Stagehand paused and restored your windows."
                 return false
@@ -346,5 +428,49 @@ final class StagehandModel: ObservableObject {
         overlays.showNavigation(state: state, windows: windows)
         onStateChange?()
         return true
+    }
+
+    private func nativeDesktopChanged(remainingChecks: Int = 5) {
+        guard isRunning else { return }
+        desktopCheckTask?.cancel()
+        switch desktopScope.refresh() {
+        case .home:
+            guard isSuspended else { return }
+            isSuspended = false
+            input.gesturesEnabled = gesturesEnabled
+            focusGate.start()
+            input.start()
+            // Reconcile only after returning to the bound Desktop; away windows never enter state.
+            refreshWindows()
+            if worker == nil { enqueue(.refresh) }
+            onStateChange?()
+        case .away, .unknown:
+            if !isSuspended {
+                isSuspended = true
+                workerGeneration += 1
+                worker?.cancel()
+                worker = nil
+                pending.removeAll()
+                refreshTask?.cancel()
+                if let transitionRollback { state = transitionRollback }
+                transitionRollback = nil
+                focusGate.cancelAll()
+                focusGate.stop()
+                input.stop()
+                overlays.hide()
+                emptySpace.hide()
+                updateInputStatus()
+                onStateChange?()
+            }
+            // Native transitions can briefly have no active Desktop ID. Retry only that transient
+            // state; otherwise the native Desktop notification wakes us when the user returns.
+            if desktopScope.relation == .unknown, remainingChecks > 0 {
+                desktopCheckTask = Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(200))
+                    guard !Task.isCancelled else { return }
+                    self?.nativeDesktopChanged(remainingChecks: remainingChecks - 1)
+                }
+            }
+        }
     }
 }
