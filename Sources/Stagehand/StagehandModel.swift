@@ -28,19 +28,25 @@ struct RibbonPositionWriteFailure: Equatable {
     let actualFrame: CGRect
 }
 
+enum WindowParkingOutcome: Equatable {
+    case parked
+    case deferred
+    case failed
+}
+
 @MainActor
 func writeRibbonPositions(
     frames: [String: CGRect],
     writtenPositions: inout [String: CGPoint],
     backingScaleFactor: CGFloat,
     setPosition: (String, CGPoint) -> Bool,
-    currentFrame: (String) -> CGRect?
+    observedFrame: (String) -> CGRect?
 ) -> RibbonPositionWriteFailure? {
     for (windowID, frame) in frames {
         let position = RibbonMotion.pixelAligned(frame.origin, backingScaleFactor: backingScaleFactor)
         if writtenPositions[windowID] == position { continue }
         guard setPosition(windowID, position) else {
-            guard let actualFrame = currentFrame(windowID) else { continue }
+            guard let actualFrame = observedFrame(windowID) else { continue }
             return RibbonPositionWriteFailure(
                 windowID: windowID,
                 requestedFrame: frame,
@@ -50,6 +56,16 @@ func writeRibbonPositions(
         writtenPositions[windowID] = position
     }
     return nil
+}
+
+@MainActor
+func parkWindow(
+    windowID: String,
+    park: (String) -> Bool,
+    observedFrame: (String) -> CGRect?
+) -> WindowParkingOutcome {
+    if park(windowID) { return .parked }
+    return observedFrame(windowID) == nil ? .deferred : .failed
 }
 
 @MainActor
@@ -1318,7 +1334,11 @@ final class StagehandModel: ObservableObject {
                 nativeDesktopChanged()
                 return false
             }
-            guard windowSystem.park(windowID: window.id) else {
+            if parkWindow(
+                windowID: window.id,
+                park: { windowSystem.park(windowID: $0) },
+                observedFrame: { windowSystem.observedFrame(windowID: $0) }
+            ) == .failed {
                 warning = "Stagehand couldn't move \(window.appName) out of this space. It paused and restored your windows."
                 return failLayout("window_parking_failed", details: [
                     "bundleIdentifier": window.bundleIdentifier,
@@ -1417,7 +1437,7 @@ final class StagehandModel: ObservableObject {
             writtenPositions: &motionWrittenPositions,
             backingScaleFactor: motionBackingScaleFactor,
             setPosition: { windowSystem.setPosition(windowID: $0, position: $1) },
-            currentFrame: { windowSystem.frame(windowID: $0) }
+            observedFrame: { windowSystem.observedFrame(windowID: $0) }
         ) {
             ribbonMotion.cancel()
             recordWindowGeometry(
@@ -1499,7 +1519,11 @@ final class StagehandModel: ObservableObject {
                                           operation: operation)
             }
             for window in self.windows where !visibleIDs.contains(window.id) {
-                guard self.windowSystem.park(windowID: window.id) else {
+                if parkWindow(
+                    windowID: window.id,
+                    park: { self.windowSystem.park(windowID: $0) },
+                    observedFrame: { self.windowSystem.observedFrame(windowID: $0) }
+                ) == .failed {
                     self.warning = "Stagehand couldn't move \(window.appName) out of this space. It paused and restored your windows."
                     self.stop(
                         reason: "ribbon_parking_failed",

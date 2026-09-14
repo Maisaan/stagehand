@@ -287,7 +287,7 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
             writeAttempts += 1
             return isAvailable
         },
-        currentFrame: { _ in isAvailable ? target : nil }
+        observedFrame: { _ in isAvailable ? target : nil }
     )
 
     #expect(firstFailure == nil)
@@ -302,7 +302,7 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
             writeAttempts += 1
             return isAvailable
         },
-        currentFrame: { _ in target }
+        observedFrame: { _ in target }
     )
 
     #expect(retryFailure == nil)
@@ -320,11 +320,49 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
         writtenPositions: &writtenPositions,
         backingScaleFactor: 2,
         setPosition: { _, _ in false },
-        currentFrame: { _ in current }
+        observedFrame: { _ in current }
     ))
 
     #expect(failure.windowID == "window")
     #expect(failure.requestedFrame == target)
     #expect(failure.actualFrame == current)
     #expect(writtenPositions.isEmpty)
+}
+
+@MainActor @Test func parkingSkipsUnavailableWindowsAndReportsReadableFailures() {
+    let readableFrame = CGRect(x: 50, y: 40, width: 900, height: 700)
+    var attempts: [String] = []
+
+    let parkedOutcome = parkWindow(
+        windowID: "parked",
+        park: { windowID in
+            attempts.append(windowID)
+            return true
+        },
+        observedFrame: { _ in
+            Issue.record("A successful parking write needs no follow-up read")
+            return readableFrame
+        }
+    )
+    let unavailableOutcome = parkWindow(
+        windowID: "unavailable",
+        park: { windowID in
+            attempts.append(windowID)
+            return false
+        },
+        observedFrame: { _ in nil }
+    )
+    let blockedOutcome = parkWindow(
+        windowID: "blocked",
+        park: { windowID in
+            attempts.append(windowID)
+            return false
+        },
+        observedFrame: { _ in readableFrame }
+    )
+
+    #expect(parkedOutcome == .parked)
+    #expect(unavailableOutcome == .deferred)
+    #expect(attempts == ["parked", "unavailable", "blocked"])
+    #expect(blockedOutcome == .failed)
 }
