@@ -102,6 +102,20 @@ private let screen = CGRect(x: 100, y: 40, width: 1000, height: 700)
     #expect(display.contains(settings.frame))
 }
 
+@Test func scrollingAcceptsAnAppMinimumWiderThanTheRequestedWidth() throws {
+    var state = WorkspaceState()
+    state.reconcile(windowIDs: ["store"])
+    let display = CGRect(x: 0, y: 39, width: 1800, height: 1130)
+    // Live App Store reproduction: requested 1710 pt, accepted 1720 pt for every pass.
+    let placement = try #require(WindowLayout.placements(
+        for: state,
+        availableFrame: display,
+        observedWidths: ["store": 1720]
+    ).first)
+
+    #expect(placement.frame.width == 1720)
+}
+
 @Test func scrollingShowsNextSliverAndKeepsFocusedWindowFullyVisible() throws {
     var state = WorkspaceState()
     state.reconcile(windowIDs: ["a", "b", "c"])
@@ -156,7 +170,7 @@ private let screen = CGRect(x: 100, y: 40, width: 1000, height: 700)
     #expect(actual == expected)
 }
 
-@Test func scrollingClampsOversizedObservedWidthsToNinetyFivePercent() throws {
+@Test func scrollingUsesAnOversizedWidthAcceptedByTheApp() throws {
     var state = WorkspaceState()
     state.reconcile(windowIDs: ["a"])
     let placement = try #require(WindowLayout.placements(
@@ -164,7 +178,7 @@ private let screen = CGRect(x: 100, y: 40, width: 1000, height: 700)
         availableFrame: screen,
         observedWidths: ["a": screen.width * 1.2]
     ).first)
-    #expect(abs(placement.frame.width - screen.width * SpaceState.maximumWidthFraction) < 0.001)
+    #expect(placement.frame.width == screen.width * 1.2)
 }
 
 @Test func negativeGapCentersTheFocusedWindowAndOverlapsBothNeighbors() throws {

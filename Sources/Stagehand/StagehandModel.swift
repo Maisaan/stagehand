@@ -364,6 +364,10 @@ final class StagehandModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([diagnostics.logURL])
     }
 
+    func clearDiagnosticLog() {
+        diagnostics.clear()
+    }
+
     private func workspaceDetails() -> [String: String] {
         var details = [
             "activeSpace": String(state.activeSpaceIndex + 1),

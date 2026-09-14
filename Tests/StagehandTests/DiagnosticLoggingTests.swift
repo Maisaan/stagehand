@@ -61,3 +61,18 @@ import Testing
     #expect(contents.contains("\"actualWidth\":\"840.0\""))
     #expect(contents.contains("\"actualFrameAvailable\":\"true\""))
 }
+
+@Test @MainActor func diagnosticLogCanBeCleared() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("StagehandDiagnosticClearTests-\(UUID().uuidString)", isDirectory: true)
+    let logURL = directory.appendingPathComponent("stagehand.log")
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let logger = DiagnosticLogger(logURL: logURL, enabled: true)
+    logger.record("started")
+    #expect(FileManager.default.fileExists(atPath: logURL.path))
+
+    logger.clear()
+    #expect(!FileManager.default.fileExists(atPath: logURL.path))
+    logger.clear()
+}

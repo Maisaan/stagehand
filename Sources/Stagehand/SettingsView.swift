@@ -321,8 +321,11 @@ struct SettingsView: View {
                 }
             }
             Section {
-                Toggle("Diagnostic logging", isOn: $model.diagnosticLoggingEnabled)
-                    .toggleStyle(.switch)
+                HStack {
+                    Toggle("Diagnostic logging", isOn: $model.diagnosticLoggingEnabled)
+                        .toggleStyle(.switch)
+                    Button("Clear Logs", role: .destructive) { model.clearDiagnosticLog() }
+                }
                 Button("Show Log in Finder") { model.revealDiagnosticLog() }
                     .disabled(!model.diagnosticLoggingEnabled)
             } header: {

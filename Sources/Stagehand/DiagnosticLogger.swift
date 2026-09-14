@@ -47,6 +47,15 @@ final class DiagnosticLogger {
         }
     }
 
+    func clear() {
+        guard FileManager.default.fileExists(atPath: logURL.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: logURL)
+        } catch {
+            NSLog("Stagehand diagnostic log clear failed: %@", error.localizedDescription)
+        }
+    }
+
     func recordWindowGeometry(
         event: String,
         appName: String?,

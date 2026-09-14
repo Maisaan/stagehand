@@ -31,7 +31,7 @@ public enum WindowLayout {
             let requestedWidth = availableFrame.width * (state.maximizeWindows ? 1 : space.widthFraction(for: windowID))
             let width: CGFloat
             if let observedWidth = observedWidths[windowID], observedWidth.isFinite, observedWidth > 0 {
-                width = state.maximizeWindows ? observedWidth : min(observedWidth, requestedWidth)
+                width = observedWidth
             } else {
                 width = requestedWidth
             }
