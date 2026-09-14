@@ -19,7 +19,7 @@ struct WindowFrameTests {
         var parking = WindowParking()
         #expect(parking.park(frame: actual, bounds: viewport, displays: [viewport],
                              setPosition: { actual.origin = $0; return true }, readFrame: { actual }) == true)
-        #expect(actual.minY > original.minY)
+        #expect(actual.minY == original.minY)
 
         #expect(state.apply(.focusNext) == true)
         #expect(state.apply(action) == true)
@@ -119,7 +119,7 @@ struct WindowFrameTests {
         #expect(!success)
     }
 
-    @Test func aFailedRestorePositionDoesNotResizeAtTheParkingCorner() {
+    @Test func aFailedRestorePositionDoesNotResizeAtTheParkingSide() {
         let original = CGRect(x: 1000, y: 692, width: 600, height: 700)
         let destination = CGRect(x: 0, y: 40, width: 900, height: 700)
         var sizeWrites = 0

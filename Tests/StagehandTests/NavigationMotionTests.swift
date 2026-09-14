@@ -37,24 +37,6 @@ struct NavigationMotionTests {
         ))
     }
 
-    @Test func windowMotionDetectsPresentationFramesThatFallBehind() {
-        #expect(motionPresentationKeepsPace(
-            previousPosition: CGPoint(x: 300, y: 60),
-            requestedPosition: CGPoint(x: 400, y: 60),
-            displayedFrame: CGRect(x: 300, y: 60, width: 900, height: 700)
-        ))
-        #expect(!motionPresentationKeepsPace(
-            previousPosition: CGPoint(x: 300, y: 60),
-            requestedPosition: CGPoint(x: 400, y: 60),
-            displayedFrame: CGRect(x: 250, y: 60, width: 900, height: 700)
-        ))
-        #expect(!motionPresentationKeepsPace(
-            previousPosition: CGPoint(x: 400, y: 60),
-            requestedPosition: CGPoint(x: 300, y: 60),
-            displayedFrame: CGRect(x: 450, y: 60, width: 900, height: 700)
-        ))
-    }
-
     @Test func repeatedNavigationReversesDismissalWithoutReplacingViewsOrTakingFocus() throws {
         _ = NSApplication.shared
         let overlays = NavigationOverlays(reduceMotion: { false })

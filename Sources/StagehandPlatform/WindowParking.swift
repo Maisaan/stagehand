@@ -6,6 +6,7 @@ struct WindowParking {
     private(set) var restoreFrame: CGRect?
     private(set) var isParked = false
     private var parkingBounds: CGRect?
+    private var parkedFrame: CGRect?
 
     mutating func park(frame: CGRect, bounds: CGRect, displays: [CGRect],
                        setPosition: (CGPoint) -> Bool, readFrame: () -> CGRect?) -> Bool {
@@ -13,16 +14,19 @@ struct WindowParking {
         let isReparking = restoreFrame != nil
         if isReparking {
             guard isParked, let actual = readFrame(), Self.valid(actual) else { return false }
-            if Self.acceptablyParked(actual, bounds: bounds, displays: displays) { return true }
+            if Self.acceptablyParked(actual, bounds: bounds, displays: displays) {
+                parkedFrame = actual
+                return true
+            }
             isParked = false
         } else {
             restoreFrame = frame
         }
         parkingBounds = bounds
-        // Two-edge overhang allows a much smaller horizontal remnant than a
-        // side-only move. Leave the title bar reachable rather than using the Dock.
-        let destinations = [CGPoint(x: bounds.maxX - 1, y: bounds.maxY - 48),
-                            CGPoint(x: bounds.minX + 1 - frame.width, y: bounds.maxY - 48)]
+        // Preserve Y so an app that presents AX moves asynchronously can only
+        // enter or leave along the same horizontal axis as ribbon navigation.
+        let destinations = [CGPoint(x: bounds.maxX - 1, y: frame.minY),
+                            CGPoint(x: bounds.minX + 1 - frame.width, y: frame.minY)]
         let containingDisplay = displays.max {
             Self.overlapArea($0, bounds) < Self.overlapArea($1, bounds)
         }
@@ -36,8 +40,9 @@ struct WindowParking {
                   abs(actual.width - frame.width) <= 1, abs(actual.height - frame.height) <= 1,
                   displays.filter({ $0 != containingDisplay }).allSatisfy({ !$0.intersects(actual) }) else { continue }
             let remnant = actual.intersection(bounds)
-            if remnant.isNull || (Self.atCorner(actual, bounds: bounds) && remnant.width <= 64 && remnant.height <= 96) {
+            if remnant.isNull || (Self.atSide(actual, bounds: bounds) && remnant.width <= 64) {
                 isParked = true
+                parkedFrame = actual
                 return true
             }
         }
@@ -45,6 +50,7 @@ struct WindowParking {
             if !isReparking {
                 restoreFrame = nil
                 parkingBounds = nil
+                parkedFrame = nil
             }
             return false
         }
@@ -56,6 +62,7 @@ struct WindowParking {
         if setPosition(frame.origin), let actual = readFrame(), Self.samePosition(actual, frame) {
             restoreFrame = nil
             parkingBounds = nil
+            parkedFrame = nil
         }
         return false
     }
@@ -71,14 +78,16 @@ struct WindowParking {
         guard let actual = readFrame(), Self.valid(actual) else { return false }
         if destination != nil {
             // An app can clamp X, Y, width and height. Let layout reconcile its
-            // observed frame, but never mistake an unchanged corner for restoration.
-            guard let parkingBounds, actual.intersects(parkingBounds),
-                  !Self.atCorner(actual, bounds: parkingBounds) else { return false }
+            // observed frame, but never mistake an unchanged parked frame for restoration.
+            guard let parkingBounds, actual.intersects(parkingBounds) else { return false }
+            if let parkedFrame, Self.samePosition(actual, parkedFrame),
+               !Self.samePosition(actual, target) { return false }
         } else {
             guard Self.samePosition(actual, target) else { return false }
         }
         self.restoreFrame = nil
         parkingBounds = nil
+        parkedFrame = nil
         return true
     }
 
@@ -91,9 +100,8 @@ struct WindowParking {
         valid(lhs) && abs(lhs.minX - rhs.minX) <= 1 && abs(lhs.minY - rhs.minY) <= 1
     }
 
-    private static func atCorner(_ frame: CGRect, bounds: CGRect) -> Bool {
-        frame.minY >= bounds.maxY - 96 &&
-            (frame.minX >= bounds.maxX - 64 || frame.maxX <= bounds.minX + 64)
+    private static func atSide(_ frame: CGRect, bounds: CGRect) -> Bool {
+        frame.minX >= bounds.maxX - 64 || frame.maxX <= bounds.minX + 64
     }
 
     private static func acceptablyParked(_ frame: CGRect, bounds: CGRect, displays: [CGRect]) -> Bool {
@@ -103,7 +111,7 @@ struct WindowParking {
             return false
         }
         let remnant = frame.intersection(bounds)
-        return remnant.isNull || (atCorner(frame, bounds: bounds) && remnant.width <= 64 && remnant.height <= 96)
+        return remnant.isNull || (atSide(frame, bounds: bounds) && remnant.width <= 64)
     }
 
     private static func overlapArea(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {

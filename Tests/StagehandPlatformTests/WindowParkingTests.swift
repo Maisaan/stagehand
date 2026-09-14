@@ -5,7 +5,7 @@ import Testing
 struct WindowParkingTests {
     private let original = CGRect(x: 100, y: 80, width: 900, height: 700)
     private let display = CGRect(x: 0, y: 0, width: 1800, height: 1169)
-    private let corner = CGRect(x: 1799, y: 1121, width: 900, height: 700)
+    private let parkedAtRight = CGRect(x: 1799, y: 80, width: 900, height: 700)
 
     private func makeParkedWindow() -> WindowParking {
         var parking = WindowParking()
@@ -16,7 +16,7 @@ struct WindowParkingTests {
         return parking
     }
 
-    @Test func clampedParkingKeepsTheWindowAtItsCornerWithoutADockOperation() {
+    @Test func clampedParkingPreservesVerticalPosition() {
         var parking = WindowParking()
         let original = CGRect(x: 100, y: 80, width: 900, height: 700)
         let display = CGRect(x: 0, y: 0, width: 1800, height: 1169)
@@ -28,7 +28,7 @@ struct WindowParkingTests {
             return true
         }, readFrame: { actual })
         #expect(success)
-        #expect(actual.origin == CGPoint(x: 1799, y: 1121))
+        #expect(actual.origin == CGPoint(x: 1799, y: original.minY))
         #expect(parking.restoreFrame == original)
         #expect(parking.isParked)
     }
@@ -50,7 +50,7 @@ struct WindowParkingTests {
         #expect(!parking.isParked)
     }
 
-    @Test func triesTheOtherCornerWhenTheFirstCornerIsRefused() {
+    @Test func triesTheOtherSideWhenTheFirstSideIsRefused() {
         var parking = WindowParking()
         var actual = original
         var positions: [CGPoint] = []
@@ -62,10 +62,10 @@ struct WindowParkingTests {
         #expect(success)
         #expect(positions.count == 2)
         #expect(actual.minX == 1 - original.width)
-        #expect(actual.minY == 1121)
+        #expect(actual.minY == original.minY)
     }
 
-    @Test func choosesTheCornerWithoutSpillingOntoANeighbor() {
+    @Test func choosesTheSideWithoutSpillingOntoANeighbor() {
         var parking = WindowParking()
         let neighbor = display.offsetBy(dx: display.width, dy: 0)
         var positions: [CGPoint] = []
@@ -76,11 +76,11 @@ struct WindowParkingTests {
             return true
         }, readFrame: { actual })
         #expect(success)
-        #expect(positions == [CGPoint(x: 1 - original.width, y: 1121)])
+        #expect(positions == [CGPoint(x: 1 - original.width, y: original.minY)])
         #expect(!actual.intersects(neighbor))
     }
 
-    @Test func refusesParkingWhenBothCornerBodiesWouldSpillOntoOtherDisplays() {
+    @Test func refusesParkingWhenBothSideBodiesWouldSpillOntoOtherDisplays() {
         var parking = WindowParking()
         var writes = 0
         let neighbors = [display, display.offsetBy(dx: display.width, dy: 0),
@@ -99,9 +99,9 @@ struct WindowParkingTests {
         #expect(!first)
         #expect(parking.restoreFrame == original)
         #expect(!parking.isParked)
-        let second = parking.park(frame: corner, bounds: display, displays: [display],
+        let second = parking.park(frame: parkedAtRight, bounds: display, displays: [display],
                              setPosition: { _ in Issue.record("Must not overwrite pending recovery"); return true },
-                             readFrame: { corner })
+                             readFrame: { parkedAtRight })
         #expect(!second)
         #expect(parking.restoreFrame == original)
     }
@@ -118,16 +118,16 @@ struct WindowParkingTests {
         let second = parking.park(frame: actual, bounds: display, displays: [display],
                                   setPosition: { actual.origin = $0; return true }, readFrame: { actual })
         #expect(second)
-        #expect(actual.origin == corner.origin)
+        #expect(actual.origin == CGPoint(x: parkedAtRight.minX, y: 220))
         #expect(parking.restoreFrame == original)
     }
 
     @Test func failedOrUnconfirmedRestoreKeepsTheSavedFrameForRetry() {
         var parking = makeParkedWindow()
-        let failed = parking.restore(setFrame: { _ in false }, readFrame: { corner })
+        let failed = parking.restore(setFrame: { _ in false }, readFrame: { parkedAtRight })
         #expect(!failed)
         #expect(parking.restoreFrame == original)
-        let unconfirmed = parking.restore(setFrame: { _ in true }, readFrame: { corner })
+        let unconfirmed = parking.restore(setFrame: { _ in true }, readFrame: { parkedAtRight })
         #expect(!unconfirmed)
         #expect(parking.restoreFrame == original)
         let restored = parking.restore(setFrame: { _ in true }, readFrame: { original })
@@ -147,9 +147,9 @@ struct WindowParkingTests {
         #expect(!parking.isParked)
     }
 
-    @Test func layoutRestoreRejectsAStaleCornerEvenWhenTheSetterReportsSuccess() {
+    @Test func layoutRestoreRejectsAStaleParkingPositionEvenWhenTheSetterReportsSuccess() {
         var parking = makeParkedWindow()
-        let success = parking.restore(to: original, setFrame: { _ in true }, readFrame: { corner })
+        let success = parking.restore(to: original, setFrame: { _ in true }, readFrame: { parkedAtRight })
         #expect(!success)
         #expect(parking.restoreFrame == original)
         #expect(!parking.isParked)
