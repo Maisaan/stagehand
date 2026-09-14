@@ -61,6 +61,7 @@ final class NavigationOverlays {
     private(set) var pointerKeepsHUDVisible = false
     private let reduceMotion: () -> Bool
     private let animationDurationMultiplier: Double
+    private var borderColor = BorderView.defaultColor
 
     init(reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion },
          animationDurationMultiplier: Double = 1) {
@@ -79,11 +80,18 @@ final class NavigationOverlays {
     private func borderPanel() -> OverlayPanel {
         if let border { return border }
         let panel = OverlayPanel(level: .floating)
-        panel.contentView = BorderView()
+        let borderView = BorderView()
+        borderView.strokeColor = borderColor
+        panel.contentView = borderView
         panel.contentView?.wantsLayer = true
         panel.hasShadow = false
         border = panel
         return panel
+    }
+
+    func setBorderColor(_ color: NSColor) {
+        borderColor = color
+        (border?.contentView as? BorderView)?.strokeColor = color
     }
 
     private func hudPanel() -> OverlayPanel {
@@ -397,6 +405,12 @@ final class OverlayPanel: NSPanel {
 }
 
 final class BorderView: NSView {
+    static let defaultColor = NSColor(srgbRed: 0.44, green: 0.85, blue: 0.71, alpha: 0.95)
+
+    var strokeColor = defaultColor {
+        didSet { needsDisplay = true }
+    }
+
     var cornerRadius: CGFloat? {
         didSet { needsDisplay = true }
     }
@@ -412,7 +426,7 @@ final class BorderView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor(calibratedRed: 0.44, green: 0.85, blue: 0.71, alpha: 0.95).setStroke()
+        strokeColor.setStroke()
         Self.outline(in: bounds, cornerRadius: cornerRadius).stroke()
     }
 }

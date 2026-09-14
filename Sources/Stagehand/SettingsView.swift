@@ -111,6 +111,20 @@ struct SettingsView: View {
                 }
             }
             Section {
+                ColorPicker(
+                    "Active border color",
+                    selection: Binding(
+                        get: { Color(nsColor: model.focusBorderColor) },
+                        set: { model.setFocusBorderColor(NSColor($0)) }
+                    ),
+                    supportsOpacity: false
+                )
+            } header: {
+                Text("Appearance")
+            } footer: {
+                Text("The border marks the active window when Maximize windows is off.")
+            }
+            Section {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 100, maximum: 140), spacing: 8)], alignment: .leading, spacing: 8) {
                     ForEach(model.state.displayedSpaceIndices, id: \.self) { index in
                         Button { selectedSpaceIndex = index } label: {

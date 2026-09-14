@@ -50,6 +50,7 @@ final class StagehandModel: ObservableObject {
             if isRunning && !isSuspended { enqueue(.preferences) }
         }
     }
+    @Published private(set) var focusBorderColor: NSColor
     @Published var diagnosticLoggingEnabled: Bool {
         didSet {
             UserDefaults.standard.set(diagnosticLoggingEnabled, forKey: DiagnosticLogger.preferenceKey)
@@ -99,6 +100,7 @@ final class StagehandModel: ObservableObject {
     private var isLayingOutWindows = false
     private var preferencesNeedLayout = false
     private var layoutFailureReason: String?
+    private static let focusBorderColorPreferenceKey = "focusBorderColor"
 
     private struct PointerInteraction {
         let windowID: String
@@ -162,6 +164,7 @@ final class StagehandModel: ObservableObject {
         gesturesEnabled = defaults.object(forKey: "gesturesEnabled") as? Bool ?? false
         gestureFingerCount = defaults.integer(forKey: "gestureFingerCount") == 3 ? 3 : 4
         gap = GapInput.clamped(defaults.object(forKey: "windowGap") as? Double ?? 8)
+        focusBorderColor = Self.savedFocusBorderColor(in: defaults) ?? BorderView.defaultColor
         state.maximizeWindows = defaults.object(forKey: "maximizeWindows") as? Bool
             ?? (defaults.string(forKey: "layoutMode") == "monocle")
         input.onAction = { [weak self] action in self?.navigate(action) }
@@ -181,6 +184,7 @@ final class StagehandModel: ObservableObject {
             return self.desktopScope.refresh() == .home
         }
         input.gestureFingerCount = gestureFingerCount
+        overlays.setBorderColor(focusBorderColor)
         input.onStatusChange = { [weak self] in self?.updateInputStatus() }
         windowSystem.onChange = { [weak self] in self?.scheduleRefresh() }
         windowSystem.onFocusedWindowChange = { [weak self] id in self?.observedFocusChanged(windowID: id) }
@@ -405,6 +409,28 @@ final class StagehandModel: ObservableObject {
         if enabled { hideFocusBorder() }
         if isRunning && !isSuspended { enqueue(.maximize(enabled)) }
         else { state.maximizeWindows = enabled }
+    }
+
+    func setFocusBorderColor(_ color: NSColor) {
+        guard let color = color.usingColorSpace(.sRGB) else { return }
+        let normalized = NSColor(srgbRed: color.redComponent, green: color.greenComponent,
+                                 blue: color.blueComponent, alpha: BorderView.defaultColor.alphaComponent)
+        focusBorderColor = normalized
+        UserDefaults.standard.set(
+            [normalized.redComponent, normalized.greenComponent, normalized.blueComponent],
+            forKey: Self.focusBorderColorPreferenceKey
+        )
+        overlays.setBorderColor(normalized)
+    }
+
+    private static func savedFocusBorderColor(in defaults: UserDefaults) -> NSColor? {
+        guard let values = defaults.array(forKey: focusBorderColorPreferenceKey), values.count == 3 else {
+            return nil
+        }
+        let components = values.compactMap { ($0 as? NSNumber)?.doubleValue }
+        guard components.count == 3, components.allSatisfy({ (0 ... 1).contains($0) }) else { return nil }
+        return NSColor(srgbRed: components[0], green: components[1], blue: components[2],
+                       alpha: BorderView.defaultColor.alphaComponent)
     }
 
     func removeMembership(windowID: String) {

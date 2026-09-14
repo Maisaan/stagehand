@@ -68,7 +68,7 @@ New windows enter after the current window. Closing a real window removes it fro
 
 The gap accepts values from `-200` to `40` points. Negative values overlap windows and keep the active window on top. Maximize temporarily removes the gap.
 
-The app bar appears beneath the camera housing, or at the top center on displays without a notch. Hover there or navigate to reveal it. Click an app to focus it or the space number to change spaces. The app bar and focus border do not take keyboard focus or reserve screen space.
+The app bar appears beneath the camera housing, or at the top center on displays without a notch. Hover there or navigate to reveal it. Click an app to focus it or the space number to change spaces. Choose the active border color under Appearance in Workspace settings. The app bar and focus border do not take keyboard focus or reserve screen space.
 
 ### Controls
 
