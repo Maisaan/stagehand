@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model.refreshPermissions()
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+        if let settingsWindow { model.registerSettingsWindow(settingsWindow) }
     }
 
     @objc private func toggleRunning() {
@@ -138,7 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let model else { return }
         let menu = NSMenu()
         menu.autoenablesItems = false
-        let title = NSMenuItem(title: model.isSuspended ? "Waiting on its Desktop" : model.isRunning ? "Space \(model.state.activeSpaceIndex + 1) · \(model.state.layoutMode.rawValue.capitalized)" : "Stagehand is paused", action: nil, keyEquivalent: "")
+        let title = NSMenuItem(title: model.isSuspended ? "Waiting on its Desktop" : model.isRunning ? "Space \(model.state.activeSpaceIndex + 1) · Ribbon" : "Stagehand is paused", action: nil, keyEquivalent: "")
         title.isEnabled = false
         menu.addItem(title)
         menu.addItem(.separator())

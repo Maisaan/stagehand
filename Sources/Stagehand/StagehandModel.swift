@@ -48,10 +48,17 @@ final class StagehandModel: ObservableObject {
     private var transitionRollback: WorkspaceState?
     private var lastLayoutMilliseconds = 0
     private var lastFocusTokenExpired = false
+    private var pointerInteraction: PointerInteraction?
+
+    private struct PointerInteraction {
+        let windowID: String
+        let placements: [WindowPlacement]
+        var needsLayout: Bool
+    }
 
     private enum Change {
         case action(NavigationAction)
-        case layout(LayoutMode)
+        case maximize(Bool)
         case remove(String)
         case focus(String)
         case refresh
@@ -61,9 +68,8 @@ final class StagehandModel: ObservableObject {
         let defaults = UserDefaults.standard
         gesturesEnabled = defaults.object(forKey: "gesturesEnabled") as? Bool ?? false
         gap = defaults.object(forKey: "windowGap") as? Double ?? 8
-        if let raw = defaults.string(forKey: "layoutMode"), let mode = LayoutMode(rawValue: raw) {
-            state.layoutMode = mode
-        }
+        state.maximizeWindows = defaults.object(forKey: "maximizeWindows") as? Bool
+            ?? (defaults.string(forKey: "layoutMode") == "monocle")
         input.onAction = { [weak self] action in self?.navigate(action) }
         input.onStatusChange = { [weak self] in self?.updateInputStatus() }
         windowSystem.onChange = { [weak self] in self?.scheduleRefresh() }
@@ -94,6 +100,16 @@ final class StagehandModel: ObservableObject {
     private var expiredTokens: Set<UInt64> = []
 
     var focusedWindow: WindowRecord? { windows.first { $0.id == state.focusedWindowID } }
+
+    func registerSettingsWindow(_ window: NSWindow) {
+        _ = windowSystem.registerOwnWindow(window: window)
+        if isRunning && !isSuspended { scheduleRefresh() }
+    }
+
+    func actualWidthPercent(for window: WindowRecord) -> Int? {
+        guard isRunning, let availableFrame, availableFrame.width > 0 else { return nil }
+        return Int((window.frame.width / availableFrame.width * 100).rounded())
+    }
 
     func refreshPermissions() {
         accessibilityGranted = windowSystem.isAccessibilityTrusted
@@ -151,6 +167,7 @@ final class StagehandModel: ObservableObject {
         desktopCheckTask?.cancel()
         desktopScope.reset()
         transitionRollback = nil
+        pointerInteraction = nil
         focusGate.cancelAll()
         focusGate.stop()
         input.stop()
@@ -174,10 +191,10 @@ final class StagehandModel: ObservableObject {
         }
     }
 
-    func setLayout(_ mode: LayoutMode) {
-        UserDefaults.standard.set(mode.rawValue, forKey: "layoutMode")
-        if isRunning && !isSuspended { enqueue(.layout(mode)) }
-        else { state.layoutMode = mode }
+    func setMaximizeWindows(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: "maximizeWindows")
+        if isRunning && !isSuspended { enqueue(.maximize(enabled)) }
+        else { state.maximizeWindows = enabled }
     }
 
     func removeMembership(windowID: String) {
@@ -193,17 +210,45 @@ final class StagehandModel: ObservableObject {
     func dismissWarning() { warning = nil }
 
     /// Runs the actual Start path, prints no window titles or input, then restores all frames.
-    func diagnoseStartup() async -> String {
+    func diagnoseStartup(includeSettings: Bool = false) async -> String {
         windowSystem.focusDiagnosticsEnabled = true
         guard accessibilityGranted else {
             return "Accessibility permission is missing for this build. No windows were changed."
         }
         let previousApp = NSWorkspace.shared.frontmostApplication
+        let settings = includeSettings ? SettingsWindow.make(model: self) : nil
+        if let settings {
+            settings.makeKeyAndOrderFront(nil)
+            NSApp.activate()
+            registerSettingsWindow(settings)
+        }
         let began = ContinuousClock.now
         start()
         let deadline = began.advanced(by: .seconds(4))
         while worker != nil && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(20))
+        }
+        var focusChecks: [String] = []
+        if includeSettings {
+            for id in state.currentSpace.windowIDs {
+                guard isRunning, !isSuspended, ContinuousClock.now < deadline else { break }
+                focusWindow(id)
+                while worker != nil && ContinuousClock.now < deadline {
+                    try? await Task.sleep(for: .milliseconds(20))
+                }
+                focusChecks.append("Focus \(id): \(isRunning && windowSystem.focusedWindowID() == id)")
+            }
+        }
+        var sizing: [String] = []
+        if isRunning, !isSuspended, let availableFrame {
+            windows = windowSystem.scanWindows()
+            for record in windows where state.currentSpace.windowIDs.contains(record.id) {
+                guard let frame = windowSystem.frame(windowID: record.id) else { continue }
+                sizing.append("Window \(record.id): width=\(frame.width), actualPercent=\(Int((frame.width / availableFrame.width * 100).rounded())), labelPercent=\(actualWidthPercent(for: record) ?? -1)")
+                if record.id == state.focusedWindowID {
+                    sizing.append("Focused frame: \(frame); available frame: \(availableFrame)")
+                }
+            }
         }
         let result = """
         Startup running: \(isRunning), suspended: \(isSuspended)
@@ -211,9 +256,12 @@ final class StagehandModel: ObservableObject {
         Layout preparation: \(lastLayoutMilliseconds) ms
         Focus token expired: \(lastFocusTokenExpired)
         Warning: \(warning ?? "none")
+        \(focusChecks.joined(separator: "\n"))
+        \(sizing.joined(separator: "\n"))
         \(windowSystem.lastFocusReport?.summary ?? "No focus report")
         """
         pause()
+        settings?.close()
         _ = previousApp?.activate(options: [])
         return result
     }
@@ -261,14 +309,52 @@ final class StagehandModel: ObservableObject {
             }
             state.focus(windowID: focused)
         }
-        if state.layoutMode == .scrolling,
-           let focused = focusedWindow,
+        // Do not fight a title-bar drag or resize. Observe the window while the
+        // mouse is held, then apply its drop to the ribbon after mouse-up.
+        if NSEvent.pressedMouseButtons & 1 != 0 {
+            if pointerInteraction == nil, let focused = focusedWindow, let frame = availableFrame {
+                pointerInteraction = PointerInteraction(
+                    windowID: focused.id,
+                    placements: WindowLayout.placements(for: oldState, availableFrame: frame, gap: gap),
+                    needsLayout: oldState != state
+                )
+            } else if oldState != state {
+                pointerInteraction?.needsLayout = true
+            }
+            if let focused = focusedWindow {
+                overlays.updateBorder(frame: focused.frame, visible: true)
+            }
+            scheduleRefresh()
+            return
+        }
+        let interaction = pointerInteraction
+        pointerInteraction = nil
+        var needsLayout = interaction?.needsLayout ?? false
+        if let focused = focusedWindow,
            let previous = lastAppliedFrames[focused.id],
-           abs(focused.frame.width - previous.width) > 3,
            let frame = availableFrame {
-            if Date().timeIntervalSince(lastTransition) > 0.4 {
-                state.setWidthFraction(focused.frame.width / frame.width, for: focused.id)
-            } else {
+            let resized = abs(focused.frame.width - previous.width) > 3 ||
+                abs(focused.frame.height - previous.height) > 3
+            let moved = abs(focused.frame.minX - previous.minX) > 3 ||
+                abs(focused.frame.minY - previous.minY) > 3
+            if (resized || moved) && (interaction != nil || Date().timeIntervalSince(lastTransition) > 0.4) {
+                if resized && !state.maximizeWindows {
+                    state.setWidthFraction(focused.frame.width / frame.width, for: focused.id)
+                }
+                if moved && !resized {
+                    let placements: [WindowPlacement]
+                    if let interaction, interaction.windowID == focused.id {
+                        placements = interaction.placements
+                    } else {
+                        placements = WindowLayout.placements(for: oldState, availableFrame: frame, gap: gap)
+                    }
+                    let destination = placements.filter {
+                        $0.windowID != focused.id && $0.frame.midX < focused.frame.midX
+                    }.count
+                    state.reorderWindow(windowID: focused.id, to: destination)
+                }
+                needsLayout = true
+            } else if resized || moved {
                 refreshTask?.cancel()
                 refreshTask = Task { [weak self] in
                     try? await Task.sleep(for: .milliseconds(450))
@@ -277,9 +363,9 @@ final class StagehandModel: ObservableObject {
                 }
             }
         }
-        if oldState != state { enqueue(.refresh) }
+        if oldState != state || needsLayout { enqueue(.refresh) }
         else if let id = state.focusedWindowID, let frame = windowSystem.frame(windowID: id) {
-            overlays.updateBorder(frame: frame, visible: state.layoutMode == .scrolling)
+            overlays.updateBorder(frame: frame, visible: true)
         }
         onStateChange?()
     }
@@ -304,7 +390,7 @@ final class StagehandModel: ObservableObject {
                 self.transitionRollback = previousState
                 switch change {
                 case .action(let action): self.state.apply(action)
-                case .layout(let mode): self.state.layoutMode = mode
+                case .maximize(let enabled): self.state.maximizeWindows = enabled
                 case .remove(let id): self.state.removeFromCurrentSpace(windowID: id)
                 case .focus(let id): self.state.focus(windowID: id)
                 case .refresh: break
@@ -345,70 +431,99 @@ final class StagehandModel: ObservableObject {
             if let token { focusGate.cancelTransfer(token: token) }
             return false
         }
-        let placements = WindowLayout.placements(for: state, availableFrame: availableFrame, gap: gap)
-        let visible = placements.filter(\.isVisible)
-        // Position neighbors first. Raising the focused real window last keeps clamped neighbors behind it.
-        for placement in visible.sorted(by: { !$0.isFocused && $1.isFocused }) {
-            guard desktopScope.refresh() == .home else {
-                nativeDesktopChanged()
-                return false
+        var placements: [WindowPlacement] = []
+        var observedWidths: [String: CGFloat] = [:]
+        var destinationPID: Int32?
+        // Read accepted widths after focus, then repack if an app constrained its size.
+        // Repacking may reveal another window. Bound this by the number of windows;
+        // the input gate's deadline also applies to the whole transition.
+        let maximumPass = state.currentSpace.windowIDs.count
+        for pass in 0...maximumPass {
+            placements = WindowLayout.placements(for: state, availableFrame: availableFrame, gap: gap,
+                                                 observedWidths: observedWidths)
+            let visible = placements.filter(\.isVisible)
+            // Position neighbors first. Raising the focused real window last keeps clamped neighbors behind it.
+            for placement in visible.sorted(by: { !$0.isFocused && $1.isFocused }) {
+                guard desktopScope.refresh() == .home else {
+                    nativeDesktopChanged()
+                    return false
+                }
+                if !windowSystem.setFrame(windowID: placement.windowID, frame: placement.frame), placement.isFocused {
+                    warning = "This app constrained its window size. Stagehand will use the size it allows."
+                }
+                lastAppliedFrames[placement.windowID] = windowSystem.frame(windowID: placement.windowID)
             }
-            if !windowSystem.setFrame(windowID: placement.windowID, frame: placement.frame), placement.isFocused {
-                warning = "This app constrained its window size. Stagehand will use the size it allows."
+            if let focusedID = state.focusedWindowID,
+               let record = windows.first(where: { $0.id == focusedID }) {
+                let preparation = layoutStart.duration(to: .now).components
+                lastLayoutMilliseconds = Int(preparation.seconds * 1_000 + preparation.attoseconds / 1_000_000_000_000_000)
+                emptySpace.hide()
+                guard desktopScope.refresh() == .home else {
+                    nativeDesktopChanged()
+                    return false
+                }
+                let focused = await windowSystem.focus(windowID: focusedID)
+                lastFocusTokenExpired = token.map { expiredTokens.contains($0) } ?? false
+                guard desktopScope.refresh() == .home else {
+                    nativeDesktopChanged()
+                    return false
+                }
+                guard isRunning, !isSuspended, !Task.isCancelled else {
+                    if let token { focusGate.cancelTransfer(token: token) }
+                    return false
+                }
+                if !focused || token.map({ expiredTokens.contains($0) }) == true {
+                    if let token { focusGate.cancelTransfer(token: token) }
+                    warning = "Could not confirm focus on \(record.appName). Stagehand paused and restored your windows. Check for a dialog or permission change."
+                    return false
+                }
+                var constrained = false
+                for placement in visible {
+                    guard let actual = windowSystem.frame(windowID: placement.windowID),
+                          actual.width.isFinite, actual.width > 0,
+                          abs(actual.width - placement.frame.width) > 1 else { continue }
+                    observedWidths[placement.windowID] = actual.width
+                    if !state.maximizeWindows {
+                        state.setWidthFraction(actual.width / availableFrame.width, for: placement.windowID)
+                    }
+                    constrained = true
+                }
+                if constrained {
+                    guard pass < maximumPass else {
+                        if let token { focusGate.cancelTransfer(token: token) }
+                        warning = "Window sizes kept changing. Stagehand paused and restored your windows."
+                        return false
+                    }
+                    continue
+                }
+                destinationPID = record.pid
+            } else {
+                // An empty space owns a real blank window so typing cannot leak to a parked app.
+                guard desktopScope.refresh() == .home else {
+                    nativeDesktopChanged()
+                    return false
+                }
+                let focused = await emptySpace.show(space: state.activeSpaceIndex + 1, frame: availableFrame)
+                guard desktopScope.refresh() == .home else {
+                    nativeDesktopChanged()
+                    return false
+                }
+                guard focused, isRunning, !isSuspended, !Task.isCancelled else {
+                    if let token { focusGate.cancelTransfer(token: token) }
+                    warning = "Could not activate the empty space. Stagehand paused and restored your windows."
+                    return false
+                }
+                destinationPID = ProcessInfo.processInfo.processIdentifier
             }
-            lastAppliedFrames[placement.windowID] = windowSystem.frame(windowID: placement.windowID)
+            break
         }
-        if let focusedID = state.focusedWindowID,
-           let record = windows.first(where: { $0.id == focusedID }) {
-            let preparation = layoutStart.duration(to: .now).components
-            lastLayoutMilliseconds = Int(preparation.seconds * 1_000 + preparation.attoseconds / 1_000_000_000_000_000)
-            emptySpace.hide()
-            guard desktopScope.refresh() == .home else {
-                nativeDesktopChanged()
-                return false
-            }
-            let focused = await windowSystem.focus(windowID: focusedID)
-            lastFocusTokenExpired = token.map { expiredTokens.contains($0) } ?? false
-            guard desktopScope.refresh() == .home else {
-                nativeDesktopChanged()
-                return false
-            }
-            guard isRunning, !isSuspended, !Task.isCancelled else {
-                if let token { focusGate.cancelTransfer(token: token) }
-                return false
-            }
-            if !focused || token.map({ expiredTokens.contains($0) }) == true {
-                if let token { focusGate.cancelTransfer(token: token) }
-                warning = "Could not confirm focus on \(record.appName). Stagehand paused and restored your windows. Check for a dialog or permission change."
-                return false
-            }
-            if let token {
-                focusGate.commitTransfer(token: token, processIdentifier: record.pid)
-                // Posting to a process is asynchronous. Give the destination event loop a turn
-                // before another queued switch, especially between windows in the same app.
-                // This is not an OS delivery acknowledgement; live acceptance testing is required.
-                try? await Task.sleep(for: .milliseconds(12))
-                guard isRunning, !isSuspended, !Task.isCancelled else { return false }
-            }
-        } else {
-            // An empty space owns a real blank window so typing cannot leak to a parked app.
-            guard desktopScope.refresh() == .home else {
-                nativeDesktopChanged()
-                return false
-            }
-            let focused = await emptySpace.show(space: state.activeSpaceIndex + 1, frame: availableFrame)
-            guard desktopScope.refresh() == .home else {
-                nativeDesktopChanged()
-                return false
-            }
-            guard focused, isRunning, !isSuspended, !Task.isCancelled else {
-                if let token { focusGate.cancelTransfer(token: token) }
-                warning = "Could not activate the empty space. Stagehand paused and restored your windows."
-                return false
-            }
-            if let token { focusGate.commitTransfer(token: token, processIdentifier: ProcessInfo.processInfo.processIdentifier) }
+        if let token, let destinationPID {
+            focusGate.commitTransfer(token: token, processIdentifier: destinationPID)
+            // Posting to a process is asynchronous, not an OS delivery acknowledgement.
+            try? await Task.sleep(for: .milliseconds(12))
+            guard isRunning, !isSuspended, !Task.isCancelled else { return false }
         }
-        let visibleIDs = Set(visible.map(\.windowID))
+        let visibleIDs = Set(placements.filter(\.isVisible).map(\.windowID))
         for window in windows where !visibleIDs.contains(window.id) {
             guard desktopScope.refresh() == .home else {
                 nativeDesktopChanged()
@@ -421,7 +536,7 @@ final class StagehandModel: ObservableObject {
         }
         lastTransition = Date()
         if let focused = state.focusedWindowID, let frame = windowSystem.frame(windowID: focused) {
-            overlays.updateBorder(frame: frame, visible: state.layoutMode == .scrolling)
+            overlays.updateBorder(frame: frame, visible: true)
         } else {
             overlays.updateBorder(frame: .zero, visible: false)
         }
@@ -454,6 +569,7 @@ final class StagehandModel: ObservableObject {
                 refreshTask?.cancel()
                 if let transitionRollback { state = transitionRollback }
                 transitionRollback = nil
+                pointerInteraction = nil
                 focusGate.cancelAll()
                 focusGate.stop()
                 input.stop()

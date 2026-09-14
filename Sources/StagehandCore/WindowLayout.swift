@@ -13,42 +13,37 @@ public enum WindowLayout {
     public static func placements(
         for state: WorkspaceState,
         availableFrame: CGRect,
-        gap: CGFloat = 8
+        gap: CGFloat = 8,
+        observedWidths: [String: CGFloat] = [:]
     ) -> [WindowPlacement] {
         guard !availableFrame.isEmpty, !availableFrame.isInfinite,
               availableFrame.origin.x.isFinite, availableFrame.origin.y.isFinite,
               availableFrame.width.isFinite, availableFrame.height.isFinite else { return [] }
         let space = state.currentSpace
-        let gap = gap.isFinite ? max(0, gap) : 8
-
-        if state.layoutMode == .monocle {
-            return space.windowIDs.map { windowID in
-                let focused = windowID == space.focusedWindowID
-                return WindowPlacement(
-                    windowID: windowID,
-                    frame: focused ? availableFrame : CGRect(
-                        x: availableFrame.maxX + gap,
-                        y: availableFrame.minY,
-                        width: availableFrame.width,
-                        height: availableFrame.height
-                    ),
-                    isVisible: focused,
-                    isFocused: focused
-                )
-            }
-        }
+        let gap = gap.isFinite ? gap : 8
 
         var cursor: CGFloat = 0
         var focusedStart: CGFloat = 0
+        var focusedWidth: CGFloat = 0
         let ribbon = space.windowIDs.map { windowID in
-            let width = availableFrame.width * space.widthFraction(for: windowID)
+            let requestedWidth = availableFrame.width * (state.maximizeWindows ? 1 : space.widthFraction(for: windowID))
+            let width: CGFloat
+            if let observedWidth = observedWidths[windowID], observedWidth.isFinite, observedWidth > 0 {
+                width = observedWidth
+            } else {
+                width = requestedWidth
+            }
             let frame = CGRect(x: cursor, y: availableFrame.minY, width: width, height: availableFrame.height)
-            if windowID == space.focusedWindowID { focusedStart = cursor }
-            cursor += width + gap
+            if windowID == space.focusedWindowID {
+                focusedStart = cursor
+                focusedWidth = width
+            }
+            cursor += max(1, width + gap)
             return (windowID: windowID, frame: frame)
         }
-        let totalWidth = max(0, cursor - gap)
-        let offset = min(focusedStart, max(0, totalWidth - availableFrame.width))
+        let totalWidth = ribbon.map { $0.frame.maxX }.max() ?? 0
+        let desiredOffset = gap < 0 ? focusedStart - (availableFrame.width - focusedWidth) / 2 : focusedStart
+        let offset = min(max(0, desiredOffset), max(0, totalWidth - availableFrame.width))
 
         return ribbon.map { item in
             let frame = item.frame.offsetBy(dx: availableFrame.minX - offset, dy: 0)

@@ -36,9 +36,20 @@ public final class WindowSystem {
     private var nextID: UInt64 = 0
     private var started = false
     private let systemElement = AXUIElementCreateSystemWide()
+    private let nativeWindows = NativeWindowRegistry()
 
     public init() {
         AXUIElementSetMessagingTimeout(systemElement, 0.1)
+        nativeWindows.onChange = { [weak self] in
+            guard let self, self.started else { return }
+            self.onChange?()
+        }
+    }
+
+    /// Register Stagehand's settings explicitly. HUD and empty-space windows stay unmanaged.
+    @discardableResult
+    public func registerOwnWindow(window: NSWindow) -> String {
+        nativeWindows.register(window: window)
     }
 
     public func requestAccessibilityPermission() {
@@ -87,7 +98,7 @@ public final class WindowSystem {
     }
 
     public func scanWindows() -> [WindowRecord] {
-        guard isAccessibilityTrusted else { return [] }
+        guard isAccessibilityTrusted else { return nativeWindows.records }
         let apps = NSWorkspace.shared.runningApplications.filter {
             $0.processIdentifier != ProcessInfo.processInfo.processIdentifier &&
             $0.activationPolicy == .regular && !$0.isTerminated
@@ -189,16 +200,18 @@ public final class WindowSystem {
             }
         }
         windows = windows.filter { seen.contains($0.key) }
-        return result
+        return result + nativeWindows.records
     }
 
     public func frame(windowID: String) -> CGRect? {
+        if nativeWindows.contains(windowID: windowID) { return nativeWindows.frame(windowID: windowID) }
         guard let tracked = windows[windowID] else { return nil }
         return tracked.parkedFrame ?? readFrame(tracked.element)
     }
 
     @discardableResult
     public func setFrame(windowID: String, frame: CGRect) -> Bool {
+        if nativeWindows.contains(windowID: windowID) { return nativeWindows.setFrame(windowID: windowID, frame: frame) }
         guard frame.origin.x.isFinite, frame.origin.y.isFinite,
               frame.width.isFinite, frame.height.isFinite,
               frame.width > 0, frame.height > 0,
@@ -212,6 +225,7 @@ public final class WindowSystem {
     /// Some apps clamp offscreen positions; those windows are minimized as a fallback.
     @discardableResult
     public func park(windowID: String) -> Bool {
+        if nativeWindows.contains(windowID: windowID) { return nativeWindows.park(windowID: windowID) }
         guard let tracked = windows[windowID] else { return false }
         if tracked.parkedFrame != nil { return true }
         guard let currentFrame = readFrame(tracked.element) else { return false }
@@ -243,6 +257,7 @@ public final class WindowSystem {
     /// Unparks without requesting app activation. Focus is a separate operation.
     @discardableResult
     public func restore(windowID: String) -> Bool {
+        if nativeWindows.contains(windowID: windowID) { return nativeWindows.restore(windowID: windowID) }
         guard let tracked = windows[windowID] else { return false }
         guard let parkedFrame = tracked.parkedFrame else { return true }
         if tracked.minimizedByStagehand {
@@ -256,12 +271,17 @@ public final class WindowSystem {
     }
 
     public func captureOriginalFrame(windowID: String) {
+        if nativeWindows.contains(windowID: windowID) {
+            nativeWindows.captureOriginalFrame(windowID: windowID)
+            return
+        }
         guard let tracked = windows[windowID], tracked.originalFrame == nil else { return }
         windows[windowID]?.originalFrame = readFrame(tracked.element)
     }
 
     /// Call on pause/quit, before releasing tracking, to return windows to their original positions.
     public func restoreAll() {
+        nativeWindows.restoreAll()
         for id in Array(windows.keys) {
             guard let tracked = windows[id] else { continue }
             // Entering native fullscreen hands the window back to macOS.
@@ -278,6 +298,7 @@ public final class WindowSystem {
     }
 
     public func focusedWindowID() -> String? {
+        if NSApp?.isActive == true { return nativeWindows.focusedWindowID }
         let result = copyAttribute(systemElement, kAXFocusedApplicationAttribute)
         let focusedApp: AXUIElement
         if let value = result.value, CFGetTypeID(value) == AXUIElementGetTypeID() {
@@ -291,6 +312,11 @@ public final class WindowSystem {
             return nil
         }
         AXUIElementSetMessagingTimeout(focusedApp, 0.1)
+        var focusedPID: pid_t = 0
+        if AXUIElementGetPid(focusedApp, &focusedPID) == .success,
+           focusedPID == ProcessInfo.processInfo.processIdentifier {
+            return nativeWindows.focusedWindowID
+        }
         guard let focusedWindow = elementAttribute(focusedApp, kAXFocusedWindowAttribute) else { return nil }
         return windows.first { CFEqual($0.value.element, focusedWindow) }?.key
     }
@@ -299,6 +325,19 @@ public final class WindowSystem {
     /// Callers must not report a successful transition before this confirmation.
     public func focus(windowID: String) async -> Bool {
         lastFocusReport = nil
+        if nativeWindows.contains(windowID: windowID) {
+            let began = ContinuousClock.now
+            let success = await nativeWindows.focus(windowID: windowID)
+            if focusDiagnosticsEnabled {
+                let elapsed = began.duration(to: .now).components
+                lastFocusReport = WindowFocusReport(targetPID: ProcessInfo.processInfo.processIdentifier,
+                                                    outcome: success ? .focused : .timedOut,
+                                                    elapsedMilliseconds: Int(elapsed.seconds * 1_000 + elapsed.attoseconds / 1_000_000_000_000_000),
+                                                    operations: [.init("nativeWindowFocus", accepted: success)],
+                                                    initialObservation: nil, observations: [])
+            }
+            return success
+        }
         guard let tracked = windows[windowID],
               let app = NSRunningApplication(processIdentifier: tracked.record.pid),
               !app.isTerminated else {
@@ -405,10 +444,16 @@ public final class WindowSystem {
                 AXUIElementSetMessagingTimeout(focusedApp, 0.1)
                 var pid: pid_t = 0
                 if AXUIElementGetPid(focusedApp, &pid) == .success { focusedPID = pid }
-                let window = system.copyAttribute(focusedApp, kAXFocusedWindowAttribute)
-                windowStatus = window.error.rawValue
-                if let focusedWindow = window.value, CFGetTypeID(focusedWindow) == AXUIElementGetTypeID() {
-                    matches = CFEqual(focusedWindow, target)
+                if focusedPID == ProcessInfo.processInfo.processIdentifier {
+                    // The target is an external app. Never synchronously query
+                    // our own AX window from the main thread while handing off.
+                    windowStatus = nil
+                } else {
+                    let window = system.copyAttribute(focusedApp, kAXFocusedWindowAttribute)
+                    windowStatus = window.error.rawValue
+                    if let focusedWindow = window.value, CFGetTypeID(focusedWindow) == AXUIElementGetTypeID() {
+                        matches = CFEqual(focusedWindow, target)
+                    }
                 }
             }
             return WindowFocusReport.Observation(

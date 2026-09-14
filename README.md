@@ -1,6 +1,6 @@
 # Stagehand
 
-A small native macOS window manager for a MacBook display. Scrolling and monocle, keyboard navigation, optional four-finger gestures, and an app bar that appears only while navigating.
+A small native macOS window manager for a MacBook display. One horizontal ribbon, keyboard navigation, optional four-finger gestures, and an app bar that appears only while navigating.
 
 Stagehand arranges real application windows. The active application keeps its menus and input. The navigation bar and focus border do not activate Stagehand or reserve screen space.
 
@@ -18,18 +18,20 @@ The app opens paused. In Setup, grant Accessibility. Grant Input Monitoring for 
 
 The build script makes a local, ad-hoc-signed app. Rebuilding can require removing and re-adding its privacy permissions. If you have a stable signing identity, set `STAGEHAND_SIGNING_IDENTITY` when building. No certificate is created and no remote is used by the build.
 
-## Layouts
+## Ribbon
 
-- **Scrolling:** a horizontal ribbon with individually adjustable widths, from 25% to 95% of the available display width. Windows use the available height. Neighboring windows remain visible where there is room. A mint border marks the focused window.
-- **Monocle:** the focused window fills the available area. Window order and stored scrolling widths survive layout changes.
+- With **Maximize windows** off, windows have individual widths from 25% to 95% of the available display width and use the available height.
+- With it on, windows request the full available width. Turning it off restores the individual widths. This is window resizing, not native fullscreen.
+- Apps can constrain their size. Settings shows their actual width, and the ribbon packs to the accepted size instead of leaving an unused slot.
+- Gap is measured in points. Positive values separate windows; negative values overlap them horizontally. The active window stays on top. Maximized windows do not reserve neighboring strips.
 
-The layout setting applies to all nine spaces. Settings and the menu show only occupied spaces and the current space. Use a numbered shortcut to enter an unused space. Gaps are adjustable. Navigation stops at the ends, without wrapping.
+The maximize toggle and gap apply to all nine spaces. Settings and the menu show only occupied spaces and the current space. Use a numbered shortcut to enter an unused space. Navigation stops at the ends, without wrapping. Drag a window by its title bar and release it to reorder within the ribbon; it does not become free-floating. Resize a window with maximization off to change its individual width.
 
 Each space remembers its order, scrolling widths, and focused window. Move removes a window from its current space. Add to Another Space keeps the same live window in both spaces, independently ordered and sized. Remove from This Space removes only that membership; the last membership cannot be removed. Closing the real window removes every membership.
 
-New windows enter after the current window. Empty spaces display a Stagehand placeholder so typing cannot reach a hidden application. Stagehand's menus appear only while its settings or empty-space window is active. Switching to a real window restores that application's menus.
+New windows enter after the current window. Stagehand's own settings window joins the ribbon too. Empty spaces display a Stagehand placeholder so typing cannot reach a hidden application. Stagehand's menus appear only while its settings or empty-space window is active. Switching to another window restores that application's menus.
 
-The settings window is resizable. Settings save the layout, gap, and gesture preference. Space membership is session-only in this MVP.
+The settings window is resizable. Settings save maximization, gap, and the gesture preference. Space membership is session-only in this MVP.
 
 ## Controls
 
@@ -45,7 +47,7 @@ The settings window is resizable. Settings save the layout, gap, and gesture pre
 | Pause and restore | Control + Option + Escape |
 | Settings | Control + Option + comma |
 
-Resume through the menu-bar item or settings. Pausing releases the global shortcuts. Shortcuts are fixed for this version. Add to Another Space is available from the current window's menu in the Workspace tab.
+Resume through the menu-bar item or settings. Pausing releases the global shortcuts. Width shortcuts apply only with maximization off. Shortcuts are fixed for this version. Add to Another Space is available from the current window's menu in the Workspace tab.
 
 Four-finger gestures are optional and off on first launch:
 
@@ -81,7 +83,7 @@ dist/Stagehand.app/Contents/MacOS/Stagehand --render-previews dist/previews
 
 See [the live acceptance checklist](docs/ACCEPTANCE.md) before relying on Stagehand for everyday work. Accessibility permissions and physical four-finger swipes cannot be certified by the unit tests.
 
-For explicit focus diagnostics, launch the installed app through `open` so macOS uses its app privacy grant. `--diagnose-focus <bundle-id>` attempts focus without resizing or typing, then restores the previous focus. `--diagnose-start` runs Start once and restores the managed frames afterward. Both print only focus status, process IDs, and timing. Keep the normal Stagehand instance paused during these checks. For example:
+For explicit focus diagnostics, launch the installed app through `open` so macOS uses its app privacy grant. `--diagnose-focus <bundle-id>` attempts focus without resizing or typing, then restores the previous focus. `--diagnose-start` runs Start once and restores the managed frames afterward. `--diagnose-ribbon` also registers a temporary Stagehand settings window and checks focus across the ribbon. These commands print focus status, process IDs, timing, and window geometry, never titles or input. Keep the normal Stagehand instance paused during these checks. For example:
 
 ```sh
 open -n -W -g --stdout /tmp/stagehand-focus.log /Applications/Stagehand.app --args --diagnose-focus com.linear

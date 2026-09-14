@@ -5,21 +5,33 @@ import StagehandPlatform
 
 @MainActor
 final class NavigationOverlays {
-    private let border = OverlayPanel()
-    private let hud = OverlayPanel()
+    private var border: OverlayPanel?
+    private var hud: OverlayPanel?
     private var dismissTask: Task<Void, Never>?
 
-    init() {
-        border.contentView = BorderView()
-        border.hasShadow = false
-        hud.hasShadow = true
+    private func borderPanel() -> OverlayPanel {
+        if let border { return border }
+        let panel = OverlayPanel()
+        panel.contentView = BorderView()
+        panel.hasShadow = false
+        border = panel
+        return panel
+    }
+
+    private func hudPanel() -> OverlayPanel {
+        if let hud { return hud }
+        let panel = OverlayPanel()
+        panel.hasShadow = true
+        hud = panel
+        return panel
     }
 
     func updateBorder(frame: CGRect, visible: Bool) {
         guard visible, let primary = NSScreen.screens.first else {
-            border.orderOut(nil)
+            border?.orderOut(nil)
             return
         }
+        let border = borderPanel()
         let converted = CGRect(x: frame.minX, y: primary.frame.maxY - frame.maxY,
                                width: frame.width, height: frame.height)
         border.setFrame(converted.insetBy(dx: -2, dy: -2), display: true)
@@ -28,13 +40,14 @@ final class NavigationOverlays {
 
     func showNavigation(state: WorkspaceState, windows: [WindowRecord]) {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        let hud = hudPanel()
         let width = min(580, screen.visibleFrame.width - 32)
         let height: CGFloat = 104
         let top = min(screen.visibleFrame.maxY, screen.frame.maxY - screen.safeAreaInsets.top)
         let frame = CGRect(x: screen.frame.midX - width / 2, y: top - height - 8, width: width, height: height)
         let records = state.currentSpace.windowIDs.compactMap { id in windows.first { $0.id == id } }
         hud.contentView = NSHostingView(rootView: NavigationHUD(
-            space: state.activeSpaceIndex + 1, mode: state.layoutMode,
+            space: state.activeSpaceIndex + 1,
             windows: records, focusedID: state.focusedWindowID
         ))
         let wasVisible = hud.isVisible
@@ -50,18 +63,26 @@ final class NavigationOverlays {
         dismissTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(800))
             guard !Task.isCancelled, let self else { return }
-            self.hud.orderOut(nil)
+            self.hud?.orderOut(nil)
         }
     }
 
     func hide() {
         dismissTask?.cancel()
-        border.orderOut(nil)
-        hud.orderOut(nil)
+        dismissTask = nil
+        border?.orderOut(nil)
+        hud?.orderOut(nil)
+        border?.close()
+        hud?.close()
+        // Recreate on the next presentation so an explicit Start on a different native
+        // Desktop binds the panels there without making them visible on every Desktop.
+        border = nil
+        hud = nil
     }
 
     func showWarning(_ message: String) {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        let hud = hudPanel()
         let width = min(580, screen.visibleFrame.width - 32)
         let top = min(screen.visibleFrame.maxY, screen.frame.maxY - screen.safeAreaInsets.top)
         hud.contentView = NSHostingView(rootView: HStack(alignment: .top, spacing: 12) {
@@ -79,12 +100,12 @@ final class NavigationOverlays {
         dismissTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(5))
             guard !Task.isCancelled else { return }
-            self?.hud.orderOut(nil)
+            self?.hud?.orderOut(nil)
         }
     }
 }
 
-private final class OverlayPanel: NSPanel {
+final class OverlayPanel: NSPanel {
     init() {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered, defer: false)
@@ -93,19 +114,31 @@ private final class OverlayPanel: NSPanel {
         level = .floating
         ignoresMouseEvents = true
         hidesOnDeactivate = false
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        // A border belongs to the Desktop where it was presented. Joining all Spaces or
+        // fullscreen auxiliary windows makes it follow native swipe animations.
+        collectionBehavior = [.transient, .fullScreenNone, .ignoresCycle]
         isReleasedWhenClosed = false
     }
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 }
 
-private final class BorderView: NSView {
+final class BorderView: NSView {
+    static func outline(in bounds: CGRect) -> NSBezierPath {
+        // Approximate the native window curve without inspecting other apps' private shapes.
+        // Add half the 2pt stroke because its inner edge meets the window's outer edge.
+        let nativeRadius: CGFloat
+        if #available(macOS 26, *) { nativeRadius = 26 }
+        else { nativeRadius = 10 }
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1),
+                                xRadius: nativeRadius + 1, yRadius: nativeRadius + 1)
+        path.lineWidth = 2
+        return path
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         NSColor(calibratedRed: 0.44, green: 0.85, blue: 0.71, alpha: 0.95).setStroke()
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 10, yRadius: 10)
-        path.lineWidth = 2
-        path.stroke()
+        Self.outline(in: bounds).stroke()
     }
 }
 
@@ -128,7 +161,6 @@ struct AppIcon: View {
 
 private struct NavigationHUD: View {
     let space: Int
-    let mode: LayoutMode
     let windows: [WindowRecord]
     let focusedID: String?
 
@@ -138,7 +170,7 @@ private struct NavigationHUD: View {
                 Text("SPACE \(space, format: .number.precision(.integerLength(2)))")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                 Spacer()
-                Text(mode == .scrolling ? "SCROLLING" : "MONOCLE")
+                Text("RIBBON")
                     .font(.system(size: 9, weight: .medium, design: .monospaced))
             }
             .foregroundStyle(.white.opacity(0.55))

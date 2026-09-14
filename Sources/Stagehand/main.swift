@@ -3,10 +3,10 @@ import AppKit
 let application = NSApplication.shared
 let delegate = AppDelegate()
 application.setActivationPolicy(.accessory)
-if CommandLine.arguments.contains("--diagnose-start") {
+if CommandLine.arguments.contains("--diagnose-start") || CommandLine.arguments.contains("--diagnose-ribbon") {
     Task { @MainActor in
         let model = StagehandModel()
-        print(await model.diagnoseStartup())
+        print(await model.diagnoseStartup(includeSettings: CommandLine.arguments.contains("--diagnose-ribbon")))
         application.terminate(nil)
     }
 } else if let index = CommandLine.arguments.firstIndex(of: "--diagnose-focus"),

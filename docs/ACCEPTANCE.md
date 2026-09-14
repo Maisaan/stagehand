@@ -12,14 +12,17 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 - Change native macOS Desktop. Stagehand should stay enabled but suspend input and layout work, without pulling windows into the new Desktop. Return and verify automatic resume with order and widths preserved.
 - Repeat Desktop switching during window navigation. No buffered typing should be replayed on the away Desktop.
 
-## Scrolling and monocle
+## Ribbon sizing and overlap
 
 - Scrolling: active window fits; adjacent sliver remains visible with 95% width.
 - Shrink and grow several windows independently; respect app minimum-size constraints.
 - Navigate across both ends; there is no wrap.
 - Reorder a window and verify focus stays with it.
-- Switch to monocle: only active window occupies the display area.
-- Switch back: ribbon order and widths remain.
+- Enable Maximize windows: the active window requests the full available width without native fullscreen.
+- Disable it: individual widths and ribbon order return unchanged.
+- System Settings: the displayed percentage reflects its constrained width; focusing the last window leaves no unused slot to its right.
+- Apply a negative gap. Windows overlap horizontally with the active one above its neighbors. A full-width active window covers the available area.
+- Drag a title bar, hold it still, then release. Reorder only on release; the window rejoins the ribbon instead of remaining detached.
 - Drag-resize a scrolling window, including immediately after navigation. Its new width should be remembered within the allowed range.
 
 ## Spaces and shared windows
@@ -50,5 +53,7 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 - Neither bar nor border shifts or resizes any window.
 - The current application owns the macOS menu bar, except while Stagehand settings or an empty-space placeholder is active.
 - Settings stay usable at the built-in display's current scaling.
+- Stagehand settings joins the ribbon, can be reordered, and regains focus through the same navigation controls.
+- Swipe to a native fullscreen Space. The focus border must not follow or flash over the destination; it returns on the home Desktop.
 - Resize settings to its minimum size and enlarge it. Content should adapt and scroll without clipping controls.
 - Only occupied spaces and the current space appear in settings and the menu. Numbered shortcuts can still reach unused spaces.

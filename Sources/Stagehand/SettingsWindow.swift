@@ -1,10 +1,11 @@
 import AppKit
 import SwiftUI
+import StagehandPlatform
 
 @MainActor
 enum SettingsWindow {
     static func make(model: StagehandModel) -> NSWindow {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 610),
+        let window = RibbonWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 610),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Stagehand"
         window.titlebarAppearsTransparent = true

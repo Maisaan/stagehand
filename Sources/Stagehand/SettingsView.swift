@@ -6,10 +6,12 @@ import StagehandPlatform
 struct SettingsView: View {
     @ObservedObject var model: StagehandModel
     @State private var tab = "Workspace"
+    @State private var gapInput: Double
 
     init(model: StagehandModel, initialTab: String = "Workspace") {
         self.model = model
         _tab = State(initialValue: initialTab)
+        _gapInput = State(initialValue: model.gap)
     }
 
     var body: some View {
@@ -93,20 +95,27 @@ struct SettingsView: View {
     private var workspace: some View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Layout").font(.system(size: 13, weight: .semibold))
-                HStack(spacing: 12) {
-                    layoutCard(.scrolling, title: "Scrolling", subtitle: "One ribbon. Room to breathe.", symbol: "rectangle.split.3x1")
-                    layoutCard(.monocle, title: "Monocle", subtitle: "One window. All the room.", symbol: "rectangle")
-                }
+                Text("Ribbon").font(.system(size: 13, weight: .semibold))
+                Toggle("Maximize windows", isOn: Binding(
+                    get: { model.state.maximizeWindows }, set: { model.setMaximizeWindows($0) }
+                ))
+                .toggleStyle(.switch)
+                Text("Use the full available width. Turn off to restore individual widths. Apps may limit their size.")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
             }
-            if model.state.layoutMode == .scrolling {
-                HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
                     Text("Window gap").font(.system(size: 12))
-                    Slider(value: $model.gap, in: 0...24, step: 2)
-                        .accessibilityLabel("Gap between windows")
-                    Text("\(Int(model.gap)) pt").font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary).frame(width: 40)
+                    Spacer()
+                    TextField("Points", value: $gapInput, format: .number.precision(.fractionLength(0)))
+                        .textFieldStyle(.roundedBorder).frame(width: 76)
+                        .accessibilityLabel("Gap between windows in points")
+                        .onSubmit { if gapInput.isFinite { model.gap = gapInput } }
+                    Text("pt").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Button("Apply") { if gapInput.isFinite { model.gap = gapInput } }
                 }
+                Text("Positive values add space. Negative values overlap windows horizontally, with the active window on top.")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
@@ -155,29 +164,6 @@ struct SettingsView: View {
         }
     }
 
-    private func layoutCard(_ mode: LayoutMode, title: String, subtitle: String, symbol: String) -> some View {
-        Button { model.setLayout(mode) } label: {
-            HStack(spacing: 12) {
-                Image(systemName: symbol).font(.system(size: 24, weight: .light))
-                    .foregroundStyle(model.state.layoutMode == mode ? Color.mint : .secondary)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title).font(.system(size: 13, weight: .semibold))
-                    Text(subtitle).font(.system(size: 10)).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(16)
-            .frame(maxWidth: .infinity)
-            .background(model.state.layoutMode == mode ? Color.mint.opacity(0.08) : Color.secondary.opacity(0.04),
-                        in: RoundedRectangle(cornerRadius: 12))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(model.state.layoutMode == mode ? Color.mint.opacity(0.6) : Color.secondary.opacity(0.12), lineWidth: 1)
-            }
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(model.state.layoutMode == mode ? .isSelected : [])
-    }
 
     private func windowRow(_ window: WindowRecord) -> some View {
         HStack(spacing: 10) {
@@ -191,9 +177,14 @@ struct SettingsView: View {
             if window.id == model.state.focusedWindowID {
                 Text("Active").font(.system(size: 9, weight: .medium)).foregroundStyle(.mint)
             }
-            if model.state.layoutMode == .scrolling {
-                Text("\(Int((model.state.currentSpace.widthFraction(for: window.id) * 100).rounded()))%")
+            Group {
+                let requested = model.state.maximizeWindows ? 100 :
+                    Int((model.state.currentSpace.widthFraction(for: window.id) * 100).rounded())
+                let actual = model.actualWidthPercent(for: window)
+                Text("\(actual ?? requested)%")
                     .font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                    .help(actual.map { "Actual window width. Requested \(requested)%; the app may limit its size. Actual: \($0)%." }
+                          ?? "Requested window width.")
             }
             Menu {
                 Button("Focus Window") { model.focusWindow(window.id) }

@@ -5,6 +5,22 @@ import Testing
 
 private let screen = CGRect(x: 100, y: 40, width: 1000, height: 700)
 
+@Test func scrollingPacksAnAppConstrainedToItsObservedWidth() throws {
+    var state = WorkspaceState()
+    state.reconcile(windowIDs: ["editor", "settings"])
+    state.focus(windowID: "settings")
+    let display = CGRect(x: 0, y: 39, width: 1800, height: 1130)
+    // Live System Settings reproduction: requested 1710 pt, accepted 723 pt.
+    let placements = WindowLayout.placements(for: state, availableFrame: display,
+                                            observedWidths: ["settings": 723])
+    let settings = try #require(placements.first { $0.windowID == "settings" })
+    let editor = try #require(placements.first { $0.windowID == "editor" })
+    #expect(settings.frame.width == 723)
+    #expect(settings.frame.maxX == display.maxX)
+    #expect(settings.frame.minX - editor.frame.maxX == 8)
+    #expect(display.contains(settings.frame))
+}
+
 @Test func scrollingShowsNextSliverAndKeepsFocusedWindowFullyVisible() throws {
     var state = WorkspaceState()
     state.reconcile(windowIDs: ["a", "b", "c"])
@@ -37,22 +53,94 @@ private let screen = CGRect(x: 100, y: 40, width: 1000, height: 700)
     #expect(placements.allSatisfy { $0.isVisible })
 }
 
-@Test func monocleFillsScreenAndParksOtherWindowsWithoutChangingWidths() throws {
+@Test func ribbonUsesRememberedWidthsAfterMaximizeIsTurnedOff() throws {
     var state = WorkspaceState()
     state.reconcile(windowIDs: ["a", "b"])
     state.setWidthFraction(0.5, for: "b")
-    state.layoutMode = .monocle
-    let placements = WindowLayout.placements(for: state, availableFrame: screen)
-    let focused = try #require(placements.first { $0.isFocused })
-    let parked = try #require(placements.first { !$0.isFocused })
-    #expect(focused.frame == screen)
-    #expect(focused.isVisible)
-    #expect(!parked.frame.intersects(screen))
-    #expect(!parked.isVisible)
+    state.maximizeWindows = true
+    state.maximizeWindows = false
     #expect(state.currentSpace.widthFraction(for: "b") == 0.5)
-    state.layoutMode = .scrolling
+    state.focus(windowID: "b")
     let scrolling = WindowLayout.placements(for: state, availableFrame: screen)
     #expect(scrolling.first { $0.isFocused }?.frame.width == 500)
+    #expect(scrolling.allSatisfy { $0.isVisible })
+}
+
+@Test func ribbonIgnoresInvalidObservedWidths() {
+    var state = WorkspaceState()
+    state.reconcile(windowIDs: ["a", "b", "c", "d"])
+    let expected = WindowLayout.placements(for: state, availableFrame: screen)
+    let actual = WindowLayout.placements(for: state, availableFrame: screen,
+                                        observedWidths: ["a": .nan, "b": .infinity, "c": 0, "d": -1])
+    #expect(actual == expected)
+}
+
+@Test func negativeGapCentersTheFocusedWindowAndOverlapsBothNeighbors() throws {
+    let display = CGRect(x: 0, y: 0, width: 1000, height: 700)
+    let state = WorkspaceState(spaces: [SpaceState(
+        windowIDs: ["a", "b", "c"], focusedWindowID: "b",
+        widthFractions: ["a": 0.6, "b": 0.6, "c": 0.6]
+    )])
+    let placements = WindowLayout.placements(for: state, availableFrame: display, gap: -100)
+    let focused = try #require(placements.first { $0.isFocused })
+    #expect(focused.frame.minX == 200)
+    #expect(focused.frame.width == 600)
+    #expect(placements[0].frame.intersection(focused.frame).width == 100)
+    #expect(placements[2].frame.intersection(focused.frame).width == 100)
+    #expect(placements[0].frame.minX < focused.frame.minX)
+    #expect(placements[2].frame.maxX > focused.frame.maxX)
+    #expect(placements.allSatisfy { $0.isVisible })
+}
+
+@Test func extremeNegativeGapKeepsRibbonOrderAndFiniteFrames() {
+    var state = WorkspaceState()
+    state.reconcile(windowIDs: ["a", "b", "c"])
+    let placements = WindowLayout.placements(for: state, availableFrame: screen, gap: -.greatestFiniteMagnitude)
+    #expect(placements[1].frame.minX - placements[0].frame.minX == 1)
+    #expect(placements[2].frame.minX - placements[1].frame.minX == 1)
+    #expect(placements.allSatisfy { $0.frame.minX.isFinite && $0.frame.width.isFinite })
+}
+
+@Test func overlappingRibbonExtentIncludesEarlierWiderWindows() {
+    let state = WorkspaceState(spaces: [SpaceState(
+        windowIDs: ["a", "b", "c"], focusedWindowID: "c",
+        widthFractions: ["a": 0.95, "b": 0.25, "c": 0.25]
+    )])
+    let placements = WindowLayout.placements(for: state, availableFrame: screen, gap: -800)
+    // The widest first window extends beyond the last window. The whole ribbon fits,
+    // so focusing the last window must not introduce an unnecessary offset.
+    #expect(placements[0].frame.minX == screen.minX)
+    #expect(placements[1].frame.minX == screen.minX + 150)
+    #expect(placements[2].frame.minX == screen.minX + 151)
+}
+
+@Test func maximizeFillsTheViewportWithoutReservingNeighborStrips() throws {
+    var state = WorkspaceState(maximizeWindows: true, spaces: [SpaceState(
+        windowIDs: ["a", "b", "c"], focusedWindowID: "b",
+        widthFractions: ["a": 0.4, "b": 0.6, "c": 0.8]
+    )])
+    for gap in [CGFloat(-100), 0, 8] {
+        let placements = WindowLayout.placements(for: state, availableFrame: screen, gap: gap)
+        let focused = try #require(placements.first { $0.isFocused })
+        #expect(focused.frame == screen)
+        #expect(placements.allSatisfy { $0.frame.width == screen.width })
+    }
+    #expect(state.currentSpace.widthFraction(for: "b") == 0.6)
+    state.maximizeWindows = false
+    let restored = WindowLayout.placements(for: state, availableFrame: screen)
+    #expect(restored.first { $0.isFocused }?.frame.width == 600)
+}
+
+@Test func maximizeStillUsesAnAppsObservedWidthConstraint() throws {
+    var state = WorkspaceState(maximizeWindows: true)
+    state.reconcile(windowIDs: ["editor", "settings"])
+    let placements = WindowLayout.placements(for: state, availableFrame: screen,
+                                            observedWidths: ["settings": 520])
+    let focused = try #require(placements.first { $0.isFocused })
+    #expect(focused.frame.width == 520)
+    #expect(focused.frame.maxX == screen.maxX)
+    #expect(placements[0].frame.width == screen.width)
+    #expect(focused.frame.minX - placements[0].frame.maxX == 8)
 }
 
 @Test func layoutHandlesEmptySpacesAndInvalidFrames() {
