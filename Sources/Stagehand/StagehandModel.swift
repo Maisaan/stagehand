@@ -16,6 +16,20 @@ func shouldSlideRibbon(from previousState: WorkspaceState, to state: WorkspaceSt
     return membershipCount < 2
 }
 
+func shouldFocusSharedWindowBeforeMoving(
+    state: WorkspaceState,
+    observedFocusedWindowID: String?,
+    destinationIsParked: Bool
+) -> Bool {
+    guard !destinationIsParked,
+          let destinationID = state.focusedWindowID,
+          destinationID != observedFocusedWindowID else { return false }
+    return state.spaces.lazy
+        .filter { $0.windowIDs.contains(destinationID) }
+        .prefix(2)
+        .count == 2
+}
+
 @MainActor
 final class StagehandModel: ObservableObject {
     @Published private(set) var state = WorkspaceState()
@@ -986,6 +1000,7 @@ final class StagehandModel: ObservableObject {
         var constraintObservations: [(pass: Int, windowID: String, requested: CGRect,
                                       actual: CGRect, axes: String)] = []
         var destinationPID: Int32?
+        var destinationFocusedBeforeFrame = false
         // Read accepted sizes after focus, then repack and center app-constrained windows.
         // Repacking may reveal another window. Bound this by the number of windows;
         // the input gate's deadline also applies to the whole transition.
@@ -996,6 +1011,37 @@ final class StagehandModel: ObservableObject {
                                                  observedWidths: observedWidths, preferredHeights: preferredHeights,
                                                  observedHeights: observedHeights)
             let visible = placements.filter { $0.isVisible || slideFrom?[$0.windowID]?.intersects(availableFrame) == true }
+            // Some apps animate a large AX move while inactive. An unparked shared window
+            // can take focus at its current ribbon position before receiving its final frame.
+            if pass == 0, request == .navigation, let focusedID = state.focusedWindowID {
+                let observedFocus = windowSystem.focusedWindowID()
+                if shouldFocusSharedWindowBeforeMoving(
+                    state: state,
+                    observedFocusedWindowID: observedFocus,
+                    destinationIsParked: windowSystem.isParked(windowID: focusedID)
+                ) {
+                    destinationFocusedBeforeFrame = await windowSystem.focus(windowID: focusedID)
+                    if diagnostics.isEnabled {
+                        var details = [
+                            "focusConfirmed": String(destinationFocusedBeforeFrame),
+                            "observedFocusedWindowIDAfter": windowSystem.focusedWindowID() ?? "none",
+                            "observedFocusedWindowIDBefore": observedFocus ?? "none",
+                            "operation": operation,
+                            "windowID": focusedID
+                        ]
+                        if let report = windowSystem.lastFocusReport { details["focusReport"] = report.summary }
+                        diagnostics.record("navigation_focus_before_frame", details: details)
+                    }
+                    guard desktopScope.refresh() == .home else {
+                        nativeDesktopChanged()
+                        return false
+                    }
+                    guard isRunning, !isSuspended, !Task.isCancelled else {
+                        if let token { focusGate.cancelTransfer(token: token) }
+                        return false
+                    }
+                }
+            }
             // Position neighbors first. Raising the focused real window last keeps clamped neighbors behind it.
             for placement in visible.sorted(by: { !$0.isFocused && $1.isFocused }) {
                 guard preferenceFocusStillMatches(request) else { return true }
@@ -1066,11 +1112,16 @@ final class StagehandModel: ObservableObject {
                     return false
                 }
                 let observedFocusBefore = diagnostics.isEnabled ? windowSystem.focusedWindowID() : nil
-                let focused = await request.confirmFocus(
-                    windowID: focusedID,
-                    currentFocus: { windowSystem.focusedWindowID() },
-                    activate: { await windowSystem.focus(windowID: focusedID) }
-                )
+                let focused: Bool
+                if destinationFocusedBeforeFrame, windowSystem.focusedWindowID() == focusedID {
+                    focused = true
+                } else {
+                    focused = await request.confirmFocus(
+                        windowID: focusedID,
+                        currentFocus: { windowSystem.focusedWindowID() },
+                        activate: { await windowSystem.focus(windowID: focusedID) }
+                    )
+                }
                 if request == .navigation, diagnostics.isEnabled {
                     let observedFocusAfter = windowSystem.focusedWindowID()
                     var details = [

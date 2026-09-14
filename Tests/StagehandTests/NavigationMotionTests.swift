@@ -37,6 +37,38 @@ struct NavigationMotionTests {
         ))
     }
 
+    @Test func unparkedSharedDestinationTakesFocusBeforeItMoves() {
+        let state = WorkspaceState(spaces: [
+            SpaceState(windowIDs: ["other", "shared"], focusedWindowID: "shared"),
+            SpaceState(windowIDs: ["shared"])
+        ])
+
+        #expect(shouldFocusSharedWindowBeforeMoving(
+            state: state,
+            observedFocusedWindowID: "other",
+            destinationIsParked: false
+        ))
+        #expect(!shouldFocusSharedWindowBeforeMoving(
+            state: state,
+            observedFocusedWindowID: "shared",
+            destinationIsParked: false
+        ))
+        #expect(!shouldFocusSharedWindowBeforeMoving(
+            state: state,
+            observedFocusedWindowID: "other",
+            destinationIsParked: true
+        ))
+
+        let ordinary = WorkspaceState(spaces: [
+            SpaceState(windowIDs: ["other", "single"], focusedWindowID: "single")
+        ])
+        #expect(!shouldFocusSharedWindowBeforeMoving(
+            state: ordinary,
+            observedFocusedWindowID: "other",
+            destinationIsParked: false
+        ))
+    }
+
     @Test func repeatedNavigationReversesDismissalWithoutReplacingViewsOrTakingFocus() throws {
         _ = NSApplication.shared
         let overlays = NavigationOverlays(reduceMotion: { false })
