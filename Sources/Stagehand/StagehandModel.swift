@@ -11,6 +11,36 @@ func shouldSlideRibbon(from previousState: WorkspaceState, to state: WorkspaceSt
     return state.focusedWindowID != nil
 }
 
+struct RibbonPositionWriteFailure: Equatable {
+    let windowID: String
+    let requestedFrame: CGRect
+    let actualFrame: CGRect
+}
+
+@MainActor
+func writeRibbonPositions(
+    frames: [String: CGRect],
+    writtenPositions: inout [String: CGPoint],
+    backingScaleFactor: CGFloat,
+    setPosition: (String, CGPoint) -> Bool,
+    currentFrame: (String) -> CGRect?
+) -> RibbonPositionWriteFailure? {
+    for (windowID, frame) in frames {
+        let position = RibbonMotion.pixelAligned(frame.origin, backingScaleFactor: backingScaleFactor)
+        if writtenPositions[windowID] == position { continue }
+        guard setPosition(windowID, position) else {
+            guard let actualFrame = currentFrame(windowID) else { continue }
+            return RibbonPositionWriteFailure(
+                windowID: windowID,
+                requestedFrame: frame,
+                actualFrame: actualFrame
+            )
+        }
+        writtenPositions[windowID] = position
+    }
+    return nil
+}
+
 @MainActor
 final class StagehandModel: ObservableObject {
     @Published private(set) var state = WorkspaceState()
@@ -1268,26 +1298,27 @@ final class StagehandModel: ObservableObject {
             scheduleRefresh()
             return
         }
-        for (id, frame) in frames {
-            let position = RibbonMotion.pixelAligned(frame.origin, backingScaleFactor: motionBackingScaleFactor)
-            if motionWrittenPositions[id] == position { continue }
-            guard windowSystem.setPosition(windowID: id, position: position) else {
-                ribbonMotion.cancel()
-                recordWindowGeometry(
-                    event: "ribbon_position_write_failed",
-                    windowID: id,
-                    requestedFrame: frame,
-                    actualFrame: windowSystem.frame(windowID: id)
-                )
-                warning = "Stagehand couldn't move one of your windows. It paused and restored them."
-                stop(
-                    reason: "ribbon_position_failed",
-                    automatic: true,
-                    details: ["windowID": id]
-                )
-                return
-            }
-            motionWrittenPositions[id] = position
+        if let failure = writeRibbonPositions(
+            frames: frames,
+            writtenPositions: &motionWrittenPositions,
+            backingScaleFactor: motionBackingScaleFactor,
+            setPosition: { windowSystem.setPosition(windowID: $0, position: $1) },
+            currentFrame: { windowSystem.frame(windowID: $0) }
+        ) {
+            ribbonMotion.cancel()
+            recordWindowGeometry(
+                event: "ribbon_position_write_failed",
+                windowID: failure.windowID,
+                requestedFrame: failure.requestedFrame,
+                actualFrame: failure.actualFrame
+            )
+            warning = "Stagehand couldn't move one of your windows. It paused and restored them."
+            stop(
+                reason: "ribbon_position_failed",
+                automatic: true,
+                details: ["windowID": failure.windowID]
+            )
+            return
         }
         if gestureBase == nil, let focused = state.focusedWindowID, var frame = frames[focused] {
             frame.origin = motionWrittenPositions[focused]

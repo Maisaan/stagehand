@@ -272,3 +272,59 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
         backingScaleFactor: 0
     ) == CGPoint(x: 11, y: 20))
 }
+
+@MainActor @Test func ribbonPositionWritesRetryAWindowThatIsTemporarilyUnavailable() {
+    let target = CGRect(x: 100.25, y: 40.25, width: 900, height: 700)
+    var writtenPositions: [String: CGPoint] = [:]
+    var writeAttempts = 0
+    var isAvailable = false
+
+    let firstFailure = writeRibbonPositions(
+        frames: ["window": target],
+        writtenPositions: &writtenPositions,
+        backingScaleFactor: 2,
+        setPosition: { _, _ in
+            writeAttempts += 1
+            return isAvailable
+        },
+        currentFrame: { _ in isAvailable ? target : nil }
+    )
+
+    #expect(firstFailure == nil)
+    #expect(writtenPositions.isEmpty)
+
+    isAvailable = true
+    let retryFailure = writeRibbonPositions(
+        frames: ["window": target],
+        writtenPositions: &writtenPositions,
+        backingScaleFactor: 2,
+        setPosition: { _, _ in
+            writeAttempts += 1
+            return isAvailable
+        },
+        currentFrame: { _ in target }
+    )
+
+    #expect(retryFailure == nil)
+    #expect(writeAttempts == 2)
+    #expect(writtenPositions["window"] == CGPoint(x: 100.5, y: 40.5))
+}
+
+@MainActor @Test func ribbonPositionWritesStillFailWhenAReadableWindowRejectsTheMove() throws {
+    let current = CGRect(x: 50, y: 40, width: 900, height: 700)
+    let target = CGRect(x: 100, y: 40, width: 900, height: 700)
+    var writtenPositions: [String: CGPoint] = [:]
+
+    let failure = try #require(writeRibbonPositions(
+        frames: ["window": target],
+        writtenPositions: &writtenPositions,
+        backingScaleFactor: 2,
+        setPosition: { _, _ in false },
+        currentFrame: { _ in current }
+    ))
+
+    #expect(failure.windowID == "window")
+    #expect(failure.requestedFrame == target)
+    #expect(failure.actualFrame == current)
+    #expect(writtenPositions.isEmpty)
+}
