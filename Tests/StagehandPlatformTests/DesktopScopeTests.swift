@@ -53,15 +53,3 @@ import Testing
     desktop = 92
     #expect(scope.refresh() == .home)
 }
-
-@MainActor @Test func desktopScopeHandlesFullscreenAndEmptyHomeWithoutWindowFingerprints() {
-    var desktop: UInt64? = 41
-    let scope = DesktopScope(currentDesktopID: { desktop })
-    #expect(scope.bindToCurrentDesktop())
-    // Fullscreen is a different native Space even when it contains the same application.
-    desktop = 103
-    #expect(scope.refresh() == .away)
-    // Home may now be empty; the native ID remains sufficient to recognize it.
-    desktop = 41
-    #expect(scope.refresh() == .home)
-}

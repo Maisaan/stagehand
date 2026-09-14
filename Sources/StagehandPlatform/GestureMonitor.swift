@@ -44,6 +44,7 @@ private let traceGestures = ProcessInfo.processInfo.arguments.contains("--trace-
 private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
     guard count >= 0, count <= 32, count == 0 || raw != nil else { return 0 }
     var contacts: [GestureContact] = []
+    contacts.reserveCapacity(Int(count))
     if let raw {
         let buffer = raw.assumingMemoryBound(to: RawContact.self)
         for index in 0..<Int(count) {

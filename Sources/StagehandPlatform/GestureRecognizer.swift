@@ -108,9 +108,12 @@ struct NavigationGestureRecognizer: Sendable {
             return origin.isEmpty ? nil : cancel(reason: "extra-contact")
         }
         let coordinateBounds = origin.isEmpty ? 0.015...0.985 : 0.0...1.0
-        guard contacts.allSatisfy({ $0.x.isFinite && $0.y.isFinite && coordinateBounds.contains($0.x) && coordinateBounds.contains($0.y) }),
-              Set(contacts.map(\.id)).count == contacts.count else {
-            return cancel(reason: "invalid-contact")
+        for (index, contact) in contacts.enumerated() {
+            guard contact.x.isFinite, contact.y.isFinite,
+                  coordinateBounds.contains(contact.x), coordinateBounds.contains(contact.y),
+                  !contacts[..<index].contains(where: { $0.id == contact.id }) else {
+                return cancel(reason: "invalid-contact")
+            }
         }
         guard contacts.count == fingerCount else {
             guard !origin.isEmpty else { return nil }
@@ -141,17 +144,22 @@ struct NavigationGestureRecognizer: Sendable {
         }
         // Intent comes from coherent movement, not a deadline after fingers land.
         // Slow starts and resting before moving must remain eligible until lift.
-        guard ordered.map(\.id) == origin.map(\.id) else {
+        guard zip(ordered, origin).allSatisfy({ $0.0.id == $0.1.id }) else {
             return cancel(reason: "replacement-contact")
         }
-        let deltas = zip(ordered, origin).map { (x: $0.x - $1.x, y: $0.y - $1.y) }
-        let dx = deltas.reduce(0) { $0 + $1.x } / Double(fingerCount)
-        let dy = deltas.reduce(0) { $0 + $1.y } / Double(fingerCount)
+        let (xTotal, yTotal) = zip(ordered, origin).reduce(into: (x: 0.0, y: 0.0)) { total, pair in
+            total.x += pair.0.x - pair.1.x
+            total.y += pair.0.y - pair.1.y
+        }
+        let dx = xTotal / Double(fingerCount)
+        let dy = yTotal / Double(fingerCount)
         // Require coherent intent before choosing an axis. After the pan is established,
         // follow its centroid like a native pan recognizer. Finger spacing naturally changes
         // during a long swipe and must not cancel an already-visible interaction.
         if axis == nil,
-           !deltas.allSatisfy({ abs($0.x - dx) < 0.035 && abs($0.y - dy) < 0.035 }) {
+           !zip(ordered, origin).allSatisfy({
+               abs(($0.0.x - $0.1.x) - dx) < 0.035 && abs(($0.0.y - $0.1.y) - dy) < 0.035
+           }) {
             return cancel(reason: "incoherent-movement")
         }
         defer { lastContacts = ordered }

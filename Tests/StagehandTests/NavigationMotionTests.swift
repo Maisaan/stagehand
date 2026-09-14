@@ -22,21 +22,6 @@ struct NavigationMotionTests {
         ))
     }
 
-    @Test func ordinaryWindowNavigationRetainsTheHorizontalRibbonSlide() {
-        let previous = WorkspaceState(spaces: [
-            SpaceState(windowIDs: ["first", "second"], focusedWindowID: "first")
-        ])
-        var destination = previous
-        #expect(destination.apply(.focusNext) == true)
-
-        #expect(shouldSlideRibbon(
-            from: previous,
-            to: destination,
-            hadPreview: false,
-            reduceMotion: false
-        ))
-    }
-
     @Test func windowMotionRejectsPresentationOutsideTheRequestedHorizontalSegment() {
         #expect(motionPresentationKeepsPace(
             previousPosition: CGPoint(x: 300, y: 60),

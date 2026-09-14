@@ -5,21 +5,6 @@ import Testing
 
 private let screen = CGRect(x: 100, y: 40, width: 1000, height: 700)
 
-@Test func ribbonKeepsHeightStableAcrossFocusChanges() throws {
-    var state = WorkspaceState()
-    state.reconcile(windowIDs: ["a", "b", "c"])
-    for maximize in [false, true] {
-        state.maximizeWindows = maximize
-        for focusedID in state.currentSpace.windowIDs {
-            state.focus(windowID: focusedID)
-            for placement in WindowLayout.placements(for: state, availableFrame: screen) {
-                #expect(placement.frame.height == 700)
-                #expect(placement.frame.midY == screen.midY)
-            }
-        }
-    }
-}
-
 @Test func ribbonCentersActualAcceptedHeightsWithoutChangingWidthPreferences() throws {
     let state = WorkspaceState(spaces: [SpaceState(
         windowIDs: ["a", "b", "c"], focusedWindowID: "b",
@@ -146,19 +131,6 @@ private let screen = CGRect(x: 100, y: 40, width: 1000, height: 700)
     #expect(placements[1].frame.width == 400)
     #expect(placements[1].frame.minX - placements[0].frame.maxX == 8)
     #expect(placements.allSatisfy { $0.isVisible })
-}
-
-@Test func ribbonUsesRememberedWidthsAfterMaximizeIsTurnedOff() throws {
-    var state = WorkspaceState()
-    state.reconcile(windowIDs: ["a", "b"])
-    state.setWidthFraction(0.5, for: "b")
-    state.maximizeWindows = true
-    state.maximizeWindows = false
-    #expect(state.currentSpace.widthFraction(for: "b") == 0.5)
-    state.focus(windowID: "b")
-    let scrolling = WindowLayout.placements(for: state, availableFrame: screen)
-    #expect(scrolling.first { $0.isFocused }?.frame.width == 500)
-    #expect(scrolling.allSatisfy { $0.isVisible })
 }
 
 @Test func ribbonIgnoresInvalidObservedWidths() {

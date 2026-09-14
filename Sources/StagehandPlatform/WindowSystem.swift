@@ -77,8 +77,9 @@ public final class WindowSystem {
         _ = AXIsProcessTrustedWithOptions(options as CFDictionary)
     }
 
-    public func start() {
-        guard !started else { return }
+    @discardableResult
+    public func start() -> [WindowRecord] {
+        guard !started else { return scanWindows() }
         started = true
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didLaunchApplicationNotification,
@@ -126,7 +127,7 @@ public final class WindowSystem {
                 self.onNativeDesktopChange?()
             }
         })
-        _ = scanWindows()
+        return scanWindows()
     }
 
     public func stop() {
@@ -313,14 +314,18 @@ public final class WindowSystem {
 
     /// Reads WindowServer's current presentation bounds. AXPosition can report a
     /// requested destination while macOS is still animating the visible window.
-    public func displayedFrames(windowIDs: Set<String>) -> [String: CGRect] {
+    public func displayedFrames<WindowIDs: Collection>(windowIDs: WindowIDs) -> [String: CGRect]
+    where WindowIDs.Element == String {
         var frames: [String: CGRect] = [:]
+        frames.reserveCapacity(windowIDs.count)
         for id in windowIDs where nativeWindows.contains(windowID: id) {
             frames[id] = nativeWindows.frame(windowID: id)
         }
-        let trackedNumbers = windowIDs.reduce(into: [CGWindowID: String]()) { result, id in
-            guard let tracked = windows[id], let number = tracked.windowNumber else { return }
-            result[number] = id
+        var trackedNumbers: [CGWindowID: String] = [:]
+        trackedNumbers.reserveCapacity(windowIDs.count)
+        for id in windowIDs {
+            guard let tracked = windows[id], let number = tracked.windowNumber else { continue }
+            trackedNumbers[number] = id
         }
         guard !trackedNumbers.isEmpty,
               let metadata = CGWindowListCopyWindowInfo(

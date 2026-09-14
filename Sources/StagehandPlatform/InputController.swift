@@ -33,15 +33,23 @@ struct ShortcutBinding: Sendable {
         return bindings
     }()
 
+    static let actions = Dictionary(uniqueKeysWithValues: defaults.map {
+        (lookupKey(key: $0.key, modifiers: $0.modifiers), $0.action)
+    })
+
+    private static func lookupKey(key: UInt32, modifiers: UInt32) -> UInt64 {
+        UInt64(key) << 32 | UInt64(modifiers)
+    }
+
     static func action(for event: CGEvent) -> NavigationAction? {
-        let key = event.getIntegerValueField(.keyboardEventKeycode)
+        let key = UInt32(truncatingIfNeeded: event.getIntegerValueField(.keyboardEventKeycode))
         let flags = event.flags.intersection([.maskControl, .maskAlternate, .maskCommand, .maskShift])
         var modifiers: UInt32 = 0
         if flags.contains(.maskControl) { modifiers |= UInt32(controlKey) }
         if flags.contains(.maskAlternate) { modifiers |= UInt32(optionKey) }
         if flags.contains(.maskCommand) { modifiers |= UInt32(cmdKey) }
         if flags.contains(.maskShift) { modifiers |= UInt32(shiftKey) }
-        return defaults.first { $0.key == key && $0.modifiers == modifiers }?.action
+        return actions[lookupKey(key: key, modifiers: modifiers)]
     }
 }
 
@@ -74,6 +82,7 @@ public final class InputController {
     public func start() {
         guard !isRunning else { return }
         isRunning = true
+        _ = ShortcutBinding.actions
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let status = InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
             guard let event, let context else { return OSStatus(eventNotHandledErr) }

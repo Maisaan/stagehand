@@ -12,6 +12,10 @@ install -m 755 "$stagehand_bin/Stagehand" "$stagehand_bundle/Contents/MacOS/Stag
 install -m 644 "$stagehand_root/Resources/Info.plist" "$stagehand_bundle/Contents/Info.plist"
 install -m 644 "$stagehand_root/Resources/Stagehand.icns" "$stagehand_bundle/Contents/Resources/Stagehand.icns"
 
+# SwiftPM keeps local and debug symbols in release executables. They are useful in
+# the build directory, but add no runtime value to the installed application.
+strip -x "$stagehand_bundle/Contents/MacOS/Stagehand"
+
 # For repeat development builds, provide a stable local signing identity if you have one.
 # The default is an ad-hoc development signature, not a notarized distribution build.
 stagehand_signing_identity="${STAGEHAND_SIGNING_IDENTITY:--}"

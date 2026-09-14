@@ -113,12 +113,14 @@ final class NavigationOverlays {
             return
         }
         let border = borderPanel()
-        (border.contentView as? BorderView)?.cornerRadius = cornerRadius
+        let borderView = border.contentView as? BorderView
+        let radiusChanged = borderView?.cornerRadius != cornerRadius
+        borderView?.cornerRadius = cornerRadius
         let converted = CGRect(x: frame.minX, y: primary.frame.maxY - frame.maxY,
                                width: frame.width, height: frame.height)
         // Frame/path changes remain synchronous, including throughout a native live resize.
         // Draw inward so the complete stroke remains visible at display edges.
-        border.setFrame(converted, display: true)
+        border.setFrame(converted, display: radiusChanged || border.frame.size != converted.size)
         if !border.isVisible { border.orderFrontRegardless() }
         if focusChanged, let layer = border.contentView?.layer {
             let reveal = CABasicAnimation(keyPath: "opacity")
@@ -149,12 +151,17 @@ final class NavigationOverlays {
 
     /// Keep hover content current without opening the bar during background reconciliation.
     func updateNavigation(state: WorkspaceState, windows: [WindowRecord]) {
-        let records = state.currentSpace.windowIDs.compactMap { id in windows.first { $0.id == id } }
-        hudModel.space = state.activeSpaceIndex + 1
-        hudModel.windows = records
-        hudModel.focusedID = state.focusedWindowID
-        hudModel.spaces = state.spaces
-        hudModel.availableSpaceIndices = state.displayedSpaceIndices
+        let recordsByID = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0) })
+        let records = state.currentSpace.windowIDs.compactMap { recordsByID[$0] }
+        let space = state.activeSpaceIndex + 1
+        let availableSpaceIndices = state.displayedSpaceIndices
+        if hudModel.space != space { hudModel.space = space }
+        if hudModel.windows != records { hudModel.windows = records }
+        if hudModel.focusedID != state.focusedWindowID { hudModel.focusedID = state.focusedWindowID }
+        if hudModel.spaces != state.spaces { hudModel.spaces = state.spaces }
+        if hudModel.availableSpaceIndices != availableSpaceIndices {
+            hudModel.availableSpaceIndices = availableSpaceIndices
+        }
         if canRevealNavigation != nil { installMouseMonitors() }
     }
 
@@ -425,11 +432,11 @@ final class BorderView: NSView {
     static let defaultColor = NSColor(srgbRed: 0.44, green: 0.85, blue: 0.71, alpha: 0.95)
 
     var strokeColor = defaultColor {
-        didSet { needsDisplay = true }
+        didSet { if oldValue != strokeColor { needsDisplay = true } }
     }
 
     var cornerRadius: CGFloat? {
-        didSet { needsDisplay = true }
+        didSet { if oldValue != cornerRadius { needsDisplay = true } }
     }
 
     static func outline(in bounds: CGRect, cornerRadius: CGFloat? = nil) -> NSBezierPath {

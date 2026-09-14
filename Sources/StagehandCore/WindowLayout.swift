@@ -27,7 +27,10 @@ public enum WindowLayout {
         var cursor: CGFloat = 0
         var focusedStart: CGFloat = 0
         var focusedWidth: CGFloat = 0
-        let ribbon = space.windowIDs.map { windowID in
+        var totalWidth: CGFloat = 0
+        var ribbon: [(windowID: String, frame: CGRect)] = []
+        ribbon.reserveCapacity(space.windowIDs.count)
+        for windowID in space.windowIDs {
             let requestedWidth = availableFrame.width * (state.maximizeWindows ? 1 : space.widthFraction(for: windowID))
             let width: CGFloat
             if let observedWidth = observedWidths[windowID], observedWidth.isFinite, observedWidth > 0 {
@@ -51,21 +54,24 @@ public enum WindowLayout {
                 focusedStart = cursor
                 focusedWidth = width
             }
+            totalWidth = max(totalWidth, frame.maxX)
             cursor += max(1, width + gap)
-            return (windowID: windowID, frame: frame)
+            ribbon.append((windowID: windowID, frame: frame))
         }
-        let totalWidth = ribbon.map { $0.frame.maxX }.max() ?? 0
         let desiredOffset = gap < 0 ? focusedStart - (availableFrame.width - focusedWidth) / 2 : focusedStart
         let offset = min(max(0, desiredOffset), max(0, totalWidth - availableFrame.width))
 
-        return ribbon.map { item in
+        var placements: [WindowPlacement] = []
+        placements.reserveCapacity(ribbon.count)
+        for item in ribbon {
             let frame = item.frame.offsetBy(dx: availableFrame.minX - offset, dy: 0)
-            return WindowPlacement(
+            placements.append(WindowPlacement(
                 windowID: item.windowID,
                 frame: frame,
                 isVisible: frame.intersects(availableFrame),
                 isFocused: item.windowID == space.focusedWindowID
-            )
+            ))
         }
+        return placements
     }
 }

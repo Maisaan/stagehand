@@ -10,44 +10,38 @@ final class DiagnosticLogger {
         return library.appendingPathComponent("Logs/Stagehand/stagehand.log")
     }
 
-    var isEnabled: Bool
+    var isEnabled: Bool {
+        didSet { if !isEnabled { closeHandle() } }
+    }
     let logURL: URL
 
     private let now: () -> Date
+    private let encoder: JSONEncoder
+    private var handle: FileHandle?
 
     init(logURL: URL = DiagnosticLogger.defaultLogURL, enabled: Bool, now: @escaping () -> Date = Date.init) {
         self.logURL = logURL
         isEnabled = enabled
         self.now = now
+        encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
     }
 
-    func record(_ event: String, details: [String: String] = [:]) {
+    func record(_ event: String, details: @autoclosure () -> [String: String] = [:]) {
         guard isEnabled else { return }
-        let entry = Entry(timestamp: now().ISO8601Format(), event: event, details: details)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
+        let entry = Entry(timestamp: now().ISO8601Format(), event: event, details: details())
         do {
             var data = try encoder.encode(entry)
             data.append(0x0A)
-            try FileManager.default.createDirectory(
-                at: logURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            if !FileManager.default.fileExists(atPath: logURL.path) {
-                guard FileManager.default.createFile(atPath: logURL.path, contents: nil) else {
-                    throw CocoaError(.fileWriteUnknown)
-                }
-            }
-            let handle = try FileHandle(forWritingTo: logURL)
-            try handle.seekToEnd()
-            try handle.write(contentsOf: data)
-            try handle.close()
+            try appendHandle().write(contentsOf: data)
         } catch {
+            closeHandle()
             NSLog("Stagehand diagnostic log write failed: %@", error.localizedDescription)
         }
     }
 
     func clear() {
+        closeHandle()
         guard FileManager.default.fileExists(atPath: logURL.path) else { return }
         do {
             try FileManager.default.removeItem(at: logURL)
@@ -65,9 +59,10 @@ final class DiagnosticLogger {
         requestedFrame: CGRect,
         beforeFrame: CGRect? = nil,
         actualFrame: CGRect?,
-        details: [String: String] = [:]
+        details: @autoclosure () -> [String: String] = [:]
     ) {
-        var context = details
+        guard isEnabled else { return }
+        var context = details()
         context["windowID"] = windowID
         context["requestedX"] = String(Double(requestedFrame.minX))
         context["requestedY"] = String(Double(requestedFrame.minY))
@@ -91,6 +86,28 @@ final class DiagnosticLogger {
             context["actualHeight"] = String(Double(actualFrame.height))
         }
         record(event, details: context)
+    }
+
+    private func appendHandle() throws -> FileHandle {
+        if let handle { return handle }
+        try FileManager.default.createDirectory(
+            at: logURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            guard FileManager.default.createFile(atPath: logURL.path, contents: nil) else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+        }
+        let handle = try FileHandle(forWritingTo: logURL)
+        try handle.seekToEnd()
+        self.handle = handle
+        return handle
+    }
+
+    private func closeHandle() {
+        try? handle?.close()
+        handle = nil
     }
 
     private struct Entry: Encodable {

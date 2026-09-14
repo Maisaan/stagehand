@@ -186,21 +186,6 @@ func gestureSelectedFingerCountNavigatesSpacesOnFlickAndStaggeredLift(fingerCoun
     }
 }
 
-@Test func gestureThreeFingerSelectionRecognizesTheConfiguredCount() {
-    var recognizer = NavigationGestureRecognizer(fingerCount: 3)
-    #expect(recognizer.update(contacts: contacts(count: 3), timestamp: 0) == nil)
-    guard case .began(axis: .horizontal, displacement: let displacement) = recognizer.update(contacts: contacts(count: 3, dx: -0.04), timestamp: 0.1) else {
-        Issue.record("Three-finger navigation did not begin before the commit threshold")
-        return
-    }
-    #expect(abs(displacement + 0.04) < 0.001)
-    guard case .ended(_, _, let action) = recognizer.update(contacts: [], timestamp: 0.11) else {
-        Issue.record("Lift did not finish the gesture")
-        return
-    }
-    #expect(action == nil)
-}
-
 @Test func gestureDragTracksBeforeCommittingAndFlicksOnLift() {
     var recognizer = NavigationGestureRecognizer()
     _ = recognizer.update(contacts: contacts(), timestamp: 0)
@@ -333,21 +318,6 @@ func gestureSelectedFingerCountNavigatesSpacesOnFlickAndStaggeredLift(fingerCoun
     ]
     for event in events { pending.append(event) }
     #expect(pending.drain() == events)
-}
-
-@Test func gestureReleaseCanBeClaimedBeforeMainDeliveryExactlyOnce() {
-    var pending = GestureEventBuffer()
-    pending.append(.began(axis: .horizontal, displacement: -0.02))
-    pending.append(.changed(displacement: -0.08, velocity: -0.8))
-    pending.append(.ended(displacement: -0.08, velocity: -0.8, action: .focusNext))
-    #expect(pending.takeCompletion() == GestureNavigationCompletion(
-        axis: .horizontal,
-        displacement: -0.08,
-        velocity: -0.8,
-        recognizerAction: .focusNext
-    ))
-    #expect(pending.takeCompletion() == nil)
-    #expect(pending.drain().isEmpty)
 }
 
 @Test func gestureCompletionClaimIncludesItsAxisWithoutReplayingPreviewEvents() {

@@ -3,6 +3,8 @@ import Combine
 import StagehandCore
 import StagehandPlatform
 
+private let traceGestures = ProcessInfo.processInfo.arguments.contains("--trace-gestures")
+
 func shouldSlideRibbon(from previousState: WorkspaceState, to state: WorkspaceState,
                        hadPreview: Bool, reduceMotion: Bool) -> Bool {
     guard !reduceMotion,
@@ -98,7 +100,6 @@ final class StagehandModel: ObservableObject {
     @Published private(set) var warning: String? {
         didSet {
             if let warning, !isSuspended { overlays.showWarning(warning) }
-            onStateChange?()
         }
     }
     @Published var gesturesEnabled: Bool {
@@ -353,8 +354,7 @@ final class StagehandModel: ObservableObject {
             return
         }
         warning = nil
-        windowSystem.start()
-        windows = windowSystem.scanWindows()
+        windows = windowSystem.start()
         preferredHeights = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0.frame.height) })
         workspaceRestoration.reconcile(state: &state, windowIDs: windows.map(\.id),
                                        trackedWindowIDs: windowSystem.trackedWindowIDs)
@@ -450,8 +450,9 @@ final class StagehandModel: ObservableObject {
         requestedFrame: CGRect,
         beforeFrame: CGRect? = nil,
         actualFrame: CGRect?,
-        details: [String: String] = [:]
+        details: @autoclosure () -> [String: String] = [:]
     ) {
+        guard diagnostics.isEnabled else { return }
         let window = windows.first { $0.id == windowID }
         diagnostics.recordWindowGeometry(
             event: event,
@@ -462,7 +463,7 @@ final class StagehandModel: ObservableObject {
             requestedFrame: requestedFrame,
             beforeFrame: beforeFrame,
             actualFrame: actualFrame,
-            details: details
+            details: details()
         )
     }
 
@@ -871,7 +872,7 @@ final class StagehandModel: ObservableObject {
     }
 
     private func enqueue(_ change: Change) {
-        if ProcessInfo.processInfo.arguments.contains("--trace-gestures"), gestureAxis != nil {
+        if traceGestures, gestureAxis != nil {
             NSLog("[DEBUG-gesture] layout requested during drag: %@", String(describing: change))
         }
         guard isRunning, !isSuspended else { return }
@@ -1417,7 +1418,6 @@ final class StagehandModel: ObservableObject {
         }
         if request == .navigation { overlays.showNavigation(state: state, windows: windows) }
         else { overlays.updateNavigation(state: state, windows: windows) }
-        onStateChange?()
         return true
     }
 
@@ -1451,7 +1451,7 @@ final class StagehandModel: ObservableObject {
             scheduleRefresh()
             return
         }
-        let displayedFrames = windowSystem.displayedFrames(windowIDs: Set(frames.keys))
+        let displayedFrames = windowSystem.displayedFrames(windowIDs: frames.keys)
         var movingFrames: [String: CGRect] = [:]
         for (id, frame) in frames where !motionLaggingWindowIDs.contains(id) {
             if let previousPosition = motionPreviousPositions[id],
@@ -1623,7 +1623,7 @@ final class StagehandModel: ObservableObject {
     }
 
     private func handleGesture(_ event: GestureNavigationEvent) {
-        if ProcessInfo.processInfo.arguments.contains("--trace-gestures") {
+        if traceGestures {
             switch event {
             case .changed: break
             default:

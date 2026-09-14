@@ -111,16 +111,29 @@ final class RibbonMotion {
         let action: NavigationAction = displacement < 0 ? .focusNext : .focusPrevious
         var destination = state
         guard destination.apply(action) else { return nil }
-        let frames = Dictionary(uniqueKeysWithValues: WindowLayout.placements(
+        var observedWidths: [String: CGFloat] = [:]
+        var observedHeights: [String: CGFloat] = [:]
+        observedWidths.reserveCapacity(from.count)
+        observedHeights.reserveCapacity(from.count)
+        for (id, frame) in from {
+            observedWidths[id] = frame.width
+            observedHeights[id] = frame.height
+        }
+        let placements = WindowLayout.placements(
             for: destination,
             availableFrame: availableFrame,
             gap: gap,
-            observedWidths: from.mapValues(\.width),
-            observedHeights: from.mapValues(\.height)
-        ).map { ($0.windowID, $0.frame) })
-        let distance = frames.reduce(CGFloat.zero) { distance, item in
-            guard let start = from[item.key] else { return distance }
-            return max(distance, abs(item.value.minX - start.minX))
+            observedWidths: observedWidths,
+            observedHeights: observedHeights
+        )
+        var frames: [String: CGRect] = [:]
+        frames.reserveCapacity(placements.count)
+        var distance: CGFloat = 0
+        for placement in placements {
+            frames[placement.windowID] = placement.frame
+            if let start = from[placement.windowID] {
+                distance = max(distance, abs(placement.frame.minX - start.minX))
+            }
         }
         return (action, frames, distance)
     }
@@ -228,13 +241,15 @@ final class RibbonMotion {
         }
         let t = (low + high) / 2
         let eased = progress == 0 ? 0 : progress == 1 ? 1 : 1 - pow(1 - t, 3)
-        return to.reduce(into: [:]) { result, item in
-            let start = from[item.key] ?? item.value
+        var frames: [String: CGRect] = [:]
+        frames.reserveCapacity(to.count)
+        for (id, target) in to {
+            let start = from[id] ?? target
             // Layout owns vertical alignment; a restored app may still report its parking Y.
-            result[item.key] = CGRect(x: start.minX + (item.value.minX - start.minX) * eased,
-                                      y: item.value.minY,
-                                      width: item.value.width, height: item.value.height)
+            frames[id] = CGRect(x: start.minX + (target.minX - start.minX) * eased,
+                                y: target.minY, width: target.width, height: target.height)
         }
+        return frames
     }
 
     static func pixelAligned(_ position: CGPoint, backingScaleFactor: CGFloat) -> CGPoint {
