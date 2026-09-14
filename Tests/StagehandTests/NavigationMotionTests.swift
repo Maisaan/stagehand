@@ -6,7 +6,7 @@ import Testing
 
 @Suite(.serialized) @MainActor
 struct NavigationMotionTests {
-    @Test func sharedWindowNavigationDoesNotSlideInFromItsParkingSide() {
+    @Test func sharedWindowNavigationRetainsTheHorizontalRibbonSlide() {
         let previous = WorkspaceState(spaces: [
             SpaceState(windowIDs: ["other", "shared"], focusedWindowID: "other"),
             SpaceState(windowIDs: ["shared"])
@@ -14,7 +14,7 @@ struct NavigationMotionTests {
         var destination = previous
         #expect(destination.apply(.focusNext) == true)
 
-        #expect(!shouldSlideRibbon(
+        #expect(shouldSlideRibbon(
             from: previous,
             to: destination,
             hadPreview: false,
@@ -37,35 +37,21 @@ struct NavigationMotionTests {
         ))
     }
 
-    @Test func unparkedSharedDestinationTakesFocusBeforeItMoves() {
-        let state = WorkspaceState(spaces: [
-            SpaceState(windowIDs: ["other", "shared"], focusedWindowID: "shared"),
-            SpaceState(windowIDs: ["shared"])
-        ])
-
-        #expect(shouldFocusSharedWindowBeforeMoving(
-            state: state,
-            observedFocusedWindowID: "other",
-            destinationIsParked: false
+    @Test func t3CodeMovesOnlyWhileFocused() {
+        #expect(!shouldApplyWindowMotion(
+            bundleIdentifier: "com.t3tools.t3code",
+            windowID: "t3",
+            focusedWindowID: "other"
         ))
-        #expect(!shouldFocusSharedWindowBeforeMoving(
-            state: state,
-            observedFocusedWindowID: "shared",
-            destinationIsParked: false
+        #expect(shouldApplyWindowMotion(
+            bundleIdentifier: "com.t3tools.t3code",
+            windowID: "t3",
+            focusedWindowID: "t3"
         ))
-        #expect(!shouldFocusSharedWindowBeforeMoving(
-            state: state,
-            observedFocusedWindowID: "other",
-            destinationIsParked: true
-        ))
-
-        let ordinary = WorkspaceState(spaces: [
-            SpaceState(windowIDs: ["other", "single"], focusedWindowID: "single")
-        ])
-        #expect(!shouldFocusSharedWindowBeforeMoving(
-            state: ordinary,
-            observedFocusedWindowID: "other",
-            destinationIsParked: false
+        #expect(shouldApplyWindowMotion(
+            bundleIdentifier: "com.linear",
+            windowID: "linear",
+            focusedWindowID: "other"
         ))
     }
 

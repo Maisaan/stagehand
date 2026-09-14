@@ -7,27 +7,16 @@ func shouldSlideRibbon(from previousState: WorkspaceState, to state: WorkspaceSt
                        hadPreview: Bool, reduceMotion: Bool) -> Bool {
     guard !reduceMotion,
           previousState.activeSpaceIndex == state.activeSpaceIndex,
-          previousState.focusedWindowID != state.focusedWindowID || hadPreview,
-          let focusedWindowID = state.focusedWindowID else { return false }
-    let membershipCount = state.spaces.lazy
-        .filter { $0.windowIDs.contains(focusedWindowID) }
-        .prefix(2)
-        .count
-    return membershipCount < 2
+          previousState.focusedWindowID != state.focusedWindowID || hadPreview else { return false }
+    return state.focusedWindowID != nil
 }
 
-func shouldFocusSharedWindowBeforeMoving(
-    state: WorkspaceState,
-    observedFocusedWindowID: String?,
-    destinationIsParked: Bool
+func shouldApplyWindowMotion(
+    bundleIdentifier: String,
+    windowID: String,
+    focusedWindowID: String?
 ) -> Bool {
-    guard !destinationIsParked,
-          let destinationID = state.focusedWindowID,
-          destinationID != observedFocusedWindowID else { return false }
-    return state.spaces.lazy
-        .filter { $0.windowIDs.contains(destinationID) }
-        .prefix(2)
-        .count == 2
+    windowID == focusedWindowID || bundleIdentifier != "com.t3tools.t3code"
 }
 
 @MainActor
@@ -1015,14 +1004,15 @@ final class StagehandModel: ObservableObject {
                                                  observedWidths: observedWidths, preferredHeights: preferredHeights,
                                                  observedHeights: observedHeights)
             let visible = placements.filter { $0.isVisible || slideFrom?[$0.windowID]?.intersects(availableFrame) == true }
-            // Some apps animate a large AX move while inactive. An unparked shared window
-            // can take focus at its current ribbon position before receiving its final frame.
-            if pass == 0, request == .navigation, let focusedID = state.focusedWindowID {
+            // T3 Code animates AX moves inside its window while inactive. Activate it
+            // before exposing it from its parked or neighboring ribbon position.
+            if pass == 0, request == .navigation, let focusedID = state.focusedWindowID,
+               let destination = windows.first(where: { $0.id == focusedID }) {
                 let observedFocus = windowSystem.focusedWindowID()
-                if shouldFocusSharedWindowBeforeMoving(
-                    state: state,
-                    observedFocusedWindowID: observedFocus,
-                    destinationIsParked: windowSystem.isParked(windowID: focusedID)
+                if !shouldApplyWindowMotion(
+                    bundleIdentifier: destination.bundleIdentifier,
+                    windowID: focusedID,
+                    focusedWindowID: observedFocus
                 ) {
                     destinationFocusedBeforeFrame = await windowSystem.focus(windowID: focusedID)
                     if diagnostics.isEnabled {
@@ -1254,9 +1244,44 @@ final class StagehandModel: ObservableObject {
             guard isRunning, !isSuspended, !Task.isCancelled else { return false }
         }
         let visibleIDs = Set(placements.filter(\.isVisible).map(\.windowID))
-        let sliding = placements.filter { $0.isVisible || slideFrom?[$0.windowID]?.intersects(availableFrame) == true }
-        let slidingIDs = slideFrom == nil ? Set<String>() : Set(sliding.map(\.windowID))
-        for window in windows where !visibleIDs.contains(window.id) && !slidingIDs.contains(window.id) {
+        let focusedWindowID = windowSystem.focusedWindowID()
+        let motionCandidates = placements.filter {
+            $0.isVisible || slideFrom?[$0.windowID]?.intersects(availableFrame) == true
+        }
+        let sliding = motionCandidates.filter { placement in
+            guard let window = windows.first(where: { $0.id == placement.windowID }) else { return true }
+            return shouldApplyWindowMotion(
+                bundleIdentifier: window.bundleIdentifier,
+                windowID: placement.windowID,
+                focusedWindowID: focusedWindowID
+            )
+        }
+        let slidingIDs = Set(sliding.map(\.windowID))
+        if slideFrom != nil {
+            for placement in motionCandidates where placement.isVisible && !slidingIDs.contains(placement.windowID) {
+                let beforeFrame = diagnostics.isEnabled
+                    ? windowSystem.observedFrame(windowID: placement.windowID) : nil
+                let frameWritten = windowSystem.setFrame(windowID: placement.windowID, frame: placement.frame)
+                let actualFrame = windowSystem.frame(windowID: placement.windowID)
+                if diagnostics.isEnabled {
+                    recordWindowGeometry(
+                        event: "inactive_motion_window_deferred",
+                        windowID: placement.windowID,
+                        requestedFrame: placement.frame,
+                        beforeFrame: beforeFrame,
+                        actualFrame: windowSystem.observedFrame(windowID: placement.windowID),
+                        details: [
+                            "frameWriteAccepted": String(frameWritten),
+                            "operation": operation,
+                            "systemFocused": String(focusedWindowID == placement.windowID)
+                        ]
+                    )
+                }
+                lastAppliedFrames[placement.windowID] = actualFrame
+            }
+        }
+        let animatedWindowIDs = slideFrom == nil ? Set<String>() : slidingIDs
+        for window in windows where !visibleIDs.contains(window.id) && !animatedWindowIDs.contains(window.id) {
             guard preferenceFocusStillMatches(request) else { return true }
             guard desktopScope.refresh() == .home else {
                 nativeDesktopChanged()
@@ -1324,7 +1349,16 @@ final class StagehandModel: ObservableObject {
             scheduleRefresh()
             return
         }
+        let focusedWindowID = windowSystem.focusedWindowID()
         for (id, frame) in frames {
+            if let window = windows.first(where: { $0.id == id }),
+               !shouldApplyWindowMotion(
+                   bundleIdentifier: window.bundleIdentifier,
+                   windowID: id,
+                   focusedWindowID: focusedWindowID
+               ) {
+                continue
+            }
             let position = RibbonMotion.pixelAligned(frame.origin, backingScaleFactor: motionBackingScaleFactor)
             if motionWrittenPositions[id] == position { continue }
             guard windowSystem.setPosition(windowID: id, position: position) else {
@@ -1532,8 +1566,17 @@ final class StagehandModel: ObservableObject {
         let preview = RibbonMotion.dragFrames(state: state, from: base, availableFrame: availableFrame,
                                               gap: gap, displacement: displacement)
         var frames: [String: CGRect] = [:]
+        let focusedWindowID = windowSystem.focusedWindowID()
         for (id, shifted) in preview {
             guard shifted.intersects(availableFrame) || gesturePrepared.contains(id) else { continue }
+            if let window = windows.first(where: { $0.id == id }),
+               !shouldApplyWindowMotion(
+                   bundleIdentifier: window.bundleIdentifier,
+                   windowID: id,
+                   focusedWindowID: focusedWindowID
+               ) {
+                continue
+            }
             if !gesturePrepared.contains(id) {
                 let beforeFrame = diagnostics.isEnabled ? windowSystem.observedFrame(windowID: id) : nil
                 let parkedBefore = diagnostics.isEnabled ? windowSystem.isParked(windowID: id) : false
