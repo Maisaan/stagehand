@@ -8,6 +8,107 @@ private func contacts(count: Int = 4, dx: Double = 0, dy: Double = 0) -> [Gestur
     (0..<count).map { GestureContact(id: Int32($0), x: 0.3 + Double($0) * 0.08 + dx, y: 0.4 + dy) }
 }
 
+@Test func gestureStaggeredLiftUsesTheRemainingFingersFinalMovement() {
+    var recognizer = NavigationGestureRecognizer()
+    _ = recognizer.update(contacts: contacts(), timestamp: 0)
+    _ = recognizer.update(contacts: contacts(dx: -0.02), timestamp: 0.1)
+    _ = recognizer.update(contacts: contacts(dx: -0.06), timestamp: 0.3)
+    guard case .ended(let displacement, _, let action) = recognizer.update(contacts: contacts(count: 3, dx: -0.09), timestamp: 0.34) else {
+        Issue.record("A staggered lift must finish the drag")
+        return
+    }
+    #expect(abs(displacement + 0.09) < 0.001)
+    #expect(action == .focusNext)
+}
+
+@Test func gestureLockedSwipeAllowsModestFingerTravelDifferences() {
+    var recognizer = NavigationGestureRecognizer()
+    _ = recognizer.update(contacts: contacts(), timestamp: 0)
+    _ = recognizer.update(contacts: contacts(dx: -0.02), timestamp: 0.1)
+    var moved = contacts(dx: -0.12)
+    moved[0].x += 0.06
+    guard case .changed = recognizer.update(contacts: moved, timestamp: 0.3) else {
+        Issue.record("An established swipe must not abort because one finger travels less")
+        return
+    }
+    guard case .ended(_, _, let action) = recognizer.update(contacts: [], timestamp: 0.31) else {
+        Issue.record("The established swipe must finish")
+        return
+    }
+    #expect(action == .focusNext)
+}
+
+@Test func gestureLockedSwipeStillRejectsPinchingRotationAndAStationaryFinger() {
+    for invalidation in 0..<3 {
+        var recognizer = NavigationGestureRecognizer()
+        _ = recognizer.update(contacts: contacts(), timestamp: 0)
+        _ = recognizer.update(contacts: contacts(dx: -0.02), timestamp: 0.1)
+        var moved = contacts(dx: -0.12)
+        if invalidation == 0 {
+            moved[0].x += 0.16
+            moved[3].x -= 0.16
+        } else if invalidation == 1 {
+            moved[0].y += 0.06
+            moved[3].y -= 0.06
+        } else {
+            moved[0].x += 0.10
+        }
+        #expect(recognizer.update(contacts: moved, timestamp: 0.3) == .cancelled)
+        #expect(recognizer.update(contacts: [], timestamp: 0.31) == nil)
+    }
+}
+
+@Test func gestureStaggeredLiftDoesNotShiftWhenTheSlowerFingerLifts() {
+    var recognizer = NavigationGestureRecognizer()
+    _ = recognizer.update(contacts: contacts(), timestamp: 0)
+    _ = recognizer.update(contacts: contacts(dx: -0.02), timestamp: 0.1)
+    var moved = contacts(dx: -0.06)
+    moved[3].x += 0.02
+    _ = recognizer.update(contacts: moved, timestamp: 0.3)
+    guard case .ended(let displacement, _, let action) = recognizer.update(contacts: Array(moved.prefix(3)), timestamp: 0.34) else {
+        Issue.record("Missing staggered completion")
+        return
+    }
+    #expect(abs(displacement + 0.055) < 0.001)
+    #expect(action == nil)
+}
+
+@Test func gestureFlickVelocityDoesNotIncludeRestingTimeBeforeMovement() {
+    var recognizer = NavigationGestureRecognizer()
+    _ = recognizer.update(contacts: contacts(), timestamp: 0)
+    _ = recognizer.update(contacts: contacts(), timestamp: 0.7)
+    _ = recognizer.update(contacts: contacts(dx: -0.015), timestamp: 0.71)
+    _ = recognizer.update(contacts: contacts(dx: -0.025), timestamp: 0.72)
+    guard case .ended(_, let velocity, let action) = recognizer.update(contacts: [], timestamp: 0.73) else {
+        Issue.record("Missing flick completion")
+        return
+    }
+    #expect(velocity < -0.45)
+    #expect(action == .focusNext)
+}
+
+@Test(arguments: [3, 4], [-1.0, 1.0])
+func gestureSelectedFingerCountNavigatesSpacesOnFlickAndStaggeredLift(fingerCount: Int, direction: Double) {
+    for isFlick in [true, false] {
+        var recognizer = NavigationGestureRecognizer(fingerCount: fingerCount)
+        _ = recognizer.update(contacts: contacts(count: fingerCount), timestamp: 0)
+        guard case .began(axis: .vertical, displacement: _) = recognizer.update(
+            contacts: contacts(count: fingerCount, dy: direction * 0.02), timestamp: isFlick ? 0.01 : 0.1) else {
+            Issue.record("The selected finger count must begin a vertical space gesture")
+            continue
+        }
+        _ = recognizer.update(contacts: contacts(count: fingerCount, dy: direction * (isFlick ? 0.04 : 0.06)),
+                              timestamp: isFlick ? 0.03 : 0.3)
+        let remaining = isFlick ? [] : contacts(count: fingerCount - 1, dy: direction * 0.09)
+        guard case .ended(_, _, let action) = recognizer.update(contacts: remaining, timestamp: isFlick ? 0.04 : 0.34) else {
+            Issue.record("Lifting must finish vertical navigation")
+            continue
+        }
+        #expect(action == (direction > 0 ? .nextSpace : .previousSpace))
+        #expect(recognizer.update(contacts: contacts(count: fingerCount, dy: direction * 0.12), timestamp: 0.4) == nil)
+    }
+}
+
 @Test func gestureThreeFingerSelectionRecognizesTheConfiguredCount() {
     var recognizer = NavigationGestureRecognizer(fingerCount: 3)
     #expect(recognizer.update(contacts: contacts(count: 3), timestamp: 0) == nil)
@@ -36,7 +137,7 @@ private func contacts(count: Int = 4, dx: Double = 0, dy: Double = 0) -> [Gestur
     }
     #expect(abs(displacement + 0.04) < 0.001)
     #expect(velocity < -0.45)
-    guard case .ended(_, _, let action) = recognizer.update(contacts: contacts(count: 3), timestamp: 0.04) else {
+    guard case .ended(_, _, let action) = recognizer.update(contacts: contacts(count: 3, dx: -0.04), timestamp: 0.04) else {
         Issue.record("First finger lift should complete the drag without waiting for all fingers")
         return
     }
@@ -248,7 +349,7 @@ private func contacts(count: Int = 4, dx: Double = 0, dy: Double = 0) -> [Gestur
     #expect(recognizer.hasContactSequence)
     _ = recognizer.update(contacts: contacts(dx: -0.1), timestamp: 0.1)
     _ = recognizer.update(contacts: contacts(dx: -0.2), timestamp: 0.2)
-    guard case .ended(_, _, let action) = recognizer.update(contacts: contacts(count: 2), timestamp: 0.3) else {
+    guard case .ended(_, _, let action) = recognizer.update(contacts: contacts(count: 2, dx: -0.2), timestamp: 0.3) else {
         Issue.record("Missing gesture completion")
         return
     }

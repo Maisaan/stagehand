@@ -29,8 +29,8 @@ struct NavigationHUDGeometry {
         }
         let attached = notch != nil && warningHeight == nil
         let limit = max(1, min(warningHeight == nil ? 520 : 580, visibleFrame.width - 32))
-        let desiredWidth = warningHeight == nil ? max(200, 60 + CGFloat(max(0, windowCount)) * 36) : 580
-        let width = min(limit, max(desiredWidth, attached ? notch?.width ?? 0 : 0))
+        let desiredWidth = warningHeight == nil ? 60 + CGFloat(max(1, windowCount)) * 36 : 580
+        let width = min(limit, desiredWidth)
         let height = warningHeight.map { max(72, $0) } ?? 66
         let centerX = notch?.midX ?? screenFrame.midX
         let left = min(max(centerX - width / 2, visibleFrame.minX + 16), visibleFrame.maxX - 16 - width)
@@ -47,7 +47,15 @@ final class NavigationOverlays {
     private(set) var hudGeneration: UInt64 = 0
     private(set) var hudIsExiting = false
     private var dismissTask: Task<Void, Never>?
-    private let hudModel = NavigationHUDModel()
+    let hudModel = NavigationHUDModel()
+    var onFocusWindow: ((String) -> Void)?
+    var onSelectSpace: ((Int) -> Void)?
+    var canRevealNavigation: (() -> Bool)?
+    private var globalMouseMonitor: Any?
+    private var localMouseMonitor: Any?
+    private var hoverFrame: CGRect?
+    private var contentFrame: CGRect?
+    private(set) var pointerKeepsHUDVisible = false
     private let reduceMotion: () -> Bool
     private let animationDurationMultiplier: Double
 
@@ -55,6 +63,11 @@ final class NavigationOverlays {
          animationDurationMultiplier: Double = 1) {
         self.reduceMotion = reduceMotion
         self.animationDurationMultiplier = animationDurationMultiplier
+        hudModel.onFocusWindow = { [weak self] id in self?.onFocusWindow?(id) }
+        hudModel.onSelectSpace = { [weak self] index in self?.onSelectSpace?(index) }
+        hudModel.onContentChange = { [weak self] in
+            self?.presentHUD(dismissAfter: .milliseconds(800))
+        }
     }
 
     private func borderPanel() -> OverlayPanel {
@@ -100,10 +113,59 @@ final class NavigationOverlays {
     }
 
     func showNavigation(state: WorkspaceState, windows: [WindowRecord]) {
+        updateNavigation(state: state, windows: windows)
+        hudModel.showingSpaces = false
+        hudModel.warning = nil
+        presentHUD(dismissAfter: .milliseconds(800))
+    }
+
+    /// Keep hover content current without opening the bar during background reconciliation.
+    func updateNavigation(state: WorkspaceState, windows: [WindowRecord]) {
         let records = state.currentSpace.windowIDs.compactMap { id in windows.first { $0.id == id } }
         hudModel.space = state.activeSpaceIndex + 1
         hudModel.windows = records
         hudModel.focusedID = state.focusedWindowID
+        hudModel.availableSpaceIndices = state.displayedSpaceIndices
+        if canRevealNavigation != nil { installMouseMonitors() }
+    }
+
+    private func installMouseMonitors() {
+        guard globalMouseMonitor == nil, localMouseMonitor == nil else { return }
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pointerMoved(to: NSEvent.mouseLocation) }
+        }
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] event in
+            self?.pointerMoved(to: NSEvent.mouseLocation)
+            return event
+        }
+        updateHoverFrame()
+    }
+
+    private func updateHoverFrame() {
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        let geometry = NavigationHUDGeometry.layout(
+            screenFrame: screen.frame, visibleFrame: screen.visibleFrame,
+            safeAreaTop: screen.safeAreaInsets.top,
+            auxiliaryLeft: screen.auxiliaryTopLeftArea, auxiliaryRight: screen.auxiliaryTopRightArea,
+            windowCount: hudModel.displayedItemCount)
+        let width = max(120, (screen.auxiliaryTopRightArea?.minX ?? 0) - (screen.auxiliaryTopLeftArea?.maxX ?? 0))
+        hoverFrame = CGRect(x: geometry.contentFrame.midX - width / 2,
+                            y: geometry.contentFrame.maxY - 4, width: width,
+                            height: screen.frame.maxY - geometry.contentFrame.maxY + 4)
+    }
+
+    func pointerMoved(to point: CGPoint) {
+        let insideTrigger = hoverFrame?.contains(point) == true
+        let insideBar = hud?.isVisible == true && hudModel.warning == nil && contentFrame?.contains(point) == true
+        let inside = insideTrigger || insideBar
+        guard inside != pointerKeepsHUDVisible else { return }
+        guard inside else {
+            pointerKeepsHUDVisible = false
+            if hud?.isVisible == true { scheduleDismiss(after: .milliseconds(450)) }
+            return
+        }
+        guard NSEvent.pressedMouseButtons == 0, canRevealNavigation?() == true else { return }
+        pointerKeepsHUDVisible = true
         hudModel.warning = nil
         presentHUD(dismissAfter: .milliseconds(800))
     }
@@ -111,6 +173,7 @@ final class NavigationOverlays {
     private func presentHUD(dismissAfter: Duration) {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
         let hud = hudPanel()
+        hud.ignoresMouseEvents = hudModel.warning != nil
         guard let container = hud.contentView as? HUDContainerView else { return }
         hudModel.reduceMotion = reduceMotion()
         hudModel.animationDurationMultiplier = animationDurationMultiplier
@@ -125,7 +188,9 @@ final class NavigationOverlays {
             screenFrame: screen.frame, visibleFrame: screen.visibleFrame,
             safeAreaTop: screen.safeAreaInsets.top,
             auxiliaryLeft: screen.auxiliaryTopLeftArea, auxiliaryRight: screen.auxiliaryTopRightArea,
-            windowCount: hudModel.windows.count, warningHeight: warningHeight)
+            windowCount: hudModel.displayedItemCount, warningHeight: warningHeight)
+        contentFrame = geometry.contentFrame
+        updateHoverFrame()
         hudModel.attachedToNotch = geometry.attachedToNotch
         container.attachedToNotch = geometry.attachedToNotch
         hud.setFrame(geometry.panelFrame, display: true)
@@ -134,7 +199,6 @@ final class NavigationOverlays {
         let wasVisible = hud.isVisible
         let wasExiting = hudIsExiting
         hudGeneration &+= 1
-        let generation = hudGeneration
         hudIsExiting = false
         dismissTask?.cancel()
         if !wasVisible {
@@ -145,8 +209,14 @@ final class NavigationOverlays {
             container.transition(visible: true, reduceMotion: hudModel.reduceMotion,
                                  duration: 0.25 * animationDurationMultiplier)
         }
+        if !pointerKeepsHUDVisible { scheduleDismiss(after: dismissAfter) }
+    }
+
+    private func scheduleDismiss(after delay: Duration) {
+        dismissTask?.cancel()
+        let generation = hudGeneration
         dismissTask = Task { [weak self] in
-            do { try await Task.sleep(for: dismissAfter) } catch { return }
+            do { try await Task.sleep(for: delay) } catch { return }
             guard !Task.isCancelled, let self, self.beginHUDDismiss(generation: generation) else { return }
             do { try await Task.sleep(for: .seconds(0.2 * self.animationDurationMultiplier)) } catch { return }
             guard !Task.isCancelled else { return }
@@ -156,7 +226,7 @@ final class NavigationOverlays {
 
     @discardableResult
     func beginHUDDismiss(generation: UInt64) -> Bool {
-        guard generation == hudGeneration, !hudIsExiting,
+        guard generation == hudGeneration, !hudIsExiting, !pointerKeepsHUDVisible,
               let container = hud?.contentView as? HUDContainerView else { return false }
         hudIsExiting = true
         container.transition(visible: false, reduceMotion: reduceMotion(),
@@ -169,10 +239,19 @@ final class NavigationOverlays {
         guard generation == hudGeneration, hudIsExiting else { return false }
         hud?.orderOut(nil)
         hudIsExiting = false
+        hudModel.showingSpaces = false
         return true
     }
 
     func hide() {
+        if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
+        if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
+        globalMouseMonitor = nil
+        localMouseMonitor = nil
+        hoverFrame = nil
+        contentFrame = nil
+        pointerKeepsHUDVisible = false
+        hudModel.showingSpaces = false
         dismissTask?.cancel()
         dismissTask = nil
         hudGeneration &+= 1
@@ -204,7 +283,7 @@ final class HUDContainerView: NSView {
     var hiddenTravel: CGFloat { animatedView.bounds.height * (attachedToNotch ? 0.35 : 0.12) }
 
     init(model: NavigationHUDModel) {
-        hostingView = NSHostingView(rootView: NavigationHUD(model: model))
+        hostingView = NavigationHostingView(rootView: NavigationHUD(model: model))
         super.init(frame: .zero)
         wantsLayer = true
         // The top edge is flush with the physical camera housing on notched displays.
@@ -287,6 +366,11 @@ final class HUDContainerView: NSView {
     }
 }
 
+private final class NavigationHostingView<Content: View>: NSHostingView<Content> {
+    // The HUD receives the first click while the managed app remains the key application.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 final class OverlayPanel: NSPanel {
     init() {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
@@ -351,7 +435,32 @@ final class NavigationHUDModel: ObservableObject {
     @Published var warning: String?
     @Published var reduceMotion = false
     @Published var attachedToNotch = false
+    @Published var availableSpaceIndices: [Int] = []
+    @Published var showingSpaces = false
     var animationDurationMultiplier: Double = 1
+    var onFocusWindow: ((String) -> Void)?
+    var onSelectSpace: ((Int) -> Void)?
+    var onContentChange: (() -> Void)?
+
+    var displayedItemCount: Int { showingSpaces ? availableSpaceIndices.count : windows.count }
+
+    func toggleSpaces() {
+        showingSpaces.toggle()
+        onContentChange?()
+    }
+
+    func selectWindow(id: String) {
+        guard windows.contains(where: { $0.id == id }) else { return }
+        onFocusWindow?(id)
+        onContentChange?()
+    }
+
+    func selectSpace(index: Int) {
+        guard availableSpaceIndices.contains(index) else { return }
+        showingSpaces = false
+        onSelectSpace?(index)
+        onContentChange?()
+    }
 }
 
 private struct NavigationHUD: View {
@@ -387,17 +496,26 @@ private struct NavigationHUD: View {
     private var navigation: some View {
         VStack(spacing: 6) {
             HStack(spacing: 8) {
-                Text("\(model.space, format: .number.precision(.integerLength(2)))")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.55))
-                    .frame(width: 22)
-                    .accessibilityLabel("Space \(model.space)")
+                Button(action: model.toggleSpaces) {
+                    Text("\(model.space, format: .number.precision(.integerLength(2)))")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.white.opacity(model.showingSpaces ? 1 : 0.65))
+                        .frame(width: 22, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(model.showingSpaces ? "Show apps" : "Choose a space")
+                .accessibilityLabel("Space \(model.space), \(model.showingSpaces ? "show apps" : "choose a space")")
                 Rectangle().fill(.white.opacity(0.15)).frame(width: 1, height: 18)
+                if model.showingSpaces {
+                    spacePicker
+                } else {
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 4) {
                             ForEach(model.windows) { window in
-                                AppIcon(bundleIdentifier: window.bundleIdentifier, size: 24)
+                                Button { model.selectWindow(id: window.id) } label: {
+                                    AppIcon(bundleIdentifier: window.bundleIdentifier, size: 24)
                                     .padding(4)
                                     .background {
                                         if window.id == model.focusedID {
@@ -408,7 +526,11 @@ private struct NavigationHUD: View {
                                                 .transition(.identity)
                                         }
                                     }
-                                    .id(window.id)
+                                }
+                                .buttonStyle(.plain)
+                                .help(window.title.isEmpty ? window.appName : "\(window.appName): \(window.title)")
+                                .accessibilityLabel("Focus \(window.appName)\(window.title.isEmpty ? "" : ", \(window.title)")")
+                                .id(window.id)
                             }
                         }
                         .frame(minWidth: 1)
@@ -424,8 +546,9 @@ private struct NavigationHUD: View {
                     }
                 }
                 .frame(height: 32)
+                }
             }
-            Text(model.windows.first(where: { $0.id == model.focusedID }).map {
+            Text(model.showingSpaces ? "Choose a space" : model.windows.first(where: { $0.id == model.focusedID }).map {
                 $0.title.isEmpty ? $0.appName : "\($0.appName) · \($0.title)"
             } ?? "Empty space")
             .font(.system(size: 10, weight: .medium))
@@ -434,5 +557,26 @@ private struct NavigationHUD: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    private var spacePicker: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                ForEach(model.availableSpaceIndices, id: \.self) { index in
+                    Button { model.selectSpace(index: index) } label: {
+                        Text("\(index + 1)")
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.white.opacity(index + 1 == model.space ? 1 : 0.7))
+                            .frame(width: 32, height: 32)
+                            .background(index + 1 == model.space ? Color.mint.opacity(0.25) : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 10))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Go to space \(index + 1)")
+                }
+            }
+        }
+        .frame(height: 32)
     }
 }

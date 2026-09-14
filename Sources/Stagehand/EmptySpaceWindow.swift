@@ -12,6 +12,8 @@ final class EmptySpaceWindow {
         return window
     }()
 
+    var isFocused: Bool { NSApp.isActive && window.isKeyWindow }
+
     func show(space: Int, frame: CGRect) async -> Bool {
         guard let primary = NSScreen.screens.first else { return false }
         window.setFrame(CGRect(x: frame.minX, y: primary.frame.maxY - frame.maxY,
@@ -20,7 +22,7 @@ final class EmptySpaceWindow {
             Image(systemName: "rectangle.dashed").font(.system(size: 46, weight: .ultraLight)).foregroundStyle(.mint)
             Text("Space \(space)").font(.system(size: 24, weight: .medium))
             Text("Room for something else.").foregroundStyle(.secondary)
-            Text("Navigate with ⌃⌥↑ / ↓ or a four-finger vertical swipe.\nMove a window here with ⌃⌥⇧\(space).")
+            Text("Navigate with ⌃⌥↑ / ↓ or a vertical navigation swipe.\nMove a window here with ⌃⌥⇧\(space).")
                 .font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }.frame(maxWidth: .infinity, maxHeight: .infinity))
         NSApp.activate(ignoringOtherApps: true)

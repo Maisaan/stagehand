@@ -56,6 +56,7 @@ struct GestureEventBuffer {
 struct NavigationGestureRecognizer: Sendable {
     let fingerCount: Int
     private var origin: [GestureContact] = []
+    private var lastContacts: [GestureContact] = []
     private var startTime: TimeInterval = 0
     private var lastTime: TimeInterval = 0
     private var samples: [(time: TimeInterval, displacement: Double)] = []
@@ -79,6 +80,7 @@ struct NavigationGestureRecognizer: Sendable {
             self = Self(fingerCount: fingerCount)
             return event
         }
+        let previousTimestamp = lastTime
         lastTime = timestamp
         guard !finished else { return nil }
         guard contacts.count <= fingerCount else { return cancel() }
@@ -91,11 +93,26 @@ struct NavigationGestureRecognizer: Sendable {
             guard !origin.isEmpty else { return nil }
             // A normal staggered lift ends immediately. A replacement finger cancels.
             guard contacts.allSatisfy({ contact in origin.contains(where: { $0.id == contact.id }) }) else { return cancel() }
+            if let axis, let previousDisplacement = samples.last?.displacement {
+                // The lift callback still contains movement from fingers touching the pad.
+                // Measure it against those same fingers in the preceding frame, not a new
+                // subset centroid, which would jump when fingers have travelled differently.
+                let deltas = contacts.compactMap { contact -> (x: Double, y: Double)? in
+                    guard let previous = lastContacts.first(where: { $0.id == contact.id }) else { return nil }
+                    return (contact.x - previous.x, contact.y - previous.y)
+                }
+                guard deltas.count == contacts.count else { return cancel() }
+                let dx = deltas.reduce(0) { $0 + $1.x } / Double(deltas.count)
+                let dy = deltas.reduce(0) { $0 + $1.y } / Double(deltas.count)
+                guard deltas.allSatisfy({ abs($0.x - dx) < 0.035 && abs($0.y - dy) < 0.035 }) else { return cancel() }
+                record(displacement: previousDisplacement + (axis == .horizontal ? dx : dy), timestamp: timestamp)
+            }
             return finish(timestamp: timestamp)
         }
         let ordered = contacts.sorted { $0.id < $1.id }
         if origin.isEmpty {
             origin = ordered
+            lastContacts = ordered
             startTime = timestamp
             hasContactSequence = true
             return nil
@@ -106,10 +123,15 @@ struct NavigationGestureRecognizer: Sendable {
         let deltas = zip(ordered, origin).map { (x: $0.x - $1.x, y: $0.y - $1.y) }
         let dx = deltas.reduce(0) { $0 + $1.x } / Double(fingerCount)
         let dy = deltas.reduce(0) { $0 + $1.y } / Double(fingerCount)
-        // Reject pinches, rotation, and a stationary thumb with three moving fingers.
-        guard deltas.allSatisfy({ abs($0.x - dx) < 0.035 && abs($0.y - dy) < 0.035 }) else {
+        // Be strict before choosing a swipe. Once locked, allow modest differences in
+        // along-axis travel as fingers extend, while keeping perpendicular drift bounded.
+        // Pinches, rotation and a stationary thumb still exceed these bounds.
+        let xTolerance = 0.035 + (axis == .horizontal ? abs(dx) * 0.25 : 0)
+        let yTolerance = 0.035 + (axis == .vertical ? abs(dy) * 0.25 : 0)
+        guard deltas.allSatisfy({ abs($0.x - dx) < xTolerance && abs($0.y - dy) < yTolerance }) else {
             return cancel()
         }
+        defer { lastContacts = ordered }
         let x = abs(dx), y = abs(dy)
         if let axis {
             let displacement = axis == .horizontal ? dx : dy
@@ -128,7 +150,11 @@ struct NavigationGestureRecognizer: Sendable {
         }
         axis = lockedAxis
         let displacement = lockedAxis == .horizontal ? dx : dy
-        samples = [(startTime, 0)]
+        let previousDisplacement = zip(lastContacts, origin).reduce(0.0) { sum, pair in
+            sum + (lockedAxis == .horizontal ? pair.0.x - pair.1.x : pair.0.y - pair.1.y)
+        } / Double(fingerCount)
+        // Resting before the swipe must not dilute its release velocity.
+        samples = [(previousTimestamp, previousDisplacement)]
         record(displacement: displacement, timestamp: timestamp)
         return .began(axis: lockedAxis, displacement: displacement)
     }

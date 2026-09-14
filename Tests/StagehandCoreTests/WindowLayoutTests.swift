@@ -33,6 +33,30 @@ private let screen = CGRect(x: 100, y: 40, width: 1000, height: 700)
     #expect(state.currentSpace.widthFractions == ["a": 0.3, "b": 0.5, "c": 0.4])
 }
 
+@Test func resizedHeightsStayCenteredAcrossFocusAndMaximizeChanges() throws {
+    var state = WorkspaceState(spaces: [SpaceState(
+        windowIDs: ["editor", "settings"], focusedWindowID: "editor",
+        widthFractions: ["editor": 0.8, "settings": 0.5]
+    )])
+    var liveHeights: [String: CGFloat] = ["editor": 560, "settings": 480]
+    for maximize in [false, true, false] {
+        state.maximizeWindows = maximize
+        for focusedID in ["settings", "editor"] {
+            state.focus(windowID: focusedID)
+            let placements = WindowLayout.placements(for: state, availableFrame: screen,
+                                                    observedHeights: liveHeights)
+            for placement in placements {
+                #expect(placement.frame.height == liveHeights[placement.windowID])
+                #expect(placement.frame.midY == screen.midY)
+            }
+            let editor = try #require(placements.first { $0.windowID == "editor" })
+            #expect(editor.frame.width == (maximize ? 1000 : 800))
+        }
+        // A manual vertical resize becomes the height supplied on the next layout.
+        liveHeights["editor"] = 420
+    }
+}
+
 @Test func ribbonIgnoresInvalidAcceptedHeights() {
     var state = WorkspaceState()
     state.reconcile(windowIDs: ["a", "b", "c", "d"])
@@ -177,7 +201,19 @@ private let screen = CGRect(x: 100, y: 40, width: 1000, height: 700)
     #expect(focused.frame.width == 520)
     #expect(focused.frame.maxX == screen.maxX)
     #expect(placements[0].frame.width == screen.width)
-    #expect(focused.frame.minX - placements[0].frame.maxX == 8)
+    #expect(focused.frame.minX - placements[0].frame.maxX == 0)
+}
+
+@Test func maximizingIgnoresSavedGapUntilResizableWidthsReturn() {
+    var state = WorkspaceState(maximizeWindows: true,
+                               spaces: [SpaceState(windowIDs: ["a", "b", "c"], focusedWindowID: "b")])
+    let touching = WindowLayout.placements(for: state, availableFrame: screen, gap: 0)
+    for gap in [CGFloat(-200), -55, 8, 40] {
+        #expect(WindowLayout.placements(for: state, availableFrame: screen, gap: gap) == touching)
+    }
+    state.maximizeWindows = false
+    let overlapping = WindowLayout.placements(for: state, availableFrame: screen, gap: -55)
+    #expect(overlapping[1].frame.minX - overlapping[0].frame.maxX == -55)
 }
 
 @Test func layoutHandlesEmptySpacesAndInvalidFrames() {

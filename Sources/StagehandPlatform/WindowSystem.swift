@@ -75,9 +75,13 @@ public final class WindowSystem {
                      NSWorkspace.didTerminateApplicationNotification,
                      NSWorkspace.didActivateApplicationNotification,
                      NSWorkspace.didUnhideApplicationNotification] {
-            workspaceTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+            workspaceTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                let pid = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier ?? 0
                 MainActor.assumeIsolated {
                     guard let self, self.started else { return }
+                    if self.focusDiagnosticsEnabled {
+                        print("Discovery t=\(ProcessInfo.processInfo.systemUptime) workspace=\(name.rawValue) pid=\(pid)")
+                    }
                     if name == NSWorkspace.didActivateApplicationNotification {
                         self.reportCurrentFocus()
                     }
@@ -127,7 +131,7 @@ public final class WindowSystem {
         var result: [WindowRecord] = []
         let visibleWindows = onScreenWindows()
         if focusDiagnosticsEnabled {
-            print("Scan runningApps=\(runningApps.count) eligibleApps=\(apps.count) cgVisibleWindows=\(visibleWindows.count)")
+            print("Scan t=\(ProcessInfo.processInfo.systemUptime) runningApps=\(runningApps.count) eligibleApps=\(apps.count) cgVisibleWindows=\(visibleWindows.count)")
         }
         for app in apps {
             let appElement = AXUIElementCreateApplication(app.processIdentifier)
@@ -563,6 +567,11 @@ public final class WindowSystem {
                 let owner = Unmanaged<WindowSystem>.fromOpaque(context).takeUnretainedValue()
                 guard owner.started else { return }
                 let name = notification as String
+                if owner.focusDiagnosticsEnabled {
+                    var pid: pid_t = 0
+                    _ = AXUIElementGetPid(changedWindow, &pid)
+                    print("Discovery t=\(ProcessInfo.processInfo.systemUptime) AX=\(name) pid=\(pid)")
+                }
                 if name == kAXFocusedWindowChangedNotification { owner.reportCurrentFocus() }
                 if owner.onFrameChange != nil,
                    name == kAXMovedNotification || name == kAXResizedNotification,
@@ -578,7 +587,8 @@ public final class WindowSystem {
         let context = Unmanaged.passUnretained(self).toOpaque()
         for name in [kAXWindowCreatedNotification, kAXFocusedWindowChangedNotification,
                      kAXApplicationHiddenNotification, kAXApplicationShownNotification] {
-            AXObserverAddNotification(observer, element, name as CFString, context)
+            let status = AXObserverAddNotification(observer, element, name as CFString, context)
+            if focusDiagnosticsEnabled { print("Discovery observe pid=\(pid) AX=\(name) status=\(status.rawValue)") }
         }
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         for tracked in windows.values where tracked.record.pid == pid {

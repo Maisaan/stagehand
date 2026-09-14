@@ -1,6 +1,6 @@
 # Stagehand
 
-A small native macOS window manager for a MacBook display. One horizontal ribbon, keyboard navigation, optional four-finger gestures, and an app bar that appears only while navigating.
+A small native macOS window manager for a MacBook display. One horizontal ribbon, keyboard navigation, optional three- or four-finger gestures, and an app bar revealed by navigation or hovering at the top center.
 
 Stagehand arranges real application windows. The active application keeps its menus and input. The navigation bar and focus border do not activate Stagehand or reserve screen space.
 
@@ -21,21 +21,21 @@ The build script makes a local, ad-hoc-signed app. Rebuilding can require removi
 ## Ribbon
 
 - With **Maximize windows** off, windows have individual widths from 25% to 95% of the available display width.
-- All windows keep a stable full available height across focus changes. Apps that constrain their own height remain vertically centered. Stagehand slides real windows rather than resizing their content to imitate scaling.
+- Windows retain their resized height and stay vertically centered, including when Maximize windows is on. Apps that constrain their own height keep the size they accept. Stagehand slides real windows rather than resizing their content to imitate scaling.
 - With it on, windows request the full available width. Turning it off restores the individual widths. This is window resizing, not native fullscreen.
 - Apps can constrain their size. Settings shows their actual width, and the ribbon packs to the accepted size instead of leaving an unused slot.
-- Gap is measured in points. Positive values separate windows; negative values overlap them horizontally. The active window stays on top. Maximized windows do not reserve neighboring strips.
+- Gap is measured in points. Positive values separate windows; negative values overlap them horizontally. The active window stays on top. Maximize uses no gap and hides its controls; turning it off restores the saved gap.
 - Adjust the gap with the slider or number field, from −200 to 40 points. Return or leaving the field applies a typed value. Up/Down changes it by 1 point; Shift changes it by 10. The slider applies on release.
 
 The maximize toggle and gap apply to all nine spaces. Settings and the menu show only occupied spaces and the current space. Use a numbered shortcut to enter an unused space. Navigation stops at the ends, without wrapping. Drag a window by its title bar and release it to reorder within the ribbon; it does not become free-floating. Resize a window with maximization off to change its individual width.
 
-Each space remembers its order, scrolling widths, and focused window. Move removes a window from its current space. Add to Another Space keeps the same live window in both spaces, independently ordered and sized. Remove from This Space removes only that membership; the last membership cannot be removed. Closing the real window removes every membership.
+Each space remembers its order, scrolling widths, and focused window. Move removes a window from its current space. Add to Another Space keeps the same live window in both spaces, with independent order and widths. Its manually resized height belongs to the live window. Remove from This Space removes only that membership; the last membership cannot be removed. Closing the real window removes every membership.
 
 New windows enter after the current window. Stagehand's own settings window joins the ribbon too. Empty spaces display a Stagehand placeholder so typing cannot reach a hidden application. Stagehand's menus appear only while its settings or empty-space window is active. Switching to another window restores that application's menus.
 
 The settings window is resizable. Settings save maximization, gap, and the gesture preference. Space membership is session-only in this MVP.
 
-The compact navigation bar stays visible through successive changes and moves its selection indicator in place. It attaches beneath the camera housing on notched displays and uses a top-center fallback elsewhere. Entrance takes 250 ms and exit 200 ms, using interruptible scale and opacity transitions. Reduce Motion removes movement. Resizable windows have an inward-drawn focus border; maximized windows have none. The border hides during managed preparation and follows position-only slides and manual resizing. These overlays never wait on or take ownership of keyboard focus.
+The compact navigation bar sizes to its content, stays visible through successive changes, and moves its selection indicator in place. Hover over the island or top center to reveal it. Click an app icon to focus that window, or click the space number to choose an occupied space or the current space. Choosing a space navigates there and returns to its apps. It attaches beneath the camera housing on notched displays and uses a top-center fallback elsewhere. Entrance takes 250 ms and exit 200 ms, using interruptible scale and opacity transitions. Reduce Motion removes movement. Resizable windows have an inward-drawn focus border; maximized windows have none. The border hides during managed preparation and follows position-only slides and manual resizing. These overlays never wait on or take ownership of keyboard focus.
 
 ## Controls
 
@@ -88,7 +88,7 @@ To render the three actual native settings views at default, compact, and expand
 dist/Stagehand.app/Contents/MacOS/Stagehand --render-previews dist/previews
 ```
 
-See [the live acceptance checklist](docs/ACCEPTANCE.md) before relying on Stagehand for everyday work. Accessibility permissions and physical four-finger swipes cannot be certified by the unit tests.
+See [the live acceptance checklist](docs/ACCEPTANCE.md) before relying on Stagehand for everyday work. Accessibility permissions and physical trackpad swipes cannot be certified by the unit tests.
 
 For explicit focus diagnostics, launch the installed app through `open` so macOS uses its app privacy grant. `--diagnose-focus <bundle-id>` attempts focus without resizing or typing, then restores the previous focus. `--diagnose-start` runs Start once and restores the managed frames afterward. `--diagnose-ribbon` also registers a temporary Stagehand settings window and checks focus across the ribbon. These commands print focus status, process IDs, timing, and window geometry, never titles or input. Keep the normal Stagehand instance paused during these checks. For example:
 
@@ -99,6 +99,8 @@ open -n -W -g --stdout /tmp/stagehand-focus.log /Applications/Stagehand.app --ar
 `--diagnose-permissions` only reports the installed app's Accessibility and Input Monitoring grants. It does not request access, start management, or activate another window.
 
 `--diagnose-parking <bundle-id>` explicitly parks and refocuses an eligible window three times, reporting accepted geometry and focus checks before restoring its original frame. Run it on a regular Desktop with the normal Stagehand instance stopped. It never types into the target window.
+
+`--diagnose-last-close` isolates and closes a disposable Stagehand window, then checks that the normal close notification leaves its empty space active. It never closes your windows. `--diagnose-discovery <probe-app-path>` checks automatic admission using the disposable external app in `scripts/DiscoveryProbe.swift` and `scripts/DiscoveryProbe-Info.plist`. Add `--settling-window` to create an initially tiny window that grows after the first scan. Both checks restore managed frames afterward and must run through the installed, permission-granted app with the normal instance stopped.
 
 ## Source map
 

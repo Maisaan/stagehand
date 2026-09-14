@@ -30,6 +30,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NSApp.terminate(nil)
             return
         }
+        if let index = arguments.firstIndex(of: "--diagnose-discovery"), arguments.indices.contains(index + 1) {
+            Task { @MainActor in
+                print(await model.diagnoseDiscovery(probeURL: URL(fileURLWithPath: arguments[index + 1]),
+                                                    settlingWindow: arguments.contains("--settling-window")))
+                NSApp.terminate(nil)
+            }
+            return
+        }
+        if arguments.contains("--diagnose-last-close") {
+            Task { @MainActor in
+                print(await model.diagnoseLastClose())
+                NSApp.terminate(nil)
+            }
+            return
+        }
         if arguments.contains("--diagnose-start") || arguments.contains("--diagnose-ribbon") {
             Task { @MainActor in
                 print(await model.diagnoseStartup(includeSettings: arguments.contains("--diagnose-ribbon")))

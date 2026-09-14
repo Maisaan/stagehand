@@ -1,4 +1,5 @@
 import AppKit
+import StagehandCore
 
 /// Short-lived position-only animation. No resize calls, snapshots or idle timer.
 @MainActor
@@ -7,6 +8,29 @@ final class RibbonMotion {
     private var generation: UInt64 = 0
     private(set) var frames: [String: CGRect] = [:]
     var isRunning: Bool { task != nil }
+
+    static func dragFrames(state: WorkspaceState, from: [String: CGRect], availableFrame: CGRect,
+                           gap: CGFloat, displacement: Double) -> [String: CGRect] {
+        guard displacement.isFinite, displacement != 0 else { return from }
+        var destination = state
+        guard destination.apply(displacement < 0 ? .focusNext : .focusPrevious) else {
+            let travel = displacement / 0.25 * availableFrame.width
+            let resistance = travel / (1 + abs(travel) / 60)
+            return from.mapValues { $0.offsetBy(dx: resistance, dy: 0) }
+        }
+        let targets = WindowLayout.placements(for: destination, availableFrame: availableFrame, gap: gap,
+                                              observedWidths: from.mapValues(\.width),
+                                              observedHeights: from.mapValues(\.height))
+        // Finger travel represents progress to one neighbor, not an arbitrary display
+        // width. A short ribbon never overshoots and then reverses when the fingers lift.
+        let progress = min(1, abs(displacement) / 0.25)
+        var frames = from
+        for target in targets {
+            guard let start = from[target.windowID] else { continue }
+            frames[target.windowID] = start.offsetBy(dx: (target.frame.minX - start.minX) * progress, dy: 0)
+        }
+        return frames
+    }
 
     func cancel() {
         generation &+= 1

@@ -105,6 +105,12 @@ final class StagehandModel: ObservableObject {
             ?? (defaults.string(forKey: "layoutMode") == "monocle")
         input.onAction = { [weak self] action in self?.navigate(action) }
         input.onGesture = { [weak self] event in self?.handleGesture(event) }
+        overlays.onFocusWindow = { [weak self] id in self?.focusWindow(id) }
+        overlays.onSelectSpace = { [weak self] index in self?.navigate(.goToSpace(index: index)) }
+        overlays.canRevealNavigation = { [weak self] in
+            guard let self, self.isRunning, !self.isSuspended else { return false }
+            return self.desktopScope.refresh() == .home
+        }
         input.gestureFingerCount = gestureFingerCount
         input.onStatusChange = { [weak self] in self?.updateInputStatus() }
         windowSystem.onChange = { [weak self] in self?.scheduleRefresh() }
@@ -282,6 +288,63 @@ final class StagehandModel: ObservableObject {
 
     func dismissWarning() { warning = nil }
 
+    /// Closes only a disposable Stagehand window after moving it to its own logical
+    /// space. Discovery and empty-space handoff use the real notification path.
+    func diagnoseLastClose() async -> String {
+        guard accessibilityGranted else {
+            return "Accessibility permission is missing for this build. No windows were changed."
+        }
+        let previousApp = NSWorkspace.shared.frontmostApplication
+        let disposable = NSWindow(contentRect: CGRect(x: 200, y: 200, width: 520, height: 360),
+                                  styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        disposable.isReleasedWhenClosed = false
+        disposable.title = "Stagehand disposable close diagnostic"
+        disposable.orderFront(nil)
+        let disposableID = windowSystem.registerOwnWindow(window: disposable)
+        defer {
+            pause()
+            disposable.close()
+            _ = previousApp?.activate(options: [])
+        }
+        start()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(8))
+        while (worker != nil || ribbonMotion.isRunning) && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        guard isRunning, !isSuspended,
+              let emptyIndex = state.spaces.indices.last(where: { state.spaces[$0].windowIDs.isEmpty }) else {
+            return "Last-close setup failed. Running: \(isRunning). Warning: \(warning ?? "none")"
+        }
+        focusWindow(disposableID)
+        while (worker != nil || ribbonMotion.isRunning) && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        guard isRunning, state.focusedWindowID == disposableID else {
+            return "Last-close setup could not focus the disposable window. Warning: \(warning ?? "none")"
+        }
+        navigate(.moveToSpace(index: emptyIndex, follow: true))
+        while (worker != nil || ribbonMotion.isRunning) && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        guard isRunning, state.activeSpaceIndex == emptyIndex, state.currentSpace.windowIDs == [disposableID] else {
+            return "Last-close setup did not isolate the disposable window. Warning: \(warning ?? "none")"
+        }
+        disposable.close()
+        // No forced scan or refresh here. Closing the window must notify the model.
+        let closeDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        repeat {
+            try? await Task.sleep(for: .milliseconds(20))
+            if !isRunning || (state.currentSpace.windowIDs.isEmpty && emptySpace.isFocused && worker == nil) { break }
+        } while ContinuousClock.now < closeDeadline
+        return """
+        Last-close running: \(isRunning), suspended: \(isSuspended)
+        Stayed in logical space: \(state.activeSpaceIndex == emptyIndex)
+        Remaining windows in space: \(state.spaces[emptyIndex].windowIDs.count)
+        Empty space focused: \(emptySpace.isFocused)
+        Warning: \(warning ?? "none")
+        """
+    }
+
     /// Runs the actual Start path, prints no window titles or input, then restores all frames.
     func diagnoseStartup(includeSettings: Bool = false) async -> String {
         windowSystem.focusDiagnosticsEnabled = true
@@ -338,6 +401,60 @@ final class StagehandModel: ObservableObject {
         settings?.close()
         _ = previousApp?.activate(options: [])
         return result
+    }
+
+    /// Launches only our disposable delayed-window fixture and observes the normal refresh path.
+    /// The final assertion intentionally does not scan: that would conceal a missed notification.
+    func diagnoseDiscovery(probeURL: URL, settlingWindow: Bool = false) async -> String {
+        let probeID = "dev.stagehand.DiscoveryProbe"
+        guard Bundle(url: probeURL)?.bundleIdentifier == probeID else {
+            return "Discovery failed: expected the Stagehand DiscoveryProbe fixture. No windows were changed."
+        }
+        guard accessibilityGranted else { return "Discovery failed: Accessibility permission is missing." }
+        guard !NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == probeID }) else {
+            return "Discovery failed: the disposable probe is already running."
+        }
+        windowSystem.focusDiagnosticsEnabled = true
+        let previousApp = NSWorkspace.shared.frontmostApplication
+        var probe: NSRunningApplication?
+        defer {
+            pause()
+            _ = probe?.terminate()
+            _ = previousApp?.activate(options: [])
+        }
+        start()
+        let preparationDeadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while worker != nil && ContinuousClock.now < preparationDeadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        navigate(.goToSpace(index: WorkspaceState.spaceCount - 1))
+        while worker != nil && ContinuousClock.now < preparationDeadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        guard isRunning, !isSuspended, state.currentSpace.windowIDs.isEmpty else {
+            return "Discovery failed: could not establish the empty-space fixture. Warning: \(warning ?? "none")"
+        }
+        let emptySpaceIndex = state.activeSpaceIndex
+        print("Discovery t=\(ProcessInfo.processInfo.systemUptime) emptySpace=\(emptySpaceIndex + 1) ready")
+        do {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            configuration.arguments = settlingWindow ? ["--settling-window"] : []
+            probe = try await NSWorkspace.shared.openApplication(at: probeURL, configuration: configuration)
+        } catch {
+            return "Discovery failed: could not launch the disposable probe."
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(6))
+        while isRunning, !isSuspended, ContinuousClock.now < deadline {
+            let discovered = windows.filter { $0.bundleIdentifier == probeID }
+            if !discovered.isEmpty, discovered.allSatisfy({ state.currentSpace.windowIDs.contains($0.id) }),
+               worker == nil, !ribbonMotion.isRunning { break }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        let discovered = windows.filter { $0.bundleIdentifier == probeID }
+        let joined = isRunning && !isSuspended && state.activeSpaceIndex == emptySpaceIndex &&
+            !discovered.isEmpty && discovered.allSatisfy { state.currentSpace.windowIDs.contains($0.id) }
+        return "Discovery passed: \(joined); freshWindows=\(discovered.count); space=\(state.activeSpaceIndex + 1); running=\(isRunning); warning=\(warning ?? "none")"
     }
 
     private func updateInputStatus() {
@@ -577,8 +694,13 @@ final class StagehandModel: ObservableObject {
         overlays.updateBorder(frame: .zero, visible: false)
         defer { isLayingOutWindows = false }
         var placements: [WindowPlacement] = []
-        var observedWidths: [String: CGFloat] = slideFrom?.mapValues(\.width) ?? [:]
-        var observedHeights: [String: CGFloat] = slideFrom?.mapValues(\.height) ?? [:]
+        // Width follows the ribbon preference, not the slide's starting geometry.
+        // Height stays at the user's live size, including a parked window's retained
+        // frame. Reading it before any writes also preserves a just-finished resize.
+        var observedWidths: [String: CGFloat] = [:]
+        var observedHeights = Dictionary(uniqueKeysWithValues: state.currentSpace.windowIDs.compactMap { id in
+            windowSystem.frame(windowID: id).map { (id, $0.height) }
+        })
         var acceptedFrames: [String: CGRect] = [:]
         var destinationPID: Int32?
         // Read accepted sizes after focus, then repack and center app-constrained windows.
@@ -721,6 +843,7 @@ final class StagehandModel: ObservableObject {
             overlays.updateBorder(frame: .zero, visible: false)
         }
         if request == .navigation { overlays.showNavigation(state: state, windows: windows) }
+        else { overlays.updateNavigation(state: state, windows: windows) }
         onStateChange?()
         return true
     }
@@ -834,13 +957,10 @@ final class StagehandModel: ObservableObject {
     private func previewGesture(displacement: Double) {
         guard let base = gestureBase, let availableFrame, gestureAxis == .horizontal,
               worker == nil, displacement.isFinite, desktopScope.refresh() == .home else { return }
-        let index = state.focusedWindowID.flatMap { state.currentSpace.windowIDs.firstIndex(of: $0) } ?? 0
-        let atBoundary = displacement > 0 ? index == 0 : index == state.currentSpace.windowIDs.count - 1
-        let travel = displacement / 0.25 * availableFrame.width
-        let offset = atBoundary ? travel / (1 + abs(travel) / 60) : min(availableFrame.width, max(-availableFrame.width, travel))
+        let preview = RibbonMotion.dragFrames(state: state, from: base, availableFrame: availableFrame,
+                                              gap: gap, displacement: displacement)
         var frames: [String: CGRect] = [:]
-        for (id, frame) in base {
-            let shifted = frame.offsetBy(dx: offset, dy: 0)
+        for (id, shifted) in preview {
             guard shifted.intersects(availableFrame) || gesturePrepared.contains(id) else { continue }
             if !gesturePrepared.contains(id) {
                 guard windowSystem.setFrame(windowID: id, frame: shifted) else { continue }

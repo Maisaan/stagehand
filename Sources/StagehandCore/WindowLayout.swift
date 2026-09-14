@@ -21,7 +21,7 @@ public enum WindowLayout {
               availableFrame.origin.x.isFinite, availableFrame.origin.y.isFinite,
               availableFrame.width.isFinite, availableFrame.height.isFinite else { return [] }
         let space = state.currentSpace
-        let gap = gap.isFinite ? gap : 8
+        let gap: CGFloat = state.maximizeWindows ? 0 : (gap.isFinite ? gap : 8)
 
         var cursor: CGFloat = 0
         var focusedStart: CGFloat = 0
@@ -34,7 +34,8 @@ public enum WindowLayout {
             } else {
                 width = requestedWidth
             }
-            // Focus changes must not trigger content reflow in another application.
+            // The caller supplies the live or retained parked height. Only a window
+            // with no usable frame falls back to the available height.
             let requestedHeight = availableFrame.height
             let height: CGFloat
             if let observedHeight = observedHeights[windowID], observedHeight.isFinite, observedHeight > 0 {
