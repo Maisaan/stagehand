@@ -39,6 +39,7 @@ private struct GestureCallbackState {
 }
 
 private let gestureCallbackState = OSAllocatedUnfairLock(initialState: GestureCallbackState())
+private let traceGestures = ProcessInfo.processInfo.arguments.contains("--trace-gestures")
 
 private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
     guard count >= 0, count <= 32, count == 0 || raw != nil else { return 0 }
@@ -57,6 +58,14 @@ private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
         guard state.enabled else { return nil }
         let wasSuppressing = state.suppressScroll
         let event = state.recognizer.update(contacts: snapshot, timestamp: timestamp)
+        if traceGestures, let event {
+            switch event {
+            case .changed: break
+            default:
+                NSLog("[DEBUG-gesture] contact t=%.3f raw=%d active=%d event=%@ reason=%@", timestamp, count,
+                      snapshot.count, String(describing: event), state.recognizer.cancellationReason ?? "none")
+            }
+        }
         state.suppressScroll = state.recognizer.hasContactSequence
         if wasSuppressing && !state.suppressScroll { state.lastLiftTime = ProcessInfo.processInfo.systemUptime }
         guard let event else { return nil }
@@ -83,14 +92,13 @@ final class GestureMonitor {
 
     func start(fingerCount: Int = 4) -> String? {
         guard !isRunning else { return nil }
-        guard AXIsProcessTrusted() else { return "Gesture navigation needs Accessibility permission." }
-        guard CGPreflightListenEventAccess() else { return "Gesture navigation needs Input Monitoring permission. Enable it in Privacy & Security, then retry." }
+        guard AXIsProcessTrusted() else { return "Allow Stagehand in Accessibility settings to use gestures." }
         guard MemoryLayout<RawContact>.stride == 96,
               MemoryLayout<RawContact>.offset(of: \.normalized) == 32,
               MemoryLayout<RawContact>.offset(of: \.absolute) == 68 else {
-            return "The trackpad data format is unsupported on this system. Keyboard shortcuts remain available."
+            return "This version of macOS does not expose trackpad data Stagehand can use. Keyboard shortcuts still work."
         }
-        guard installScrollTap() else { return "The gesture scroll filter could not start. Check Accessibility and Input Monitoring permissions." }
+        guard installScrollTap() else { return "Gesture navigation couldn't start. Re-enable Accessibility for Stagehand, then try again." }
         // Keep the framework loaded for process lifetime: a late framework callback must never
         // jump into unloaded code. Only one built-in trackpad is in scope for the MVP.
         if framework == nil { framework = dlopen("/System/Library/PrivateFrameworks/MultitouchSupport.framework/MultitouchSupport", RTLD_NOW | RTLD_LOCAL) }
@@ -101,7 +109,7 @@ final class GestureMonitor {
               let startSymbol = dlsym(framework, "MTDeviceStart"),
               let stopSymbol = dlsym(framework, "MTDeviceStop") else {
             removeScrollTap()
-            return "The private macOS trackpad API is unavailable. Keyboard shortcuts remain available."
+            return "Gesture navigation isn't available on this version of macOS. Keyboard shortcuts still work."
         }
         let create = unsafeBitCast(createSymbol, to: (@convention(c) () -> UnsafeMutableRawPointer?).self)
         let register = unsafeBitCast(registerSymbol, to: (@convention(c) (UnsafeMutableRawPointer, ContactCallback) -> Void).self)
@@ -110,7 +118,7 @@ final class GestureMonitor {
         stopDevice = unsafeBitCast(stopSymbol, to: (@convention(c) (UnsafeMutableRawPointer) -> Void).self)
         guard let device = self.device ?? create() else {
             removeScrollTap()
-            return "No built-in trackpad was found. Keyboard shortcuts remain available."
+            return "Stagehand couldn't find a built-in trackpad. Keyboard shortcuts still work."
         }
         self.device = device
         let activeGeneration = generation
@@ -139,6 +147,7 @@ final class GestureMonitor {
     }
 
     func stop() {
+        if traceGestures, isRunning { NSLog("[DEBUG-gesture] monitor stopped") }
         gestureCallbackState.withLock { $0 = GestureCallbackState() }
         generation &+= 1
         let wasRunning = isRunning
@@ -155,15 +164,16 @@ final class GestureMonitor {
         removeScrollTap()
     }
 
-    func takePendingGestureAction() -> NavigationAction? {
+    func takePendingGestureCompletion() -> GestureNavigationCompletion? {
         guard isRunning else { return nil }
         return gestureCallbackState.withLock { state in
             guard state.enabled else { return nil }
-            return state.pendingEvents.takeCommittedAction()
+            return state.pendingEvents.takeCompletion()
         }
     }
 
     func cancelGestureSequence() {
+        if traceGestures { NSLog("[DEBUG-gesture] sequence interrupted by app") }
         gestureCallbackState.withLock { state in
             state.recognizer.cancelUntilLift()
             _ = state.pendingEvents.drain()

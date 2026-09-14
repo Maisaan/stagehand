@@ -166,6 +166,19 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     }
 
     @discardableResult
+    public mutating func share(windowID: String, toSpace index: Int) -> Bool {
+        guard spaces.indices.contains(index), index != activeSpaceIndex,
+              currentSpace.windowIDs.contains(windowID),
+              !spaces[index].windowIDs.contains(windowID) else { return false }
+        spaces[index].insert(
+            windowID: windowID,
+            width: currentSpace.widthFraction(for: windowID),
+            focus: false
+        )
+        return true
+    }
+
+    @discardableResult
     public mutating func apply(_ action: NavigationAction) -> Bool {
         switch action {
         case .focusPrevious: return navigateWindow(by: -1, reorder: false)
@@ -180,9 +193,10 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
             return goToSpace(index: index)
         case .goToSpace(let index): return goToSpace(index: index)
         case .moveToSpace(let index, let follow):
-            return transferToSpace(index: index, move: true, follow: follow)
+            return moveFocusedWindow(toSpace: index, follow: follow)
         case .shareToSpace(let index):
-            return transferToSpace(index: index, move: false, follow: false)
+            guard let focusedWindowID else { return false }
+            return share(windowID: focusedWindowID, toSpace: index)
         case .shrinkWidth, .growWidth:
             guard !maximizeWindows, let windowID = focusedWindowID else { return false }
             let adjustment = action == .growWidth ? 0.05 : -0.05
@@ -214,13 +228,11 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         return true
     }
 
-    private mutating func transferToSpace(index: Int, move: Bool, follow: Bool) -> Bool {
+    private mutating func moveFocusedWindow(toSpace index: Int, follow: Bool) -> Bool {
         guard spaces.indices.contains(index), index != activeSpaceIndex,
               let windowID = focusedWindowID else { return false }
-        let alreadyPresent = spaces[index].windowIDs.contains(windowID)
-        guard move || !alreadyPresent else { return false }
         spaces[index].insert(windowID: windowID, width: currentSpace.widthFraction(for: windowID), focus: false)
-        if move { spaces[activeSpaceIndex].remove(windowID: windowID) }
+        spaces[activeSpaceIndex].remove(windowID: windowID)
         if follow {
             activeSpaceIndex = index
             spaces[index].focusedWindowID = windowID

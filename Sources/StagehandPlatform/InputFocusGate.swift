@@ -78,7 +78,7 @@ public final class FocusInputGate {
 
     public func start() {
         guard tap == nil else { return }
-        guard AXIsProcessTrusted(), CGPreflightListenEventAccess() else {
+        guard AXIsProcessTrusted() else {
             tapIsAvailable = false
             onAvailabilityChanged?()
             return

@@ -48,7 +48,6 @@ final class GapTextField: NSTextField, NSTextFieldDelegate {
         bezelStyle = .roundedBezel
         font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         alignment = .right
-        placeholderString = "Points"
         setAccessibilityLabel("Gap between windows in points")
         displayValue(committedValue)
     }

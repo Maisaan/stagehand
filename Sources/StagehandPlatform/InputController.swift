@@ -27,7 +27,7 @@ struct ShortcutBinding: Sendable {
         let numbers = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5, kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9]
         for (index, key) in numbers.enumerated() {
             bindings.append(.init(key: UInt32(key), modifiers: base, action: .goToSpace(index: index), label: "⌃⌥\(index + 1)"))
-            bindings.append(.init(key: UInt32(key), modifiers: base | shift, action: .moveToSpace(index: index, follow: false), label: "⌃⌥⇧\(index + 1)"))
+            bindings.append(.init(key: UInt32(key), modifiers: base | shift, action: .shareToSpace(index: index), label: "⌃⌥⇧\(index + 1)"))
             bindings.append(.init(key: UInt32(key), modifiers: base | command, action: .moveToSpace(index: index, follow: true), label: "⌃⌥⌘\(index + 1)"))
         }
         return bindings
@@ -60,7 +60,6 @@ public final class InputController {
         }
     }
     public private(set) var issues: [String] = []
-    public var inputMonitoringGranted: Bool { CGPreflightListenEventAccess() }
     public var gesturesAvailable: Bool { gestures.isRunning }
 
     private var isRunning = false
@@ -89,7 +88,7 @@ public final class InputController {
             return noErr
         }, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), &eventHandler)
         guard status == noErr else {
-            shortcutIssues = ["Keyboard shortcuts could not start (\(status))."]
+            shortcutIssues = ["Stagehand couldn't register its keyboard shortcuts. Error \(status)."]
             updateGestures()
             return
         }
@@ -101,7 +100,7 @@ public final class InputController {
                 hotKeys.append(ref)
                 actions[id] = binding.action
             } else {
-                shortcutIssues.append("\(binding.label) is unavailable. Another app may have registered it (\(result)).")
+                shortcutIssues.append("\(binding.label) isn't available because another app may already use it. Error \(result).")
             }
         }
         updateGestures()
@@ -124,10 +123,10 @@ public final class InputController {
         if isRunning { updateGestures() }
     }
 
-    /// Call before routing a physical keyboard event. The caller must begin the focus
-    /// transfer synchronously, but leave window activation and animation to queued work.
-    public func takePendingGestureAction() -> NavigationAction? {
-        gestures.takePendingGestureAction()
+    /// Call before routing a physical keyboard event. The caller must resolve the gesture
+    /// and begin any focus transfer synchronously, leaving activation to queued work.
+    public func takePendingGestureCompletion() -> GestureNavigationCompletion? {
+        gestures.takePendingGestureCompletion()
     }
 
     /// Cancel a preview without rearming its still-held contacts. The caller owns
@@ -164,9 +163,9 @@ public final class InputController {
                 (CFPreferencesCopyAppValue(key as CFString, domain as CFString) as? NSNumber)?.intValue
             }
             if values.contains(where: { $0 != 0 }) {
-                result.append("macOS has a \(label) \(direction) gesture enabled. Reassign or disable it in Trackpad > More Gestures.")
+                result.append("macOS already uses a \(label) \(direction) gesture. Change or turn it off in System Settings > Trackpad > More Gestures.")
             } else if values.isEmpty {
-                result.append("Check Trackpad > More Gestures for \(label) \(direction) conflicts; macOS did not expose that preference.")
+                result.append("Check System Settings > Trackpad > More Gestures for a \(label) \(direction) conflict. macOS did not report this setting.")
             }
         }
         return result

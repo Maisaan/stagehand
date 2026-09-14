@@ -69,6 +69,45 @@ struct NavigationInteractionTests {
         #expect(model.focusedID == nil)
     }
 
+    @Test func appBarLabelOmitsTheWindowTitle() {
+        let model = NavigationHUDModel()
+        model.windows = [WindowRecord(id: "first", appName: "Example", title: "A very long document title",
+                                      bundleIdentifier: "com.example", pid: 10, frame: .zero, isResizable: true)]
+        model.focusedID = "first"
+        #expect(model.focusedAppName == "Example")
+    }
+
+    @Test func appBarMembershipActionsUseTheClickedWindow() {
+        let model = NavigationHUDModel()
+        model.space = 1
+        model.windows = [
+            WindowRecord(id: "focused", appName: "First", title: "", bundleIdentifier: "com.first",
+                         pid: 10, frame: .zero, isResizable: true),
+            WindowRecord(id: "other", appName: "Second", title: "", bundleIdentifier: "com.second",
+                         pid: 11, frame: .zero, isResizable: true)
+        ]
+        model.focusedID = "focused"
+        model.spaces = [
+            SpaceState(windowIDs: ["focused", "other"]),
+            SpaceState(windowIDs: ["other"]),
+            SpaceState()
+        ]
+        var shared: [(String, Int)] = []
+        var removed: [String] = []
+        model.onShareWindow = { shared.append(($0, $1)) }
+        model.onRemoveWindow = { removed.append($0) }
+
+        #expect(model.shareDestinations(for: "other") == [2])
+        #expect(model.canRemoveFromCurrentSpace(windowID: "other"))
+        model.shareWindow(id: "other", withSpace: 2)
+        model.shareWindow(id: "other", withSpace: 1)
+        model.removeWindowFromCurrentSpace(id: "other")
+
+        #expect(shared.map(\.0) == ["other"])
+        #expect(shared.map(\.1) == [2])
+        #expect(removed == ["other"])
+    }
+
     @Test func spacePickerUsesAvailableSpacesAndReturnsToAppsAfterSelection() throws {
         _ = NSApplication.shared
         let overlays = NavigationOverlays()

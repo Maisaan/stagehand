@@ -1,4 +1,5 @@
 import AppKit
+import StagehandCore
 import Testing
 @testable import Stagehand
 
@@ -12,6 +13,19 @@ import Testing
     #expect(!panel.canBecomeKey)
     #expect(!panel.canBecomeMain)
     #expect(panel.ignoresMouseEvents)
+}
+
+@MainActor @Test func navigationBarStaysAboveTheFocusBorder() throws {
+    _ = NSApplication.shared
+    let overlays = NavigationOverlays()
+    defer { overlays.hide() }
+    overlays.showNavigation(state: WorkspaceState(), windows: [])
+    overlays.updateBorder(frame: CGRect(x: 40, y: 70, width: 1200, height: 700), visible: true)
+
+    let hud = try #require(overlays.hud)
+    let border = try #require(overlays.border)
+    #expect(hud.level == .statusBar)
+    #expect(hud.level > border.level)
 }
 
 @MainActor @Test func navigationBorderUsesTheTargetWindowRadius() {

@@ -26,7 +26,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         self.model = model
         if arguments.contains("--diagnose-permissions") {
             print("Accessibility: \(model.accessibilityGranted)")
-            print("Input Monitoring: \(CGPreflightListenEventAccess())")
             NSApp.terminate(nil)
             return
         }
@@ -178,7 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let model else { return }
         let menu = NSMenu()
         menu.autoenablesItems = false
-        let title = NSMenuItem(title: model.isSuspended ? "Waiting on its Desktop" : model.isRunning ? "Space \(model.state.activeSpaceIndex + 1) · Ribbon" : "Stagehand is paused", action: nil, keyEquivalent: "")
+        let title = NSMenuItem(title: model.isSuspended ? "Waiting for its Desktop" : model.isRunning ? "Space \(model.state.activeSpaceIndex + 1)" : "Paused", action: nil, keyEquivalent: "")
         title.isEnabled = false
         menu.addItem(title)
         menu.addItem(.separator())
@@ -198,7 +197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
-        let toggle = NSMenuItem(title: model.isRunning ? "Pause & Restore Windows" : "Start Stagehand", action: #selector(toggleRunning), keyEquivalent: "")
+        let toggle = NSMenuItem(title: model.isRunning ? "Pause Stagehand" : "Start Stagehand", action: #selector(toggleRunning), keyEquivalent: "")
         toggle.target = self
         menu.addItem(toggle)
         menu.addItem(.separator())

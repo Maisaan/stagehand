@@ -83,11 +83,42 @@ func gestureRestBeforeMovementDoesNotDisableNavigation(fingerCount: Int) {
     #expect(action == .focusNext)
 }
 
-@Test func gestureLockedSwipeStillRejectsPinchingRotationAndAStationaryFinger() {
+@Test func gestureLockedSwipeTracksCentroidWhenFingerSpacingChanges() {
+    var recognizer = NavigationGestureRecognizer(fingerCount: 3)
+    _ = recognizer.update(contacts: contacts(count: 3), timestamp: 0)
+    _ = recognizer.update(contacts: contacts(count: 3, dx: -0.02), timestamp: 0.1)
+    var moved = contacts(count: 3, dx: -0.12)
+    moved[0].x += 0.13
+    moved[0].y += 0.04
+
+    guard case .changed = recognizer.update(contacts: moved, timestamp: 0.3) else {
+        Issue.record("An established pan must follow its centroid instead of rubber-banding when finger spacing changes")
+        return
+    }
+    guard case .ended(_, _, let action) = recognizer.update(contacts: [], timestamp: 0.31) else {
+        Issue.record("The centroid-tracked swipe must finish")
+        return
+    }
+    #expect(action == .focusNext)
+}
+
+@Test func gestureCanBeginAfterAnIncidentalExtraContactLifts() {
+    var recognizer = NavigationGestureRecognizer(fingerCount: 3)
+    _ = recognizer.update(contacts: contacts(count: 4), timestamp: 0)
+    _ = recognizer.update(contacts: contacts(count: 3), timestamp: 0.1)
+
+    guard case .began(axis: .horizontal, displacement: _) = recognizer.update(
+        contacts: contacts(count: 3, dx: -0.03), timestamp: 0.2
+    ) else {
+        Issue.record("A transient extra contact before recognition must not disable the intended three-finger swipe")
+        return
+    }
+}
+
+@Test func gestureRequiresCoherentMovementBeforeAxisLock() {
     for invalidation in 0..<3 {
         var recognizer = NavigationGestureRecognizer()
         _ = recognizer.update(contacts: contacts(), timestamp: 0)
-        _ = recognizer.update(contacts: contacts(dx: -0.02), timestamp: 0.1)
         var moved = contacts(dx: -0.12)
         if invalidation == 0 {
             moved[0].x += 0.16
@@ -98,7 +129,8 @@ func gestureRestBeforeMovementDoesNotDisableNavigation(fingerCount: Int) {
         } else {
             moved[0].x += 0.10
         }
-        #expect(recognizer.update(contacts: moved, timestamp: 0.3) == .cancelled)
+        #expect(recognizer.update(contacts: moved, timestamp: 0.3) == nil)
+        #expect(recognizer.cancellationReason == "incoherent-movement")
         #expect(recognizer.update(contacts: [], timestamp: 0.31) == nil)
     }
 }
@@ -308,16 +340,39 @@ func gestureSelectedFingerCountNavigatesSpacesOnFlickAndStaggeredLift(fingerCoun
     pending.append(.began(axis: .horizontal, displacement: -0.02))
     pending.append(.changed(displacement: -0.08, velocity: -0.8))
     pending.append(.ended(displacement: -0.08, velocity: -0.8, action: .focusNext))
-    #expect(pending.takeCommittedAction() == .focusNext)
-    #expect(pending.takeCommittedAction() == nil)
+    #expect(pending.takeCompletion() == GestureNavigationCompletion(
+        axis: .horizontal,
+        displacement: -0.08,
+        velocity: -0.8,
+        recognizerAction: .focusNext
+    ))
+    #expect(pending.takeCompletion() == nil)
     #expect(pending.drain().isEmpty)
+}
+
+@Test func gestureCompletionClaimIncludesItsAxisWithoutReplayingPreviewEvents() {
+    var pending = GestureEventBuffer()
+    pending.append(.began(axis: .horizontal, displacement: -0.02))
+    pending.append(.changed(displacement: -0.03, velocity: -0.1))
+    pending.append(.ended(displacement: -0.03, velocity: 0, action: nil))
+    pending.append(.began(axis: .vertical, displacement: 0.02))
+
+    #expect(pending.takeCompletion() == GestureNavigationCompletion(
+        axis: .horizontal,
+        displacement: -0.03,
+        velocity: 0,
+        recognizerAction: nil
+    ))
+    #expect(pending.takeCompletion() == nil)
+    #expect(pending.drain() == [.began(axis: .vertical, displacement: 0.02)])
 }
 
 @Test func gestureNormalDeliveryCannotBeClaimedAgainByKeyboard() {
     var pending = GestureEventBuffer()
+    pending.append(.began(axis: .horizontal, displacement: -0.02))
     pending.append(.ended(displacement: -0.08, velocity: -0.8, action: .focusNext))
-    #expect(pending.drain().count == 1)
-    #expect(pending.takeCommittedAction() == nil)
+    #expect(pending.drain().count == 2)
+    #expect(pending.takeCompletion() == nil)
 }
 
 @Test func gestureReleaseClaimsPreserveLaterSequencesAndNeverActivateCancellation() {
@@ -326,15 +381,20 @@ func gestureSelectedFingerCountNavigatesSpacesOnFlickAndStaggeredLift(fingerCoun
     pending.append(.cancelled)
     pending.append(.began(axis: .horizontal, displacement: 0.02))
     pending.append(.ended(displacement: 0.03, velocity: 0.1, action: nil))
-    #expect(pending.takeCommittedAction() == nil)
+    #expect(pending.takeCompletion() == GestureNavigationCompletion(
+        axis: .horizontal,
+        displacement: 0.03,
+        velocity: 0.1,
+        recognizerAction: nil
+    ))
     pending.append(.began(axis: .horizontal, displacement: -0.02))
     pending.append(.ended(displacement: -0.08, velocity: -0.8, action: .focusNext))
     pending.append(.began(axis: .vertical, displacement: 0.02))
     pending.append(.ended(displacement: 0.08, velocity: 0.8, action: .nextSpace))
     pending.append(.began(axis: .horizontal, displacement: 0.02))
-    #expect(pending.takeCommittedAction() == .focusNext)
-    #expect(pending.takeCommittedAction() == .nextSpace)
-    #expect(pending.takeCommittedAction() == nil)
+    #expect(pending.takeCompletion()?.recognizerAction == .focusNext)
+    #expect(pending.takeCompletion()?.recognizerAction == .nextSpace)
+    #expect(pending.takeCompletion() == nil)
     #expect(pending.drain() == [.began(axis: .horizontal, displacement: 0.02)])
 }
 
@@ -503,6 +563,14 @@ func gestureSelectedFingerCountNavigatesSpacesOnFlickAndStaggeredLift(fingerCoun
     let bindings = ShortcutBinding.defaults
     let keys = bindings.map { "\($0.key):\($0.modifiers)" }
     #expect(Set(keys).count == bindings.count)
+}
+
+@Test func controlOptionShiftNumberSharesWithSpace() throws {
+    let binding = try #require(ShortcutBinding.defaults.first {
+        $0.key == UInt32(kVK_ANSI_4) &&
+            $0.modifiers == UInt32(controlKey | optionKey | shiftKey)
+    })
+    #expect(binding.action == .shareToSpace(index: 3))
 }
 
 @MainActor @Test func gateReplaysEachKeyPairToItsOwnTransferAndDoesNotRecapture() throws {

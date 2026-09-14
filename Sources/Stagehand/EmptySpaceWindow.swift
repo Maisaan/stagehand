@@ -21,8 +21,8 @@ final class EmptySpaceWindow {
         window.contentView = NSHostingView(rootView: VStack(spacing: 16) {
             Image(systemName: "rectangle.dashed").font(.system(size: 46, weight: .ultraLight)).foregroundStyle(.mint)
             Text("Space \(space)").font(.system(size: 24, weight: .medium))
-            Text("Room for something else.").foregroundStyle(.secondary)
-            Text("Navigate with ⌃⌥↑ / ↓ or a vertical navigation swipe.\nMove a window here with ⌃⌥⇧\(space).")
+            Text("No windows here yet.").foregroundStyle(.secondary)
+            Text("Switch spaces with ⌃⌥↑/↓ or swipe vertically.\nFrom another space, share a window here with ⌃⌥⇧\(space).")
                 .font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }.frame(maxWidth: .infinity, maxHeight: .infinity))
         NSApp.activate(ignoringOtherApps: true)

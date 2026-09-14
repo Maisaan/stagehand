@@ -14,7 +14,11 @@ install -m 644 "$stagehand_root/Resources/Stagehand.icns" "$stagehand_bundle/Con
 
 # For repeat development builds, provide a stable local signing identity if you have one.
 # The default is an ad-hoc development signature, not a notarized distribution build.
-codesign --force --sign "${STAGEHAND_SIGNING_IDENTITY:--}" "$stagehand_bundle"
+stagehand_signing_identity="${STAGEHAND_SIGNING_IDENTITY:--}"
+codesign --force --sign "$stagehand_signing_identity" "$stagehand_bundle"
 codesign --verify --strict "$stagehand_bundle"
 printf 'Built %s\n' "$stagehand_bundle"
+if [[ "$stagehand_signing_identity" == "-" ]]; then
+    printf 'Warning: this ad-hoc signature changes on rebuild; macOS will require Accessibility again after replacement.\n'
+fi
 printf 'Open with: open "%s"\n' "$stagehand_bundle"

@@ -14,7 +14,7 @@ swift test
 open dist/Stagehand.app
 ```
 
-The app opens paused. In Setup, grant Accessibility. Grant Input Monitoring for keyboard handoff protection, then restart Stagehand if macOS requests it. Press **Start Stagehand** when ready to arrange windows. Quit KiwiDesk or other managers first to avoid competing shortcuts and window changes.
+The app opens paused. In Setup, grant Accessibility, then restart Stagehand if macOS requests it. Press **Start Stagehand** when ready to arrange windows. Quit KiwiDesk or other managers first to avoid competing shortcuts and window changes.
 
 The build script makes a local, ad-hoc-signed app. Rebuilding can require removing and re-adding its privacy permissions. If you have a stable signing identity, set `STAGEHAND_SIGNING_IDENTITY` when building. No certificate is created and no remote is used by the build.
 
@@ -29,7 +29,7 @@ The build script makes a local, ad-hoc-signed app. Rebuilding can require removi
 
 The maximize toggle and gap apply to all nine spaces. Settings and the menu show only occupied spaces and the current space. Use a numbered shortcut to enter an unused space. Navigation stops at the ends, without wrapping. Drag a window by its title bar and release it to reorder within the ribbon; it does not become free-floating. Resize a window with maximization off to change its individual width.
 
-Each space remembers its order, scrolling widths, and focused window. Move removes a window from its current space. Add to Another Space keeps the same live window in both spaces, with independent order and widths. Its manually resized height belongs to the live window. Remove from This Space removes only that membership; the last membership cannot be removed. Closing the real window removes every membership.
+Each space remembers its order, scrolling widths, and focused window. **Move to** removes a window from its current space. **Share with** keeps the same live window in both spaces, with independent order and widths. Its manually resized height belongs to the live window. **Remove from this space** removes only that membership; the last membership cannot be removed. Closing the real window removes every membership.
 
 New windows enter after the current window. Stagehand's own settings window joins the ribbon too. Closing a space's final window switches to the previous occupied space, or the next one if none precedes it. Other spaces keep their numbers. If no windows remain, one empty space stays available. Intentionally entering an unused space still works. Empty spaces display a Stagehand placeholder so typing cannot reach a hidden application. Stagehand's menus appear only while its settings or empty-space window is active. Switching to another window restores that application's menus.
 
@@ -45,13 +45,13 @@ The compact navigation bar sizes to its content, stays visible through successiv
 | Previous / next space | Control + Option + Up / Down |
 | Reorder focused window | Control + Option + Command + Left / Right |
 | Go to space 1–9 | Control + Option + number |
-| Move window to space | Control + Option + Shift + number |
+| Share window with space | Control + Option + Shift + number |
 | Move window and follow | Control + Option + Command + number |
 | Shrink / grow width | Option + Command + 1 / 2 |
 | Pause and restore | Control + Option + Escape |
 | Settings | Control + Option + comma |
 
-Resume through the menu-bar item or settings. Pausing releases the global shortcuts. Width shortcuts apply only with maximization off. Shortcuts are fixed for this version. Add to Another Space is available from the current window's menu in the Workspace tab.
+Resume through the menu-bar item or settings. Pausing releases the global shortcuts. Width shortcuts apply only with maximization off. Shortcuts are fixed for this version. Use **Share with** in the Workspace tab, or right-click an app in the app bar, to manage shared spaces.
 
 Gesture navigation is optional and off on first launch. Choose three or four fingers; four is the default:
 
@@ -66,7 +66,7 @@ In System Settings → Trackpad → More Gestures, assign conflicting native ges
 
 Navigation activates and raises the destination's real AX window, and confirms both the frontmost application and focused window. If the system-wide Accessibility focus query has no value, confirmation still requires the target app to be active and frontmost and its direct Accessibility query to identify the exact target window. Animation never delays the focus request. If a focus change fails, Stagehand pauses and restores original window frames.
 
-With Input Monitoring, the keyboard event tap begins a short in-memory transfer buffer at a navigation shortcut, before subsequent typing events. After focus is confirmed, buffered events are posted to the destination process. Failed or expired transfers withhold buffered events and show a warning rather than inject them into an unverified app. Input is never logged or written to disk.
+The Accessibility-authorized keyboard event tap begins a short in-memory transfer buffer at a navigation shortcut, before subsequent typing events. After focus is confirmed, buffered events are posted to the destination process. Failed or expired transfers withhold buffered events and show a warning rather than inject them into an unverified app. Input is never logged or written to disk.
 
 Horizontal navigation settles with position-only writes for 200 ms, without waiting to release verified input. Updates run only during dragging or settling, with no idle animation timer or screen capture. Consecutive keyboard steps can skip an intermediate window only when its input transfer is empty. Pending gesture releases are claimed before routing subsequent keyboard events so main-queue ordering does not send that typing to the old app. Physical trackpad callback ordering and cross-process position clamping still need live testing.
 
@@ -96,7 +96,7 @@ For explicit focus diagnostics, launch the installed app through `open` so macOS
 open -n -W -g --stdout /tmp/stagehand-focus.log /Applications/Stagehand.app --args --diagnose-focus com.linear
 ```
 
-`--diagnose-permissions` only reports the installed app's Accessibility and Input Monitoring grants. It does not request access, start management, or activate another window.
+`--diagnose-permissions` only reports the installed app's Accessibility grant. It does not request access, start management, or activate another window.
 
 `--diagnose-parking <bundle-id>` explicitly parks and refocuses an eligible window three times, reporting accepted geometry and focus checks before restoring its original frame. Run it on a regular Desktop with the normal Stagehand instance stopped. It never types into the target window.
 
