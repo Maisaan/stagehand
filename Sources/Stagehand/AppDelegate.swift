@@ -13,9 +13,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let arguments = ProcessInfo.processInfo.arguments
         // Diagnostics need the same completed AppKit launch as normal operation.
         // A main-actor Task created before NSApplication.run can execute earlier.
-        if let index = arguments.firstIndex(of: "--diagnose-focus"), arguments.indices.contains(index + 1) {
+        if let index = arguments.firstIndex(of: "--diagnose-focus") ?? arguments.firstIndex(of: "--diagnose-parking"),
+           arguments.indices.contains(index + 1) {
             Task { @MainActor in
-                await FocusDiagnostics.run(bundleIdentifier: arguments[index + 1])
+                await FocusDiagnostics.run(bundleIdentifier: arguments[index + 1],
+                                           parkBeforeFocus: arguments[index] == "--diagnose-parking")
                 NSApp.terminate(nil)
             }
             return

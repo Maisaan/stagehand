@@ -32,6 +32,7 @@ final class GapTextField: NSTextField, NSTextFieldDelegate {
     var onCommit: (Double) -> Void
     private var committedValue: Double
     private let modifierFlags: () -> NSEvent.ModifierFlags
+    private var outsideClickMonitor: Any?
 
     init(value: Double, modifierFlags: @escaping () -> NSEvent.ModifierFlags = {
         NSApp.currentEvent?.modifierFlags ?? []
@@ -53,6 +54,26 @@ final class GapTextField: NSTextField, NSTextFieldDelegate {
     }
 
     required init?(coder: NSCoder) { return nil }
+
+    isolated deinit {
+        if let outsideClickMonitor { NSEvent.removeMonitor(outsideClickMonitor) }
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { monitorOutsideClicks() }
+        return accepted
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow !== window { stopMonitoringOutsideClicks() }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    func controlTextDidBeginEditing(_ notification: Notification) {
+        monitorOutsideClicks()
+    }
 
     func update(value: Double) {
         let value = GapInput.clamped(value)
@@ -84,7 +105,35 @@ final class GapTextField: NSTextField, NSTextFieldDelegate {
     }
 
     func controlTextDidEndEditing(_ notification: Notification) {
+        stopMonitoringOutsideClicks()
         commit(text: stringValue)
+    }
+
+    private func monitorOutsideClicks() {
+        guard outsideClickMonitor == nil, let window else { return }
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(editingWindowResignedKey),
+            name: NSWindow.didResignKeyNotification, object: window
+        )
+        outsideClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+            guard let self, let window = self.window, self.currentEditor() != nil else { return event }
+            let isInside = event.window === window
+                && self.bounds.contains(self.convert(event.locationInWindow, from: nil))
+            if !isInside { window.makeFirstResponder(nil) }
+            return event
+        }
+    }
+
+    private func stopMonitoringOutsideClicks() {
+        guard let outsideClickMonitor else { return }
+        NSEvent.removeMonitor(outsideClickMonitor)
+        self.outsideClickMonitor = nil
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: nil)
+    }
+
+    @objc private func editingWindowResignedKey() {
+        guard currentEditor() != nil else { return }
+        window?.makeFirstResponder(nil)
     }
 
     private func commit(text: String, editor: NSTextView? = nil) {

@@ -476,15 +476,17 @@ final class StagehandModel: ObservableObject {
         }
         var placements: [WindowPlacement] = []
         var observedWidths: [String: CGFloat] = [:]
+        var observedHeights: [String: CGFloat] = [:]
+        var acceptedFrames: [String: CGRect] = [:]
         var destinationPID: Int32?
-        // Read accepted widths after focus, then repack if an app constrained its size.
+        // Read accepted sizes after focus, then repack and center app-constrained windows.
         // Repacking may reveal another window. Bound this by the number of windows;
         // the input gate's deadline also applies to the whole transition.
         let maximumPass = state.currentSpace.windowIDs.count
         for pass in 0...maximumPass {
             guard preferenceFocusStillMatches(request) else { return true }
             placements = WindowLayout.placements(for: state, availableFrame: availableFrame, gap: gap,
-                                                 observedWidths: observedWidths)
+                                                 observedWidths: observedWidths, observedHeights: observedHeights)
             let visible = placements.filter(\.isVisible)
             // Position neighbors first. Raising the focused real window last keeps clamped neighbors behind it.
             for placement in visible.sorted(by: { !$0.isFocused && $1.isFocused }) {
@@ -493,6 +495,8 @@ final class StagehandModel: ObservableObject {
                     nativeDesktopChanged()
                     return false
                 }
+                // A correction pass only writes windows whose geometry actually changed.
+                if pass > 0, acceptedFrames[placement.windowID] == placement.frame { continue }
                 if !windowSystem.setFrame(windowID: placement.windowID, frame: placement.frame), placement.isFocused {
                     warning = "This app constrained its window size. Stagehand will use the size it allows."
                 }
@@ -529,14 +533,21 @@ final class StagehandModel: ObservableObject {
                 }
                 var constrained = false
                 for placement in visible {
-                    guard let actual = windowSystem.frame(windowID: placement.windowID),
-                          actual.width.isFinite, actual.width > 0,
-                          abs(actual.width - placement.frame.width) > 1 else { continue }
-                    observedWidths[placement.windowID] = actual.width
-                    if !state.maximizeWindows {
-                        state.setWidthFraction(actual.width / availableFrame.width, for: placement.windowID)
+                    guard let actual = windowSystem.frame(windowID: placement.windowID) else { continue }
+                    acceptedFrames[placement.windowID] = actual
+                    if actual.width.isFinite, actual.width > 0,
+                       abs(actual.width - placement.frame.width) > 1 {
+                        observedWidths[placement.windowID] = actual.width
+                        if !state.maximizeWindows {
+                            state.setWidthFraction(actual.width / availableFrame.width, for: placement.windowID)
+                        }
+                        constrained = true
                     }
-                    constrained = true
+                    if actual.height.isFinite, actual.height > 0,
+                       abs(actual.height - placement.frame.height) > 1 {
+                        observedHeights[placement.windowID] = actual.height
+                        constrained = true
+                    }
                 }
                 if constrained {
                     guard pass < maximumPass else {

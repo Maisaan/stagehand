@@ -7,7 +7,7 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 - Launch paused; confirm no windows move before Start.
 - Grant Accessibility and Input Monitoring to the built Stagehand.app.
 - Start with several ordinary windows on one native macOS Desktop.
-- Pause and Quit independently. Verify every managed window returns to its pre-Start frame and every Stagehand-minimized window is restored.
+- Pause and Quit independently. Verify every managed window returns to its pre-Start frame. Stagehand must never minimize a window to the Dock.
 - Repeatedly pause/start during navigation. No stale operation should move windows after pause.
 - Change native macOS Desktop. Stagehand should stay enabled but suspend input and layout work, without pulling windows into the new Desktop. Return and verify automatic resume with order and widths preserved.
 - Repeat Desktop switching during window navigation. No buffered typing should be replayed on the away Desktop.
@@ -16,6 +16,7 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 
 - Scrolling: active window fits; adjacent sliver remains visible with 95% width.
 - Shrink and grow several windows independently; respect app minimum-size constraints.
+- Inactive windows use 95% of available height and stay centered. Focus requests 100%. Apps with fixed/minimum/maximum heights stay centered at their actual accepted size.
 - Navigate across both ends; there is no wrap.
 - Reorder a window and verify focus stays with it.
 - Enable Maximize windows: the active window requests the full available width without native fullscreen.
@@ -39,6 +40,7 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 
 - Focus different apps with shortcuts, then immediately type unique text into disposable fields. Verify every character's destination.
 - Repeat with two windows of the same app. Include rapid consecutive switches, held keys, key repeats, and modifiers held across a switch.
+- Navigate away until Cursor is parked, then back repeatedly. No Dock animation, minimized state, or false focus failure should occur. Repeat with an app whose position is clamped by macOS.
 - Repeat with the navigation overlay visible. App menus and input remain with the active real app.
 - Exercise a blocked/slow app or modal dialog. Failed focus must pause/restore and visibly report withheld input.
 - Check Setup when Secure Input is active. Do not assume interception remains available.
@@ -54,6 +56,7 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 - Enable Reduce Motion. The bar uses a fade without drop/scale movement; indicator changes do not travel between icons.
 - Resize the active window continuously. The border follows its actual frame without easing behind it, and its corners match the target window.
 - Adjust the gap with the slider, typed values, Up/Down, and Shift+Up/Down while running. Input focus remains in the number field; no keys reach another app. Invalid values restore the previous value and out-of-range values clamp.
+- Click outside the gap field onto empty settings background. The edit commits, the field loses focus, and the original click still reaches its target.
 - Neither bar nor border shifts or resizes any window.
 - The current application owns the macOS menu bar, except while Stagehand settings or an empty-space placeholder is active.
 - Settings stay usable at the built-in display's current scaling.

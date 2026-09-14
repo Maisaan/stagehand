@@ -5,6 +5,43 @@ import Testing
 
 private let screen = CGRect(x: 100, y: 40, width: 1000, height: 700)
 
+@Test func ribbonRequestsFullFocusedHeightAndCentersShorterNeighbors() throws {
+    var state = WorkspaceState()
+    state.reconcile(windowIDs: ["a", "b", "c"])
+    for maximize in [false, true] {
+        state.maximizeWindows = maximize
+        for focusedID in state.currentSpace.windowIDs {
+            state.focus(windowID: focusedID)
+            for placement in WindowLayout.placements(for: state, availableFrame: screen) {
+                #expect(placement.frame.height == (placement.isFocused ? 700 : 665))
+                #expect(placement.frame.midY == screen.midY)
+            }
+        }
+    }
+}
+
+@Test func ribbonCentersActualAcceptedHeightsWithoutChangingWidthPreferences() throws {
+    let state = WorkspaceState(spaces: [SpaceState(
+        windowIDs: ["a", "b", "c"], focusedWindowID: "b",
+        widthFractions: ["a": 0.3, "b": 0.5, "c": 0.4]
+    )])
+    let placements = WindowLayout.placements(for: state, availableFrame: screen,
+                                            observedHeights: ["a": 680, "b": 500, "c": 800])
+    #expect(placements.map(\.frame.height) == [680, 500, 800])
+    #expect(placements.allSatisfy { $0.frame.midY == screen.midY })
+    #expect(placements.map(\.frame.width) == [300, 500, 400])
+    #expect(state.currentSpace.widthFractions == ["a": 0.3, "b": 0.5, "c": 0.4])
+}
+
+@Test func ribbonIgnoresInvalidAcceptedHeights() {
+    var state = WorkspaceState()
+    state.reconcile(windowIDs: ["a", "b", "c", "d"])
+    let expected = WindowLayout.placements(for: state, availableFrame: screen)
+    let actual = WindowLayout.placements(for: state, availableFrame: screen,
+                                        observedHeights: ["a": .nan, "b": .infinity, "c": 0, "d": -1])
+    #expect(actual == expected)
+}
+
 @Test func scrollingPacksAnAppConstrainedToItsObservedWidth() throws {
     var state = WorkspaceState()
     state.reconcile(windowIDs: ["editor", "settings"])

@@ -20,7 +20,8 @@ The build script makes a local, ad-hoc-signed app. Rebuilding can require removi
 
 ## Ribbon
 
-- With **Maximize windows** off, windows have individual widths from 25% to 95% of the available display width and use the available height.
+- With **Maximize windows** off, windows have individual widths from 25% to 95% of the available display width.
+- The focused window requests 100% of the available height; inactive windows request 95%. Windows are vertically centered using their actual accepted heights when an app constrains its size.
 - With it on, windows request the full available width. Turning it off restores the individual widths. This is window resizing, not native fullscreen.
 - Apps can constrain their size. Settings shows their actual width, and the ribbon packs to the accepted size instead of leaving an unused slot.
 - Gap is measured in points. Positive values separate windows; negative values overlap them horizontally. The active window stays on top. Maximized windows do not reserve neighboring strips.
@@ -68,7 +69,7 @@ With Input Monitoring, the keyboard event tap begins a short in-memory transfer 
 
 **This is a prototype, not a proven zero-loss input guarantee.** macOS provides no acknowledgement that a posted key event was consumed by a specific window. Rapid transitions between two windows of the same process and key releases spanning switches need live validation. Secure Input or a disabled event tap can bypass protection; Setup reports its current availability. A short event-loop allowance after replay reduces queue races but is not a delivery guarantee.
 
-Inactive/offscreen windows are parked individually. When an app refuses an offscreen position, Stagehand falls back to minimizing that window, which can inherit macOS's Dock animation. Pause and Quit restore original frames and unminimize windows that Stagehand minimized. User-minimized windows and native-fullscreen windows are excluded. Crashes or forced termination cannot run restoration; a window minimized by Stagehand can be reopened from the Dock.
+Off-ribbon windows are parked individually in a screen corner without minimizing to the Dock or hiding their entire application. macOS can retain a small visible corner remnant. If a window refuses safe parking, Stagehand restores it and pauses instead of minimizing it. Pause and Quit restore original frames. User-minimized windows and native-fullscreen windows are excluded. Crashes or forced termination cannot run restoration.
 
 New windows must match on-screen CoreGraphics metadata before admission. Ambiguous same-app windows with identical frames can be skipped until distinguishable. Stagehand stays enabled on the native Desktop where you press Start. Leaving that Desktop suspends its input and layout work without discarding its spaces. Returning resumes automatically. Desktop identity uses a read-only private system API; when identity is unavailable, Stagehand stays suspended rather than managing an unknown Desktop. Pause and Start again to bind to a different Desktop. This MVP targets one built-in display; native fullscreen and multiple-display workflows are deferred.
 
@@ -93,6 +94,8 @@ open -n -W -g --stdout /tmp/stagehand-focus.log /Applications/Stagehand.app --ar
 ```
 
 `--diagnose-permissions` only reports the installed app's Accessibility and Input Monitoring grants. It does not request access, start management, or activate another window.
+
+`--diagnose-parking <bundle-id>` explicitly parks and refocuses an eligible window three times, reporting accepted geometry and focus checks before restoring its original frame. Run it on a regular Desktop with the normal Stagehand instance stopped. It never types into the target window.
 
 ## Source map
 

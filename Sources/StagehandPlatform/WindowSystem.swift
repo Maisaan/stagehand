@@ -26,8 +26,8 @@ public final class WindowSystem {
         let element: AXUIElement
         var record: WindowRecord
         var originalFrame: CGRect?
-        var parkedFrame: CGRect?
-        var minimizedByStagehand = false
+        var parking = WindowParking()
+        var parkedFrame: CGRect? { parking.restoreFrame }
         var isAdmitted = true
     }
 
@@ -104,7 +104,8 @@ public final class WindowSystem {
 
     public func scanWindows() -> [WindowRecord] {
         guard isAccessibilityTrusted else { return nativeWindows.records }
-        let apps = NSWorkspace.shared.runningApplications.filter {
+        let runningApps = NSWorkspace.shared.runningApplications
+        let apps = runningApps.filter {
             $0.processIdentifier != ProcessInfo.processInfo.processIdentifier &&
             $0.activationPolicy == .regular && !$0.isTerminated
         }
@@ -117,11 +118,18 @@ public final class WindowSystem {
         var seen = Set<String>()
         var result: [WindowRecord] = []
         let visibleWindows = onScreenWindows()
+        if focusDiagnosticsEnabled {
+            print("Scan runningApps=\(runningApps.count) eligibleApps=\(apps.count) cgVisibleWindows=\(visibleWindows.count)")
+        }
         for app in apps {
             let appElement = AXUIElementCreateApplication(app.processIdentifier)
             AXUIElementSetMessagingTimeout(appElement, 0.1)
             if started { observeApplication(appElement, pid: app.processIdentifier) }
-            guard let elements = attribute(appElement, kAXWindowsAttribute) as? [AXUIElement] else {
+            let windowList = copyAttribute(appElement, kAXWindowsAttribute)
+            if focusDiagnosticsEnabled {
+                print("Scan pid=\(app.processIdentifier) AXWindowsStatus=\(windowList.error.rawValue) count=\((windowList.value as? [AXUIElement])?.count ?? -1)")
+            }
+            guard let elements = windowList.value as? [AXUIElement] else {
                 // A temporarily busy application must not lose its space memberships.
                 for tracked in windows.values where tracked.record.pid == app.processIdentifier {
                     seen.insert(tracked.record.id)
@@ -145,36 +153,53 @@ public final class WindowSystem {
                 guard let subrole = attribute(element, kAXSubroleAttribute) as? String,
                       let currentFrame = candidate.frame,
                       let minimized = attribute(element, kAXMinimizedAttribute) as? Bool else {
+                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=missingMetadata") }
                     if let existing, existing.isAdmitted { result.append(existing.record) }
                     continue
                 }
                 let fullscreen = copyAttribute(element, "AXFullScreen")
                 if fullscreen.error == .cannotComplete {
+                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=fullscreenReadTimeout") }
                     if let existing, existing.isAdmitted { result.append(existing.record) }
                     continue
                 }
                 guard subrole == kAXStandardWindowSubrole,
                       fullscreen.value as? Bool != true,
-                      currentFrame.width > 1, currentFrame.height > 1 else { continue }
-                guard !minimized || existingID.flatMap({ windows[$0]?.minimizedByStagehand }) == true else {
+                      currentFrame.width > 1, currentFrame.height > 1 else {
+                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=nonstandardOrFullscreenOrInvalidFrame") }
+                    continue
+                }
+                guard !minimized else {
+                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=minimized") }
                     continue
                 }
                 if existing?.isAdmitted != true {
                     // PID and bounds remain available without Screen Recording access.
                     // Reject ambiguous geometry rather than accidentally admitting a
                     // same-sized window belonging to another native macOS Desktop.
-                    guard visibleWindows.contains(where: {
+                    let visibleMatch = visibleWindows.contains(where: {
                         $0.pid == app.processIdentifier && sameBounds($0.frame, currentFrame)
-                    }), candidates.filter({
+                    })
+                    let geometryMatches = candidates.filter({
                         $0.frame.map { sameBounds($0, currentFrame) } == true
-                    }).count == 1 else { continue }
+                    }).count
+                    guard visibleMatch, geometryMatches == 1 else {
+                        if focusDiagnosticsEnabled {
+                            print("Scan pid=\(app.processIdentifier) rejected=desktopAdmission visibleMatch=\(visibleMatch) sameGeometryCount=\(geometryMatches)")
+                        }
+                        continue
+                    }
                 }
                 var movable: DarwinBoolean = false
                 guard AXUIElementIsAttributeSettable(element, kAXPositionAttribute as CFString, &movable) == .success else {
+                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=positionSettableReadFailed") }
                     if let existing, existing.isAdmitted { result.append(existing.record) }
                     continue
                 }
-                guard movable.boolValue else { continue }
+                guard movable.boolValue else {
+                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=notMovable") }
+                    continue
+                }
                 var resizable: DarwinBoolean = false
                 let sizeStatus = AXUIElementIsAttributeSettable(element, kAXSizeAttribute as CFString, &resizable)
                 let id: String
@@ -205,6 +230,7 @@ public final class WindowSystem {
             }
         }
         windows = windows.filter { seen.contains($0.key) }
+        if focusDiagnosticsEnabled { print("Scan admittedExternal=\(result.count) registeredNative=\(nativeWindows.records.count)") }
         return result + nativeWindows.records
     }
 
@@ -222,17 +248,25 @@ public final class WindowSystem {
               frame.width > 0, frame.height > 0,
               let tracked = windows[windowID] else { return false }
         captureOriginalFrame(windowID: windowID)
-        guard restore(windowID: windowID) else { return false }
+        if tracked.parkedFrame != nil {
+            guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else { return false }
+            var parking = tracked.parking
+            let success = parking.restore(to: frame, setFrame: { self.writeFrame(tracked.element, frame: $0) },
+                                          readFrame: { self.readFrame(tracked.element) })
+            windows[windowID]?.parking = parking
+            return success
+        }
         return writeFrame(tracked.element, frame: frame)
     }
 
     /// Parks just this window, preserving other windows belonging to the same app.
-    /// Some apps clamp offscreen positions; those windows are minimized as a fallback.
+    /// A small bottom-corner remnant avoids macOS's fully-offscreen clamp without minimizing.
     @discardableResult
     public func park(windowID: String) -> Bool {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.park(windowID: windowID) }
         guard let tracked = windows[windowID] else { return false }
-        if tracked.parkedFrame != nil { return true }
+        if tracked.parkedFrame != nil { return tracked.parking.isParked }
+        guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else { return false }
         guard let currentFrame = readFrame(tracked.element) else { return false }
         captureOriginalFrame(windowID: windowID)
         let displays = NSScreen.screens.map { screen -> CGRect in
@@ -240,23 +274,28 @@ public final class WindowSystem {
             return CGRect(x: screen.frame.minX, y: primaryTop - screen.frame.maxY,
                           width: screen.frame.width, height: screen.frame.height)
         }
-        guard let rightEdge = displays.map(\.maxX).max() else { return false }
-        var parked = currentFrame
-        parked.origin.x = rightEdge + 32
-        windows[windowID]?.parkedFrame = currentFrame
-        if writePosition(tracked.element, position: parked.origin),
-           let actual = readFrame(tracked.element),
-           displays.allSatisfy({ !$0.intersects(actual) }) {
-            return true
+        let screens = NSScreen.screens
+        guard let screenIndex = displays.indices.max(by: {
+            let lhs = displays[$0].intersection(currentFrame)
+            let rhs = displays[$1].intersection(currentFrame)
+            return (lhs.isNull ? 0 : lhs.width * lhs.height) < (rhs.isNull ? 0 : rhs.width * rhs.height)
+        }) else { return false }
+        let visible = screens[screenIndex].visibleFrame
+        let bounds = CGRect(x: visible.minX, y: (screens.first?.frame.maxY ?? 0) - visible.maxY,
+                            width: visible.width, height: visible.height)
+        var parking = tracked.parking
+        let success = parking.park(frame: currentFrame, bounds: bounds, displays: displays,
+                                   setPosition: { position in
+            let accepted = self.writePosition(tracked.element, position: position)
+            if self.focusDiagnosticsEnabled { print("Parking write pid=\(tracked.record.pid) requested=\(position) accepted=\(accepted)") }
+            return accepted
+        },
+                                   readFrame: { self.readFrame(tracked.element) })
+        windows[windowID]?.parking = parking
+        if focusDiagnosticsEnabled {
+            print("Parking pid=\(tracked.record.pid) success=\(success) actual=\(String(describing: readFrame(tracked.element))) minimized=\(String(describing: attribute(tracked.element, kAXMinimizedAttribute) as? Bool)) restorePending=\(parking.restoreFrame != nil)")
         }
-        // Restore the visible position before minimizing so the Dock restores it correctly.
-        _ = writePosition(tracked.element, position: currentFrame.origin)
-        if AXUIElementSetAttributeValue(tracked.element, kAXMinimizedAttribute as CFString, kCFBooleanTrue) == .success {
-            windows[windowID]?.minimizedByStagehand = true
-            return true
-        }
-        windows[windowID]?.parkedFrame = nil
-        return false
+        return success
     }
 
     /// Unparks without requesting app activation. Focus is a separate operation.
@@ -264,15 +303,17 @@ public final class WindowSystem {
     public func restore(windowID: String) -> Bool {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.restore(windowID: windowID) }
         guard let tracked = windows[windowID] else { return false }
-        guard let parkedFrame = tracked.parkedFrame else { return true }
-        if tracked.minimizedByStagehand {
-            guard AXUIElementSetAttributeValue(tracked.element, kAXMinimizedAttribute as CFString, kCFBooleanFalse) == .success else {
-                return false
-            }
+        guard tracked.parkedFrame != nil else { return true }
+        // A user-minimized window remains theirs; Stagehand never reverses that action.
+        guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else { return false }
+        var parking = tracked.parking
+        let success = parking.restore(setFrame: { self.writeFrame(tracked.element, frame: $0) },
+                                      readFrame: { self.readFrame(tracked.element) })
+        windows[windowID]?.parking = parking
+        if focusDiagnosticsEnabled {
+            print("Parking restore pid=\(tracked.record.pid) success=\(success) actual=\(String(describing: readFrame(tracked.element))) restorePending=\(parking.restoreFrame != nil)")
         }
-        windows[windowID]?.minimizedByStagehand = false
-        windows[windowID]?.parkedFrame = nil
-        return writeFrame(tracked.element, frame: parkedFrame)
+        return success
     }
 
     public func captureOriginalFrame(windowID: String) {
@@ -291,7 +332,7 @@ public final class WindowSystem {
             guard let tracked = windows[id] else { continue }
             // Entering native fullscreen hands the window back to macOS.
             guard attribute(tracked.element, "AXFullScreen") as? Bool != true else { continue }
-            // Do not discard the original frame if unminimizing/unparking failed.
+            // Do not discard the original frame if unparking failed.
             // A later recovery attempt must still know where the window started.
             guard restore(windowID: id) else { continue }
             if let originalFrame = tracked.originalFrame {

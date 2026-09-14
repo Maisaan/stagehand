@@ -14,7 +14,8 @@ public enum WindowLayout {
         for state: WorkspaceState,
         availableFrame: CGRect,
         gap: CGFloat = 8,
-        observedWidths: [String: CGFloat] = [:]
+        observedWidths: [String: CGFloat] = [:],
+        observedHeights: [String: CGFloat] = [:]
     ) -> [WindowPlacement] {
         guard !availableFrame.isEmpty, !availableFrame.isInfinite,
               availableFrame.origin.x.isFinite, availableFrame.origin.y.isFinite,
@@ -33,7 +34,14 @@ public enum WindowLayout {
             } else {
                 width = requestedWidth
             }
-            let frame = CGRect(x: cursor, y: availableFrame.minY, width: width, height: availableFrame.height)
+            let requestedHeight = availableFrame.height * (windowID == space.focusedWindowID ? 1 : 0.95)
+            let height: CGFloat
+            if let observedHeight = observedHeights[windowID], observedHeight.isFinite, observedHeight > 0 {
+                height = observedHeight
+            } else {
+                height = requestedHeight
+            }
+            let frame = CGRect(x: cursor, y: availableFrame.midY - height / 2, width: width, height: height)
             if windowID == space.focusedWindowID {
                 focusedStart = cursor
                 focusedWidth = width
