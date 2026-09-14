@@ -58,6 +58,10 @@ final class NativeWindowRegistry: NSObject {
 
     func contains(windowID: String) -> Bool { windows[windowID]?.window != nil }
 
+    var trackedWindowIDs: Set<String> {
+        Set(windows.values.filter { !$0.closed && $0.window != nil }.map(\.id))
+    }
+
     var records: [WindowRecord] {
         windows.values.compactMap { entry in
             guard let window = entry.window, !entry.closed, !window.isMiniaturized,

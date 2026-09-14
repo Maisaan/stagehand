@@ -47,6 +47,8 @@ Stagehand opens paused and does not move windows until you start it.
 
 Press Control + Option + Escape to pause and restore the window frames captured at Start. You can resume from settings or the menu bar item.
 
+Manual pauses and automatic pauses after an error preserve your spaces, window order, shared memberships, and per-space widths for resume. Closed windows are omitted. Windows that are temporarily unavailable regain their saved memberships when Stagehand discovers them again.
+
 ## Using Stagehand
 
 Stagehand has nine numbered spaces. Each space keeps its own window order, focused window, and widths. Space membership lasts only for the current session.

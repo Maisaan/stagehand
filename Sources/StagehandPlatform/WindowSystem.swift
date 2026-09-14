@@ -23,6 +23,11 @@ public final class WindowSystem {
     public var focusDiagnosticsEnabled = false
     public private(set) var lastFocusReport: WindowFocusReport?
 
+    /// Includes known windows omitted from a scan while busy, minimized, or on another Desktop.
+    public var trackedWindowIDs: Set<String> {
+        Set(windows.keys).union(nativeWindows.trackedWindowIDs)
+    }
+
     private struct TrackedWindow {
         let element: AXUIElement
         var record: WindowRecord

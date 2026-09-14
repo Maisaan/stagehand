@@ -9,6 +9,8 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 - Start with several ordinary windows on one native macOS Desktop.
 - Pause and Quit independently. Verify every managed window returns to its pre-Start frame. Stagehand must never minimize a window to the Dock.
 - Repeatedly pause/start during navigation. No stale operation should move windows after pause.
+- Arrange and share windows across several numbered spaces, with different orders and widths. Pause, close one shared window, and resume. Preserve the surviving memberships, orders, and widths; omit the closed window from every space.
+- Repeat after an automatic pause caused by failed focus or parking. Resume should use the layout before an interrupted transition. If an app is still busy at resume, verify its windows regain their saved memberships when discovery recovers, including after another pause/resume.
 - Change native macOS Desktop. Stagehand should stay enabled but suspend input and layout work, without pulling windows into the new Desktop. Return and verify automatic resume with order and widths preserved.
 - Repeat Desktop switching during window navigation. No buffered typing should be replayed on the away Desktop.
 

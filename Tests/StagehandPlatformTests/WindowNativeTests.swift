@@ -37,6 +37,19 @@ struct NativeWindowTests {
         #expect(registry.register(window: settings) == id)
     }
 
+    @Test func undiscoveredWindowsRemainTrackedUntilClosed() {
+        let registry = NativeWindowRegistry()
+        let settings = makeWindow()
+        defer { settings.close() }
+        let id = registry.register(window: settings)
+        #expect(registry.records.isEmpty)
+        #expect(registry.trackedWindowIDs == [id])
+
+        settings.close()
+        #expect(registry.records.isEmpty)
+        #expect(registry.trackedWindowIDs.isEmpty)
+    }
+
     @Test func parkingKeepsMembershipAndPauseRestoresOriginalGeometry() {
         let registry = NativeWindowRegistry()
         let settings = makeWindow()

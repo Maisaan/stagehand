@@ -77,6 +77,7 @@ final class StagehandModel: ObservableObject {
     private var workerGeneration = 0
     private var desktopCheckTask: Task<Void, Never>?
     private var transitionRollback: WorkspaceState?
+    private var workspaceRestoration = WorkspaceRestoration()
     private var lastLayoutMilliseconds = 0
     private var lastFocusTokenExpired = false
     private var pointerInteraction: PointerInteraction?
@@ -248,7 +249,8 @@ final class StagehandModel: ObservableObject {
         windowSystem.start()
         windows = windowSystem.scanWindows()
         preferredHeights = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0.frame.height) })
-        state.reconcile(windowIDs: windows.map(\.id))
+        workspaceRestoration.reconcile(state: &state, windowIDs: windows.map(\.id),
+                                       trackedWindowIDs: windowSystem.trackedWindowIDs)
         if let focused = windowSystem.focusedWindowID() { state.focus(windowID: focused) }
         isRunning = true
         isSuspended = false
@@ -277,7 +279,7 @@ final class StagehandModel: ObservableObject {
         )
         isRunning = false
         isSuspended = false
-        state.isPaused = true
+        state = workspaceRestoration.pause(state: state, transitionRollback: transitionRollback)
         ribbonMotion.cancel()
         gestureBase = nil
         presentationFrames = nil
@@ -606,7 +608,8 @@ final class StagehandModel: ObservableObject {
         let oldState = state
         let oldIDs = Set(windows.map(\.id))
         windows = current
-        state.reconcile(windowIDs: current.map(\.id))
+        workspaceRestoration.reconcile(state: &state, windowIDs: current.map(\.id),
+                                       trackedWindowIDs: windowSystem.trackedWindowIDs)
         let hasNewWindows = current.contains { !oldIDs.contains($0.id) }
         if !hasNewWindows, oldState.activeSpaceIndex == state.activeSpaceIndex,
            let focused = windowSystem.focusedWindowID(),

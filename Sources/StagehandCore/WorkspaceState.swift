@@ -106,6 +106,29 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         self.activeSpaceIndex = min(max(activeSpaceIndex, 0), Self.spaceCount - 1)
     }
 
+    /// Restore returning windows without undoing changes to windows already in the workspace.
+    public mutating func restoreMemberships(windowIDs: Set<String>, from savedState: WorkspaceState) {
+        let returningIDs = windowIDs.subtracting(spaces.flatMap(\.windowIDs))
+        for index in spaces.indices {
+            let savedSpace = savedState.spaces[index]
+            for (offset, windowID) in savedSpace.windowIDs.enumerated() where returningIDs.contains(windowID) {
+                // Insert before the next surviving neighbor, preserving the current
+                // order of windows the user has already resumed and rearranged.
+                let nextID = savedSpace.windowIDs.dropFirst(offset + 1)
+                    .first { spaces[index].windowIDs.contains($0) }
+                let insertionIndex = nextID.flatMap { spaces[index].windowIDs.firstIndex(of: $0) }
+                    ?? spaces[index].windowIDs.endIndex
+                spaces[index].windowIDs.insert(windowID, at: insertionIndex)
+                spaces[index].widthFractions[windowID] = savedSpace.widthFractions[windowID]
+            }
+            if spaces[index].focusedWindowID == nil {
+                spaces[index].focusedWindowID = savedSpace.focusedWindowID
+                    .flatMap { spaces[index].windowIDs.contains($0) ? $0 : nil }
+                    ?? spaces[index].windowIDs.first
+            }
+        }
+    }
+
     /// Reconcile against all live managed windows, including windows in other spaces.
     /// Only globally unknown windows are added to the active space.
     public mutating func reconcile(windowIDs: [String]) {
