@@ -108,6 +108,27 @@ struct NavigationInteractionTests {
         #expect(removed == ["other"])
     }
 
+    @Test func appBarDropReordersTheDraggedWindow() {
+        let model = NavigationHUDModel()
+        model.windows = [
+            WindowRecord(id: "first", appName: "First", title: "", bundleIdentifier: "com.first",
+                         pid: 10, frame: .zero, isResizable: true),
+            WindowRecord(id: "second", appName: "Second", title: "", bundleIdentifier: "com.second",
+                         pid: 11, frame: .zero, isResizable: true),
+            WindowRecord(id: "third", appName: "Third", title: "", bundleIdentifier: "com.third",
+                         pid: 12, frame: .zero, isResizable: true)
+        ]
+        var reorders: [(String, Int)] = []
+        model.onReorderWindow = { reorders.append(($0, $1)) }
+
+        #expect(model.reorderWindow(id: "first", onto: "third"))
+        #expect(!model.reorderWindow(id: "first", onto: "first"))
+        #expect(!model.reorderWindow(id: "stale", onto: "second"))
+        #expect(!model.reorderWindow(id: "second", onto: "stale"))
+        #expect(reorders.map(\.0) == ["first"])
+        #expect(reorders.map(\.1) == [2])
+    }
+
     @Test func spacePickerUsesAvailableSpacesAndReturnsToAppsAfterSelection() throws {
         _ = NSApplication.shared
         let overlays = NavigationOverlays()

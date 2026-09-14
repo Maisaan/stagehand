@@ -52,6 +52,7 @@ final class NavigationOverlays {
     var onSelectSpace: ((Int) -> Void)?
     var onShareWindow: ((String, Int) -> Void)?
     var onRemoveWindow: ((String) -> Void)?
+    var onReorderWindow: ((String, Int) -> Void)?
     var canRevealNavigation: (() -> Bool)?
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
@@ -69,6 +70,7 @@ final class NavigationOverlays {
         hudModel.onSelectSpace = { [weak self] index in self?.onSelectSpace?(index) }
         hudModel.onShareWindow = { [weak self] id, index in self?.onShareWindow?(id, index) }
         hudModel.onRemoveWindow = { [weak self] id in self?.onRemoveWindow?(id) }
+        hudModel.onReorderWindow = { [weak self] id, index in self?.onReorderWindow?(id, index) }
         hudModel.onContentChange = { [weak self] in
             self?.presentHUD(dismissAfter: .milliseconds(800))
         }
@@ -448,6 +450,7 @@ final class NavigationHUDModel: ObservableObject {
     var onSelectSpace: ((Int) -> Void)?
     var onShareWindow: ((String, Int) -> Void)?
     var onRemoveWindow: ((String) -> Void)?
+    var onReorderWindow: ((String, Int) -> Void)?
     var onContentChange: (() -> Void)?
 
     var displayedItemCount: Int { showingSpaces ? availableSpaceIndices.count : windows.count }
@@ -492,6 +495,16 @@ final class NavigationHUDModel: ObservableObject {
         guard canRemoveFromCurrentSpace(windowID: id) else { return }
         onRemoveWindow?(id)
         onContentChange?()
+    }
+
+    @discardableResult
+    func reorderWindow(id: String, onto destinationID: String) -> Bool {
+        guard id != destinationID,
+              windows.contains(where: { $0.id == id }),
+              let destination = windows.firstIndex(where: { $0.id == destinationID }) else { return false }
+        onReorderWindow?(id, destination)
+        onContentChange?()
+        return true
     }
 }
 
@@ -578,6 +591,11 @@ private struct NavigationHUD: View {
                                             model.removeWindowFromCurrentSpace(id: window.id)
                                         }
                                     }
+                                }
+                                .draggable(window.id)
+                                .dropDestination(for: String.self) { draggedIDs, _ in
+                                    guard let draggedID = draggedIDs.first else { return false }
+                                    return model.reorderWindow(id: draggedID, onto: window.id)
                                 }
                                 .id(window.id)
                             }

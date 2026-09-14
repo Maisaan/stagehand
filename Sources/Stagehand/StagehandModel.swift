@@ -143,7 +143,7 @@ final class StagehandModel: ObservableObject {
             case .moveMembership: "moveMembershipFromSettings"
             case .shareMembership: "shareMembershipFromSettings"
             case .removeMembership: "removeMembershipFromSettings"
-            case .reorderWindow: "reorderWindowFromSettings"
+            case .reorderWindow: "reorderWindow"
             case .focusInSpace: "focusWindowFromSettings"
             case .observedFocus: "observedFocus"
             case .refresh: "refresh"
@@ -172,6 +172,10 @@ final class StagehandModel: ObservableObject {
             self?.shareMembership(windowID: id, spaceIndex: index)
         }
         overlays.onRemoveWindow = { [weak self] id in self?.removeMembership(windowID: id) }
+        overlays.onReorderWindow = { [weak self] id, index in
+            guard let self else { return }
+            self.reorderWindow(windowID: id, toIndex: index, spaceIndex: self.state.activeSpaceIndex)
+        }
         overlays.canRevealNavigation = { [weak self] in
             guard let self, self.isRunning, !self.isSuspended else { return false }
             return self.desktopScope.refresh() == .home
