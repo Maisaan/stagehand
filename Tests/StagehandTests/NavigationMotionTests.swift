@@ -147,7 +147,7 @@ struct NavigationMotionTests {
             let frame = CGRect(x: 110, y: 115, width: width, height: 490)
             overlays.updateBorder(frame: frame, visible: true, cornerRadius: 18, focusChanged: false)
             let expected = CGRect(x: frame.minX, y: primary.frame.maxY - frame.maxY,
-                                  width: frame.width, height: frame.height).insetBy(dx: -2, dy: -2)
+                                  width: frame.width, height: frame.height)
             #expect(panel.frame == expected)
             #expect(overlays.border === panel)
             #expect(layer.animation(forKey: "focusReveal")?.beginTime == reveal.beginTime)

@@ -39,3 +39,20 @@ import Testing
     let square = BorderView.outline(in: bounds, cornerRadius: 0)
     #expect(square.contains(CGPoint(x: 2, y: 2)))
 }
+
+@MainActor @Test func navigationBorderStaysInsideWindowAtDisplayEdges() throws {
+    _ = NSApplication.shared
+    let screen = try #require(NSScreen.screens.first)
+    let overlays = NavigationOverlays()
+    defer { overlays.hide() }
+    let frame = CGRect(x: screen.frame.maxX - 300, y: 0, width: 300, height: screen.frame.height)
+    overlays.updateBorder(frame: frame, visible: true, cornerRadius: 26)
+    let panel = try #require(overlays.border)
+    let expected = CGRect(x: frame.minX, y: screen.frame.maxY - frame.maxY,
+                          width: frame.width, height: frame.height)
+    #expect(panel.frame == expected)
+    let view = try #require(panel.contentView)
+    let path = BorderView.outline(in: view.bounds, cornerRadius: 26)
+    let strokeBounds = path.bounds.insetBy(dx: -path.lineWidth / 2, dy: -path.lineWidth / 2)
+    #expect(view.bounds.contains(strokeBounds))
+}

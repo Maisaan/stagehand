@@ -36,7 +36,7 @@ final class StagehandModel: ObservableObject {
     private let desktopScope = DesktopScope()
     private let input = InputController()
     private let focusGate = FocusInputGate()
-    private let overlays = NavigationOverlays()
+    private let overlays: NavigationOverlays
     private let emptySpace = EmptySpaceWindow()
     private var refreshTask: Task<Void, Never>?
     private var worker: Task<Void, Never>?
@@ -51,6 +51,7 @@ final class StagehandModel: ObservableObject {
     private var pointerInteraction: PointerInteraction?
     private var borderWindowID: String?
     private var borderCornerRadius: CGFloat?
+    private var isLayingOutWindows = false
     private var preferencesNeedLayout = false
 
     private struct PointerInteraction {
@@ -75,7 +76,8 @@ final class StagehandModel: ObservableObject {
         }
     }
 
-    init() {
+    init(overlays: NavigationOverlays = NavigationOverlays()) {
+        self.overlays = overlays
         let defaults = UserDefaults.standard
         gesturesEnabled = defaults.object(forKey: "gesturesEnabled") as? Bool ?? false
         gap = GapInput.clamped(defaults.object(forKey: "windowGap") as? Double ?? 8)
@@ -86,6 +88,7 @@ final class StagehandModel: ObservableObject {
         windowSystem.onChange = { [weak self] in self?.scheduleRefresh() }
         windowSystem.onFrameChange = { [weak self] id, frame in
             guard let self, self.isRunning, !self.isSuspended,
+                  !self.isLayingOutWindows,
                   self.borderWindowID == id, self.state.focusedWindowID == id else { return }
             guard self.desktopScope.refresh() == .home else {
                 self.nativeDesktopChanged()
@@ -93,7 +96,7 @@ final class StagehandModel: ObservableObject {
             }
             // Geometry follows native notifications immediately. Do not scan windows,
             // query corner metadata, or wait for layout reconciliation during a resize.
-            self.overlays.updateBorder(frame: frame, visible: true, cornerRadius: self.borderCornerRadius)
+            self.updateFocusBorder(windowID: id, frame: frame)
         }
         windowSystem.onNativeDesktopChange = { [weak self] in
             self?.nativeDesktopChanged()
@@ -218,6 +221,7 @@ final class StagehandModel: ObservableObject {
 
     func setMaximizeWindows(_ enabled: Bool) {
         UserDefaults.standard.set(enabled, forKey: "maximizeWindows")
+        if enabled { hideFocusBorder() }
         if isRunning && !isSuspended { enqueue(.maximize(enabled)) }
         else { state.maximizeWindows = enabled }
     }
@@ -474,6 +478,11 @@ final class StagehandModel: ObservableObject {
             if let token { focusGate.cancelTransfer(token: token) }
             return false
         }
+        // Native frame setters and focus confirmation are separate operations. Never
+        // leave the old outline on screen or follow their intermediate notifications.
+        isLayingOutWindows = true
+        overlays.updateBorder(frame: .zero, visible: false)
+        defer { isLayingOutWindows = false }
         var placements: [WindowPlacement] = []
         var observedWidths: [String: CGFloat] = [:]
         var observedHeights: [String: CGFloat] = [:]
@@ -616,7 +625,11 @@ final class StagehandModel: ObservableObject {
         request == .navigation || (state.focusedWindowID != nil && windowSystem.focusedWindowID() == state.focusedWindowID)
     }
 
-    private func updateFocusBorder(windowID: String, frame: CGRect) {
+    func updateFocusBorder(windowID: String, frame: CGRect) {
+        guard !state.maximizeWindows else {
+            hideFocusBorder()
+            return
+        }
         let changed = borderWindowID != windowID
         if changed {
             borderWindowID = windowID
@@ -625,6 +638,12 @@ final class StagehandModel: ObservableObject {
             }
         }
         overlays.updateBorder(frame: frame, visible: true, cornerRadius: borderCornerRadius, focusChanged: changed)
+    }
+
+    private func hideFocusBorder() {
+        borderWindowID = nil
+        borderCornerRadius = nil
+        overlays.updateBorder(frame: .zero, visible: false)
     }
 
     private func nativeDesktopChanged(remainingChecks: Int = 5) {

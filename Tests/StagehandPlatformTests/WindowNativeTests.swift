@@ -4,6 +4,19 @@ import Testing
 
 @Suite(.serialized) @MainActor
 struct NativeWindowTests {
+    private final class RevealRecordingWindow: NSWindow {
+        var framesWhenRevealed: [CGRect] = []
+
+        override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+            frameRect
+        }
+
+        override func orderFront(_ sender: Any?) {
+            framesWhenRevealed.append(frame)
+            super.orderFront(sender)
+        }
+    }
+
     private func makeWindow() -> NSWindow {
         _ = NSApplication.shared
         let window = RibbonWindow(contentRect: CGRect(x: 10_000, y: 10_000, width: 680, height: 610),
@@ -63,6 +76,26 @@ struct NativeWindowTests {
         #expect(registry.park(windowID: id))
         #expect(registry.setFrame(windowID: id, frame: CGRect(x: 10_100, y: 10_100, width: 900, height: 700)))
         #expect(settings.isVisible)
+        #expect(!settings.isKeyWindow)
+    }
+
+    @Test func parkedWindowReceivesItsDestinationFrameBeforeBeingRevealed() {
+        _ = NSApplication.shared
+        let registry = NativeWindowRegistry()
+        let settings = RevealRecordingWindow(
+            contentRect: CGRect(x: 10_000, y: 10_000, width: 680, height: 610),
+            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        settings.isReleasedWhenClosed = false
+        defer { settings.close() }
+        settings.orderFront(nil)
+        let id = registry.register(window: settings)
+        #expect(registry.park(windowID: id))
+        settings.framesWhenRevealed.removeAll()
+
+        let destination = CGRect(x: 10_100, y: 10_100, width: 900, height: 700)
+        #expect(registry.setFrame(windowID: id, frame: destination))
+        #expect(settings.framesWhenRevealed == [settings.frame])
+        #expect(registry.frame(windowID: id) == destination)
         #expect(!settings.isKeyWindow)
     }
 

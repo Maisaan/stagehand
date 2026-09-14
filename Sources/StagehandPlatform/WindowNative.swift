@@ -90,9 +90,10 @@ final class NativeWindowRegistry: NSObject {
               frame.minX.isFinite, frame.minY.isFinite, frame.width.isFinite, frame.height.isFinite,
               frame.width > 0, frame.height > 0, !window.styleMask.contains(.fullScreen) else { return false }
         captureOriginalFrame(windowID: windowID)
-        guard restore(windowID: windowID) else { return false }
         // Converting between AppKit and AX coordinates is the same vertical reflection in both directions.
+        // Update parked windows while hidden so they never reveal the previous ribbon frame.
         window.setFrame(accessibilityFrame(frame), display: true, animate: false)
+        guard restore(windowID: windowID) else { return false }
         let actual = accessibilityFrame(window.frame)
         return abs(actual.minX - frame.minX) <= 1 && abs(actual.minY - frame.minY) <= 1 &&
             abs(actual.width - frame.width) <= 1 && abs(actual.height - frame.height) <= 1
@@ -133,6 +134,9 @@ final class NativeWindowRegistry: NSObject {
     func focus(windowID: String) async -> Bool {
         guard let entry = windows[windowID], !entry.closed, let window = entry.window,
               restore(windowID: windowID) else { return false }
+        // Cooperative activate() can be refused while another app owns focus.
+        // Use AppKit's AXFrontmost handler directly, without AX messaging to our own process.
+        NSApp.setAccessibilityFrontmost(true)
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         let deadline = ContinuousClock.now.advanced(by: .milliseconds(180))

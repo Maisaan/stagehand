@@ -35,7 +35,7 @@ New windows enter after the current window. Stagehand's own settings window join
 
 The settings window is resizable. Settings save maximization, gap, and the gesture preference. Space membership is session-only in this MVP.
 
-The navigation bar stays visible through successive changes and moves its selection indicator in place. It enters and exits toward the top using short scale and opacity transitions. Reduce Motion removes movement. Border focus feedback uses opacity only; window movement and resizing are tracked immediately, without geometry animation. These overlays never wait on or take ownership of keyboard focus.
+The navigation bar stays visible through successive changes and moves its selection indicator in place. It enters and exits toward the top using short scale and opacity transitions. Reduce Motion removes movement. Resizable windows have an inward-drawn focus border; maximized windows have none. The border hides during managed layout changes and follows manual resizing immediately, without geometry animation. Focus feedback uses opacity only. These overlays never wait on or take ownership of keyboard focus.
 
 ## Controls
 

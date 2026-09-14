@@ -50,7 +50,8 @@ final class NavigationOverlays {
         let converted = CGRect(x: frame.minX, y: primary.frame.maxY - frame.maxY,
                                width: frame.width, height: frame.height)
         // Frame/path changes remain synchronous, including throughout a native live resize.
-        border.setFrame(converted.insetBy(dx: -2, dy: -2), display: true)
+        // Draw inward so the complete stroke remains visible at display edges.
+        border.setFrame(converted, display: true)
         if !border.isVisible { border.orderFrontRegardless() }
         if focusChanged, let layer = border.contentView?.layer {
             let reveal = CABasicAnimation(keyPath: "opacity")
@@ -263,7 +264,7 @@ final class BorderView: NSView {
         // retain the small fallback; the OS version alone does not determine window shape.
         let nativeRadius = cornerRadius.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil } ?? 9
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1),
-                                xRadius: nativeRadius + 1, yRadius: nativeRadius + 1)
+                                xRadius: max(0, nativeRadius - 1), yRadius: max(0, nativeRadius - 1))
         path.lineWidth = 2
         return path
     }
