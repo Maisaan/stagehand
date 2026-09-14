@@ -1,4 +1,5 @@
 import Foundation
+import ApplicationServices
 import Testing
 @testable import StagehandPlatform
 
@@ -7,6 +8,7 @@ private final class FocusDriverFixture: WindowFocusDriving {
     let targetPID: Int32
     var elapsedMilliseconds = 0
     var preparationMilliseconds = 0
+    var observationMilliseconds: [Int] = []
     var cancelWait = false
     var readings: [WindowFocusReport.Observation]
     private var readingIndex = 0
@@ -28,6 +30,9 @@ private final class FocusDriverFixture: WindowFocusDriving {
     }
 
     func observe() -> WindowFocusReport.Observation {
+        if readingIndex < observationMilliseconds.count {
+            elapsedMilliseconds += observationMilliseconds[readingIndex]
+        }
         defer { readingIndex += 1 }
         return readings[min(readingIndex, readings.count - 1)]
     }
@@ -36,6 +41,33 @@ private final class FocusDriverFixture: WindowFocusDriving {
         if cancelWait { throw CancellationError() }
         elapsedMilliseconds += 8
     }
+}
+
+@Test @MainActor func focusAttemptRechecksAfterASlowInvalidObservationConsumesTheRetryBudget() async {
+    // Minimized from an App Store navigation trace. Its first post-activation
+    // AX read returned invalidUIElement after blocking past the retry deadline,
+    // but the target window owned focus immediately afterward.
+    let driver = FocusDriverFixture(readings: [
+        focusReading(active: false, matches: false, directMatches: true),
+        WindowFocusReport.Observation(
+            frontmostPID: 456,
+            focusedApplicationPID: nil,
+            focusedApplicationStatus: AXError.invalidUIElement.rawValue,
+            focusedWindowStatus: nil,
+            directFocusedWindowStatus: AXError.invalidUIElement.rawValue,
+            directTargetWindowMatches: false,
+            targetApplicationActive: false,
+            targetWindowMatches: false
+        ),
+        focusReading(active: true, matches: true)
+    ])
+    driver.observationMilliseconds = [0, 511, 0]
+
+    let report = await WindowFocusAttempt.run(driver: driver)
+
+    #expect(report.outcome == .focused)
+    #expect(report.observations.last?.targetWindowMatches == true)
+    #expect(driver.requests == [0])
 }
 
 private func focusReading(active: Bool, matches: Bool, directMatches: Bool = false) -> WindowFocusReport.Observation {

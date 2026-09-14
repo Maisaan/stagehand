@@ -117,6 +117,15 @@ enum WindowFocusAttempt {
                 break
             }
         } while driver.elapsedMilliseconds < deadline
+        // A slow AX read can consume the retry budget while activation completes.
+        // Take one read-only snapshot at the deadline before reporting failure.
+        if outcome == .timedOut {
+            let observation = driver.observe()
+            if recordDiagnostics { observations.append(observation) }
+            if observation.confirmsFocus(targetPID: driver.targetPID) {
+                outcome = .focused
+            }
+        }
         return WindowFocusReport(targetPID: driver.targetPID, outcome: outcome,
                                  elapsedMilliseconds: driver.elapsedMilliseconds,
                                  operations: operations, initialObservation: initialObservation,
