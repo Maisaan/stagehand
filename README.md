@@ -4,6 +4,8 @@
 
 I built Stagehand for a simple constraint. Sometimes the built-in MacBook display is the whole setup. The window managers I tried felt aimed at larger external displays or multi-monitor desks. Stagehand keeps real app windows in one horizontal ribbon, so I can move between them with shortcuts or trackpad gestures. The active app keeps its menus and input.
 
+Stagehand was inspired by [KiwiDesk](https://github.com/KiwiCanopy/KiwiDesk).
+
 Stagehand has no third-party packages or remote services.
 
 ## Status
@@ -135,3 +137,7 @@ The executable also provides `--diagnose-focus`, `--diagnose-start`, `--diagnose
 - `Tests` mirrors the three source targets.
 - `docs/ACCEPTANCE.md` contains the live test checklist.
 - `scripts/build-app.sh` builds and signs the local app bundle.
+
+## License
+
+Stagehand is licensed under the [MIT License](LICENSE).
