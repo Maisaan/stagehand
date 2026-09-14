@@ -3,6 +3,19 @@ import Combine
 import StagehandCore
 import StagehandPlatform
 
+func shouldSlideRibbon(from previousState: WorkspaceState, to state: WorkspaceState,
+                       hadPreview: Bool, reduceMotion: Bool) -> Bool {
+    guard !reduceMotion,
+          previousState.activeSpaceIndex == state.activeSpaceIndex,
+          previousState.focusedWindowID != state.focusedWindowID || hadPreview,
+          let focusedWindowID = state.focusedWindowID else { return false }
+    let membershipCount = state.spaces.lazy
+        .filter { $0.windowIDs.contains(focusedWindowID) }
+        .prefix(2)
+        .count
+    return membershipCount < 2
+}
+
 @MainActor
 final class StagehandModel: ObservableObject {
     @Published private(set) var state = WorkspaceState()
@@ -767,9 +780,12 @@ final class StagehandModel: ObservableObject {
                     }
                     self.state = prepared
                 }
-                let canSlide = previousState.activeSpaceIndex == self.state.activeSpaceIndex &&
-                    (previousState.focusedWindowID != self.state.focusedWindowID || hadPreview) &&
-                    !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+                let canSlide = shouldSlideRibbon(
+                    from: previousState,
+                    to: self.state,
+                    hadPreview: hadPreview,
+                    reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+                )
                 self.layoutFailureReason = nil
                 let succeeded = await self.applyLayout(token: token, request: change.policy,
                                                        slideFrom: canSlide ? motionStart : nil)

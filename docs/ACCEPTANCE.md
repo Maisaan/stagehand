@@ -33,6 +33,7 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 - Move a window to an empty space without following. The outgoing space remains active.
 - Move and follow. The moved window receives focus.
 - Add the same T3 window to two spaces; reorder and resize independently. Content is shared.
+- With the shared window focused and unfocused in each space, switch spaces and navigate left/right back to it. It must not enter from the bottom or side. Repeat with maximization on and off, including different saved widths in each space. An already visible shared window with unchanged geometry should stay in place.
 - Close a shared window. It disappears from both spaces.
 - Remove one shared membership without closing the real window.
 - Switch to an empty space. Typing must not reach a parked app; a blank Stagehand placeholder is expected.

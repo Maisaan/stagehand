@@ -47,7 +47,7 @@ private final class SystemRibbonFrameDriver: NSObject, RibbonFrameDriving {
     }
 }
 
-/// Short-lived position-only animation. No resize calls, snapshots or idle timer.
+/// Short-lived horizontal animation. No resize calls, snapshots or idle timer.
 @MainActor
 final class RibbonMotion {
     private struct Animation {
@@ -230,8 +230,9 @@ final class RibbonMotion {
         let eased = progress == 0 ? 0 : progress == 1 ? 1 : 1 - pow(1 - t, 3)
         return to.reduce(into: [:]) { result, item in
             let start = from[item.key] ?? item.value
+            // Layout owns vertical alignment; a restored app may still report its parking Y.
             result[item.key] = CGRect(x: start.minX + (item.value.minX - start.minX) * eased,
-                                      y: start.minY + (item.value.minY - start.minY) * eased,
+                                      y: item.value.minY,
                                       width: item.value.width, height: item.value.height)
         }
     }
