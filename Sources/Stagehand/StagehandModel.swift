@@ -112,13 +112,19 @@ final class StagehandModel: ObservableObject {
         case remove(String)
         case share(windowID: String, spaceIndex: Int)
         case focus(String)
+        case moveMembership(windowID: String, fromSpaceIndex: Int, toSpaceIndex: Int)
+        case shareMembership(windowID: String, fromSpaceIndex: Int, toSpaceIndex: Int)
+        case removeMembership(windowID: String, fromSpaceIndex: Int)
+        case reorderWindow(windowID: String, toIndex: Int, spaceIndex: Int)
+        case focusInSpace(windowID: String, spaceIndex: Int)
         case observedFocus(String)
         case refresh
         case preferences
 
         var policy: LayoutRequestPolicy {
             switch self {
-            case .maximize, .preferences, .observedFocus: .preferences
+            case .maximize, .preferences, .observedFocus, .moveMembership,
+                 .shareMembership, .removeMembership, .reorderWindow: .preferences
             default: .navigation
             }
         }
@@ -134,6 +140,11 @@ final class StagehandModel: ObservableObject {
             case .remove: "removeMembership"
             case .share: "shareMembership"
             case .focus: "focusWindow"
+            case .moveMembership: "moveMembershipFromSettings"
+            case .shareMembership: "shareMembershipFromSettings"
+            case .removeMembership: "removeMembershipFromSettings"
+            case .reorderWindow: "reorderWindowFromSettings"
+            case .focusInSpace: "focusWindowFromSettings"
             case .observedFocus: "observedFocus"
             case .refresh: "refresh"
             case .preferences: "preferences"
@@ -402,6 +413,33 @@ final class StagehandModel: ObservableObject {
     func focusWindow(_ id: String) {
         guard isRunning, !isSuspended else { return }
         enqueue(.focus(id))
+    }
+
+    func moveMembership(windowID: String, fromSpaceIndex: Int, toSpaceIndex: Int) {
+        guard isRunning, !isSuspended else { return }
+        enqueue(.moveMembership(windowID: windowID, fromSpaceIndex: fromSpaceIndex,
+                                toSpaceIndex: toSpaceIndex))
+    }
+
+    func shareMembership(windowID: String, fromSpaceIndex: Int, toSpaceIndex: Int) {
+        guard isRunning, !isSuspended else { return }
+        enqueue(.shareMembership(windowID: windowID, fromSpaceIndex: fromSpaceIndex,
+                                 toSpaceIndex: toSpaceIndex))
+    }
+
+    func removeMembership(windowID: String, fromSpaceIndex: Int) {
+        guard isRunning, !isSuspended else { return }
+        enqueue(.removeMembership(windowID: windowID, fromSpaceIndex: fromSpaceIndex))
+    }
+
+    func reorderWindow(windowID: String, toIndex: Int, spaceIndex: Int) {
+        guard isRunning, !isSuspended else { return }
+        enqueue(.reorderWindow(windowID: windowID, toIndex: toIndex, spaceIndex: spaceIndex))
+    }
+
+    func focusWindow(_ id: String, inSpace spaceIndex: Int) {
+        guard isRunning, !isSuspended else { return }
+        enqueue(.focusInSpace(windowID: id, spaceIndex: spaceIndex))
     }
 
     func dismissWarning() { warning = nil }
@@ -780,6 +818,16 @@ final class StagehandModel: ObservableObject {
                 case .remove(let id): self.state.removeFromCurrentSpace(windowID: id)
                 case .share(let id, let index): self.state.share(windowID: id, toSpace: index)
                 case .focus(let id): self.state.focus(windowID: id)
+                case .moveMembership(let id, let sourceIndex, let destinationIndex):
+                    self.state.move(windowID: id, fromSpace: sourceIndex, toSpace: destinationIndex)
+                case .shareMembership(let id, let sourceIndex, let destinationIndex):
+                    self.state.share(windowID: id, fromSpace: sourceIndex, toSpace: destinationIndex)
+                case .removeMembership(let id, let sourceIndex):
+                    self.state.remove(windowID: id, fromSpace: sourceIndex)
+                case .reorderWindow(let id, let index, let spaceIndex):
+                    self.state.reorderWindow(windowID: id, to: index, inSpace: spaceIndex)
+                case .focusInSpace(let id, let spaceIndex):
+                    self.state.focus(windowID: id, inSpace: spaceIndex)
                 case .refresh, .preferences, .observedFocus: break
                 }
                 if change.isWindowNavigation, self.pending.first?.0.isWindowNavigation == true,

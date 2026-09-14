@@ -295,3 +295,39 @@ import Testing
     #expect(state.currentSpace.windowIDs.isEmpty)
     #expect(state.spaces[0] == snapshot.spaces[0])
 }
+
+@Test func settingsCanReorderAnInactiveSpaceWithoutActivatingIt() {
+    var state = WorkspaceState(spaces: [
+        SpaceState(windowIDs: ["active"]),
+        SpaceState(windowIDs: ["one", "two", "three"], focusedWindowID: "two")
+    ])
+
+    let reordered = state.reorderWindow(windowID: "three", to: 0, inSpace: 1)
+    #expect(reordered)
+    #expect(state.spaces[1].windowIDs == ["three", "one", "two"])
+    #expect(state.spaces[1].focusedWindowID == "two")
+    #expect(state.activeSpaceIndex == 0)
+}
+
+@Test func settingsMembershipActionsUseTheirSelectedSourceSpace() {
+    var state = WorkspaceState(spaces: [
+        SpaceState(windowIDs: ["active"]),
+        SpaceState(windowIDs: ["one", "shared"], widthFractions: ["one": 0.4, "shared": 0.6]),
+        SpaceState(windowIDs: ["shared"])
+    ])
+
+    let shared = state.share(windowID: "one", fromSpace: 1, toSpace: 3)
+    #expect(shared)
+    #expect(state.spaces[3].windowIDs == ["one"])
+    #expect(state.spaces[3].widthFraction(for: "one") == 0.4)
+    let moved = state.move(windowID: "shared", fromSpace: 1, toSpace: 2)
+    #expect(moved)
+    #expect(state.spaces[1].windowIDs == ["one"])
+    #expect(state.spaces[2].windowIDs == ["shared"])
+    #expect(state.activeSpaceIndex == 0)
+
+    let focused = state.focus(windowID: "one", inSpace: 1)
+    #expect(focused)
+    #expect(state.activeSpaceIndex == 1)
+    #expect(state.focusedWindowID == "one")
+}

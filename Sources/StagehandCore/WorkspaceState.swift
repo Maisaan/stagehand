@@ -154,19 +154,33 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
 
     @discardableResult
     public mutating func focus(windowID: String) -> Bool {
-        guard currentSpace.windowIDs.contains(windowID), focusedWindowID != windowID else { return false }
-        spaces[activeSpaceIndex].focusedWindowID = windowID
+        focus(windowID: windowID, inSpace: activeSpaceIndex)
+    }
+
+    @discardableResult
+    public mutating func focus(windowID: String, inSpace index: Int) -> Bool {
+        guard spaces.indices.contains(index), spaces[index].windowIDs.contains(windowID),
+              activeSpaceIndex != index || spaces[index].focusedWindowID != windowID else { return false }
+        activeSpaceIndex = index
+        spaces[index].focusedWindowID = windowID
         return true
     }
 
     /// Uses the final index in the current space and preserves focus and per-space widths.
     @discardableResult
     public mutating func reorderWindow(windowID: String, to index: Int) -> Bool {
-        guard let originalIndex = currentSpace.windowIDs.firstIndex(of: windowID) else { return false }
-        let destination = min(max(index, 0), currentSpace.windowIDs.count - 1)
+        reorderWindow(windowID: windowID, to: index, inSpace: activeSpaceIndex)
+    }
+
+    /// Reorders a space without making it active.
+    @discardableResult
+    public mutating func reorderWindow(windowID: String, to index: Int, inSpace spaceIndex: Int) -> Bool {
+        guard spaces.indices.contains(spaceIndex),
+              let originalIndex = spaces[spaceIndex].windowIDs.firstIndex(of: windowID) else { return false }
+        let destination = min(max(index, 0), spaces[spaceIndex].windowIDs.count - 1)
         guard originalIndex != destination else { return false }
-        spaces[activeSpaceIndex].windowIDs.remove(at: originalIndex)
-        spaces[activeSpaceIndex].windowIDs.insert(windowID, at: destination)
+        spaces[spaceIndex].windowIDs.remove(at: originalIndex)
+        spaces[spaceIndex].windowIDs.insert(windowID, at: destination)
         return true
     }
 
@@ -182,22 +196,42 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     /// Removing the final membership would orphan a live window, so it is a no-op.
     @discardableResult
     public mutating func removeFromCurrentSpace(windowID: String) -> Bool {
-        guard currentSpace.windowIDs.contains(windowID),
+        remove(windowID: windowID, fromSpace: activeSpaceIndex)
+    }
+
+    @discardableResult
+    public mutating func remove(windowID: String, fromSpace index: Int) -> Bool {
+        guard spaces.indices.contains(index), spaces[index].windowIDs.contains(windowID),
               spaces.filter({ $0.windowIDs.contains(windowID) }).count > 1 else { return false }
-        spaces[activeSpaceIndex].remove(windowID: windowID)
+        spaces[index].remove(windowID: windowID)
         return true
     }
 
     @discardableResult
     public mutating func share(windowID: String, toSpace index: Int) -> Bool {
-        guard spaces.indices.contains(index), index != activeSpaceIndex,
-              currentSpace.windowIDs.contains(windowID),
-              !spaces[index].windowIDs.contains(windowID) else { return false }
-        spaces[index].insert(
+        share(windowID: windowID, fromSpace: activeSpaceIndex, toSpace: index)
+    }
+
+    @discardableResult
+    public mutating func share(windowID: String, fromSpace sourceIndex: Int, toSpace destinationIndex: Int) -> Bool {
+        guard spaces.indices.contains(sourceIndex), spaces.indices.contains(destinationIndex),
+              sourceIndex != destinationIndex, spaces[sourceIndex].windowIDs.contains(windowID),
+              !spaces[destinationIndex].windowIDs.contains(windowID) else { return false }
+        spaces[destinationIndex].insert(
             windowID: windowID,
-            width: currentSpace.widthFraction(for: windowID),
+            width: spaces[sourceIndex].widthFraction(for: windowID),
             focus: false
         )
+        return true
+    }
+
+    @discardableResult
+    public mutating func move(windowID: String, fromSpace sourceIndex: Int, toSpace destinationIndex: Int) -> Bool {
+        guard spaces.indices.contains(sourceIndex), spaces.indices.contains(destinationIndex),
+              sourceIndex != destinationIndex, spaces[sourceIndex].windowIDs.contains(windowID) else { return false }
+        let width = spaces[sourceIndex].widthFraction(for: windowID)
+        spaces[destinationIndex].insert(windowID: windowID, width: width, focus: false)
+        spaces[sourceIndex].remove(windowID: windowID)
         return true
     }
 

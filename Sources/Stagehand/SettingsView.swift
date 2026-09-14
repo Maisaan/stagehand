@@ -7,11 +7,13 @@ struct SettingsView: View {
     @ObservedObject var model: StagehandModel
     @State private var tab = "Workspace"
     @State private var gapInput: Double
+    @State private var selectedSpaceIndex: Int
 
     init(model: StagehandModel, initialTab: String = "Workspace") {
         self.model = model
         _tab = State(initialValue: initialTab)
         _gapInput = State(initialValue: GapInput.clamped(model.gap))
+        _selectedSpaceIndex = State(initialValue: model.state.activeSpaceIndex)
     }
 
     var body: some View {
@@ -111,7 +113,7 @@ struct SettingsView: View {
             Section {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 100, maximum: 140), spacing: 8)], alignment: .leading, spacing: 8) {
                     ForEach(model.state.displayedSpaceIndices, id: \.self) { index in
-                        Button { model.navigate(.goToSpace(index: index)) } label: {
+                        Button { selectedSpaceIndex = index } label: {
                             HStack(spacing: 8) {
                                 Text("Space \(index + 1)")
                                 Text("\(model.state.spaces[index].windowIDs.count)")
@@ -120,34 +122,43 @@ struct SettingsView: View {
                             .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
-                        .tint(index == model.state.activeSpaceIndex ? Color.accentColor : nil)
+                        .tint(index == selectedSpaceIndex ? Color.accentColor : nil)
                         .disabled(!model.isRunning || model.isSuspended)
                         .accessibilityLabel("Space \(index + 1), \(model.state.spaces[index].windowIDs.count) \(model.state.spaces[index].windowIDs.count == 1 ? "window" : "windows")")
-                        .accessibilityAddTraits(index == model.state.activeSpaceIndex ? .isSelected : [])
+                        .accessibilityAddTraits(index == selectedSpaceIndex ? .isSelected : [])
                     }
                 }
-                if model.state.currentSpace.windowIDs.isEmpty {
+                if model.state.spaces[selectedSpaceIndex].windowIDs.isEmpty {
                     Text(model.isRunning ? "No windows in this space. Move or add one from another space." : "No windows yet.")
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, minHeight: 45, alignment: .center)
                 } else {
-                    ForEach(model.state.currentSpace.windowIDs, id: \.self) { id in
+                    ForEach(model.state.spaces[selectedSpaceIndex].windowIDs, id: \.self) { id in
                         if let window = model.windows.first(where: { $0.id == id }) {
-                            windowRow(window)
+                            windowRow(window, inSpace: selectedSpaceIndex)
                         }
                     }
                 }
             } header: {
                 Text("Spaces")
             } footer: {
-                Text("Switch spaces with ⌃⌥ plus a number. Shared windows can have a different order in each space.")
+                Text("Select a space here to reorder its windows. Switch spaces with ⌃⌥ plus a number. Shared windows can have a different order in each space.")
+            }
+        }
+        .onChange(of: model.state.displayedSpaceIndices) { _, indices in
+            if !indices.contains(selectedSpaceIndex) {
+                selectedSpaceIndex = model.state.activeSpaceIndex
             }
         }
     }
 
 
-    private func windowRow(_ window: WindowRecord) -> some View {
+    private func windowRow(_ window: WindowRecord, inSpace spaceIndex: Int) -> some View {
         HStack(spacing: 10) {
+            Image(systemName: "line.3.horizontal")
+                .foregroundStyle(.tertiary)
+                .help("Drag to reorder")
+                .accessibilityHidden(true)
             AppIcon(bundleIdentifier: window.bundleIdentifier, size: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(window.appName).font(.body.weight(.medium))
@@ -155,12 +166,12 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
-            if window.id == model.state.focusedWindowID {
+            if spaceIndex == model.state.activeSpaceIndex && window.id == model.state.focusedWindowID {
                 Text("Active").font(.caption).foregroundStyle(.secondary)
             }
             Group {
                 let requested = model.state.maximizeWindows ? 100 :
-                    Int((model.state.currentSpace.widthFraction(for: window.id) * 100).rounded())
+                    Int((model.state.spaces[spaceIndex].widthFraction(for: window.id) * 100).rounded())
                 let actual = model.actualWidthPercent(for: window)
                 Text("\(actual ?? requested)%")
                     .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
@@ -168,21 +179,27 @@ struct SettingsView: View {
                           ?? "Requested width: \(requested)%.")
             }
             Menu {
-                Button("Focus") { model.focusWindow(window.id) }
-                if window.id == model.state.focusedWindowID {
-                    Menu("Move to") {
-                        ForEach(model.state.spaces.indices.filter { $0 != model.state.activeSpaceIndex }, id: \.self) { index in
-                            Button("Space \(index + 1)") { model.navigate(.moveToSpace(index: index, follow: false)) }
+                Button("Focus") { model.focusWindow(window.id, inSpace: spaceIndex) }
+                Menu("Move to") {
+                    ForEach(model.state.spaces.indices.filter { $0 != spaceIndex }, id: \.self) { index in
+                        Button("Space \(index + 1)") {
+                            model.moveMembership(windowID: window.id, fromSpaceIndex: spaceIndex,
+                                                 toSpaceIndex: index)
                         }
                     }
-                    Menu("Share with") {
-                        ForEach(model.state.spaces.indices.filter { !model.state.spaces[$0].windowIDs.contains(window.id) }, id: \.self) { index in
-                            Button("Space \(index + 1)") { model.navigate(.shareToSpace(index: index)) }
+                }
+                Menu("Share with") {
+                    ForEach(model.state.spaces.indices.filter { !model.state.spaces[$0].windowIDs.contains(window.id) }, id: \.self) { index in
+                        Button("Space \(index + 1)") {
+                            model.shareMembership(windowID: window.id, fromSpaceIndex: spaceIndex,
+                                                  toSpaceIndex: index)
                         }
                     }
                 }
                 if model.state.spaces.filter({ $0.windowIDs.contains(window.id) }).count > 1 {
-                    Button("Remove from this space") { model.removeMembership(windowID: window.id) }
+                    Button("Remove from Space \(spaceIndex + 1)") {
+                        model.removeMembership(windowID: window.id, fromSpaceIndex: spaceIndex)
+                    }
                 }
             } label: {
                 Image(systemName: "ellipsis.circle")
@@ -197,6 +214,22 @@ struct SettingsView: View {
             .accessibilityLabel("Actions for \(window.appName)")
         }
         .padding(.vertical, 2)
+        .draggable(window.id)
+        .dropDestination(for: String.self) { draggedIDs, _ in
+            guard let draggedID = draggedIDs.first,
+                  let destination = model.state.spaces[spaceIndex].windowIDs.firstIndex(of: window.id),
+                  model.state.spaces[spaceIndex].windowIDs.contains(draggedID) else { return false }
+            model.reorderWindow(windowID: draggedID, toIndex: destination, spaceIndex: spaceIndex)
+            return true
+        }
+        .accessibilityAction(named: "Move earlier") {
+            guard let index = model.state.spaces[spaceIndex].windowIDs.firstIndex(of: window.id) else { return }
+            model.reorderWindow(windowID: window.id, toIndex: index - 1, spaceIndex: spaceIndex)
+        }
+        .accessibilityAction(named: "Move later") {
+            guard let index = model.state.spaces[spaceIndex].windowIDs.firstIndex(of: window.id) else { return }
+            model.reorderWindow(windowID: window.id, toIndex: index + 1, spaceIndex: spaceIndex)
+        }
     }
 
     private var controls: some View {
