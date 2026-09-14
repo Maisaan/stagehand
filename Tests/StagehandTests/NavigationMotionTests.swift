@@ -55,6 +55,27 @@ struct NavigationMotionTests {
         ))
     }
 
+    @Test func windowMotionAllowsSmallWindowServerPresentationDelay() {
+        #expect(motionPresentationKeepsPace(
+            previousPosition: CGPoint(x: -1525, y: 67),
+            requestedPosition: CGPoint(x: -1526, y: 67),
+            displayedFrame: CGRect(x: -1531, y: 67, width: 1710, height: 1074)
+        ))
+    }
+
+    @Test func laggingOutgoingWindowIsIdentifiedBeforeTheFocusHandoff() {
+        #expect(laggingOutgoingWindowID(
+            destinationWindowID: "destination",
+            systemFocusedWindowID: "outgoing",
+            laggingWindowIDs: ["outgoing"]
+        ) == "outgoing")
+        #expect(laggingOutgoingWindowID(
+            destinationWindowID: "destination",
+            systemFocusedWindowID: "destination",
+            laggingWindowIDs: ["outgoing"]
+        ) == nil)
+    }
+
     @Test func repeatedNavigationReversesDismissalWithoutReplacingViewsOrTakingFocus() throws {
         _ = NSApplication.shared
         let overlays = NavigationOverlays(reduceMotion: { false })

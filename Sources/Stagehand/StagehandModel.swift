@@ -16,10 +16,24 @@ func motionPresentationKeepsPace(
     requestedPosition: CGPoint,
     displayedFrame: CGRect
 ) -> Bool {
-    guard abs(requestedPosition.y - displayedFrame.minY) <= 1 else { return false }
-    let lowerX = min(previousPosition.x, requestedPosition.x) - 1
-    let upperX = max(previousPosition.x, requestedPosition.x) + 1
+    // WindowServer presentation normally trails an AX write by a few points.
+    // Treat only a visible divergence as native window animation.
+    let presentationTolerance: CGFloat = 8
+    guard abs(requestedPosition.y - displayedFrame.minY) <= presentationTolerance else { return false }
+    let lowerX = min(previousPosition.x, requestedPosition.x) - presentationTolerance
+    let upperX = max(previousPosition.x, requestedPosition.x) + presentationTolerance
     return displayedFrame.minX >= lowerX && displayedFrame.minX <= upperX
+}
+
+func laggingOutgoingWindowID(
+    destinationWindowID: String?,
+    systemFocusedWindowID: String?,
+    laggingWindowIDs: Set<String>
+) -> String? {
+    guard let systemFocusedWindowID,
+          systemFocusedWindowID != destinationWindowID,
+          laggingWindowIDs.contains(systemFocusedWindowID) else { return nil }
+    return systemFocusedWindowID
 }
 
 struct RibbonPositionWriteFailure: Equatable {
@@ -1047,6 +1061,7 @@ final class StagehandModel: ObservableObject {
                                       actual: CGRect, axes: String)] = []
         var destinationPID: Int32?
         var destinationFocusedBeforeFrame = false
+        var laggingWindowsPositionedBeforeFocus = Set<String>()
         // Read accepted sizes after focus, then repack and center app-constrained windows.
         // Repacking may reveal another window. Bound this by the number of windows;
         // the input gate's deadline also applies to the whole transition.
@@ -1057,6 +1072,32 @@ final class StagehandModel: ObservableObject {
                                                  observedWidths: observedWidths, preferredHeights: preferredHeights,
                                                  observedHeights: observedHeights)
             let visible = placements.filter { $0.isVisible || slideFrom?[$0.windowID]?.intersects(availableFrame) == true }
+            if pass == 0, request == .navigation,
+               let outgoingID = laggingOutgoingWindowID(
+                   destinationWindowID: state.focusedWindowID,
+                   systemFocusedWindowID: windowSystem.focusedWindowID(),
+                   laggingWindowIDs: motionLaggingWindowIDs
+               ),
+               let outgoing = visible.first(where: { $0.windowID == outgoingID }) {
+                let beforeFrame = diagnostics.isEnabled ? windowSystem.observedFrame(windowID: outgoingID) : nil
+                let frameWritten = windowSystem.setFrame(windowID: outgoingID, frame: outgoing.frame)
+                let actualFrame = windowSystem.frame(windowID: outgoingID)
+                if frameWritten { laggingWindowsPositionedBeforeFocus.insert(outgoingID) }
+                lastAppliedFrames[outgoingID] = actualFrame
+                if diagnostics.isEnabled {
+                    recordWindowGeometry(
+                        event: "window_motion_positioned_before_focus",
+                        windowID: outgoingID,
+                        requestedFrame: outgoing.frame,
+                        beforeFrame: beforeFrame,
+                        actualFrame: windowSystem.observedFrame(windowID: outgoingID),
+                        details: [
+                            "frameWriteAccepted": String(frameWritten),
+                            "operation": operation
+                        ]
+                    )
+                }
+            }
             // Once WindowServer shows that an app animates AX moves while inactive,
             // focus its destination before moving it and do not drive more animation frames.
             if pass == 0, request == .navigation, let focusedID = state.focusedWindowID,
@@ -1213,7 +1254,8 @@ final class StagehandModel: ObservableObject {
                 }
                 if request == .navigation {
                     for placement in visible where placement.isVisible &&
-                        motionLaggingWindowIDs.contains(placement.windowID) {
+                        motionLaggingWindowIDs.contains(placement.windowID) &&
+                        !laggingWindowsPositionedBeforeFocus.contains(placement.windowID) {
                         if pass > 0, acceptedFrames[placement.windowID] == placement.frame { continue }
                         let beforeFrame = diagnostics.isEnabled
                             ? windowSystem.observedFrame(windowID: placement.windowID) : nil
