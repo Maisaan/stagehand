@@ -84,6 +84,10 @@ final class NativeWindowRegistry: NSObject {
         return accessibilityFrame(window.frame)
     }
 
+    func isParked(windowID: String) -> Bool {
+        windows[windowID]?.parked == true
+    }
+
     func captureOriginalFrame(windowID: String) {
         guard let entry = windows[windowID], !entry.closed, entry.originalFrame == nil else { return }
         entry.originalFrame = entry.window?.frame

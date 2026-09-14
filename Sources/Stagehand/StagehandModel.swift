@@ -366,6 +366,7 @@ final class StagehandModel: ObservableObject {
         event: String,
         windowID: String,
         requestedFrame: CGRect,
+        beforeFrame: CGRect? = nil,
         actualFrame: CGRect?,
         details: [String: String] = [:]
     ) {
@@ -377,6 +378,7 @@ final class StagehandModel: ObservableObject {
             pid: window?.pid,
             windowID: windowID,
             requestedFrame: requestedFrame,
+            beforeFrame: beforeFrame,
             actualFrame: actualFrame,
             details: details
         )
@@ -853,14 +855,38 @@ final class StagehandModel: ObservableObject {
                     }
                     self.state = prepared
                 }
+                let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
                 let canSlide = shouldSlideRibbon(
                     from: previousState,
                     to: self.state,
                     hadPreview: hadPreview,
-                    reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+                    reduceMotion: reduceMotion
                 )
+                if change.policy == .navigation, self.diagnostics.isEnabled {
+                    let destinationID = self.state.focusedWindowID
+                    let observedFocus = self.windowSystem.focusedWindowID()
+                    let membershipCount = destinationID.map { id in
+                        self.state.spaces.count { $0.windowIDs.contains(id) }
+                    } ?? 0
+                    self.diagnostics.record("navigation_motion_planned", details: [
+                        "destinationFocusedWindowID": destinationID ?? "none",
+                        "destinationMembershipCount": String(membershipCount),
+                        "destinationParked": String(destinationID.map { self.windowSystem.isParked(windowID: $0) } ?? false),
+                        "destinationSpace": String(self.state.activeSpaceIndex + 1),
+                        "destinationWasSystemFocused": String(destinationID != nil && destinationID == observedFocus),
+                        "hadGesturePreview": String(hadPreview),
+                        "motionStartWindowCount": String(motionStart.count),
+                        "observedFocusedWindowID": observedFocus ?? "none",
+                        "operation": change.diagnosticName,
+                        "previousFocusedWindowID": previousState.focusedWindowID ?? "none",
+                        "previousSpace": String(previousState.activeSpaceIndex + 1),
+                        "reduceMotion": String(reduceMotion),
+                        "slideEnabled": String(canSlide)
+                    ])
+                }
                 self.layoutFailureReason = nil
                 let succeeded = await self.applyLayout(token: token, request: change.policy,
+                                                       operation: change.diagnosticName,
                                                        slideFrom: canSlide ? motionStart : nil)
                 guard generation == self.workerGeneration, !Task.isCancelled else { return }
                 if !succeeded {
@@ -904,7 +930,7 @@ final class StagehandModel: ObservableObject {
         return false
     }
 
-    private func applyLayout(token: UInt64?, request: LayoutRequestPolicy,
+    private func applyLayout(token: UInt64?, request: LayoutRequestPolicy, operation: String,
                              slideFrom: [String: CGRect]? = nil) async -> Bool {
         let layoutStart = ContinuousClock.now
         guard desktopScope.refresh() == .home else {
@@ -955,8 +981,43 @@ final class StagehandModel: ObservableObject {
                 var preparedFrame = placement.frame
                 if let start = slideFrom?[placement.windowID] { preparedFrame.origin.x = start.minX }
                 if pass > 0, acceptedFrames[placement.windowID] == preparedFrame { continue }
+                let recordsNavigationMotion = request == .navigation && diagnostics.isEnabled
+                let beforeFrame = recordsNavigationMotion
+                    ? windowSystem.observedFrame(windowID: placement.windowID) : nil
+                let parkedBefore = recordsNavigationMotion
+                    ? windowSystem.isParked(windowID: placement.windowID) : false
+                let observedFocusBefore = recordsNavigationMotion ? windowSystem.focusedWindowID() : nil
                 let frameWritten = windowSystem.setFrame(windowID: placement.windowID, frame: preparedFrame)
                 let actualFrame = windowSystem.frame(windowID: placement.windowID)
+                if recordsNavigationMotion {
+                    let observedFocusAfter = windowSystem.focusedWindowID()
+                    let membershipCount = state.spaces.count { $0.windowIDs.contains(placement.windowID) }
+                    recordWindowGeometry(
+                        event: "navigation_window_frame_applied",
+                        windowID: placement.windowID,
+                        requestedFrame: preparedFrame,
+                        beforeFrame: beforeFrame,
+                        actualFrame: windowSystem.observedFrame(windowID: placement.windowID),
+                        details: [
+                            "frameWriteAccepted": String(frameWritten),
+                            "isDestinationFocused": String(placement.isFocused),
+                            "membershipCount": String(membershipCount),
+                            "observedFocusedWindowIDAfter": observedFocusAfter ?? "none",
+                            "observedFocusedWindowIDBefore": observedFocusBefore ?? "none",
+                            "operation": operation,
+                            "parkedAfter": String(windowSystem.isParked(windowID: placement.windowID)),
+                            "parkedBefore": String(parkedBefore),
+                            "pass": String(pass + 1),
+                            "slidePrepared": String(slideFrom?[placement.windowID] != nil),
+                            "systemFocusedAfter": String(observedFocusAfter == placement.windowID),
+                            "systemFocusedBefore": String(observedFocusBefore == placement.windowID),
+                            "targetHeight": String(Double(placement.frame.height)),
+                            "targetWidth": String(Double(placement.frame.width)),
+                            "targetX": String(Double(placement.frame.minX)),
+                            "targetY": String(Double(placement.frame.minY))
+                        ]
+                    )
+                }
                 if !frameWritten, placement.isFocused {
                     recordWindowGeometry(
                         event: "frame_write_constrained",
@@ -978,11 +1039,30 @@ final class StagehandModel: ObservableObject {
                     nativeDesktopChanged()
                     return false
                 }
+                let observedFocusBefore = diagnostics.isEnabled ? windowSystem.focusedWindowID() : nil
                 let focused = await request.confirmFocus(
                     windowID: focusedID,
                     currentFocus: { windowSystem.focusedWindowID() },
                     activate: { await windowSystem.focus(windowID: focusedID) }
                 )
+                if request == .navigation, diagnostics.isEnabled {
+                    let observedFocusAfter = windowSystem.focusedWindowID()
+                    var details = [
+                        "focusConfirmed": String(focused),
+                        "membershipCount": String(state.spaces.count { $0.windowIDs.contains(focusedID) }),
+                        "observedFocusedWindowIDAfter": observedFocusAfter ?? "none",
+                        "observedFocusedWindowIDBefore": observedFocusBefore ?? "none",
+                        "operation": operation,
+                        "parkedAfter": String(windowSystem.isParked(windowID: focusedID)),
+                        "systemFocusedAfter": String(observedFocusAfter == focusedID),
+                        "systemFocusedBefore": String(observedFocusBefore == focusedID),
+                        "windowID": focusedID
+                    ]
+                    if observedFocusBefore != focusedID, let report = windowSystem.lastFocusReport {
+                        details["focusReport"] = report.summary
+                    }
+                    diagnostics.record("navigation_focus_confirmed", details: details)
+                }
                 if request == .preferences, !focused { return true }
                 lastFocusTokenExpired = token.map { expiredTokens.contains($0) } ?? false
                 guard desktopScope.refresh() == .home else {
@@ -1118,7 +1198,7 @@ final class StagehandModel: ObservableObject {
                 windowSystem.frame(windowID: placement.windowID).map { (placement.windowID, $0) }
             })
             let targets = Dictionary(uniqueKeysWithValues: sliding.map { ($0.windowID, $0.frame) })
-            settleRibbon(from: starts, to: targets, visibleIDs: visibleIDs)
+            settleRibbon(from: starts, to: targets, visibleIDs: visibleIDs, operation: operation)
         }
         if let focused = state.focusedWindowID, let frame = windowSystem.frame(windowID: focused) {
             updateFocusBorder(windowID: focused, frame: frame)
@@ -1191,15 +1271,36 @@ final class StagehandModel: ObservableObject {
         }
     }
 
-    private func settleRibbon(from: [String: CGRect], to: [String: CGRect], visibleIDs: Set<String>) {
+    private func settleRibbon(from: [String: CGRect], to: [String: CGRect], visibleIDs: Set<String>,
+                              operation: String) {
         motionBackingScaleFactor = builtInScreen?.backingScaleFactor ?? 1
         motionWrittenPositions = from.mapValues {
             RibbonMotion.pixelAligned($0.origin, backingScaleFactor: motionBackingScaleFactor)
+        }
+        if diagnostics.isEnabled {
+            diagnostics.record("ribbon_animation_started", details: [
+                "focusedWindowID": state.focusedWindowID ?? "none",
+                "observedFocusedWindowID": windowSystem.focusedWindowID() ?? "none",
+                "operation": operation,
+                "windowCount": String(to.count)
+            ])
+            recordRibbonGeometry(event: "ribbon_animation_window_started", from: from, to: to,
+                                 operation: operation)
         }
         ribbonMotion.animate(from: from, to: to,
                              duration: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.2,
                              update: { [weak self] in self?.applyMotionFrames($0) }, completion: { [weak self] in
             guard let self, self.isRunning, !self.isSuspended, self.desktopScope.refresh() == .home else { return }
+            if self.diagnostics.isEnabled {
+                self.diagnostics.record("ribbon_animation_completed", details: [
+                    "focusedWindowID": self.state.focusedWindowID ?? "none",
+                    "observedFocusedWindowID": self.windowSystem.focusedWindowID() ?? "none",
+                    "operation": operation,
+                    "windowCount": String(to.count)
+                ])
+                self.recordRibbonGeometry(event: "ribbon_animation_window_completed", from: from, to: to,
+                                          operation: operation)
+            }
             for window in self.windows where !visibleIDs.contains(window.id) {
                 guard self.windowSystem.park(windowID: window.id) else {
                     self.warning = "Stagehand couldn't move \(window.appName) out of this space. It paused and restored your windows."
@@ -1222,6 +1323,28 @@ final class StagehandModel: ObservableObject {
             self.lastTransition = Date()
             self.scheduleRefresh()
         })
+    }
+
+    private func recordRibbonGeometry(event: String, from: [String: CGRect], to: [String: CGRect],
+                                      operation: String) {
+        let observedFocus = windowSystem.focusedWindowID()
+        for (windowID, target) in to.sorted(by: { $0.key < $1.key }) {
+            recordWindowGeometry(
+                event: event,
+                windowID: windowID,
+                requestedFrame: target,
+                beforeFrame: from[windowID],
+                actualFrame: windowSystem.observedFrame(windowID: windowID),
+                details: [
+                    "isDestinationFocused": String(state.focusedWindowID == windowID),
+                    "membershipCount": String(state.spaces.count { $0.windowIDs.contains(windowID) }),
+                    "observedFocusedWindowID": observedFocus ?? "none",
+                    "operation": operation,
+                    "parked": String(windowSystem.isParked(windowID: windowID)),
+                    "systemFocused": String(observedFocus == windowID)
+                ]
+            )
+        }
     }
 
     private func handleGesture(_ event: GestureNavigationEvent) {
@@ -1248,6 +1371,14 @@ final class StagehandModel: ObservableObject {
                 motionWrittenPositions = presentationFrames?.mapValues {
                     RibbonMotion.pixelAligned($0.origin, backingScaleFactor: motionBackingScaleFactor)
                 } ?? [:]
+                if diagnostics.isEnabled {
+                    diagnostics.record("gesture_motion_started", details: [
+                        "focusedWindowID": state.focusedWindowID ?? "none",
+                        "observedFocusedWindowID": windowSystem.focusedWindowID() ?? "none",
+                        "preparedWindowCount": String(gesturePrepared.count),
+                        "trackedWindowCount": String(frames.count)
+                    ])
+                }
                 overlays.updateBorder(frame: .zero, visible: false)
                 previewGesture(displacement: displacement)
             }
@@ -1277,6 +1408,15 @@ final class StagehandModel: ObservableObject {
             )
         } else {
             resolvedAction = recognizerAction
+        }
+        if diagnostics.isEnabled {
+            diagnostics.record("gesture_motion_resolved", details: [
+                "displacement": String(displacement),
+                "focusedWindowID": state.focusedWindowID ?? "none",
+                "observedFocusedWindowID": windowSystem.focusedWindowID() ?? "none",
+                "resolvedAction": resolvedAction.map { String(describing: $0) } ?? "none",
+                "velocity": String(velocity)
+            ])
         }
         gestureAxis = nil
         if let resolvedAction {
@@ -1314,7 +1454,33 @@ final class StagehandModel: ObservableObject {
         for (id, shifted) in preview {
             guard shifted.intersects(availableFrame) || gesturePrepared.contains(id) else { continue }
             if !gesturePrepared.contains(id) {
-                guard windowSystem.setFrame(windowID: id, frame: shifted) else { continue }
+                let beforeFrame = diagnostics.isEnabled ? windowSystem.observedFrame(windowID: id) : nil
+                let parkedBefore = diagnostics.isEnabled ? windowSystem.isParked(windowID: id) : false
+                let observedFocusBefore = diagnostics.isEnabled ? windowSystem.focusedWindowID() : nil
+                let frameWritten = windowSystem.setFrame(windowID: id, frame: shifted)
+                if diagnostics.isEnabled {
+                    let observedFocusAfter = windowSystem.focusedWindowID()
+                    recordWindowGeometry(
+                        event: "gesture_window_frame_applied",
+                        windowID: id,
+                        requestedFrame: shifted,
+                        beforeFrame: beforeFrame,
+                        actualFrame: windowSystem.observedFrame(windowID: id),
+                        details: [
+                            "displacement": String(displacement),
+                            "frameWriteAccepted": String(frameWritten),
+                            "isLogicalFocused": String(state.focusedWindowID == id),
+                            "membershipCount": String(state.spaces.count { $0.windowIDs.contains(id) }),
+                            "observedFocusedWindowIDAfter": observedFocusAfter ?? "none",
+                            "observedFocusedWindowIDBefore": observedFocusBefore ?? "none",
+                            "parkedAfter": String(windowSystem.isParked(windowID: id)),
+                            "parkedBefore": String(parkedBefore),
+                            "systemFocusedAfter": String(observedFocusAfter == id),
+                            "systemFocusedBefore": String(observedFocusBefore == id)
+                        ]
+                    )
+                }
+                guard frameWritten else { continue }
                 gesturePrepared.insert(id)
                 motionWrittenPositions[id] = RibbonMotion.pixelAligned(
                     shifted.origin,
@@ -1335,7 +1501,8 @@ final class StagehandModel: ObservableObject {
         presentationFrames = nil
         gesturePrepared.removeAll()
         settleRibbon(from: starts, to: targets,
-                     visibleIDs: Set(base.filter { $0.value.intersects(availableFrame) }.keys))
+                     visibleIDs: Set(base.filter { $0.value.intersects(availableFrame) }.keys),
+                     operation: "gesture.preview.restore")
     }
 
     private func preferenceFocusStillMatches(_ request: LayoutRequestPolicy) -> Bool {

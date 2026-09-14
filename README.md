@@ -107,7 +107,7 @@ In System Settings > Trackpad > More Gestures, change or disable macOS gestures 
 
 ## Diagnostic logging
 
-Turn on **Diagnostic logging** in Setup to record starts, layout operations, focus checks, suspensions, and the exact reason for every automatic pause. **Show Log in Finder** reveals `~/Library/Logs/Stagehand/stagehand.log`.
+Turn on **Diagnostic logging** in Setup to record starts, layout operations, focus checks, navigation and gesture frame transitions, suspensions, and the exact reason for every automatic pause. **Show Log in Finder** reveals `~/Library/Logs/Stagehand/stagehand.log`.
 
 The log uses one JSON object per line. It excludes window titles and keyboard input. Buffered input stays in memory and is never logged or written to disk.
 

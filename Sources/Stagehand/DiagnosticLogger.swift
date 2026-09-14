@@ -54,6 +54,7 @@ final class DiagnosticLogger {
         pid: Int32?,
         windowID: String,
         requestedFrame: CGRect,
+        beforeFrame: CGRect? = nil,
         actualFrame: CGRect?,
         details: [String: String] = [:]
     ) {
@@ -63,10 +64,17 @@ final class DiagnosticLogger {
         context["requestedY"] = String(Double(requestedFrame.minY))
         context["requestedWidth"] = String(Double(requestedFrame.width))
         context["requestedHeight"] = String(Double(requestedFrame.height))
+        context["beforeFrameAvailable"] = String(beforeFrame != nil)
         context["actualFrameAvailable"] = String(actualFrame != nil)
         if let appName { context["appName"] = appName }
         if let bundleIdentifier { context["bundleIdentifier"] = bundleIdentifier }
         if let pid { context["pid"] = String(pid) }
+        if let beforeFrame {
+            context["beforeX"] = String(Double(beforeFrame.minX))
+            context["beforeY"] = String(Double(beforeFrame.minY))
+            context["beforeWidth"] = String(Double(beforeFrame.width))
+            context["beforeHeight"] = String(Double(beforeFrame.height))
+        }
         if let actualFrame {
             context["actualX"] = String(Double(actualFrame.minX))
             context["actualY"] = String(Double(actualFrame.minY))

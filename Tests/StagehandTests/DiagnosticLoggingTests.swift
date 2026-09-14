@@ -44,6 +44,7 @@ import Testing
         pid: 42,
         windowID: "42:7",
         requestedFrame: CGRect(x: 100, y: 200, width: 900, height: 700),
+        beforeFrame: CGRect(x: -880, y: 900, width: 840, height: 680),
         actualFrame: CGRect(x: 100, y: 200, width: 840, height: 680),
         details: ["constraintAxes": "width,height", "pass": "9"]
     )
@@ -54,6 +55,9 @@ import Testing
     #expect(contents.contains("\"bundleIdentifier\":\"com.example.app\""))
     #expect(contents.contains("\"windowID\":\"42:7\""))
     #expect(contents.contains("\"requestedWidth\":\"900.0\""))
+    #expect(contents.contains("\"beforeX\":\"-880.0\""))
+    #expect(contents.contains("\"beforeY\":\"900.0\""))
+    #expect(contents.contains("\"beforeFrameAvailable\":\"true\""))
     #expect(contents.contains("\"actualWidth\":\"840.0\""))
     #expect(contents.contains("\"actualFrameAvailable\":\"true\""))
 }
