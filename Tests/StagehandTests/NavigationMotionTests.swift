@@ -37,21 +37,21 @@ struct NavigationMotionTests {
         ))
     }
 
-    @Test func t3CodeMovesOnlyWhileFocused() {
-        #expect(!shouldApplyWindowMotion(
-            bundleIdentifier: "com.t3tools.t3code",
-            windowID: "t3",
-            focusedWindowID: "other"
+    @Test func windowMotionDetectsPresentationFramesThatFallBehind() {
+        #expect(motionPresentationKeepsPace(
+            previousPosition: CGPoint(x: 300, y: 60),
+            requestedPosition: CGPoint(x: 400, y: 60),
+            displayedFrame: CGRect(x: 300, y: 60, width: 900, height: 700)
         ))
-        #expect(shouldApplyWindowMotion(
-            bundleIdentifier: "com.t3tools.t3code",
-            windowID: "t3",
-            focusedWindowID: "t3"
+        #expect(!motionPresentationKeepsPace(
+            previousPosition: CGPoint(x: 300, y: 60),
+            requestedPosition: CGPoint(x: 400, y: 60),
+            displayedFrame: CGRect(x: 250, y: 60, width: 900, height: 700)
         ))
-        #expect(shouldApplyWindowMotion(
-            bundleIdentifier: "com.linear",
-            windowID: "linear",
-            focusedWindowID: "other"
+        #expect(!motionPresentationKeepsPace(
+            previousPosition: CGPoint(x: 400, y: 60),
+            requestedPosition: CGPoint(x: 300, y: 60),
+            displayedFrame: CGRect(x: 450, y: 60, width: 900, height: 700)
         ))
     }
 
