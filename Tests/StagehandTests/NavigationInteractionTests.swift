@@ -129,6 +129,63 @@ struct NavigationInteractionTests {
         #expect(reorders.map(\.1) == [2])
     }
 
+    @Test func appBarDragDescribesAndMarksTheExactDropPosition() {
+        let model = NavigationHUDModel()
+        model.windows = [
+            WindowRecord(id: "first", appName: "First", title: "", bundleIdentifier: "com.first",
+                         pid: 10, frame: .zero, isResizable: true),
+            WindowRecord(id: "second", appName: "Second", title: "", bundleIdentifier: "com.second",
+                         pid: 11, frame: .zero, isResizable: true),
+            WindowRecord(id: "third", appName: "Third", title: "", bundleIdentifier: "com.third",
+                         pid: 12, frame: .zero, isResizable: true)
+        ]
+
+        #expect(model.beginDraggingWindow(id: "first"))
+        model.setDropTarget(id: "third", isTargeted: true)
+        #expect(model.dropIndicatorEdge(for: "third") == .trailing)
+        #expect(model.dropDescription == "Move after Third")
+
+        model.setDropTarget(id: "second", isTargeted: true)
+        model.setDropTarget(id: "third", isTargeted: false)
+        #expect(model.dropIndicatorEdge(for: "second") == .trailing)
+        #expect(model.dropDescription == "Move after Second")
+
+        model.setDropTarget(id: "third", isTargeted: true)
+        model.setDropTarget(id: "third", isTargeted: false)
+        #expect(model.dropIndicatorEdge(for: "third") == nil)
+        #expect(model.dropDescription == nil)
+
+        #expect(model.beginDraggingWindow(id: "third"))
+        model.setDropTarget(id: "first", isTargeted: true)
+        #expect(model.dropIndicatorEdge(for: "first") == .leading)
+        #expect(model.dropDescription == "Move before First")
+    }
+
+    @Test func activeAppBarDropTargetKeepsTheHUDVisible() throws {
+        _ = NSApplication.shared
+        let overlays = NavigationOverlays(reduceMotion: { true })
+        defer { overlays.hide() }
+        let windows = [
+            WindowRecord(id: "first", appName: "First", title: "", bundleIdentifier: "com.first",
+                         pid: 10, frame: .zero, isResizable: true),
+            WindowRecord(id: "second", appName: "Second", title: "", bundleIdentifier: "com.second",
+                         pid: 11, frame: .zero, isResizable: true)
+        ]
+        overlays.showNavigation(
+            state: WorkspaceState(spaces: [SpaceState(windowIDs: windows.map(\.id))]),
+            windows: windows
+        )
+
+        #expect(overlays.hudModel.beginDraggingWindow(id: "first"))
+        overlays.hudModel.setDropTarget(id: "second", isTargeted: true)
+        #expect(overlays.dropTargetKeepsHUDVisible)
+        #expect(!overlays.beginHUDDismiss(generation: overlays.hudGeneration))
+
+        overlays.hudModel.setDropTarget(id: "second", isTargeted: false)
+        #expect(!overlays.dropTargetKeepsHUDVisible)
+        #expect(overlays.beginHUDDismiss(generation: overlays.hudGeneration))
+    }
+
     @Test func spacePickerUsesAvailableSpacesAndReturnsToAppsAfterSelection() throws {
         _ = NSApplication.shared
         let overlays = NavigationOverlays()

@@ -88,7 +88,13 @@ import Testing
         timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
         context: nil, eventNumber: 1, clickCount: 1, pressure: 1
     ))
+    let release = try #require(NSEvent.mouseEvent(
+        with: .leftMouseUp, location: click.locationInWindow, modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+        context: nil, eventNumber: 2, clickCount: 1, pressure: 0
+    ))
     NSApp.sendEvent(click)
+    NSApp.sendEvent(release)
 
     #expect(window.firstResponder !== editor)
     #expect(field.currentEditor() == nil)
@@ -99,6 +105,7 @@ import Testing
     #expect(window.makeFirstResponder(field))
     #expect(field.currentEditor() != nil)
     NSApp.sendEvent(click)
+    NSApp.sendEvent(release)
     #expect(field.currentEditor() == nil)
     #expect(changes == [-35])
     #expect(background.clicks == 2)

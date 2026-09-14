@@ -59,6 +59,7 @@ final class NavigationOverlays {
     private var hoverFrame: CGRect?
     private var contentFrame: CGRect?
     private(set) var pointerKeepsHUDVisible = false
+    private(set) var dropTargetKeepsHUDVisible = false
     private let reduceMotion: () -> Bool
     private let animationDurationMultiplier: Double
     private var borderColor = BorderView.defaultColor
@@ -72,6 +73,9 @@ final class NavigationOverlays {
         hudModel.onShareWindow = { [weak self] id, index in self?.onShareWindow?(id, index) }
         hudModel.onRemoveWindow = { [weak self] id in self?.onRemoveWindow?(id) }
         hudModel.onReorderWindow = { [weak self] id, index in self?.onReorderWindow?(id, index) }
+        hudModel.onDropTargetChange = { [weak self] isTargeted in
+            self?.dropTargetChanged(isTargeted: isTargeted)
+        }
         hudModel.onContentChange = { [weak self] in
             self?.presentHUD(dismissAfter: .milliseconds(800))
         }
@@ -131,6 +135,16 @@ final class NavigationOverlays {
         hudModel.showingSpaces = false
         hudModel.warning = nil
         presentHUD(dismissAfter: .milliseconds(800))
+    }
+
+    private func dropTargetChanged(isTargeted: Bool) {
+        guard dropTargetKeepsHUDVisible != isTargeted else { return }
+        dropTargetKeepsHUDVisible = isTargeted
+        if isTargeted {
+            presentHUD(dismissAfter: .milliseconds(800))
+        } else if !pointerKeepsHUDVisible, hud?.isVisible == true {
+            scheduleDismiss(after: .milliseconds(450))
+        }
     }
 
     /// Keep hover content current without opening the bar during background reconciliation.
@@ -224,7 +238,7 @@ final class NavigationOverlays {
             container.transition(visible: true, reduceMotion: hudModel.reduceMotion,
                                  duration: 0.25 * animationDurationMultiplier)
         }
-        if !pointerKeepsHUDVisible { scheduleDismiss(after: dismissAfter) }
+        if !pointerKeepsHUDVisible && !dropTargetKeepsHUDVisible { scheduleDismiss(after: dismissAfter) }
     }
 
     private func scheduleDismiss(after delay: Duration) {
@@ -242,6 +256,7 @@ final class NavigationOverlays {
     @discardableResult
     func beginHUDDismiss(generation: UInt64) -> Bool {
         guard generation == hudGeneration, !hudIsExiting, !pointerKeepsHUDVisible,
+              !dropTargetKeepsHUDVisible,
               let container = hud?.contentView as? HUDContainerView else { return false }
         hudIsExiting = true
         container.transition(visible: false, reduceMotion: reduceMotion(),
@@ -266,7 +281,9 @@ final class NavigationOverlays {
         hoverFrame = nil
         contentFrame = nil
         pointerKeepsHUDVisible = false
+        dropTargetKeepsHUDVisible = false
         hudModel.showingSpaces = false
+        hudModel.endDraggingWindow()
         dismissTask?.cancel()
         dismissTask = nil
         hudGeneration &+= 1
@@ -448,6 +465,11 @@ struct AppIcon: View {
     }
 }
 
+enum WindowDropIndicatorEdge: Equatable {
+    case leading
+    case trailing
+}
+
 @MainActor
 final class NavigationHUDModel: ObservableObject {
     @Published var space = 1
@@ -459,16 +481,25 @@ final class NavigationHUDModel: ObservableObject {
     @Published var spaces: [SpaceState] = []
     @Published var availableSpaceIndices: [Int] = []
     @Published var showingSpaces = false
+    @Published private(set) var draggedWindowID: String?
+    @Published private(set) var dropTargetID: String?
     var animationDurationMultiplier: Double = 1
     var onFocusWindow: ((String) -> Void)?
     var onSelectSpace: ((Int) -> Void)?
     var onShareWindow: ((String, Int) -> Void)?
     var onRemoveWindow: ((String) -> Void)?
     var onReorderWindow: ((String, Int) -> Void)?
+    var onDropTargetChange: ((Bool) -> Void)?
     var onContentChange: (() -> Void)?
 
     var displayedItemCount: Int { showingSpaces ? availableSpaceIndices.count : windows.count }
     var focusedAppName: String { windows.first { $0.id == focusedID }?.appName ?? "No windows" }
+    var dropDescription: String? {
+        guard let dropTargetID,
+              let edge = dropIndicatorEdge(for: dropTargetID),
+              let appName = windows.first(where: { $0.id == dropTargetID })?.appName else { return nil }
+        return "Move \(edge == .leading ? "before" : "after") \(appName)"
+    }
 
     func toggleSpaces() {
         showingSpaces.toggle()
@@ -509,6 +540,41 @@ final class NavigationHUDModel: ObservableObject {
         guard canRemoveFromCurrentSpace(windowID: id) else { return }
         onRemoveWindow?(id)
         onContentChange?()
+    }
+
+    @discardableResult
+    func beginDraggingWindow(id: String) -> Bool {
+        guard windows.count > 1, windows.contains(where: { $0.id == id }) else { return false }
+        draggedWindowID = id
+        setDropTarget(id: nil, isTargeted: false)
+        return true
+    }
+
+    func setDropTarget(id: String?, isTargeted: Bool) {
+        let target: String?
+        if isTargeted, let id, id != draggedWindowID, windows.contains(where: { $0.id == id }) {
+            target = id
+        } else {
+            guard id == nil || id == dropTargetID else { return }
+            target = nil
+        }
+        guard target != dropTargetID else { return }
+        dropTargetID = target
+        onDropTargetChange?(target != nil)
+    }
+
+    func dropIndicatorEdge(for windowID: String) -> WindowDropIndicatorEdge? {
+        guard dropTargetID == windowID,
+              let draggedWindowID,
+              let source = windows.firstIndex(where: { $0.id == draggedWindowID }),
+              let destination = windows.firstIndex(where: { $0.id == windowID }),
+              source != destination else { return nil }
+        return source < destination ? .trailing : .leading
+    }
+
+    func endDraggingWindow() {
+        setDropTarget(id: nil, isTargeted: false)
+        draggedWindowID = nil
     }
 
     @discardableResult
@@ -577,12 +643,30 @@ private struct NavigationHUD: View {
                                     AppIcon(bundleIdentifier: window.bundleIdentifier, size: 24)
                                     .padding(4)
                                     .background {
-                                        if window.id == model.focusedID {
-                                            RoundedRectangle(cornerRadius: 10)
-                                                .fill(Color.mint.opacity(0.25))
-                                                .overlay { RoundedRectangle(cornerRadius: 10).stroke(Color.mint.opacity(0.8), lineWidth: 1) }
-                                                .matchedGeometryEffect(id: "selection", in: selection)
-                                                .transition(.identity)
+                                        ZStack {
+                                            if window.id == model.focusedID {
+                                                RoundedRectangle(cornerRadius: 10)
+                                                    .fill(Color.mint.opacity(0.25))
+                                                    .overlay { RoundedRectangle(cornerRadius: 10).stroke(Color.mint.opacity(0.8), lineWidth: 1) }
+                                                    .matchedGeometryEffect(id: "selection", in: selection)
+                                                    .transition(.identity)
+                                            }
+                                            if window.id == model.dropTargetID {
+                                                RoundedRectangle(cornerRadius: 10)
+                                                    .fill(Color.white.opacity(0.12))
+                                                    .overlay { RoundedRectangle(cornerRadius: 10).stroke(Color.mint, lineWidth: 1.5) }
+                                            }
+                                        }
+                                    }
+                                    .overlay {
+                                        if let edge = model.dropIndicatorEdge(for: window.id) {
+                                            HStack(spacing: 0) {
+                                                if edge == .trailing { Spacer(minLength: 0) }
+                                                Capsule().fill(Color.mint).frame(width: 3, height: 28)
+                                                    .shadow(color: Color.mint.opacity(0.8), radius: 3)
+                                                if edge == .leading { Spacer(minLength: 0) }
+                                            }
+                                            .offset(x: edge == .leading ? -3 : 3)
                                         }
                                     }
                                 }
@@ -606,10 +690,28 @@ private struct NavigationHUD: View {
                                         }
                                     }
                                 }
-                                .draggable(window.id)
+                                .onDrag {
+                                    _ = model.beginDraggingWindow(id: window.id)
+                                    return NSItemProvider(object: window.id as NSString)
+                                } preview: {
+                                    HStack(spacing: 7) {
+                                        AppIcon(bundleIdentifier: window.bundleIdentifier, size: 24)
+                                        Text(window.appName).font(.system(size: 11, weight: .semibold))
+                                    }
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 8)
+                                    .foregroundStyle(.white)
+                                    .background(Color(white: 0.1).opacity(0.96), in: RoundedRectangle(cornerRadius: 11))
+                                    .overlay { RoundedRectangle(cornerRadius: 11).stroke(Color.mint.opacity(0.8), lineWidth: 1) }
+                                    .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
+                                    .environment(\.colorScheme, .dark)
+                                }
                                 .dropDestination(for: String.self) { draggedIDs, _ in
+                                    defer { model.endDraggingWindow() }
                                     guard let draggedID = draggedIDs.first else { return false }
                                     return model.reorderWindow(id: draggedID, onto: window.id)
+                                } isTargeted: { isTargeted in
+                                    model.setDropTarget(id: window.id, isTargeted: isTargeted)
                                 }
                                 .id(window.id)
                             }
@@ -630,10 +732,11 @@ private struct NavigationHUD: View {
                 }
             }
             if !model.showingSpaces {
-                Text(model.focusedAppName)
+                Text(model.dropDescription ?? model.focusedAppName)
                 .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.white.opacity(0.8))
+                .foregroundStyle(model.dropDescription == nil ? Color.white.opacity(0.8) : Color.mint)
                 .lineLimit(1)
+                .minimumScaleFactor(0.7)
             }
         }
         .padding(.horizontal, 12)
