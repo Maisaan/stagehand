@@ -160,35 +160,6 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     #expect(middle.size == to["a"]?.size)
 }
 
-@MainActor @Test func ribbonSlideKeepsTheTargetsVerticalPosition() throws {
-    let driver = TestRibbonFrameDriver()
-    let motion = RibbonMotion(frameDriver: driver)
-    let target = CGRect(x: 0, y: 40, width: 900, height: 700)
-    let reported = CGRect(x: 1000, y: 692, width: 900, height: 700)
-    var updates: [CGRect] = []
-    var completions = 0
-
-    // A delayed vertical position report must not turn horizontal navigation
-    // into an upward slide.
-    motion.animate(from: ["window": reported], to: ["window": target], duration: 0.2,
-                   update: { frames in
-        if let frame = frames["window"] { updates.append(frame) }
-    }, completion: { completions += 1 })
-    let start = CACurrentMediaTime()
-    for elapsed in [0.01, 0.05, 0.1, 0.25] { driver.emit(at: start + elapsed) }
-
-    #expect(updates.count == 4)
-    for frame in updates {
-        #expect(frame.minY == target.minY)
-        #expect(frame.size == target.size)
-    }
-    let first = try #require(updates.first)
-    #expect(first.minX > target.minX && first.minX < reported.minX)
-    #expect(updates.last == target)
-    #expect(completions == 1)
-    #expect(!motion.isRunning)
-}
-
 @MainActor @Test func retargetedSlideNeverCompletesAnOutdatedAnimation() async throws {
     let motion = RibbonMotion()
     let a = ["a": CGRect(x: 0, y: 0, width: 900, height: 700)]

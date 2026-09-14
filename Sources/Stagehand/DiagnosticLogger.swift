@@ -47,6 +47,35 @@ final class DiagnosticLogger {
         }
     }
 
+    func recordWindowGeometry(
+        event: String,
+        appName: String?,
+        bundleIdentifier: String?,
+        pid: Int32?,
+        windowID: String,
+        requestedFrame: CGRect,
+        actualFrame: CGRect?,
+        details: [String: String] = [:]
+    ) {
+        var context = details
+        context["windowID"] = windowID
+        context["requestedX"] = String(Double(requestedFrame.minX))
+        context["requestedY"] = String(Double(requestedFrame.minY))
+        context["requestedWidth"] = String(Double(requestedFrame.width))
+        context["requestedHeight"] = String(Double(requestedFrame.height))
+        context["actualFrameAvailable"] = String(actualFrame != nil)
+        if let appName { context["appName"] = appName }
+        if let bundleIdentifier { context["bundleIdentifier"] = bundleIdentifier }
+        if let pid { context["pid"] = String(pid) }
+        if let actualFrame {
+            context["actualX"] = String(Double(actualFrame.minX))
+            context["actualY"] = String(Double(actualFrame.minY))
+            context["actualWidth"] = String(Double(actualFrame.width))
+            context["actualHeight"] = String(Double(actualFrame.height))
+        }
+        record(event, details: context)
+    }
+
     private struct Entry: Encodable {
         let timestamp: String
         let event: String

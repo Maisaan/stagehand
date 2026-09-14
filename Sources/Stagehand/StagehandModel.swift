@@ -3,19 +3,6 @@ import Combine
 import StagehandCore
 import StagehandPlatform
 
-func shouldSlideRibbon(from previousState: WorkspaceState, to state: WorkspaceState,
-                       hadPreview: Bool, reduceMotion: Bool) -> Bool {
-    guard !reduceMotion,
-          previousState.activeSpaceIndex == state.activeSpaceIndex,
-          previousState.focusedWindowID != state.focusedWindowID || hadPreview,
-          let focusedWindowID = state.focusedWindowID else { return false }
-    let membershipCount = state.spaces.lazy
-        .filter { $0.windowIDs.contains(focusedWindowID) }
-        .prefix(2)
-        .count
-    return membershipCount < 2
-}
-
 @MainActor
 final class StagehandModel: ObservableObject {
     @Published private(set) var state = WorkspaceState()
@@ -344,6 +331,26 @@ final class StagehandModel: ObservableObject {
             details["focusedWindowID"] = focusedWindow.id
         }
         return details
+    }
+
+    private func recordWindowGeometry(
+        event: String,
+        windowID: String,
+        requestedFrame: CGRect,
+        actualFrame: CGRect?,
+        details: [String: String] = [:]
+    ) {
+        let window = windows.first { $0.id == windowID }
+        diagnostics.recordWindowGeometry(
+            event: event,
+            appName: window?.appName,
+            bundleIdentifier: window?.bundleIdentifier,
+            pid: window?.pid,
+            windowID: windowID,
+            requestedFrame: requestedFrame,
+            actualFrame: actualFrame,
+            details: details
+        )
     }
 
     func navigate(_ action: NavigationAction) {
@@ -780,12 +787,9 @@ final class StagehandModel: ObservableObject {
                     }
                     self.state = prepared
                 }
-                let canSlide = shouldSlideRibbon(
-                    from: previousState,
-                    to: self.state,
-                    hadPreview: hadPreview,
-                    reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-                )
+                let canSlide = previousState.activeSpaceIndex == self.state.activeSpaceIndex &&
+                    (previousState.focusedWindowID != self.state.focusedWindowID || hadPreview) &&
+                    !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
                 self.layoutFailureReason = nil
                 let succeeded = await self.applyLayout(token: token, request: change.policy,
                                                        slideFrom: canSlide ? motionStart : nil)
@@ -858,6 +862,8 @@ final class StagehandModel: ObservableObject {
         var observedWidths: [String: CGFloat] = [:]
         var observedHeights: [String: CGFloat] = [:]
         var acceptedFrames: [String: CGRect] = [:]
+        var constraintObservations: [(pass: Int, windowID: String, requested: CGRect,
+                                      actual: CGRect, axes: String)] = []
         var destinationPID: Int32?
         // Read accepted sizes after focus, then repack and center app-constrained windows.
         // Repacking may reveal another window. Bound this by the number of windows;
@@ -880,14 +886,19 @@ final class StagehandModel: ObservableObject {
                 var preparedFrame = placement.frame
                 if let start = slideFrom?[placement.windowID] { preparedFrame.origin.x = start.minX }
                 if pass > 0, acceptedFrames[placement.windowID] == preparedFrame { continue }
-                if !windowSystem.setFrame(windowID: placement.windowID, frame: preparedFrame), placement.isFocused {
-                    diagnostics.record("frame_write_constrained", details: [
-                        "pass": String(pass),
-                        "windowID": placement.windowID
-                    ])
+                let frameWritten = windowSystem.setFrame(windowID: placement.windowID, frame: preparedFrame)
+                let actualFrame = windowSystem.frame(windowID: placement.windowID)
+                if !frameWritten, placement.isFocused {
+                    recordWindowGeometry(
+                        event: "frame_write_constrained",
+                        windowID: placement.windowID,
+                        requestedFrame: preparedFrame,
+                        actualFrame: actualFrame,
+                        details: ["pass": String(pass + 1)]
+                    )
                     warning = "This app controls its window size. Stagehand will use the size it allows."
                 }
-                lastAppliedFrames[placement.windowID] = windowSystem.frame(windowID: placement.windowID)
+                lastAppliedFrames[placement.windowID] = actualFrame
             }
             if let focusedID = state.focusedWindowID,
                let record = windows.first(where: { $0.id == focusedID }) {
@@ -932,6 +943,7 @@ final class StagehandModel: ObservableObject {
                 for placement in visible {
                     guard let actual = windowSystem.frame(windowID: placement.windowID) else { continue }
                     acceptedFrames[placement.windowID] = actual
+                    var constrainedAxes: [String] = []
                     if actual.width.isFinite, actual.width > 0,
                        abs(actual.width - placement.frame.width) > 1 {
                         observedWidths[placement.windowID] = actual.width
@@ -939,18 +951,42 @@ final class StagehandModel: ObservableObject {
                             state.setWidthFraction(actual.width / availableFrame.width, for: placement.windowID)
                         }
                         constrained = true
+                        constrainedAxes.append("width")
                     }
                     if actual.height.isFinite, actual.height > 0,
                        abs(actual.height - placement.frame.height) > 1 {
                         observedHeights[placement.windowID] = actual.height
                         constrained = true
+                        constrainedAxes.append("height")
+                    }
+                    if !constrainedAxes.isEmpty {
+                        constraintObservations.append((
+                            pass: pass + 1,
+                            windowID: placement.windowID,
+                            requested: placement.frame,
+                            actual: actual,
+                            axes: constrainedAxes.joined(separator: ",")
+                        ))
                     }
                 }
                 if constrained {
                     guard pass < maximumPass else {
                         if let token { focusGate.cancelTransfer(token: token) }
                         warning = "Window sizes kept changing. Stagehand paused and restored your windows."
+                        for observation in constraintObservations {
+                            recordWindowGeometry(
+                                event: "window_size_constraint_observed",
+                                windowID: observation.windowID,
+                                requestedFrame: observation.requested,
+                                actualFrame: observation.actual,
+                                details: [
+                                    "constraintAxes": observation.axes,
+                                    "pass": String(observation.pass)
+                                ]
+                            )
+                        }
                         return failLayout("window_size_constraints_unstable", details: [
+                            "constraintObservationCount": String(constraintObservations.count),
                             "layoutPasses": String(pass + 1)
                         ])
                     }
@@ -1063,6 +1099,12 @@ final class StagehandModel: ObservableObject {
             if motionWrittenPositions[id] == position { continue }
             guard windowSystem.setPosition(windowID: id, position: position) else {
                 ribbonMotion.cancel()
+                recordWindowGeometry(
+                    event: "ribbon_position_write_failed",
+                    windowID: id,
+                    requestedFrame: frame,
+                    actualFrame: windowSystem.frame(windowID: id)
+                )
                 warning = "Stagehand couldn't move one of your windows. It paused and restored them."
                 stop(
                     reason: "ribbon_position_failed",
