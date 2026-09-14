@@ -303,7 +303,7 @@ public final class WindowSystem {
         if tracked.parkedFrame != nil {
             guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else { return false }
             var parking = tracked.parking
-            let success = parking.restore(to: frame, setFrame: { self.writeFrame(tracked.element, frame: $0) },
+            let success = parking.restore(to: frame, setFrame: { self.writeFrame(tracked.element, frame: $0, resizeFirst: false) },
                                           readFrame: { self.readFrame(tracked.element) })
             windows[windowID]?.parking = parking
             return success
@@ -359,7 +359,7 @@ public final class WindowSystem {
         // A user-minimized window remains theirs; Stagehand never reverses that action.
         guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else { return false }
         var parking = tracked.parking
-        let success = parking.restore(setFrame: { self.writeFrame(tracked.element, frame: $0) },
+        let success = parking.restore(setFrame: { self.writeFrame(tracked.element, frame: $0, resizeFirst: false) },
                                       readFrame: { self.readFrame(tracked.element) })
         windows[windowID]?.parking = parking
         if focusDiagnosticsEnabled {
@@ -720,13 +720,32 @@ public final class WindowSystem {
         return AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value) == .success
     }
 
-    private func writeFrame(_ element: AXUIElement, frame: CGRect) -> Bool {
-        var size = frame.size
-        guard let value = AXValueCreate(.cgSize, &size) else { return false }
-        // Size, position, size handles apps whose minimum size depends on their display.
-        let resized = AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value) == .success
-        let positioned = writePosition(element, position: frame.origin)
-        if resized { _ = AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value) }
-        return positioned && (resized || readFrame(element)?.size == frame.size)
+    private func writeFrame(_ element: AXUIElement, frame: CGRect, resizeFirst: Bool = true) -> Bool {
+        Self.writeFrame(frame: frame, resizeFirst: resizeFirst, readFrame: { self.readFrame(element) }, setSize: { requested in
+            var size = requested
+            guard let value = AXValueCreate(.cgSize, &size) else { return false }
+            return AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value) == .success
+        }, setPosition: { self.writePosition(element, position: $0) })
+    }
+
+    static func writeFrame(frame: CGRect, resizeFirst: Bool = true, readFrame: () -> CGRect?,
+                           setSize: (CGSize) -> Bool, setPosition: (CGPoint) -> Bool) -> Bool {
+        // Navigation usually changes only position. Avoid native resize animations
+        // from the parking corner, using layout's one-point size tolerance.
+        if let current = readFrame(), abs(current.width - frame.width) <= 1,
+           abs(current.height - frame.height) <= 1 {
+            return current.origin == frame.origin || setPosition(frame.origin)
+        }
+        // Parked windows must leave the corner before resizing. Other frame writes
+        // retain size, position, size for display-dependent minimum sizes.
+        var resized = resizeFirst && setSize(frame.size)
+        let positioned = setPosition(frame.origin)
+        if !resizeFirst {
+            guard positioned else { return false }
+            resized = setSize(frame.size)
+        } else if resized {
+            _ = setSize(frame.size)
+        }
+        return positioned && (resized || readFrame()?.size == frame.size)
     }
 }

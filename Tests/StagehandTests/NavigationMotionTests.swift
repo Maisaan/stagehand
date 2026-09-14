@@ -6,6 +6,37 @@ import Testing
 
 @Suite(.serialized) @MainActor
 struct NavigationMotionTests {
+    @Test func sharedWindowNavigationDoesNotSlideInFromItsParkingSide() {
+        let previous = WorkspaceState(spaces: [
+            SpaceState(windowIDs: ["other", "shared"], focusedWindowID: "other"),
+            SpaceState(windowIDs: ["shared"])
+        ])
+        var destination = previous
+        #expect(destination.apply(.focusNext) == true)
+
+        #expect(!shouldSlideRibbon(
+            from: previous,
+            to: destination,
+            hadPreview: false,
+            reduceMotion: false
+        ))
+    }
+
+    @Test func ordinaryWindowNavigationRetainsTheHorizontalRibbonSlide() {
+        let previous = WorkspaceState(spaces: [
+            SpaceState(windowIDs: ["first", "second"], focusedWindowID: "first")
+        ])
+        var destination = previous
+        #expect(destination.apply(.focusNext) == true)
+
+        #expect(shouldSlideRibbon(
+            from: previous,
+            to: destination,
+            hadPreview: false,
+            reduceMotion: false
+        ))
+    }
+
     @Test func repeatedNavigationReversesDismissalWithoutReplacingViewsOrTakingFocus() throws {
         _ = NSApplication.shared
         let overlays = NavigationOverlays(reduceMotion: { false })
