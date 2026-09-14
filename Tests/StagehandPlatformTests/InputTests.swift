@@ -8,6 +8,51 @@ private func contacts(count: Int = 4, dx: Double = 0, dy: Double = 0) -> [Gestur
     (0..<count).map { GestureContact(id: Int32($0), x: 0.3 + Double($0) * 0.08 + dx, y: 0.4 + dy) }
 }
 
+@Test(arguments: [3, 4], [GestureAxis.horizontal, .vertical])
+func gestureSlowStartAndRepeatedDragsRemainRecognizable(fingerCount: Int, axis: GestureAxis) {
+    var recognizer = NavigationGestureRecognizer(fingerCount: fingerCount)
+    for sequence in 0..<20 {
+        let start = Double(sequence) * 10
+        _ = recognizer.update(contacts: contacts(count: fingerCount), timestamp: start)
+        var began = false
+        // Move only one percent of the pad per second, including before axis lock.
+        for frame in 1...600 {
+            let displacement = Double(frame) / 600 * 0.1
+            let event = recognizer.update(
+                contacts: contacts(count: fingerCount,
+                                   dx: axis == .horizontal ? -displacement : 0,
+                                   dy: axis == .vertical ? displacement : 0),
+                timestamp: start + Double(frame) / 60
+            )
+            if case .began = event { began = true }
+        }
+        #expect(began)
+        guard case .ended(_, _, let action) = recognizer.update(contacts: [], timestamp: start + 10) else {
+            Issue.record("Slow swipe must finish and leave the next sequence usable")
+            return
+        }
+        #expect(action == (axis == .horizontal ? .focusNext : .nextSpace))
+        #expect(!recognizer.hasContactSequence)
+    }
+}
+
+@Test(arguments: [3, 4])
+func gestureRestBeforeMovementDoesNotDisableNavigation(fingerCount: Int) {
+    var recognizer = NavigationGestureRecognizer(fingerCount: fingerCount)
+    _ = recognizer.update(contacts: contacts(count: fingerCount), timestamp: 0)
+    #expect(recognizer.update(contacts: contacts(count: fingerCount), timestamp: 2) == nil)
+    guard case .began = recognizer.update(contacts: contacts(count: fingerCount, dx: -0.02), timestamp: 3) else {
+        Issue.record("Resting fingers must still be able to begin a deliberate swipe")
+        return
+    }
+    _ = recognizer.update(contacts: contacts(count: fingerCount, dx: -0.1), timestamp: 6)
+    guard case .ended(_, _, let action) = recognizer.update(contacts: [], timestamp: 7) else {
+        Issue.record("Missing slow swipe completion")
+        return
+    }
+    #expect(action == .focusNext)
+}
+
 @Test func gestureStaggeredLiftUsesTheRemainingFingersFinalMovement() {
     var recognizer = NavigationGestureRecognizer()
     _ = recognizer.update(contacts: contacts(), timestamp: 0)
@@ -404,8 +449,8 @@ func gestureSelectedFingerCountNavigatesSpacesOnFlickAndStaggeredLift(fingerCoun
     var recognizer = NavigationGestureRecognizer()
     _ = recognizer.update(contacts: contacts(), timestamp: 0)
     #expect(recognizer.update(contacts: contacts(dx: 0.01), timestamp: 0.1) == nil)
-    #expect(recognizer.update(contacts: contacts(dx: 0.1), timestamp: 1.3) == nil)
-    _ = recognizer.update(contacts: [], timestamp: 1.4)
+    #expect(recognizer.update(contacts: contacts(dx: 0.01), timestamp: 1.3) == nil)
+    #expect(recognizer.update(contacts: [], timestamp: 1.4) == nil)
     _ = recognizer.update(contacts: contacts(), timestamp: 1.5)
     var replaced = contacts(dx: 0.1)
     replaced[0].id = 10

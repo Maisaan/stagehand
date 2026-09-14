@@ -57,7 +57,6 @@ struct NavigationGestureRecognizer: Sendable {
     let fingerCount: Int
     private var origin: [GestureContact] = []
     private var lastContacts: [GestureContact] = []
-    private var startTime: TimeInterval = 0
     private var lastTime: TimeInterval = 0
     private var samples: [(time: TimeInterval, displacement: Double)] = []
     private var axis: GestureAxis?
@@ -113,11 +112,12 @@ struct NavigationGestureRecognizer: Sendable {
         if origin.isEmpty {
             origin = ordered
             lastContacts = ordered
-            startTime = timestamp
             hasContactSequence = true
             return nil
         }
-        guard ordered.map(\.id) == origin.map(\.id), axis != nil || timestamp - startTime <= 1.2 else {
+        // Intent comes from coherent movement, not a deadline after fingers land.
+        // Slow starts and resting before moving must remain eligible until lift.
+        guard ordered.map(\.id) == origin.map(\.id) else {
             return cancel()
         }
         let deltas = zip(ordered, origin).map { (x: $0.x - $1.x, y: $0.y - $1.y) }
