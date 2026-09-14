@@ -9,9 +9,15 @@ struct WindowParking {
 
     mutating func park(frame: CGRect, bounds: CGRect, displays: [CGRect],
                        setPosition: (CGPoint) -> Bool, readFrame: () -> CGRect?) -> Bool {
-        if restoreFrame != nil { return isParked }
         guard Self.valid(frame), Self.valid(bounds), !displays.isEmpty, displays.allSatisfy(Self.valid) else { return false }
-        restoreFrame = frame
+        let isReparking = restoreFrame != nil
+        if isReparking {
+            guard isParked, let actual = readFrame(), Self.valid(actual) else { return false }
+            if Self.acceptablyParked(actual, bounds: bounds, displays: displays) { return true }
+            isParked = false
+        } else {
+            restoreFrame = frame
+        }
         parkingBounds = bounds
         // Two-edge overhang allows a much smaller horizontal remnant than a
         // side-only move. Leave the title bar reachable rather than using the Dock.
@@ -36,10 +42,15 @@ struct WindowParking {
             }
         }
         if !attempted {
-            restoreFrame = nil
-            parkingBounds = nil
+            if !isReparking {
+                restoreFrame = nil
+                parkingBounds = nil
+            }
             return false
         }
+        // A native Space transition can move a parked window onscreen. If
+        // re-parking fails, keep its original frame so pause can still restore it.
+        if isReparking { return false }
         // A refusal is not permission to minimize. Roll back, keeping the saved
         // frame when even rollback cannot be confirmed so pause/quit can retry.
         if setPosition(frame.origin), let actual = readFrame(), Self.samePosition(actual, frame) {
@@ -83,6 +94,16 @@ struct WindowParking {
     private static func atCorner(_ frame: CGRect, bounds: CGRect) -> Bool {
         frame.minY >= bounds.maxY - 96 &&
             (frame.minX >= bounds.maxX - 64 || frame.maxX <= bounds.minX + 64)
+    }
+
+    private static func acceptablyParked(_ frame: CGRect, bounds: CGRect, displays: [CGRect]) -> Bool {
+        guard let containingDisplay = displays.max(by: {
+            overlapArea($0, bounds) < overlapArea($1, bounds)
+        }), displays.filter({ $0 != containingDisplay }).allSatisfy({ !$0.intersects(frame) }) else {
+            return false
+        }
+        let remnant = frame.intersection(bounds)
+        return remnant.isNull || (atCorner(frame, bounds: bounds) && remnant.width <= 64 && remnant.height <= 96)
     }
 
     private static func overlapArea(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {

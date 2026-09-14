@@ -43,6 +43,7 @@ public final class WindowSystem {
     private var observationRetries: [pid_t: Task<Void, Never>] = [:]
     private let launchDiscovery = ApplicationLaunchDiscovery()
     private var workspaceTokens: [NSObjectProtocol] = []
+    private var parkingValidationIDs = Set<String>()
     private var nextID: UInt64 = 0
     private var started = false
     private let systemElement = AXUIElementCreateSystemWide()
@@ -118,6 +119,9 @@ public final class WindowSystem {
                                                    object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.started else { return }
+                self.parkingValidationIDs = Set(self.windows.compactMap {
+                    $0.value.parkedFrame == nil ? nil : $0.key
+                })
                 self.onNativeDesktopChange?()
             }
         })
@@ -134,6 +138,7 @@ public final class WindowSystem {
         let center = NSWorkspace.shared.notificationCenter
         for token in workspaceTokens { center.removeObserver(token) }
         workspaceTokens.removeAll()
+        parkingValidationIDs.removeAll()
         for retry in observationRetries.values { retry.cancel() }
         observationRetries.removeAll()
         applicationObservations.removeAll()
@@ -329,7 +334,8 @@ public final class WindowSystem {
     public func park(windowID: String) -> Bool {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.park(windowID: windowID) }
         guard let tracked = windows[windowID] else { return false }
-        if tracked.parkedFrame != nil { return tracked.parking.isParked }
+        let needsValidation = parkingValidationIDs.remove(windowID) != nil
+        if tracked.parkedFrame != nil, !needsValidation { return tracked.parking.isParked }
         guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else { return false }
         guard let currentFrame = readFrame(tracked.element) else { return false }
         captureOriginalFrame(windowID: windowID)

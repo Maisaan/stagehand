@@ -106,6 +106,22 @@ struct WindowParkingTests {
         #expect(parking.restoreFrame == original)
     }
 
+    @Test func reparksAWindowMovedOnscreenByANativeSpaceTransition() {
+        var parking = WindowParking()
+        var actual = original
+        let first = parking.park(frame: actual, bounds: display, displays: [display],
+                                 setPosition: { actual.origin = $0; return true }, readFrame: { actual })
+        #expect(first)
+
+        actual.origin = CGPoint(x: 450, y: 220)
+
+        let second = parking.park(frame: actual, bounds: display, displays: [display],
+                                  setPosition: { actual.origin = $0; return true }, readFrame: { actual })
+        #expect(second)
+        #expect(actual.origin == corner.origin)
+        #expect(parking.restoreFrame == original)
+    }
+
     @Test func failedOrUnconfirmedRestoreKeepsTheSavedFrameForRetry() {
         var parking = makeParkedWindow()
         let failed = parking.restore(setFrame: { _ in false }, readFrame: { corner })
