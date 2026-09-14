@@ -77,7 +77,7 @@ final class NavigationOverlays {
             self?.dropTargetChanged(isTargeted: isTargeted)
         }
         hudModel.onContentChange = { [weak self] in
-            self?.presentHUD(dismissAfter: .milliseconds(800))
+            self?.presentHUD(dismissAfter: .milliseconds(1_500))
         }
     }
 
@@ -134,14 +134,14 @@ final class NavigationOverlays {
         updateNavigation(state: state, windows: windows)
         hudModel.showingSpaces = false
         hudModel.warning = nil
-        presentHUD(dismissAfter: .milliseconds(800))
+        presentHUD(dismissAfter: .milliseconds(1_500))
     }
 
     private func dropTargetChanged(isTargeted: Bool) {
         guard dropTargetKeepsHUDVisible != isTargeted else { return }
         dropTargetKeepsHUDVisible = isTargeted
         if isTargeted {
-            presentHUD(dismissAfter: .milliseconds(800))
+            presentHUD(dismissAfter: .milliseconds(1_500))
         } else if !pointerKeepsHUDVisible, hud?.isVisible == true {
             scheduleDismiss(after: .milliseconds(450))
         }
@@ -196,7 +196,7 @@ final class NavigationOverlays {
         guard NSEvent.pressedMouseButtons == 0, canRevealNavigation?() == true else { return }
         pointerKeepsHUDVisible = true
         hudModel.warning = nil
-        presentHUD(dismissAfter: .milliseconds(800))
+        presentHUD(dismissAfter: .milliseconds(1_500))
     }
 
     private func presentHUD(dismissAfter: Duration) {
