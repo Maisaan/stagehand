@@ -4,7 +4,7 @@ import Testing
 
 @Test @MainActor func diagnosticLoggingCapturesAutomaticPauseOnlyWhenEnabled() throws {
     let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("StagehandDiagnosticLoggingTests-(UUID().uuidString)", isDirectory: true)
+        .appendingPathComponent("StagehandDiagnosticLoggingTests-\(UUID().uuidString)", isDirectory: true)
     let logURL = directory.appendingPathComponent("stagehand.log")
     defer { try? FileManager.default.removeItem(at: directory) }
 

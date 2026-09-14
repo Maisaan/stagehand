@@ -229,6 +229,7 @@ final class StagehandModel: ObservableObject {
                 }
             }
         }
+        self.diagnostics.record("session_started")
         refreshPermissions()
     }
 
