@@ -21,7 +21,7 @@ The build script makes a local, ad-hoc-signed app. Rebuilding can require removi
 ## Ribbon
 
 - With **Maximize windows** off, windows have individual widths from 25% to 95% of the available display width.
-- The focused window requests 100% of the available height; inactive windows request 95%. Windows are vertically centered using their actual accepted heights when an app constrains its size.
+- All windows keep a stable full available height across focus changes. Apps that constrain their own height remain vertically centered. Stagehand slides real windows rather than resizing their content to imitate scaling.
 - With it on, windows request the full available width. Turning it off restores the individual widths. This is window resizing, not native fullscreen.
 - Apps can constrain their size. Settings shows their actual width, and the ribbon packs to the accepted size instead of leaving an unused slot.
 - Gap is measured in points. Positive values separate windows; negative values overlap them horizontally. The active window stays on top. Maximized windows do not reserve neighboring strips.
@@ -35,7 +35,7 @@ New windows enter after the current window. Stagehand's own settings window join
 
 The settings window is resizable. Settings save maximization, gap, and the gesture preference. Space membership is session-only in this MVP.
 
-The navigation bar stays visible through successive changes and moves its selection indicator in place. It enters and exits toward the top using short scale and opacity transitions. Reduce Motion removes movement. Resizable windows have an inward-drawn focus border; maximized windows have none. The border hides during managed layout changes and follows manual resizing immediately, without geometry animation. Focus feedback uses opacity only. These overlays never wait on or take ownership of keyboard focus.
+The compact navigation bar stays visible through successive changes and moves its selection indicator in place. It attaches beneath the camera housing on notched displays and uses a top-center fallback elsewhere. Entrance takes 250 ms and exit 200 ms, using interruptible scale and opacity transitions. Reduce Motion removes movement. Resizable windows have an inward-drawn focus border; maximized windows have none. The border hides during managed preparation and follows position-only slides and manual resizing. These overlays never wait on or take ownership of keyboard focus.
 
 ## Controls
 
@@ -53,13 +53,14 @@ The navigation bar stays visible through successive changes and moves its select
 
 Resume through the menu-bar item or settings. Pausing releases the global shortcuts. Width shortcuts apply only with maximization off. Shortcuts are fixed for this version. Add to Another Space is available from the current window's menu in the Workspace tab.
 
-Four-finger gestures are optional and off on first launch:
+Gesture navigation is optional and off on first launch. Choose three or four fingers; four is the default:
 
 - Swipe left / right: next / previous window.
 - Swipe up / down: next / previous space.
-- One contact sequence produces at most one action. Three fingers, five fingers, ambiguous diagonals, and unstable contacts are rejected.
+- Horizontal movement follows your fingers and commits on release by distance or recent flick velocity. An uncommitted drag settles back.
+- One contact sequence produces at most one action. Other finger counts, ambiguous diagonals, and unstable contacts are rejected.
 
-In System Settings → Trackpad → More Gestures, move native actions assigned to four fingers to three fingers, or disable them. Detection reads preferences as hints; the System Settings UI is authoritative. Stagehand never rewrites system gesture settings. Three-finger dragging can also conflict. A scoped scroll-event filter prevents scroll leakage once a four-finger swipe is recognized; edge cases during finger landing/lifting still require device testing.
+In System Settings → Trackpad → More Gestures, assign conflicting native gestures a different finger count or disable them. Detection reads preferences as hints; the System Settings UI is authoritative. Stagehand never rewrites system gesture settings. Three-finger dragging can also conflict. A scoped scroll-event filter prevents scroll leakage once the selected contact sequence is recognized; edge cases during finger landing/lifting still require device testing.
 
 ## Focus and restoration
 
@@ -67,13 +68,15 @@ Navigation activates and raises the destination's real AX window, and confirms b
 
 With Input Monitoring, the keyboard event tap begins a short in-memory transfer buffer at a navigation shortcut, before subsequent typing events. After focus is confirmed, buffered events are posted to the destination process. Failed or expired transfers withhold buffered events and show a warning rather than inject them into an unverified app. Input is never logged or written to disk.
 
+Horizontal navigation settles with position-only writes for 200 ms, without waiting to release verified input. Updates run only during dragging or settling, with no idle animation timer or screen capture. Consecutive keyboard steps can skip an intermediate window only when its input transfer is empty. Pending gesture releases are claimed before routing subsequent keyboard events so main-queue ordering does not send that typing to the old app. Physical trackpad callback ordering and cross-process position clamping still need live testing.
+
 **This is a prototype, not a proven zero-loss input guarantee.** macOS provides no acknowledgement that a posted key event was consumed by a specific window. Rapid transitions between two windows of the same process and key releases spanning switches need live validation. Secure Input or a disabled event tap can bypass protection; Setup reports its current availability. A short event-loop allowance after replay reduces queue races but is not a delivery guarantee.
 
 Off-ribbon windows are parked individually in a screen corner without minimizing to the Dock or hiding their entire application. macOS can retain a small visible corner remnant. If a window refuses safe parking, Stagehand restores it and pauses instead of minimizing it. Pause and Quit restore original frames. User-minimized windows and native-fullscreen windows are excluded. Crashes or forced termination cannot run restoration.
 
 New windows must match on-screen CoreGraphics metadata before admission. Ambiguous same-app windows with identical frames can be skipped until distinguishable. Stagehand stays enabled on the native Desktop where you press Start. Leaving that Desktop suspends its input and layout work without discarding its spaces. Returning resumes automatically. Desktop identity uses a read-only private system API; when identity is unavailable, Stagehand stays suspended rather than managing an unknown Desktop. Pause and Start again to bind to a different Desktop. This MVP targets one built-in display; native fullscreen and multiple-display workflows are deferred.
 
-Four-finger recognition loads Apple's private `MultitouchSupport` framework at runtime and fails gracefully when unavailable. Its ABI can change with macOS updates. This build is intended for local use, not App Store submission.
+Gesture recognition loads Apple's private `MultitouchSupport` framework at runtime and fails gracefully when unavailable. Its ABI can change with macOS updates. This build is intended for local use, not App Store submission.
 
 ## Verification
 

@@ -236,11 +236,22 @@ struct SettingsView: View {
                 shortcut("Open settings", keys: "⌃ ⌥ ,")
             }
             Divider()
-            Toggle("Four-finger navigation", isOn: $model.gesturesEnabled)
-                .font(.system(size: 12, weight: .medium))
+            HStack {
+                Toggle("Gesture navigation", isOn: $model.gesturesEnabled)
+                    .font(.system(size: 12, weight: .medium))
+                Spacer()
+                Picker("Fingers", selection: $model.gestureFingerCount) {
+                    Text("Three fingers").tag(3)
+                    Text("Four fingers").tag(4)
+                }
+                .labelsHidden()
+                .frame(width: 140)
+                .disabled(!model.gesturesEnabled)
+                .accessibilityLabel("Navigation gesture fingers")
+            }
             Text("Swipe left for the next window, right for the previous one. Swipe up for the next space, down for the previous one. One swipe moves one step.")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
-            Text("Before enabling, move conflicting macOS gestures to three fingers or turn them off in Trackpad settings. Three-finger dragging can also conflict.")
+            Text("Use a different finger count for conflicting macOS gestures, or turn those gestures off in Trackpad settings. Three-finger dragging can also conflict.")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
             Button("Open Trackpad Settings") { openSettingsPane("com.apple.Trackpad-Settings.extension") }
             Text("Add a window to another space from its menu in the Workspace tab. Shortcuts are fixed in this first version.")
@@ -289,7 +300,7 @@ struct SettingsView: View {
             Text("MVP boundaries").font(.system(size: 13, weight: .semibold))
             Text("Built for your Mac’s built-in display and ordinary windows on one macOS Desktop. Native fullscreen is excluded. Layout preferences are saved; space membership lasts for this Stagehand session. Pause or quit to restore original window positions.")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
-            Text("Four-finger recognition uses a private macOS trackpad API. If it is unavailable, keyboard navigation still works. Secure Input can prevent keyboard interception.")
+            Text("Gesture recognition uses a private macOS trackpad API. If it is unavailable, keyboard navigation still works. Secure Input can prevent keyboard interception.")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
         }
     }

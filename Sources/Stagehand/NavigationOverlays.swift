@@ -4,6 +4,42 @@ import QuartzCore
 import StagehandCore
 import StagehandPlatform
 
+struct NavigationHUDGeometry {
+    static let padding: CGFloat = 16
+    let contentFrame: CGRect
+    let attachedToNotch: Bool
+
+    var panelFrame: CGRect {
+        let padded = contentFrame.insetBy(dx: -Self.padding, dy: -Self.padding)
+        return CGRect(x: padded.minX, y: padded.minY, width: padded.width,
+                      height: padded.height - (attachedToNotch ? Self.padding : 0))
+    }
+
+    static func layout(screenFrame: CGRect, visibleFrame: CGRect, safeAreaTop: CGFloat,
+                       auxiliaryLeft: CGRect?, auxiliaryRight: CGRect?, windowCount: Int,
+                       warningHeight: CGFloat? = nil) -> Self {
+        let notch: CGRect?
+        if safeAreaTop > 0, let left = auxiliaryLeft, let right = auxiliaryRight,
+           left.maxX < right.minX, left.maxX >= screenFrame.minX,
+           right.minX <= screenFrame.maxX, left.height > 0, right.height > 0 {
+            notch = CGRect(x: left.maxX, y: screenFrame.maxY - safeAreaTop,
+                           width: right.minX - left.maxX, height: safeAreaTop)
+        } else {
+            notch = nil
+        }
+        let attached = notch != nil && warningHeight == nil
+        let limit = max(1, min(warningHeight == nil ? 520 : 580, visibleFrame.width - 32))
+        let desiredWidth = warningHeight == nil ? max(200, 60 + CGFloat(max(0, windowCount)) * 36) : 580
+        let width = min(limit, max(desiredWidth, attached ? notch?.width ?? 0 : 0))
+        let height = warningHeight.map { max(72, $0) } ?? 66
+        let centerX = notch?.midX ?? screenFrame.midX
+        let left = min(max(centerX - width / 2, visibleFrame.minX + 16), visibleFrame.maxX - 16 - width)
+        let top = attached ? (notch?.minY ?? visibleFrame.maxY) : min(visibleFrame.maxY, screenFrame.maxY - safeAreaTop) - 6
+        return Self(contentFrame: CGRect(x: left, y: top - height, width: width, height: height),
+                    attachedToNotch: attached)
+    }
+}
+
 @MainActor
 final class NavigationOverlays {
     private(set) var border: OverlayPanel?
@@ -78,13 +114,21 @@ final class NavigationOverlays {
         guard let container = hud.contentView as? HUDContainerView else { return }
         hudModel.reduceMotion = reduceMotion()
         hudModel.animationDurationMultiplier = animationDurationMultiplier
-        let width = min(580, screen.visibleFrame.width - 32)
-        let height: CGFloat = 104
-        let padding = HUDContainerView.padding
-        let top = min(screen.visibleFrame.maxY, screen.frame.maxY - screen.safeAreaInsets.top)
-        hud.setFrame(CGRect(x: screen.frame.midX - width / 2 - padding,
-                            y: top - height - 8 - padding,
-                            width: width + padding * 2, height: height + padding * 2), display: true)
+        let warningHeight = hudModel.warning.map { message in
+            let textWidth = max(1, min(580, screen.visibleFrame.width - 32) - 64)
+            return ceil((message as NSString).boundingRect(
+                with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [.font: NSFont.systemFont(ofSize: 12)]).height) + 36
+        }
+        let geometry = NavigationHUDGeometry.layout(
+            screenFrame: screen.frame, visibleFrame: screen.visibleFrame,
+            safeAreaTop: screen.safeAreaInsets.top,
+            auxiliaryLeft: screen.auxiliaryTopLeftArea, auxiliaryRight: screen.auxiliaryTopRightArea,
+            windowCount: hudModel.windows.count, warningHeight: warningHeight)
+        hudModel.attachedToNotch = geometry.attachedToNotch
+        container.attachedToNotch = geometry.attachedToNotch
+        hud.setFrame(geometry.panelFrame, display: true)
         container.needsLayout = true
         container.layoutSubtreeIfNeeded()
         let wasVisible = hud.isVisible
@@ -99,12 +143,12 @@ final class NavigationOverlays {
         }
         if !wasVisible || wasExiting {
             container.transition(visible: true, reduceMotion: hudModel.reduceMotion,
-                                 duration: 0.2 * animationDurationMultiplier)
+                                 duration: 0.25 * animationDurationMultiplier)
         }
         dismissTask = Task { [weak self] in
             do { try await Task.sleep(for: dismissAfter) } catch { return }
             guard !Task.isCancelled, let self, self.beginHUDDismiss(generation: generation) else { return }
-            do { try await Task.sleep(for: .seconds(0.125 * self.animationDurationMultiplier)) } catch { return }
+            do { try await Task.sleep(for: .seconds(0.2 * self.animationDurationMultiplier)) } catch { return }
             guard !Task.isCancelled else { return }
             _ = self.completeHUDDismiss(generation: generation)
         }
@@ -116,7 +160,7 @@ final class NavigationOverlays {
               let container = hud?.contentView as? HUDContainerView else { return false }
         hudIsExiting = true
         container.transition(visible: false, reduceMotion: reduceMotion(),
-                             duration: 0.125 * animationDurationMultiplier)
+                             duration: 0.2 * animationDurationMultiplier)
         return true
     }
 
@@ -153,14 +197,19 @@ final class NavigationOverlays {
 /// no window geometry or managed application participates in the decorative transition.
 @MainActor
 final class HUDContainerView: NSView {
-    static let padding: CGFloat = 16
+    static let padding = NavigationHUDGeometry.padding
     let animatedView = NSView()
     let hostingView: NSView
+    var attachedToNotch = false
+    var hiddenTravel: CGFloat { animatedView.bounds.height * (attachedToNotch ? 0.35 : 0.12) }
 
     init(model: NavigationHUDModel) {
         hostingView = NSHostingView(rootView: NavigationHUD(model: model))
         super.init(frame: .zero)
         wantsLayer = true
+        // The top edge is flush with the physical camera housing on notched displays.
+        // Clip translation there so content never travels over the menu bar.
+        layer?.masksToBounds = true
         animatedView.wantsLayer = true
         addSubview(animatedView)
         animatedView.addSubview(hostingView)
@@ -176,7 +225,9 @@ final class HUDContainerView: NSView {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        animatedView.frame = bounds.insetBy(dx: Self.padding, dy: Self.padding)
+        animatedView.frame = CGRect(x: Self.padding, y: Self.padding,
+                                    width: max(0, bounds.width - Self.padding * 2),
+                                    height: max(0, bounds.height - Self.padding * (attachedToNotch ? 1 : 2)))
         hostingView.frame = animatedView.bounds
         CATransaction.commit()
     }
@@ -188,7 +239,7 @@ final class HUDContainerView: NSView {
         // AppKit owns this backing layer's bottom-left anchor and resets custom anchors
         // at commit. Compensate the scale in the transform to keep its top center fixed.
         let x = size.width * (1 - scale) / 2
-        let y = size.height * (1 - scale) + size.height * 0.08
+        let y = size.height * (1 - scale) + hiddenTravel
         return CATransform3DScale(CATransform3DMakeTranslation(x, y, 0), scale, scale, 1)
     }
 
@@ -299,6 +350,7 @@ final class NavigationHUDModel: ObservableObject {
     @Published var focusedID: String?
     @Published var warning: String?
     @Published var reduceMotion = false
+    @Published var attachedToNotch = false
     var animationDurationMultiplier: Double = 1
 }
 
@@ -321,50 +373,57 @@ private struct NavigationHUD: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(white: 0.075).opacity(0.97), in: RoundedRectangle(cornerRadius: 17))
-        .overlay { RoundedRectangle(cornerRadius: 17).stroke(.white.opacity(0.12), lineWidth: 1) }
+        .background(model.attachedToNotch ? Color.black : Color(white: 0.075).opacity(0.97), in: shape)
+        .overlay { if !model.attachedToNotch { shape.stroke(.white.opacity(0.12), lineWidth: 1) } }
         .environment(\.colorScheme, .dark)
     }
 
+    private var shape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(topLeadingRadius: model.attachedToNotch ? 0 : 15,
+                               bottomLeadingRadius: 15, bottomTrailingRadius: 15,
+                               topTrailingRadius: model.attachedToNotch ? 0 : 15)
+    }
+
     private var navigation: some View {
-        VStack(spacing: 8) {
-            HStack {
-                Text("SPACE \(model.space, format: .number.precision(.integerLength(2)))")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                Spacer()
-                Text("RIBBON")
-                    .font(.system(size: 9, weight: .medium, design: .monospaced))
-            }
-            .foregroundStyle(.white.opacity(0.55))
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(model.windows) { window in
-                            AppIcon(bundleIdentifier: window.bundleIdentifier)
-                                .padding(6)
-                                .background {
-                                    if window.id == model.focusedID {
-                                        RoundedRectangle(cornerRadius: 10)
-                                            .fill(Color.mint.opacity(0.25))
-                                            .overlay { RoundedRectangle(cornerRadius: 10).stroke(Color.mint.opacity(0.8), lineWidth: 1) }
-                                            .matchedGeometryEffect(id: "selection", in: selection)
-                                            .transition(.identity)
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                Text("\(model.space, format: .number.precision(.integerLength(2)))")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.55))
+                    .frame(width: 22)
+                    .accessibilityLabel("Space \(model.space)")
+                Rectangle().fill(.white.opacity(0.15)).frame(width: 1, height: 18)
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 4) {
+                            ForEach(model.windows) { window in
+                                AppIcon(bundleIdentifier: window.bundleIdentifier, size: 24)
+                                    .padding(4)
+                                    .background {
+                                        if window.id == model.focusedID {
+                                            RoundedRectangle(cornerRadius: 10)
+                                                .fill(Color.mint.opacity(0.25))
+                                                .overlay { RoundedRectangle(cornerRadius: 10).stroke(Color.mint.opacity(0.8), lineWidth: 1) }
+                                                .matchedGeometryEffect(id: "selection", in: selection)
+                                                .transition(.identity)
+                                        }
                                     }
-                                }
-                                .id(window.id)
+                                    .id(window.id)
+                            }
                         }
+                        .frame(minWidth: 1)
+                        .animation(model.reduceMotion ? nil : .timingCurve(0.77, 0, 0.175, 1,
+                                                                          duration: 0.2 * model.animationDurationMultiplier),
+                                   value: model.focusedID)
                     }
-                    .frame(minWidth: 1)
-                    .animation(model.reduceMotion ? nil : .timingCurve(0.77, 0, 0.175, 1,
-                                                                      duration: 0.18 * model.animationDurationMultiplier),
-                               value: model.focusedID)
+                    .onChange(of: model.focusedID, initial: true) { _, id in
+                        if let id { proxy.scrollTo(id, anchor: .center) }
+                    }
+                    .onChange(of: model.windows.map(\.id)) { _, _ in
+                        if let id = model.focusedID { proxy.scrollTo(id, anchor: .center) }
+                    }
                 }
-                .onChange(of: model.focusedID, initial: true) { _, id in
-                    if let id { proxy.scrollTo(id, anchor: .center) }
-                }
-                .onChange(of: model.windows.map(\.id)) { _, _ in
-                    if let id = model.focusedID { proxy.scrollTo(id, anchor: .center) }
-                }
+                .frame(height: 32)
             }
             Text(model.windows.first(where: { $0.id == model.focusedID }).map {
                 $0.title.isEmpty ? $0.appName : "\($0.appName) · \($0.title)"
@@ -373,7 +432,7 @@ private struct NavigationHUD: View {
             .foregroundStyle(.white.opacity(0.8))
             .lineLimit(1)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 }

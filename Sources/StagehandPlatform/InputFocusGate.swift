@@ -9,6 +9,7 @@ struct InputTransferBuffer<Event> {
     private var transfers: [(token: UInt64, events: [Event])] = []
     var latestToken: UInt64? { transfers.last?.token }
     var eventCount: Int { transfers.reduce(0) { $0 + $1.events.count } }
+    func isEmpty(token: UInt64) -> Bool { transfers.first { $0.token == token }?.events.isEmpty == true }
 
     mutating func begin() -> UInt64 {
         nextToken &+= 1
@@ -47,6 +48,7 @@ public final class FocusInputGate {
     public var onInputDiscarded: ((Int) -> Void)?
     public var onAvailabilityChanged: (() -> Void)?
     public var onNavigationAction: ((NavigationAction) -> Void)?
+    public var onBeforeKeyboardEvent: (() -> Void)?
 
     private enum KeyDestination {
         case pending(UInt64)
@@ -144,6 +146,14 @@ public final class FocusInputGate {
         if !events.isEmpty { onInputDiscarded?(events.count) }
     }
 
+    /// Only visual-only navigation may be skipped. A transfer that owns typing
+    /// must still visit and verify its original destination.
+    public func cancelTransferIfEmpty(token: UInt64) -> Bool {
+        guard buffer.isEmpty(token: token) else { return false }
+        cancelTransfer(token: token)
+        return true
+    }
+
     public func cancelAll() {
         for deadline in deadlines.values { deadline.cancel() }
         deadlines.removeAll()
@@ -171,6 +181,9 @@ public final class FocusInputGate {
     /// events and an injected replay sink without starting global capture or posting input.
     func processKeyboardEvent(type: CGEventType, event: CGEvent) -> Bool {
         guard event.getIntegerValueField(.eventSourceUserData) != eventMarker else { return false }
+        // A trackpad release may already be committed on its callback thread while
+        // its main-queue delivery is pending. Enqueue that handoff before this key.
+        onBeforeKeyboardEvent?()
         let key = event.getIntegerValueField(.keyboardEventKeycode)
         if type == .keyUp, navigationKeys.remove(key) != nil { return true }
         if type == .keyDown, let action = ShortcutBinding.action(for: event) {

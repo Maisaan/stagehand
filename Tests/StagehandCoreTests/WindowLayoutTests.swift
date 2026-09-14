@@ -5,7 +5,7 @@ import Testing
 
 private let screen = CGRect(x: 100, y: 40, width: 1000, height: 700)
 
-@Test func ribbonRequestsFullFocusedHeightAndCentersShorterNeighbors() throws {
+@Test func ribbonKeepsHeightStableAcrossFocusChanges() throws {
     var state = WorkspaceState()
     state.reconcile(windowIDs: ["a", "b", "c"])
     for maximize in [false, true] {
@@ -13,7 +13,7 @@ private let screen = CGRect(x: 100, y: 40, width: 1000, height: 700)
         for focusedID in state.currentSpace.windowIDs {
             state.focus(windowID: focusedID)
             for placement in WindowLayout.placements(for: state, availableFrame: screen) {
-                #expect(placement.frame.height == (placement.isFocused ? 700 : 665))
+                #expect(placement.frame.height == 700)
                 #expect(placement.frame.midY == screen.midY)
             }
         }

@@ -17,6 +17,7 @@ public struct WindowRecord: Identifiable, Equatable, Sendable {
 public final class WindowSystem {
     public var onChange: (() -> Void)?
     public var onFrameChange: ((String, CGRect) -> Void)?
+    public var onFocusedWindowChange: ((String) -> Void)?
     public var onNativeDesktopChange: (() -> Void)?
     public var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
     public var focusDiagnosticsEnabled = false
@@ -49,6 +50,10 @@ public final class WindowSystem {
             guard let self, self.started else { return }
             self.onFrameChange?(id, frame)
         }
+        nativeWindows.onFocusedWindowChange = { [weak self] id in
+            guard let self, self.started else { return }
+            self.onFocusedWindowChange?(id)
+        }
     }
 
     /// Register Stagehand's settings explicitly. HUD and empty-space windows stay unmanaged.
@@ -71,8 +76,11 @@ public final class WindowSystem {
                      NSWorkspace.didActivateApplicationNotification,
                      NSWorkspace.didUnhideApplicationNotification] {
             workspaceTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor [weak self] in
+                MainActor.assumeIsolated {
                     guard let self, self.started else { return }
+                    if name == NSWorkspace.didActivateApplicationNotification {
+                        self.reportCurrentFocus()
+                    }
                     self.onChange?()
                 }
             })
@@ -234,6 +242,19 @@ public final class WindowSystem {
         return result + nativeWindows.records
     }
 
+    /// Moves a restored window without resizing it or requesting keyboard focus.
+    @discardableResult
+    public func setPosition(windowID: String, position: CGPoint) -> Bool {
+        guard position.x.isFinite, position.y.isFinite else { return false }
+        if nativeWindows.contains(windowID: windowID) {
+            return nativeWindows.setPosition(windowID: windowID, position: position)
+        }
+        guard let tracked = windows[windowID], tracked.isAdmitted,
+              tracked.parkedFrame == nil else { return false }
+        captureOriginalFrame(windowID: windowID)
+        return writePosition(tracked.element, position: position)
+    }
+
     public func frame(windowID: String) -> CGRect? {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.frame(windowID: windowID) }
         guard let tracked = windows[windowID] else { return nil }
@@ -365,6 +386,20 @@ public final class WindowSystem {
         }
         guard let focusedWindow = elementAttribute(focusedApp, kAXFocusedWindowAttribute) else { return nil }
         return windows.first { CFEqual($0.value.element, focusedWindow) }?.key
+    }
+
+    private func reportCurrentFocus() {
+        guard onFocusedWindowChange != nil, let id = focusedWindowID() else { return }
+        if nativeWindows.contains(windowID: id) {
+            onFocusedWindowChange?(id)
+            return
+        }
+        // An app's delayed focus notification can arrive after it lost activation.
+        // Resolve actual focus and independently reject background remembered windows.
+        guard let tracked = windows[id], tracked.isAdmitted,
+              let frontmost = NSWorkspace.shared.frontmostApplication,
+              frontmost.isActive, frontmost.processIdentifier == tracked.record.pid else { return }
+        onFocusedWindowChange?(id)
     }
 
     /// Returns success only after the target application and its exact window own focus.
@@ -528,6 +563,7 @@ public final class WindowSystem {
                 let owner = Unmanaged<WindowSystem>.fromOpaque(context).takeUnretainedValue()
                 guard owner.started else { return }
                 let name = notification as String
+                if name == kAXFocusedWindowChangedNotification { owner.reportCurrentFocus() }
                 if owner.onFrameChange != nil,
                    name == kAXMovedNotification || name == kAXResizedNotification,
                    let tracked = owner.windows.first(where: { CFEqual($0.value.element, changedWindow) }),

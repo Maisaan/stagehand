@@ -7,63 +7,163 @@ struct GestureContact: Equatable, Sendable {
     var y: Double
 }
 
-/// One action per four-finger contact sequence. Positions use normalized trackpad coordinates.
-struct FourFingerRecognizer: Sendable {
+public enum GestureAxis: Equatable, Sendable {
+    case horizontal, vertical
+}
+
+/// Displacement is in normalized trackpad coordinates, velocity in those units per second.
+/// Only `ended` may commit navigation. A preview must not change keyboard focus.
+public enum GestureNavigationEvent: Equatable, Sendable {
+    case began(axis: GestureAxis, displacement: Double)
+    case changed(displacement: Double, velocity: Double)
+    case ended(displacement: Double, velocity: Double, action: NavigationAction?)
+    case cancelled
+}
+
+/// Preserve lifecycle boundaries while dropping obsolete visual frames if the main thread is busy.
+struct GestureEventBuffer {
+    private var events: [GestureNavigationEvent] = []
+
+    mutating func append(_ event: GestureNavigationEvent) {
+        if case .changed = event, case .changed = events.last {
+            events[events.count - 1] = event
+        } else {
+            events.append(event)
+        }
+    }
+
+    mutating func drain() -> [GestureNavigationEvent] {
+        let result = events
+        events.removeAll(keepingCapacity: true)
+        return result
+    }
+
+    /// A keyboard event can reach the main run loop before its queued gesture delivery.
+    /// Claim the release and its earlier preview events together, so later delivery cannot
+    /// navigate twice or restore the preview over the committed window transition.
+    mutating func takeCommittedAction() -> NavigationAction? {
+        for (index, event) in events.enumerated() {
+            if case .ended(_, _, let action?) = event {
+                events.removeFirst(index + 1)
+                return action
+            }
+        }
+        return nil
+    }
+}
+
+/// One drag per contact sequence. Wait for all fingers to lift before accepting another.
+struct NavigationGestureRecognizer: Sendable {
+    let fingerCount: Int
     private var origin: [GestureContact] = []
     private var startTime: TimeInterval = 0
     private var lastTime: TimeInterval = 0
+    private var samples: [(time: TimeInterval, displacement: Double)] = []
+    private var axis: GestureAxis?
     private var finished = false
-    private(set) var hasFourFingerSequence = false
+    private(set) var hasContactSequence = false
+    var isDragging: Bool { axis != nil && !finished }
 
-    mutating func reset() { self = Self() }
+    init(fingerCount: Int = 4) {
+        self.fingerCount = fingerCount == 3 ? 3 : 4
+    }
 
-    mutating func update(contacts: [GestureContact], timestamp: TimeInterval) -> NavigationAction? {
-        guard timestamp.isFinite else { reset(); return nil }
-        if contacts.isEmpty { reset(); return nil }
-        guard timestamp >= lastTime else { finished = true; return nil }
+    mutating func cancelUntilLift() {
+        if hasContactSequence { finished = true }
+    }
+
+    mutating func update(contacts: [GestureContact], timestamp: TimeInterval) -> GestureNavigationEvent? {
+        guard timestamp.isFinite, timestamp >= lastTime else { return cancel() }
+        if contacts.isEmpty {
+            let event = finish(timestamp: timestamp)
+            self = Self(fingerCount: fingerCount)
+            return event
+        }
         lastTime = timestamp
         guard !finished else { return nil }
-        guard contacts.count <= 4 else { finished = true; return nil }
-        guard contacts.count == 4 else {
-            if !origin.isEmpty { finished = true }
-            return nil
+        guard contacts.count <= fingerCount else { return cancel() }
+        let coordinateBounds = origin.isEmpty ? 0.015...0.985 : 0.0...1.0
+        guard contacts.allSatisfy({ $0.x.isFinite && $0.y.isFinite && coordinateBounds.contains($0.x) && coordinateBounds.contains($0.y) }),
+              Set(contacts.map(\.id)).count == contacts.count else {
+            return cancel()
         }
-        guard contacts.allSatisfy({ $0.x.isFinite && $0.y.isFinite && (0.015...0.985).contains($0.x) && (0.015...0.985).contains($0.y) }),
-              Set(contacts.map(\.id)).count == 4 else {
-            finished = true
-            return nil
+        guard contacts.count == fingerCount else {
+            guard !origin.isEmpty else { return nil }
+            // A normal staggered lift ends immediately. A replacement finger cancels.
+            guard contacts.allSatisfy({ contact in origin.contains(where: { $0.id == contact.id }) }) else { return cancel() }
+            return finish(timestamp: timestamp)
         }
         let ordered = contacts.sorted { $0.id < $1.id }
         if origin.isEmpty {
             origin = ordered
             startTime = timestamp
-            hasFourFingerSequence = true
+            hasContactSequence = true
             return nil
         }
-        guard ordered.map(\.id) == origin.map(\.id), timestamp - startTime <= 1.2 else {
-            finished = true
-            return nil
+        guard ordered.map(\.id) == origin.map(\.id), axis != nil || timestamp - startTime <= 1.2 else {
+            return cancel()
         }
         let deltas = zip(ordered, origin).map { (x: $0.x - $1.x, y: $0.y - $1.y) }
-        let dx = deltas.reduce(0) { $0 + $1.x } / 4
-        let dy = deltas.reduce(0) { $0 + $1.y } / 4
+        let dx = deltas.reduce(0) { $0 + $1.x } / Double(fingerCount)
+        let dy = deltas.reduce(0) { $0 + $1.y } / Double(fingerCount)
         // Reject pinches, rotation, and a stationary thumb with three moving fingers.
         guard deltas.allSatisfy({ abs($0.x - dx) < 0.035 && abs($0.y - dy) < 0.035 }) else {
-            finished = true
-            return nil
+            return cancel()
         }
         let x = abs(dx), y = abs(dy)
-        guard max(x, y) >= 0.075 else { return nil }
-        if x >= y * 1.35 {
-            finished = true
-            return dx < 0 ? .focusNext : .focusPrevious
+        if let axis {
+            let displacement = axis == .horizontal ? dx : dy
+            let previousDisplacement = samples.last?.displacement
+            record(displacement: displacement, timestamp: timestamp)
+            guard displacement != previousDisplacement else { return nil }
+            return .changed(displacement: displacement, velocity: velocity(at: timestamp))
         }
-        if y >= x * 1.35 {
-            finished = true
-            return dy > 0 ? .nextSpace : .previousSpace
+        guard max(x, y) >= 0.012 else { return nil }
+        let lockedAxis: GestureAxis
+        if x >= y * 1.35 { lockedAxis = .horizontal }
+        else if y >= x * 1.35 { lockedAxis = .vertical }
+        else {
+            // A long diagonal is ambiguous. Do not unexpectedly choose an axis.
+            return max(x, y) >= 0.12 ? cancel() : nil
         }
-        // A long diagonal is ambiguous. Wait for lift instead of unexpectedly choosing an axis.
-        if max(x, y) >= 0.12 { finished = true }
-        return nil
+        axis = lockedAxis
+        let displacement = lockedAxis == .horizontal ? dx : dy
+        samples = [(startTime, 0)]
+        record(displacement: displacement, timestamp: timestamp)
+        return .began(axis: lockedAxis, displacement: displacement)
+    }
+
+    private mutating func record(displacement: Double, timestamp: TimeInterval) {
+        // Keep at most 12 recent samples and one preceding sample for a stable release velocity.
+        samples.append((timestamp, displacement))
+        while samples.count > 2 && (samples[1].time < timestamp - 0.08 || samples.count > 12) {
+            samples.removeFirst()
+        }
+    }
+
+    private func velocity(at timestamp: TimeInterval) -> Double {
+        guard let first = samples.first, let last = samples.last,
+              timestamp - last.time <= 0.1, last.time > first.time else { return 0 }
+        return (last.displacement - first.displacement) / (last.time - first.time)
+    }
+
+    private mutating func finish(timestamp: TimeInterval) -> GestureNavigationEvent? {
+        guard !finished else { return nil }
+        finished = true
+        guard let axis, let displacement = samples.last?.displacement else { return nil }
+        let velocity = velocity(at: timestamp)
+        let flick = abs(displacement) >= 0.02 && abs(velocity) >= 0.45 && displacement * velocity > 0
+        let committed = abs(displacement) >= 0.075 || flick
+        let action: NavigationAction?
+        if !committed { action = nil }
+        else if axis == .horizontal { action = displacement < 0 ? .focusNext : .focusPrevious }
+        else { action = displacement > 0 ? .nextSpace : .previousSpace }
+        return .ended(displacement: displacement, velocity: velocity, action: action)
+    }
+
+    private mutating func cancel() -> GestureNavigationEvent? {
+        let wasDragging = isDragging
+        finished = true
+        return wasDragging ? .cancelled : nil
     }
 }

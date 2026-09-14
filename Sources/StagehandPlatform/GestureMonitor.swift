@@ -30,10 +30,12 @@ private typealias ContactCallback = @convention(c) (UnsafeMutableRawPointer?, Un
 
 private struct GestureCallbackState {
     var enabled = false
-    var recognizer = FourFingerRecognizer()
+    var recognizer = NavigationGestureRecognizer()
     var suppressScroll = false
     var lastLiftTime: TimeInterval = 0
-    var onAction: (@Sendable (NavigationAction) -> Void)?
+    var pendingEvents = GestureEventBuffer()
+    var deliveryScheduled = false
+    var scheduleDelivery: (@Sendable () -> Void)?
 }
 
 private let gestureCallbackState = OSAllocatedUnfairLock(initialState: GestureCallbackState())
@@ -51,22 +53,25 @@ private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
         }
     }
     let snapshot = contacts
-    let delivery = gestureCallbackState.withLock { state -> ((@Sendable (NavigationAction) -> Void), NavigationAction)? in
+    let delivery = gestureCallbackState.withLock { state -> (@Sendable () -> Void)? in
         guard state.enabled else { return nil }
         let wasSuppressing = state.suppressScroll
-        let action = state.recognizer.update(contacts: snapshot, timestamp: timestamp)
-        state.suppressScroll = state.recognizer.hasFourFingerSequence
+        let event = state.recognizer.update(contacts: snapshot, timestamp: timestamp)
+        state.suppressScroll = state.recognizer.hasContactSequence
         if wasSuppressing && !state.suppressScroll { state.lastLiftTime = ProcessInfo.processInfo.systemUptime }
-        if let action, let handler = state.onAction { return (handler, action) }
-        return nil
+        guard let event else { return nil }
+        state.pendingEvents.append(event)
+        guard !state.deliveryScheduled else { return nil }
+        state.deliveryScheduled = true
+        return state.scheduleDelivery
     }
-    if let (handler, action) = delivery { handler(action) }
+    delivery?()
     return 0
 }
 
 @MainActor
 final class GestureMonitor {
-    var onAction: ((NavigationAction) -> Void)?
+    var onGesture: ((GestureNavigationEvent) -> Void)?
     private(set) var isRunning = false
     private var framework: UnsafeMutableRawPointer?
     private var device: UnsafeMutableRawPointer?
@@ -76,10 +81,10 @@ final class GestureMonitor {
     private var runLoopSource: CFRunLoopSource?
     private var generation: UInt64 = 0
 
-    func start() -> String? {
+    func start(fingerCount: Int = 4) -> String? {
         guard !isRunning else { return nil }
-        guard AXIsProcessTrusted() else { return "Four-finger gestures need Accessibility permission." }
-        guard CGPreflightListenEventAccess() else { return "Four-finger gestures need Input Monitoring permission. Enable it in Privacy & Security, then retry." }
+        guard AXIsProcessTrusted() else { return "Gesture navigation needs Accessibility permission." }
+        guard CGPreflightListenEventAccess() else { return "Gesture navigation needs Input Monitoring permission. Enable it in Privacy & Security, then retry." }
         guard MemoryLayout<RawContact>.stride == 96,
               MemoryLayout<RawContact>.offset(of: \.normalized) == 32,
               MemoryLayout<RawContact>.offset(of: \.absolute) == 68 else {
@@ -111,11 +116,19 @@ final class GestureMonitor {
         let activeGeneration = generation
         gestureCallbackState.withLock { state in
             state = GestureCallbackState()
+            state.recognizer = NavigationGestureRecognizer(fingerCount: fingerCount)
             state.enabled = true
-            state.onAction = { [weak self] action in
+            state.scheduleDelivery = { [weak self] in
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isRunning, self.generation == activeGeneration else { return }
-                    self.onAction?(action)
+                    let events = gestureCallbackState.withLock { state in
+                        state.deliveryScheduled = false
+                        return state.pendingEvents.drain()
+                    }
+                    for event in events {
+                        guard self.isRunning, self.generation == activeGeneration else { return }
+                        self.onGesture?(event)
+                    }
                 }
             }
         }
@@ -130,6 +143,8 @@ final class GestureMonitor {
         generation &+= 1
         let wasRunning = isRunning
         isRunning = false
+        // Deliver cancellation synchronously before changing settings or dropping queued phases.
+        if wasRunning { onGesture?(.cancelled) }
         if let device, wasRunning {
             unregister?(device, contactCallback)
             stopDevice?(device)
@@ -138,6 +153,21 @@ final class GestureMonitor {
         // its private dequeue thread exits can race the framework's own final release.
         // Reuse this handle on restart instead of allocating/leaking one per preference edit.
         removeScrollTap()
+    }
+
+    func takePendingGestureAction() -> NavigationAction? {
+        guard isRunning else { return nil }
+        return gestureCallbackState.withLock { state in
+            guard state.enabled else { return nil }
+            return state.pendingEvents.takeCommittedAction()
+        }
+    }
+
+    func cancelGestureSequence() {
+        gestureCallbackState.withLock { state in
+            state.recognizer.cancelUntilLift()
+            _ = state.pendingEvents.drain()
+        }
     }
 
     private func installScrollTap() -> Bool {

@@ -48,9 +48,16 @@ struct ShortcutBinding: Sendable {
 @MainActor
 public final class InputController {
     public var onAction: ((NavigationAction) -> Void)?
+    public var onGesture: ((GestureNavigationEvent) -> Void)?
     public var onStatusChange: (() -> Void)?
     public var gesturesEnabled = false {
-        didSet { if isRunning { updateGestures() } }
+        didSet { if isRunning && oldValue != gesturesEnabled { updateGestures() } }
+    }
+    public var gestureFingerCount = 4 {
+        didSet {
+            gestureFingerCount = gestureFingerCount == 3 ? 3 : 4
+            if isRunning && oldValue != gestureFingerCount { updateGestures() }
+        }
     }
     public private(set) var issues: [String] = []
     public var inputMonitoringGranted: Bool { CGPreflightListenEventAccess() }
@@ -117,31 +124,49 @@ public final class InputController {
         if isRunning { updateGestures() }
     }
 
+    /// Call before routing a physical keyboard event. The caller must begin the focus
+    /// transfer synchronously, but leave window activation and animation to queued work.
+    public func takePendingGestureAction() -> NavigationAction? {
+        gestures.takePendingGestureAction()
+    }
+
+    /// Cancel a preview without rearming its still-held contacts. The caller owns
+    /// geometry cleanup; this only prevents a later release from navigating again.
+    public func cancelGestureSequence() {
+        gestures.cancelGestureSequence()
+    }
+
     private func updateGestures() {
         gestures.stop()
         issues = shortcutIssues
         if gesturesEnabled {
-            issues += Self.nativeGestureConflicts()
-            gestures.onAction = { [weak self] action in self?.onAction?(action) }
-            if let issue = gestures.start() { issues.append(issue) }
+            issues += Self.nativeGestureConflicts(fingerCount: gestureFingerCount)
+            gestures.onGesture = { [weak self] event in
+                guard let self else { return }
+                if let onGesture = self.onGesture { onGesture(event) }
+                else if case .ended(_, _, let action?) = event { self.onAction?(action) }
+            }
+            if let issue = gestures.start(fingerCount: gestureFingerCount) { issues.append(issue) }
         }
         onStatusChange?()
     }
 
     /// macOS does not publish an API for these bindings. These preferences are hints only;
     /// System Settings > Trackpad > More Gestures is authoritative. Nothing is written.
-    public static func nativeGestureConflicts() -> [String] {
+    public static func nativeGestureConflicts(fingerCount: Int = 4) -> [String] {
         let domains = ["com.apple.AppleMultitouchTrackpad", "com.apple.driver.AppleBluetoothMultitouch.trackpad"]
-        let keys = [("TrackpadFourFingerHorizSwipeGesture", "horizontal"), ("TrackpadFourFingerVertSwipeGesture", "vertical")]
+        let countName = fingerCount == 3 ? "Three" : "Four"
+        let label = fingerCount == 3 ? "three-finger" : "four-finger"
+        let keys = [("Trackpad\(countName)FingerHorizSwipeGesture", "horizontal"), ("Trackpad\(countName)FingerVertSwipeGesture", "vertical")]
         var result: [String] = []
         for (key, direction) in keys {
             let values = domains.compactMap { domain -> Int? in
                 (CFPreferencesCopyAppValue(key as CFString, domain as CFString) as? NSNumber)?.intValue
             }
             if values.contains(where: { $0 != 0 }) {
-                result.append("macOS has a four-finger \(direction) gesture enabled. Reassign or disable it in Trackpad > More Gestures.")
+                result.append("macOS has a \(label) \(direction) gesture enabled. Reassign or disable it in Trackpad > More Gestures.")
             } else if values.isEmpty {
-                result.append("Check Trackpad > More Gestures for four-finger \(direction) conflicts; macOS did not expose that preference.")
+                result.append("Check Trackpad > More Gestures for \(label) \(direction) conflicts; macOS did not expose that preference.")
             }
         }
         return result

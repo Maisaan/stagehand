@@ -34,7 +34,8 @@ public enum WindowLayout {
             } else {
                 width = requestedWidth
             }
-            let requestedHeight = availableFrame.height * (windowID == space.focusedWindowID ? 1 : 0.95)
+            // Focus changes must not trigger content reflow in another application.
+            let requestedHeight = availableFrame.height
             let height: CGFloat
             if let observedHeight = observedHeights[windowID], observedHeight.isFinite, observedHeight > 0 {
                 height = observedHeight

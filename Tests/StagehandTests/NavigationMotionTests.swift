@@ -95,7 +95,7 @@ struct NavigationMotionTests {
         let entering = try #require(container.animatedView.layer?.presentation())
         #expect(entering.transform.m11 < 1)
         #expect(abs(entering.frame.midX - container.bounds.midX) <= 0.5)
-        let enteringUpwardOffset = container.animatedView.bounds.height * 0.08 * (1 - entering.transform.m11) / 0.05
+        let enteringUpwardOffset = container.hiddenTravel * (1 - entering.transform.m11) / 0.05
         #expect(abs(entering.frame.maxY - container.animatedView.frame.maxY - enteringUpwardOffset) <= 0.5)
         #expect(panel.frame == panelFrame)
 
@@ -105,7 +105,7 @@ struct NavigationMotionTests {
         let exiting = try #require(container.animatedView.layer?.presentation())
         #expect(exiting.transform.m11 < 1)
         #expect(abs(exiting.frame.midX - container.bounds.midX) <= 0.5)
-        let exitingUpwardOffset = container.animatedView.bounds.height * 0.08 * (1 - exiting.transform.m11) / 0.05
+        let exitingUpwardOffset = container.hiddenTravel * (1 - exiting.transform.m11) / 0.05
         #expect(abs(exiting.frame.maxY - container.animatedView.frame.maxY - exitingUpwardOffset) <= 0.5)
         #expect(panel.frame == panelFrame)
     }
@@ -126,6 +126,37 @@ struct NavigationMotionTests {
         #expect(layer.animation(forKey: "hudTransform") == nil)
         #expect(layer.animation(forKey: "hudOpacity") != nil)
         #expect(CATransform3DIsIdentity(layer.transform))
+    }
+
+    @Test func cameraAttachedContainerClipsMotionAtItsTopEdge() throws {
+        _ = NSApplication.shared
+        let container = HUDContainerView(model: NavigationHUDModel())
+        container.attachedToNotch = true
+        container.frame = CGRect(x: 0, y: 0, width: 272, height: 82)
+        container.needsLayout = true
+        container.layoutSubtreeIfNeeded()
+        #expect(container.animatedView.frame.maxY == container.bounds.maxY)
+        #expect(container.animatedView.bounds.size == CGSize(width: 240, height: 66))
+        #expect(container.layer?.masksToBounds == true)
+        container.setHidden(reduceMotion: false)
+        let transform = try #require(container.animatedView.layer).transform
+        #expect(transform.m11 == 0.95)
+        #expect(transform.m22 == 0.95)
+        #expect(abs(transform.m42 - 66 * 0.4) < 0.001)
+    }
+
+    @Test func revisedHUDTimingStaysBelowThreeHundredMilliseconds() throws {
+        _ = NSApplication.shared
+        let overlays = NavigationOverlays(reduceMotion: { false })
+        defer { overlays.hide() }
+        overlays.showNavigation(state: WorkspaceState(), windows: [])
+        let container = try #require(overlays.hud?.contentView as? HUDContainerView)
+        let layer = try #require(container.animatedView.layer)
+        #expect(layer.animation(forKey: "hudOpacity")?.duration == 0.25)
+        #expect(layer.animation(forKey: "hudTransform")?.duration == 0.25)
+        #expect(overlays.beginHUDDismiss(generation: overlays.hudGeneration))
+        #expect(layer.animation(forKey: "hudOpacity")?.duration == 0.2)
+        #expect(layer.animation(forKey: "hudTransform")?.duration == 0.2)
     }
 
     @Test func borderGeometryUpdatesImmediatelyWithoutRestartingFocusReveal() throws {

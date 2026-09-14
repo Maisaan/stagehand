@@ -14,6 +14,7 @@ public final class RibbonWindow: NSWindow {
 final class NativeWindowRegistry: NSObject {
     var onChange: (() -> Void)?
     var onFrameChange: ((String, CGRect) -> Void)?
+    var onFocusedWindowChange: ((String) -> Void)?
 
     private final class Registration {
         weak var window: NSWindow?
@@ -100,6 +101,19 @@ final class NativeWindowRegistry: NSObject {
     }
 
     @discardableResult
+    func setPosition(windowID: String, position: CGPoint) -> Bool {
+        guard position.x.isFinite, position.y.isFinite,
+              let entry = windows[windowID], !entry.closed, !entry.parked,
+              let window = entry.window, !window.styleMask.contains(.fullScreen) else { return false }
+        captureOriginalFrame(windowID: windowID)
+        var frame = accessibilityFrame(window.frame)
+        frame.origin = position
+        window.setFrameOrigin(accessibilityFrame(frame).origin)
+        let actual = accessibilityFrame(window.frame).origin
+        return abs(actual.x - position.x) <= 1 && abs(actual.y - position.y) <= 1
+    }
+
+    @discardableResult
     func park(windowID: String) -> Bool {
         guard let entry = windows[windowID], !entry.closed, let window = entry.window else { return false }
         if entry.parked { return true }
@@ -168,6 +182,9 @@ final class NativeWindowRegistry: NSObject {
             entry.originalFrame = nil
         } else if notification.name == NSWindow.didMoveNotification || notification.name == NSWindow.didResizeNotification {
             onFrameChange?(entry.id, accessibilityFrame(window.frame))
+        } else if notification.name == NSWindow.didBecomeKeyNotification,
+                  focusedWindowID == entry.id {
+            onFocusedWindowChange?(entry.id)
         }
         onChange?()
     }

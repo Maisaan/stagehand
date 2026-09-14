@@ -132,4 +132,47 @@ struct NativeWindowTests {
         overlay.setFrame(frame, display: false, animate: false)
         #expect(changeCount == 0)
     }
+
+    @Test func positionChangesPreserveSizeAndDoNotRequestFocus() throws {
+        let registry = NativeWindowRegistry()
+        let settings = makeWindow()
+        defer { settings.close() }
+        settings.orderFront(nil)
+        let id = registry.register(window: settings)
+        let original = try #require(registry.frame(windowID: id))
+        let destination = CGPoint(x: original.minX + 80, y: original.minY + 30)
+
+        #expect(registry.setPosition(windowID: id, position: destination))
+        #expect(registry.frame(windowID: id) == CGRect(origin: destination, size: original.size))
+        #expect(!settings.isKeyWindow)
+        registry.restoreAll()
+        #expect(registry.frame(windowID: id) == original)
+    }
+
+    @Test func positionChangesDoNotRevealParkedWindows() {
+        let registry = NativeWindowRegistry()
+        let settings = makeWindow()
+        defer { settings.close() }
+        settings.orderFront(nil)
+        let id = registry.register(window: settings)
+        let original = registry.frame(windowID: id)
+        #expect(registry.park(windowID: id))
+
+        #expect(!registry.setPosition(windowID: id, position: CGPoint(x: 20, y: 20)))
+        #expect(!settings.isVisible)
+        #expect(registry.frame(windowID: id) == original)
+    }
+
+    @Test func staleKeyNotificationsDoNotAdoptAnUnfocusedWindow() {
+        let registry = NativeWindowRegistry()
+        let settings = makeWindow()
+        defer { settings.close() }
+        _ = registry.register(window: settings)
+        var focusedIDs: [String] = []
+        registry.onFocusedWindowChange = { focusedIDs.append($0) }
+
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: settings)
+        #expect(!settings.isKeyWindow)
+        #expect(focusedIDs.isEmpty)
+    }
 }
