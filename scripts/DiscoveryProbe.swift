@@ -38,5 +38,5 @@ MainActor.assumeIsolated {
     let delegate = DiscoveryProbeDelegate()
     application.setActivationPolicy(.regular)
     application.delegate = delegate
-    application.run()
+    withExtendedLifetime(delegate) { application.run() }
 }

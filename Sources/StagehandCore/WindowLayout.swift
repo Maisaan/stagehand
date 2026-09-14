@@ -15,6 +15,7 @@ public enum WindowLayout {
         availableFrame: CGRect,
         gap: CGFloat = 8,
         observedWidths: [String: CGFloat] = [:],
+        preferredHeights: [String: CGFloat] = [:],
         observedHeights: [String: CGFloat] = [:]
     ) -> [WindowPlacement] {
         guard !availableFrame.isEmpty, !availableFrame.isInfinite,
@@ -34,9 +35,11 @@ public enum WindowLayout {
             } else {
                 width = requestedWidth
             }
-            // The caller supplies the live or retained parked height. Only a window
-            // with no usable frame falls back to the available height.
-            let requestedHeight = availableFrame.height
+            // Accepted app constraints take precedence over either requested size.
+            // Keep the user's preferred height separate so maximizing cannot erase it.
+            let preferredHeight = preferredHeights[windowID] ?? availableFrame.height
+            let requestedHeight = !state.maximizeWindows && preferredHeight.isFinite && preferredHeight > 0
+                ? preferredHeight : availableFrame.height
             let height: CGFloat
             if let observedHeight = observedHeights[windowID], observedHeight.isFinite, observedHeight > 0 {
                 height = observedHeight

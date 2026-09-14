@@ -38,23 +38,43 @@ private let screen = CGRect(x: 100, y: 40, width: 1000, height: 700)
         windowIDs: ["editor", "settings"], focusedWindowID: "editor",
         widthFractions: ["editor": 0.8, "settings": 0.5]
     )])
-    var liveHeights: [String: CGFloat] = ["editor": 560, "settings": 480]
+    var preferredHeights: [String: CGFloat] = ["editor": 560, "settings": 480]
     for maximize in [false, true, false] {
         state.maximizeWindows = maximize
         for focusedID in ["settings", "editor"] {
             state.focus(windowID: focusedID)
             let placements = WindowLayout.placements(for: state, availableFrame: screen,
-                                                    observedHeights: liveHeights)
+                                                    preferredHeights: preferredHeights)
             for placement in placements {
-                #expect(placement.frame.height == liveHeights[placement.windowID])
+                #expect(placement.frame.height == (maximize ? screen.height : preferredHeights[placement.windowID]))
                 #expect(placement.frame.midY == screen.midY)
             }
             let editor = try #require(placements.first { $0.windowID == "editor" })
             #expect(editor.frame.width == (maximize ? 1000 : 800))
         }
         // A manual vertical resize becomes the height supplied on the next layout.
-        liveHeights["editor"] = 420
+        if !maximize { preferredHeights["editor"] = 420 }
     }
+}
+
+@Test func maximizingRequestsFullHeightWithoutOverwritingPreferredHeightOrAppLimits() throws {
+    var state = WorkspaceState()
+    state.reconcile(windowIDs: ["a"])
+    let preferredHeights: [String: CGFloat] = ["a": 420]
+    state.maximizeWindows = true
+    let maximized = try #require(WindowLayout.placements(for: state, availableFrame: screen,
+                                                        preferredHeights: preferredHeights).first)
+    #expect(maximized.frame.height == screen.height)
+    let constrained = try #require(WindowLayout.placements(for: state, availableFrame: screen,
+                                                          preferredHeights: preferredHeights,
+                                                          observedHeights: ["a": 500]).first)
+    #expect(constrained.frame.height == 500)
+    #expect(constrained.frame.midY == screen.midY)
+    state.maximizeWindows = false
+    let restored = try #require(WindowLayout.placements(for: state, availableFrame: screen,
+                                                       preferredHeights: preferredHeights).first)
+    #expect(restored.frame.height == 420)
+    #expect(restored.frame.midY == screen.midY)
 }
 
 @Test func ribbonIgnoresInvalidAcceptedHeights() {

@@ -1,5 +1,39 @@
 import Foundation
 import Testing
+
+@Test func closingTheLastWindowLeavesItsSpaceAndPreservesOtherSpaceNumbers() {
+    var state = WorkspaceState(spaces: [SpaceState(windowIDs: ["a"]), SpaceState(),
+                                       SpaceState(windowIDs: ["closing"]), SpaceState(windowIDs: ["b"])], activeSpaceIndex: 2)
+    state.reconcile(windowIDs: ["a", "b"])
+    #expect(state.activeSpaceIndex == 0)
+    #expect(state.focusedWindowID == "a")
+    #expect(state.displayedSpaceIndices == [0, 3])
+    #expect(state.spaces[3].windowIDs == ["b"])
+    #expect(state.apply(.nextSpace) == true)
+    #expect(state.activeSpaceIndex == 3)
+    #expect(state.apply(.previousSpace) == true)
+    #expect(state.activeSpaceIndex == 0)
+}
+
+@Test func closingFirstOccupiedSpaceFallsForwardAndClosingAllWindowsKeepsOneEmptySpace() {
+    var state = WorkspaceState(spaces: [SpaceState(windowIDs: ["closing"]), SpaceState(), SpaceState(windowIDs: ["b"])])
+    state.reconcile(windowIDs: ["b"])
+    #expect(state.activeSpaceIndex == 2)
+    state.reconcile(windowIDs: [])
+    #expect(state.activeSpaceIndex == 0)
+    #expect(state.displayedSpaceIndices == [0])
+    #expect(state.currentSpace.windowIDs.isEmpty)
+}
+
+@Test func replacementWindowAndIntentionallyEmptySpaceDoNotTriggerSpaceClosure() {
+    var state = WorkspaceState(spaces: [SpaceState(windowIDs: ["a"]), SpaceState(windowIDs: ["closing"])], activeSpaceIndex: 1)
+    state.reconcile(windowIDs: ["a", "replacement"])
+    #expect(state.activeSpaceIndex == 1)
+    #expect(state.focusedWindowID == "replacement")
+    state.apply(.goToSpace(index: 5))
+    state.reconcile(windowIDs: ["a", "replacement"])
+    #expect(state.activeSpaceIndex == 5)
+}
 @testable import StagehandCore
 
 @Test func sharedWindowsHaveIndependentOrderAndWidth() {

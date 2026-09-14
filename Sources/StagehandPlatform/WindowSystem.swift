@@ -34,6 +34,9 @@ public final class WindowSystem {
 
     private var windows: [String: TrackedWindow] = [:]
     private var observers: [pid_t: AXObserver] = [:]
+    private var applicationObservations: [pid_t: ApplicationObservation] = [:]
+    private var observationRetries: [pid_t: Task<Void, Never>] = [:]
+    private let launchDiscovery = ApplicationLaunchDiscovery()
     private var workspaceTokens: [NSObjectProtocol] = []
     private var nextID: UInt64 = 0
     private var started = false
@@ -85,6 +88,23 @@ public final class WindowSystem {
                     if name == NSWorkspace.didActivateApplicationNotification {
                         self.reportCurrentFocus()
                     }
+                    if name == NSWorkspace.didTerminateApplicationNotification {
+                        self.removeObserver(pid: pid)
+                    }
+                    if name == NSWorkspace.didLaunchApplicationNotification || name == NSWorkspace.didActivateApplicationNotification,
+                       let app = NSRunningApplication(processIdentifier: pid),
+                       app.activationPolicy == .regular,
+                       pid != ProcessInfo.processInfo.processIdentifier,
+                       !self.windows.values.contains(where: { $0.record.pid == pid && $0.isAdmitted }) {
+                        self.launchDiscovery.schedule(pid: pid) { [weak self] in
+                            guard let self, self.started, !app.isTerminated,
+                                  !self.windows.values.contains(where: { $0.record.pid == pid && $0.isAdmitted }) else {
+                                return false
+                            }
+                            self.onChange?()
+                            return true
+                        }
+                    }
                     self.onChange?()
                 }
             })
@@ -101,6 +121,7 @@ public final class WindowSystem {
 
     public func stop() {
         started = false
+        launchDiscovery.cancelAll()
         restoreAll()
         // A subsequent Start can happen on a different native Desktop. Keep
         // stable identities, but admit only its visible windows again.
@@ -108,6 +129,9 @@ public final class WindowSystem {
         let center = NSWorkspace.shared.notificationCenter
         for token in workspaceTokens { center.removeObserver(token) }
         workspaceTokens.removeAll()
+        for retry in observationRetries.values { retry.cancel() }
+        observationRetries.removeAll()
+        applicationObservations.removeAll()
         for observer in observers.values {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         }
@@ -123,9 +147,7 @@ public final class WindowSystem {
         }
         let livePIDs = Set(apps.map(\.processIdentifier))
         for pid in Array(observers.keys) where !livePIDs.contains(pid) {
-            if let observer = observers.removeValue(forKey: pid) {
-                CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
-            }
+            removeObserver(pid: pid)
         }
         var seen = Set<String>()
         var result: [WindowRecord] = []
@@ -584,15 +606,51 @@ public final class WindowSystem {
         }
         guard AXObserverCreate(pid, callback, &created) == .success, let observer = created else { return }
         observers[pid] = observer
-        let context = Unmanaged.passUnretained(self).toOpaque()
-        for name in [kAXWindowCreatedNotification, kAXFocusedWindowChangedNotification,
-                     kAXApplicationHiddenNotification, kAXApplicationShownNotification] {
-            let status = AXObserverAddNotification(observer, element, name as CFString, context)
-            if focusDiagnosticsEnabled { print("Discovery observe pid=\(pid) AX=\(name) status=\(status.rawValue)") }
-        }
+        applicationObservations[pid] = ApplicationObservation()
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+        if registerApplicationNotifications(element: element, pid: pid) {
+            observationRetries[pid] = Task { @MainActor [weak self] in
+                // A launch can precede the app's Accessibility server becoming ready.
+                // Retry only this app, with a fixed budget and no idle polling.
+                for delay in [100, 200, 400, 800, 1600] {
+                    do { try await Task.sleep(for: .milliseconds(delay)) }
+                    catch { return }
+                    guard let self, self.started, !Task.isCancelled else { return }
+                    guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else {
+                        self.removeObserver(pid: pid)
+                        return
+                    }
+                    let retry = self.registerApplicationNotifications(element: element, pid: pid)
+                    // Discover windows that appeared before registration succeeded.
+                    self.onChange?()
+                    if !retry { break }
+                }
+                self?.observationRetries.removeValue(forKey: pid)
+            }
+        }
         for tracked in windows.values where tracked.record.pid == pid {
             observeWindow(tracked.element, observer: observer)
+        }
+    }
+
+    private func registerApplicationNotifications(element: AXUIElement, pid: pid_t) -> Bool {
+        guard let observer = observers[pid], var registration = applicationObservations[pid] else { return false }
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        let retry = registration.register { name in
+            let status = AXObserverAddNotification(observer, element, name as CFString, context)
+            if focusDiagnosticsEnabled { print("Discovery observe pid=\(pid) AX=\(name) status=\(status.rawValue)") }
+            return status
+        }
+        applicationObservations[pid] = registration
+        return retry
+    }
+
+    private func removeObserver(pid: pid_t) {
+        launchDiscovery.cancel(pid: pid)
+        observationRetries.removeValue(forKey: pid)?.cancel()
+        applicationObservations.removeValue(forKey: pid)
+        if let observer = observers.removeValue(forKey: pid) {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         }
     }
 

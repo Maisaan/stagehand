@@ -21,7 +21,7 @@ The build script makes a local, ad-hoc-signed app. Rebuilding can require removi
 ## Ribbon
 
 - With **Maximize windows** off, windows have individual widths from 25% to 95% of the available display width.
-- Windows retain their resized height and stay vertically centered, including when Maximize windows is on. Apps that constrain their own height keep the size they accept. Stagehand slides real windows rather than resizing their content to imitate scaling.
+- Maximize windows uses the full available width and height. Turning it off restores individual widths and resized heights, centered vertically. Apps that constrain their own height keep the size they accept. Stagehand slides real windows rather than resizing their content to imitate scaling.
 - With it on, windows request the full available width. Turning it off restores the individual widths. This is window resizing, not native fullscreen.
 - Apps can constrain their size. Settings shows their actual width, and the ribbon packs to the accepted size instead of leaving an unused slot.
 - Gap is measured in points. Positive values separate windows; negative values overlap them horizontally. The active window stays on top. Maximize uses no gap and hides its controls; turning it off restores the saved gap.
@@ -31,7 +31,7 @@ The maximize toggle and gap apply to all nine spaces. Settings and the menu show
 
 Each space remembers its order, scrolling widths, and focused window. Move removes a window from its current space. Add to Another Space keeps the same live window in both spaces, with independent order and widths. Its manually resized height belongs to the live window. Remove from This Space removes only that membership; the last membership cannot be removed. Closing the real window removes every membership.
 
-New windows enter after the current window. Stagehand's own settings window joins the ribbon too. Empty spaces display a Stagehand placeholder so typing cannot reach a hidden application. Stagehand's menus appear only while its settings or empty-space window is active. Switching to another window restores that application's menus.
+New windows enter after the current window. Stagehand's own settings window joins the ribbon too. Closing a space's final window switches to the previous occupied space, or the next one if none precedes it. Other spaces keep their numbers. If no windows remain, one empty space stays available. Intentionally entering an unused space still works. Empty spaces display a Stagehand placeholder so typing cannot reach a hidden application. Stagehand's menus appear only while its settings or empty-space window is active. Switching to another window restores that application's menus.
 
 The settings window is resizable. Settings save maximization, gap, and the gesture preference. Space membership is session-only in this MVP.
 
@@ -100,7 +100,7 @@ open -n -W -g --stdout /tmp/stagehand-focus.log /Applications/Stagehand.app --ar
 
 `--diagnose-parking <bundle-id>` explicitly parks and refocuses an eligible window three times, reporting accepted geometry and focus checks before restoring its original frame. Run it on a regular Desktop with the normal Stagehand instance stopped. It never types into the target window.
 
-`--diagnose-last-close` isolates and closes a disposable Stagehand window, then checks that the normal close notification leaves its empty space active. It never closes your windows. `--diagnose-discovery <probe-app-path>` checks automatic admission using the disposable external app in `scripts/DiscoveryProbe.swift` and `scripts/DiscoveryProbe-Info.plist`. Add `--settling-window` to create an initially tiny window that grows after the first scan. Both checks restore managed frames afterward and must run through the installed, permission-granted app with the normal instance stopped.
+`--diagnose-last-close` isolates and closes a disposable Stagehand window, then checks that its space disappears and the destination receives focus. It never closes your windows. `--diagnose-discovery <probe-app-path>` checks automatic admission using the disposable external app in `scripts/DiscoveryProbe.swift` and `scripts/DiscoveryProbe-Info.plist`. Add `--settling-window` to create an initially tiny window that grows after the first scan. Both checks restore managed frames afterward and must run through the installed, permission-granted app with the normal instance stopped.
 
 ## Source map
 

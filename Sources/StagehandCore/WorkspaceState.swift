@@ -109,6 +109,7 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     /// Reconcile against all live managed windows, including windows in other spaces.
     /// Only globally unknown windows are added to the active space.
     public mutating func reconcile(windowIDs: [String]) {
+        let wasOccupied = !currentSpace.windowIDs.isEmpty
         let liveIDs = Set(windowIDs)
         for index in spaces.indices {
             for windowID in spaces[index].windowIDs where !liveIDs.contains(windowID) {
@@ -120,6 +121,11 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
             spaces[activeSpaceIndex].insert(
                 windowID: windowID, width: SpaceState.defaultWidthFraction, focus: true
             )
+        }
+        if wasOccupied && currentSpace.windowIDs.isEmpty {
+            // Keep numbered shortcuts stable; empty slots disappear from the picker.
+            activeSpaceIndex = spaces.indices.last(where: { $0 < activeSpaceIndex && !spaces[$0].windowIDs.isEmpty })
+                ?? spaces.indices.first(where: { !spaces[$0].windowIDs.isEmpty }) ?? 0
         }
     }
 
@@ -166,8 +172,12 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         case .focusNext: return navigateWindow(by: 1, reorder: false)
         case .reorderPrevious: return navigateWindow(by: -1, reorder: true)
         case .reorderNext: return navigateWindow(by: 1, reorder: true)
-        case .previousSpace: return goToSpace(index: activeSpaceIndex - 1)
-        case .nextSpace: return goToSpace(index: activeSpaceIndex + 1)
+        case .previousSpace:
+            guard let index = displayedSpaceIndices.last(where: { $0 < activeSpaceIndex }) else { return false }
+            return goToSpace(index: index)
+        case .nextSpace:
+            guard let index = displayedSpaceIndices.first(where: { $0 > activeSpaceIndex }) else { return false }
+            return goToSpace(index: index)
         case .goToSpace(let index): return goToSpace(index: index)
         case .moveToSpace(let index, let follow):
             return transferToSpace(index: index, move: true, follow: follow)

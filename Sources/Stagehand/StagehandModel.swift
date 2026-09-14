@@ -56,6 +56,7 @@ final class StagehandModel: ObservableObject {
     private var worker: Task<Void, Never>?
     private var pending: [(Change, UInt64?)] = []
     private var lastAppliedFrames: [String: CGRect] = [:]
+    private var preferredHeights: [String: CGFloat] = [:]
     private var lastTransition = Date.distantPast
     private var workerGeneration = 0
     private var desktopCheckTask: Task<Void, Never>?
@@ -203,6 +204,7 @@ final class StagehandModel: ObservableObject {
         warning = nil
         windowSystem.start()
         windows = windowSystem.scanWindows()
+        preferredHeights = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0.frame.height) })
         state.reconcile(windowIDs: windows.map(\.id))
         if let focused = windowSystem.focusedWindowID() { state.focus(windowID: focused) }
         isRunning = true
@@ -334,13 +336,14 @@ final class StagehandModel: ObservableObject {
         let closeDeadline = ContinuousClock.now.advanced(by: .seconds(2))
         repeat {
             try? await Task.sleep(for: .milliseconds(20))
-            if !isRunning || (state.currentSpace.windowIDs.isEmpty && emptySpace.isFocused && worker == nil) { break }
+            if !isRunning || (state.spaces[emptyIndex].windowIDs.isEmpty && worker == nil &&
+                (state.focusedWindowID.map { windowSystem.focusedWindowID() == $0 } ?? emptySpace.isFocused)) { break }
         } while ContinuousClock.now < closeDeadline
         return """
         Last-close running: \(isRunning), suspended: \(isSuspended)
-        Stayed in logical space: \(state.activeSpaceIndex == emptyIndex)
+        Closed space removed: \(!state.displayedSpaceIndices.contains(emptyIndex))
         Remaining windows in space: \(state.spaces[emptyIndex].windowIDs.count)
-        Empty space focused: \(emptySpace.isFocused)
+        Destination focused: \(state.focusedWindowID.map { windowSystem.focusedWindowID() == $0 } ?? emptySpace.isFocused)
         Warning: \(warning ?? "none")
         """
     }
@@ -452,9 +455,15 @@ final class StagehandModel: ObservableObject {
             try? await Task.sleep(for: .milliseconds(25))
         }
         let discovered = windows.filter { $0.bundleIdentifier == probeID }
+        let visibleWindows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] ?? []
+        let probeVisible = visibleWindows.contains {
+            ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == probe?.processIdentifier &&
+            ($0[kCGWindowLayer as String] as? NSNumber)?.intValue == 0
+        }
         let joined = isRunning && !isSuspended && state.activeSpaceIndex == emptySpaceIndex &&
-            !discovered.isEmpty && discovered.allSatisfy { state.currentSpace.windowIDs.contains($0.id) }
-        return "Discovery passed: \(joined); freshWindows=\(discovered.count); space=\(state.activeSpaceIndex + 1); running=\(isRunning); warning=\(warning ?? "none")"
+            probeVisible && !discovered.isEmpty && discovered.allSatisfy { state.currentSpace.windowIDs.contains($0.id) }
+        return "Discovery passed: \(joined); probeVisible=\(probeVisible); freshWindows=\(discovered.count); space=\(state.activeSpaceIndex + 1); running=\(isRunning); warning=\(warning ?? "none")"
     }
 
     private func updateInputStatus() {
@@ -518,7 +527,8 @@ final class StagehandModel: ObservableObject {
         windows = current
         state.reconcile(windowIDs: current.map(\.id))
         let hasNewWindows = current.contains { !oldIDs.contains($0.id) }
-        if !hasNewWindows, let focused = windowSystem.focusedWindowID(),
+        if !hasNewWindows, oldState.activeSpaceIndex == state.activeSpaceIndex,
+           let focused = windowSystem.focusedWindowID(),
            current.contains(where: { $0.id == focused }) {
             // External app activation follows an existing membership; shared windows stay in this space.
             if !state.currentSpace.windowIDs.contains(focused),
@@ -558,6 +568,7 @@ final class StagehandModel: ObservableObject {
             if (resized || moved) && (interaction != nil || Date().timeIntervalSince(lastTransition) > 0.4) {
                 if resized && !state.maximizeWindows {
                     state.setWidthFraction(focused.frame.width / frame.width, for: focused.id)
+                    preferredHeights[focused.id] = focused.frame.height
                 }
                 if moved && !resized {
                     let placements: [WindowPlacement]
@@ -624,7 +635,18 @@ final class StagehandModel: ObservableObject {
                 self.gesturePrepared.removeAll()
                 switch change {
                 case .action(let action): self.state.apply(action)
-                case .maximize(let enabled): self.state.maximizeWindows = enabled
+                case .maximize(let enabled):
+                    if enabled && !self.state.maximizeWindows {
+                        // A resize may finish before the debounced refresh observes it.
+                        // Capture live heights before this transition replaces them.
+                        for window in self.windows {
+                            if let height = self.windowSystem.frame(windowID: window.id)?.height,
+                               height.isFinite, height > 0 {
+                                self.preferredHeights[window.id] = height
+                            }
+                        }
+                    }
+                    self.state.maximizeWindows = enabled
                 case .remove(let id): self.state.removeFromCurrentSpace(windowID: id)
                 case .focus(let id): self.state.focus(windowID: id)
                 case .refresh, .preferences, .observedFocus: break
@@ -694,13 +716,15 @@ final class StagehandModel: ObservableObject {
         overlays.updateBorder(frame: .zero, visible: false)
         defer { isLayingOutWindows = false }
         var placements: [WindowPlacement] = []
-        // Width follows the ribbon preference, not the slide's starting geometry.
-        // Height stays at the user's live size, including a parked window's retained
-        // frame. Reading it before any writes also preserves a just-finished resize.
+        // Capture a new window's preferred height before any maximized size writes.
+        // Accepted constraints belong to this layout pass, not the saved preference.
+        let knownIDs = Set(windows.map(\.id))
+        preferredHeights = preferredHeights.filter { knownIDs.contains($0.key) }
+        for window in windows where preferredHeights[window.id] == nil {
+            preferredHeights[window.id] = windowSystem.frame(windowID: window.id)?.height ?? window.frame.height
+        }
         var observedWidths: [String: CGFloat] = [:]
-        var observedHeights = Dictionary(uniqueKeysWithValues: state.currentSpace.windowIDs.compactMap { id in
-            windowSystem.frame(windowID: id).map { (id, $0.height) }
-        })
+        var observedHeights: [String: CGFloat] = [:]
         var acceptedFrames: [String: CGRect] = [:]
         var destinationPID: Int32?
         // Read accepted sizes after focus, then repack and center app-constrained windows.
@@ -710,7 +734,8 @@ final class StagehandModel: ObservableObject {
         for pass in 0...maximumPass {
             guard preferenceFocusStillMatches(request) else { return true }
             placements = WindowLayout.placements(for: state, availableFrame: availableFrame, gap: gap,
-                                                 observedWidths: observedWidths, observedHeights: observedHeights)
+                                                 observedWidths: observedWidths, preferredHeights: preferredHeights,
+                                                 observedHeights: observedHeights)
             let visible = placements.filter { $0.isVisible || slideFrom?[$0.windowID]?.intersects(availableFrame) == true }
             // Position neighbors first. Raising the focused real window last keeps clamped neighbors behind it.
             for placement in visible.sorted(by: { !$0.isFocused && $1.isFocused }) {

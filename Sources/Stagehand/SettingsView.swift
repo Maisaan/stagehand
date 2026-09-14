@@ -82,7 +82,7 @@ struct SettingsView: View {
             } header: {
                 Text("Ribbon")
             } footer: {
-                Text("Use the full available width, or turn off to keep individual widths. Windows retain their resized height and stay centered.")
+                Text("Use the full available width and height. Turn off to restore individual widths and resized heights, centered vertically. Apps may limit their size.")
             }
             if !model.state.maximizeWindows {
                 Section {
