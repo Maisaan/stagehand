@@ -36,6 +36,11 @@ func laggingOutgoingWindowID(
     return systemFocusedWindowID
 }
 
+func preferredParkingSide(for frame: CGRect?, relativeTo bounds: CGRect) -> WindowParkingSide? {
+    guard let frame, !bounds.isEmpty, frame.midX.isFinite, bounds.midX.isFinite else { return nil }
+    return frame.midX < bounds.midX ? .left : .right
+}
+
 struct RibbonPositionWriteFailure: Equatable {
     let windowID: String
     let requestedFrame: CGRect
@@ -1376,9 +1381,13 @@ final class StagehandModel: ObservableObject {
                 nativeDesktopChanged()
                 return false
             }
+            let parkingSide = preferredParkingSide(
+                for: placements.first(where: { $0.windowID == window.id })?.frame,
+                relativeTo: availableFrame
+            )
             if parkWindow(
                 windowID: window.id,
-                park: { windowSystem.park(windowID: $0) },
+                park: { windowSystem.park(windowID: $0, preferredSide: parkingSide) },
                 observedFrame: { windowSystem.observedFrame(windowID: $0) }
             ) == .failed {
                 warning = "Stagehand couldn't move \(window.appName) out of this space. It paused and restored your windows."
@@ -1561,9 +1570,12 @@ final class StagehandModel: ObservableObject {
                                           operation: operation)
             }
             for window in self.windows where !visibleIDs.contains(window.id) {
+                let parkingSide = self.availableFrame.flatMap {
+                    preferredParkingSide(for: to[window.id], relativeTo: $0)
+                }
                 if parkWindow(
                     windowID: window.id,
-                    park: { self.windowSystem.park(windowID: $0) },
+                    park: { self.windowSystem.park(windowID: $0, preferredSide: parkingSide) },
                     observedFrame: { self.windowSystem.observedFrame(windowID: $0) }
                 ) == .failed {
                     self.warning = "Stagehand couldn't move \(window.appName) out of this space. It paused and restored your windows."

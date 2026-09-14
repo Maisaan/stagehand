@@ -76,6 +76,19 @@ struct NavigationMotionTests {
         ) == nil)
     }
 
+    @Test func offscreenRibbonFramesChooseTheirNearestParkingSide() {
+        let display = CGRect(x: 0, y: 0, width: 1800, height: 1169)
+
+        #expect(preferredParkingSide(
+            for: CGRect(x: -1662, y: 62, width: 1711, height: 1084),
+            relativeTo: display
+        ) == .left)
+        #expect(preferredParkingSide(
+            for: CGRect(x: 1799, y: 62, width: 1711, height: 1084),
+            relativeTo: display
+        ) == .right)
+    }
+
     @Test func repeatedNavigationReversesDismissalWithoutReplacingViewsOrTakingFocus() throws {
         _ = NSApplication.shared
         let overlays = NavigationOverlays(reduceMotion: { false })

@@ -65,6 +65,27 @@ struct WindowParkingTests {
         #expect(actual.minY == original.minY)
     }
 
+    @Test func preferredSideIsTriedFirst() {
+        var parking = WindowParking()
+        var actual = original
+        var positions: [CGPoint] = []
+        let success = parking.park(
+            frame: original,
+            bounds: display,
+            displays: [display],
+            preferredSide: .left,
+            setPosition: { position in
+                positions.append(position)
+                actual.origin = position
+                return true
+            },
+            readFrame: { actual }
+        )
+
+        #expect(success)
+        #expect(positions == [CGPoint(x: 1 - original.width, y: original.minY)])
+    }
+
     @Test func choosesTheSideWithoutSpillingOntoANeighbor() {
         var parking = WindowParking()
         let neighbor = display.offsetBy(dx: display.width, dy: 0)

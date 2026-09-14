@@ -365,7 +365,7 @@ public final class WindowSystem {
     /// Parks just this window, preserving other windows belonging to the same app.
     /// A thin side remnant avoids macOS's fully-offscreen clamp without changing Y.
     @discardableResult
-    public func park(windowID: String) -> Bool {
+    public func park(windowID: String, preferredSide: WindowParkingSide? = nil) -> Bool {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.park(windowID: windowID) }
         guard let tracked = windows[windowID] else { return false }
         let needsValidation = parkingValidationIDs.remove(windowID) != nil
@@ -389,6 +389,7 @@ public final class WindowSystem {
                             width: visible.width, height: visible.height)
         var parking = tracked.parking
         let success = parking.park(frame: currentFrame, bounds: bounds, displays: displays,
+                                   preferredSide: preferredSide,
                                    setPosition: { position in
             let accepted = self.writePosition(tracked.element, position: position)
             if self.focusDiagnosticsEnabled { print("Parking write pid=\(tracked.record.pid) requested=\(position) accepted=\(accepted)") }

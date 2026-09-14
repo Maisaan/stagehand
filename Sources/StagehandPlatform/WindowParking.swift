@@ -1,5 +1,10 @@
 import CoreGraphics
 
+public enum WindowParkingSide: Equatable, Sendable {
+    case left
+    case right
+}
+
 /// Per-window parking state. Operations are supplied by the AX adapter so the
 /// refusal and restoration paths can be tested without controlling user windows.
 struct WindowParking {
@@ -8,7 +13,7 @@ struct WindowParking {
     private var parkingBounds: CGRect?
     private var parkedFrame: CGRect?
 
-    mutating func park(frame: CGRect, bounds: CGRect, displays: [CGRect],
+    mutating func park(frame: CGRect, bounds: CGRect, displays: [CGRect], preferredSide: WindowParkingSide? = nil,
                        setPosition: (CGPoint) -> Bool, readFrame: () -> CGRect?) -> Bool {
         guard Self.valid(frame), Self.valid(bounds), !displays.isEmpty, displays.allSatisfy(Self.valid) else { return false }
         let isReparking = restoreFrame != nil
@@ -25,8 +30,9 @@ struct WindowParking {
         parkingBounds = bounds
         // Preserve Y so an app that presents AX moves asynchronously can only
         // enter or leave along the same horizontal axis as ribbon navigation.
-        let destinations = [CGPoint(x: bounds.maxX - 1, y: frame.minY),
-                            CGPoint(x: bounds.minX + 1 - frame.width, y: frame.minY)]
+        let right = CGPoint(x: bounds.maxX - 1, y: frame.minY)
+        let left = CGPoint(x: bounds.minX + 1 - frame.width, y: frame.minY)
+        let destinations = preferredSide == .left ? [left, right] : [right, left]
         let containingDisplay = displays.max {
             Self.overlapArea($0, bounds) < Self.overlapArea($1, bounds)
         }
