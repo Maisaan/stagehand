@@ -64,7 +64,8 @@ final class StagehandModel: ObservableObject {
     private var gestureBase: [String: CGRect]?
     private var gesturePrepared: Set<String> = []
     private var gestureAxis: GestureAxis?
-    private var motionWrittenFrames: [String: CGRect] = [:]
+    private var motionWrittenPositions: [String: CGPoint] = [:]
+    private var motionBackingScaleFactor: CGFloat = 1
     private let emptySpace = EmptySpaceWindow()
     private var refreshTask: Task<Void, Never>?
     private var observedFocusTask: Task<Void, Never>?
@@ -789,12 +790,15 @@ final class StagehandModel: ObservableObject {
         }
     }
 
-    private var availableFrame: CGRect? {
-        let screen = NSScreen.screens.first { screen in
+    private var builtInScreen: NSScreen? {
+        NSScreen.screens.first { screen in
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return false }
             return CGDisplayIsBuiltin(number.uint32Value) != 0
         } ?? NSScreen.main
-        guard let screen, let primary = NSScreen.screens.first else { return nil }
+    }
+
+    private var availableFrame: CGRect? {
+        guard let screen = builtInScreen, let primary = NSScreen.screens.first else { return nil }
         let frame = screen.visibleFrame
         return CGRect(x: frame.minX, y: primary.frame.maxY - frame.maxY, width: frame.width, height: frame.height)
     }
@@ -1036,8 +1040,9 @@ final class StagehandModel: ObservableObject {
             return
         }
         for (id, frame) in frames {
-            if motionWrittenFrames[id]?.origin == frame.origin { continue }
-            guard windowSystem.setPosition(windowID: id, position: frame.origin) else {
+            let position = RibbonMotion.pixelAligned(frame.origin, backingScaleFactor: motionBackingScaleFactor)
+            if motionWrittenPositions[id] == position { continue }
+            guard windowSystem.setPosition(windowID: id, position: position) else {
                 ribbonMotion.cancel()
                 warning = "Stagehand couldn't move one of your windows. It paused and restored them."
                 stop(
@@ -1047,15 +1052,20 @@ final class StagehandModel: ObservableObject {
                 )
                 return
             }
-            motionWrittenFrames[id] = frame
+            motionWrittenPositions[id] = position
         }
-        if gestureBase == nil, let focused = state.focusedWindowID, let frame = frames[focused] {
+        if gestureBase == nil, let focused = state.focusedWindowID, var frame = frames[focused] {
+            frame.origin = motionWrittenPositions[focused]
+                ?? RibbonMotion.pixelAligned(frame.origin, backingScaleFactor: motionBackingScaleFactor)
             updateFocusBorder(windowID: focused, frame: frame)
         }
     }
 
     private func settleRibbon(from: [String: CGRect], to: [String: CGRect], visibleIDs: Set<String>) {
-        motionWrittenFrames = from
+        motionBackingScaleFactor = builtInScreen?.backingScaleFactor ?? 1
+        motionWrittenPositions = from.mapValues {
+            RibbonMotion.pixelAligned($0.origin, backingScaleFactor: motionBackingScaleFactor)
+        }
         ribbonMotion.animate(from: from, to: to,
                              duration: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.2,
                              update: { [weak self] in self?.applyMotionFrames($0) }, completion: { [weak self] in
@@ -1104,7 +1114,10 @@ final class StagehandModel: ObservableObject {
                 gestureBase = frames
                 presentationFrames = frames.filter { $0.value.intersects(availableFrame ?? .zero) }
                 gesturePrepared = Set(presentationFrames?.keys.map { $0 } ?? [])
-                motionWrittenFrames = presentationFrames ?? [:]
+                motionBackingScaleFactor = builtInScreen?.backingScaleFactor ?? 1
+                motionWrittenPositions = presentationFrames?.mapValues {
+                    RibbonMotion.pixelAligned($0.origin, backingScaleFactor: motionBackingScaleFactor)
+                } ?? [:]
                 overlays.updateBorder(frame: .zero, visible: false)
                 previewGesture(displacement: displacement)
             }
@@ -1152,7 +1165,19 @@ final class StagehandModel: ObservableObject {
 
     private func previewGesture(displacement: Double) {
         guard let base = gestureBase, let availableFrame, gestureAxis == .horizontal,
-              worker == nil, displacement.isFinite, desktopScope.refresh() == .home else { return }
+              worker == nil, displacement.isFinite else { return }
+        ribbonMotion.follow(frames: { [weak self] in
+            guard let self, self.gestureBase != nil, self.desktopScope.refresh() == .home else { return [:] }
+            return self.gesturePreviewFrames(
+                from: base,
+                availableFrame: availableFrame,
+                displacement: displacement
+            )
+        }, update: { [weak self] in self?.applyMotionFrames($0) })
+    }
+
+    private func gesturePreviewFrames(from base: [String: CGRect], availableFrame: CGRect,
+                                      displacement: Double) -> [String: CGRect] {
         let preview = RibbonMotion.dragFrames(state: state, from: base, availableFrame: availableFrame,
                                               gap: gap, displacement: displacement)
         var frames: [String: CGRect] = [:]
@@ -1161,11 +1186,15 @@ final class StagehandModel: ObservableObject {
             if !gesturePrepared.contains(id) {
                 guard windowSystem.setFrame(windowID: id, frame: shifted) else { continue }
                 gesturePrepared.insert(id)
+                motionWrittenPositions[id] = RibbonMotion.pixelAligned(
+                    shifted.origin,
+                    backingScaleFactor: motionBackingScaleFactor
+                )
             }
             frames[id] = shifted
         }
         presentationFrames = frames
-        ribbonMotion.follow(frames) { [weak self] in self?.applyMotionFrames($0) }
+        return frames
     }
 
     private func restoreGesturePreview() {

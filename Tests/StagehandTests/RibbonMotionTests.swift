@@ -8,9 +8,11 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     private var handler: ((TimeInterval) -> Void)?
     private(set) var startCount = 0
     private(set) var stopCount = 0
+    private(set) var maximumFramesPerSecond: Int?
 
-    func start(onFrame: @escaping (TimeInterval) -> Void) -> Bool {
+    func start(maximumFramesPerSecond: Int, onFrame: @escaping (TimeInterval) -> Void) -> Bool {
         startCount += 1
+        self.maximumFramesPerSecond = maximumFramesPerSecond
         handler = onFrame
         return true
     }
@@ -196,12 +198,48 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     let latest = ["a": CGRect(x: 30, y: 0, width: 900, height: 700)]
     var updates: [[String: CGRect]] = []
 
-    motion.follow(first, update: { updates.append($0) })
-    motion.follow(latest, update: { updates.append($0) })
+    motion.follow(frames: { first }, update: { updates.append($0) })
+    motion.follow(frames: { latest }, update: { updates.append($0) })
     #expect(driver.startCount == 1)
+    #expect(driver.maximumFramesPerSecond == 60)
     #expect(updates.isEmpty)
 
     driver.emit(at: 1)
     #expect(updates == [latest])
     #expect(motion.frames == latest)
+}
+
+@MainActor @Test func gestureGeometryIsComputedOnlyOncePerDisplayRefresh() {
+    let driver = TestRibbonFrameDriver()
+    let motion = RibbonMotion(frameDriver: driver)
+    let first = ["a": CGRect(x: 10, y: 0, width: 900, height: 700)]
+    let latest = ["a": CGRect(x: 30, y: 0, width: 900, height: 700)]
+    var computations = 0
+    var updates: [[String: CGRect]] = []
+
+    motion.follow(frames: {
+        computations += 1
+        return first
+    }, update: { updates.append($0) })
+    motion.follow(frames: {
+        computations += 1
+        return latest
+    }, update: { updates.append($0) })
+
+    #expect(computations == 0)
+    #expect(updates.isEmpty)
+    driver.emit(at: 1)
+    #expect(computations == 1)
+    #expect(updates == [latest])
+}
+
+@MainActor @Test func motionPositionsAlignToDisplayPixels() {
+    #expect(RibbonMotion.pixelAligned(
+        CGPoint(x: 10.24, y: 20.26),
+        backingScaleFactor: 2
+    ) == CGPoint(x: 10, y: 20.5))
+    #expect(RibbonMotion.pixelAligned(
+        CGPoint(x: 10.6, y: 20.4),
+        backingScaleFactor: 0
+    ) == CGPoint(x: 11, y: 20))
 }

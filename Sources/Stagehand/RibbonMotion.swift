@@ -4,7 +4,7 @@ import StagehandCore
 
 @MainActor
 protocol RibbonFrameDriving: AnyObject {
-    func start(onFrame: @escaping (TimeInterval) -> Void) -> Bool
+    func start(maximumFramesPerSecond: Int, onFrame: @escaping (TimeInterval) -> Void) -> Bool
     func stop()
 }
 
@@ -13,7 +13,7 @@ private final class SystemRibbonFrameDriver: NSObject, RibbonFrameDriving {
     private var displayLink: CADisplayLink?
     private var onFrame: ((TimeInterval) -> Void)?
 
-    func start(onFrame: @escaping (TimeInterval) -> Void) -> Bool {
+    func start(maximumFramesPerSecond: Int, onFrame: @escaping (TimeInterval) -> Void) -> Bool {
         stop()
         guard let screen = NSScreen.screens.first(where: { screen in
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
@@ -26,9 +26,9 @@ private final class SystemRibbonFrameDriver: NSObject, RibbonFrameDriving {
         let displayLink = screen.displayLink(target: self, selector: #selector(displayFrame(_:)))
         self.onFrame = onFrame
         self.displayLink = displayLink
-        let maximum = Float(max(60, screen.maximumFramesPerSecond))
+        let maximum = Float(min(maximumFramesPerSecond, max(1, screen.maximumFramesPerSecond)))
         displayLink.preferredFrameRateRange = CAFrameRateRange(
-            minimum: min(60, maximum),
+            minimum: maximum,
             maximum: maximum,
             preferred: maximum
         )
@@ -61,8 +61,10 @@ final class RibbonMotion {
 
     private static let screenWidthsPerTrackpadWidth = 4.0
     private static let completionProgress = 0.3
+    private static let maximumFramesPerSecond = 60
     private let frameDriver: RibbonFrameDriving
     private var animation: Animation?
+    private var followingFrames: (() -> [String: CGRect])?
     private var followingUpdate: (([String: CGRect]) -> Void)?
     private var generation: UInt64 = 0
     private(set) var frames: [String: CGRect] = [:]
@@ -137,18 +139,23 @@ final class RibbonMotion {
         generation &+= 1
         frameDriver.stop()
         animation = nil
+        followingFrames = nil
         followingUpdate = nil
     }
 
     /// Trackpad callbacks can arrive between display refreshes. Keep only the newest
     /// geometry and write it once on the next refresh instead of queueing stale positions.
-    func follow(_ frames: [String: CGRect], update: @escaping ([String: CGRect]) -> Void) {
+    func follow(frames: @escaping () -> [String: CGRect],
+                update: @escaping ([String: CGRect]) -> Void) {
         if animation != nil { cancel() }
-        self.frames = frames
         let wasFollowing = followingUpdate != nil
+        followingFrames = frames
         followingUpdate = update
         guard !wasFollowing else { return }
         guard startFrameDriver() else {
+            let frames = frames()
+            self.frames = frames
+            followingFrames = nil
             followingUpdate = nil
             update(frames)
             return
@@ -186,13 +193,14 @@ final class RibbonMotion {
     }
 
     private func startFrameDriver() -> Bool {
-        frameDriver.start { [weak self] timestamp in
+        frameDriver.start(maximumFramesPerSecond: Self.maximumFramesPerSecond) { [weak self] timestamp in
             self?.advance(to: timestamp)
         }
     }
 
     private func advance(to timestamp: TimeInterval) {
-        if let followingUpdate {
+        if let followingFrames, let followingUpdate {
+            frames = followingFrames()
             followingUpdate(frames)
             return
         }
@@ -226,5 +234,13 @@ final class RibbonMotion {
                                       y: start.minY + (item.value.minY - start.minY) * eased,
                                       width: item.value.width, height: item.value.height)
         }
+    }
+
+    static func pixelAligned(_ position: CGPoint, backingScaleFactor: CGFloat) -> CGPoint {
+        let scale = backingScaleFactor.isFinite && backingScaleFactor > 0 ? backingScaleFactor : 1
+        return CGPoint(
+            x: (position.x * scale).rounded() / scale,
+            y: (position.y * scale).rounded() / scale
+        )
     }
 }
