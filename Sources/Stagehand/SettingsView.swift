@@ -52,13 +52,13 @@ struct SettingsView: View {
                 Circle().fill(model.isSuspended ? Color.orange : model.isRunning ? .green : .secondary)
                     .frame(width: 6, height: 6)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(model.isSuspended ? "Waiting on its Desktop" : model.isRunning ? "Running" : "Paused")
+                    Text(model.isSuspended ? "Waiting for its Desktop" : model.isRunning ? "Running" : "Paused")
                         .font(.callout.weight(.medium))
-                    Text(model.isSuspended ? "Resumes when you return to its Desktop." : model.isRunning ? "Pause restores your original window positions." : "Start to arrange your open windows.")
+                    Text(model.isSuspended ? "Return to the Desktop where you started Stagehand to resume." : model.isRunning ? "Pausing restores your original window positions." : "Stagehand isn't moving your windows.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button(model.isRunning ? "Pause & Restore" : "Start Stagehand") {
+                Button(model.isRunning ? "Pause Stagehand" : "Start Stagehand") {
                     if model.isRunning { model.pause() }
                     else if model.accessibilityGranted { model.start() }
                     else { tab = "Setup"; model.requestAccessibility() }
@@ -79,10 +79,8 @@ struct SettingsView: View {
                     get: { model.state.maximizeWindows }, set: { model.setMaximizeWindows($0) }
                 ))
                 .toggleStyle(.switch)
-            } header: {
-                Text("Ribbon")
             } footer: {
-                Text("Use the full available width and height. Turn off to restore individual widths and resized heights, centered vertically. Apps may limit their size.")
+                Text("Each window uses all available width and height. Turn this off to restore its saved size. Some apps set their own size limits.")
             }
             if !model.state.maximizeWindows {
                 Section {
@@ -107,7 +105,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                     }
                 } footer: {
-                    Text("Negative values overlap windows, with the active window on top. ↑ / ↓ adjusts by 1 pt, Shift by 10 pt. Press Return or leave the field to apply.")
+                    Text("Negative values overlap windows. The active window stays on top. Use ↑/↓ to adjust by 1 pt or Shift-↑/↓ by 10 pt. Press Return or click elsewhere to apply.")
                 }
             }
             Section {
@@ -124,12 +122,12 @@ struct SettingsView: View {
                         .buttonStyle(.bordered)
                         .tint(index == model.state.activeSpaceIndex ? Color.accentColor : nil)
                         .disabled(!model.isRunning || model.isSuspended)
-                        .accessibilityLabel("Space \(index + 1), \(model.state.spaces[index].windowIDs.count) windows")
+                        .accessibilityLabel("Space \(index + 1), \(model.state.spaces[index].windowIDs.count) \(model.state.spaces[index].windowIDs.count == 1 ? "window" : "windows")")
                         .accessibilityAddTraits(index == model.state.activeSpaceIndex ? .isSelected : [])
                     }
                 }
                 if model.state.currentSpace.windowIDs.isEmpty {
-                    Text(model.isRunning ? "This space is empty. Move or add a window from another space." : "Start Stagehand to arrange your open windows.")
+                    Text(model.isRunning ? "No windows in this space. Move or add one from another space." : "No windows yet.")
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, minHeight: 45, alignment: .center)
                 } else {
@@ -142,7 +140,7 @@ struct SettingsView: View {
             } header: {
                 Text("Spaces")
             } footer: {
-                Text("Open another space with ⌃⌥ and its number. Shared windows can have a different order in each space.")
+                Text("Switch spaces with ⌃⌥ plus a number. Shared windows can have a different order in each space.")
             }
         }
     }
@@ -166,25 +164,25 @@ struct SettingsView: View {
                 let actual = model.actualWidthPercent(for: window)
                 Text("\(actual ?? requested)%")
                     .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-                    .help(actual.map { "Actual window width. Requested \(requested)%; the app may limit its size. Actual: \($0)%." }
-                          ?? "Requested window width.")
+                    .help(actual.map { "This app limits the window to \($0)% width. Stagehand requested \(requested)%." }
+                          ?? "Requested width: \(requested)%.")
             }
             Menu {
-                Button("Focus Window") { model.focusWindow(window.id) }
+                Button("Focus") { model.focusWindow(window.id) }
                 if window.id == model.state.focusedWindowID {
-                    Menu("Move to Space") {
+                    Menu("Move to") {
                         ForEach(model.state.spaces.indices.filter { $0 != model.state.activeSpaceIndex }, id: \.self) { index in
                             Button("Space \(index + 1)") { model.navigate(.moveToSpace(index: index, follow: false)) }
                         }
                     }
-                    Menu("Add to Another Space") {
+                    Menu("Share with") {
                         ForEach(model.state.spaces.indices.filter { !model.state.spaces[$0].windowIDs.contains(window.id) }, id: \.self) { index in
                             Button("Space \(index + 1)") { model.navigate(.shareToSpace(index: index)) }
                         }
                     }
                 }
                 if model.state.spaces.filter({ $0.windowIDs.contains(window.id) }).count > 1 {
-                    Button("Remove from This Space") { model.removeMembership(windowID: window.id) }
+                    Button("Remove from this space") { model.removeMembership(windowID: window.id) }
                 }
             } label: {
                 Image(systemName: "ellipsis.circle")
@@ -222,26 +220,25 @@ struct SettingsView: View {
             } header: {
                 Text("Trackpad")
             } footer: {
-                Text("Swipe left for the next window, right for the previous one. Swipe up for the next space, down for the previous one. One swipe moves one step.")
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Swipe left for the next window and right for the previous one. Swipe up for the next space and down for the previous one. Each swipe moves one step.")
+                    Text("If macOS uses the same finger count, choose the other count here or turn off the conflicting gesture in Trackpad settings. Three-finger dragging may also conflict.")
+                }
             }
             Section {
-                Text("Use a different finger count for conflicting macOS gestures, or turn those gestures off in Trackpad settings. Three-finger dragging can also conflict.")
-                    .foregroundStyle(.secondary)
-            }
-            Section {
-                shortcut("Previous / next window", keys: "⌃ ⌥ ← / →")
-                shortcut("Previous / next space", keys: "⌃ ⌥ ↑ / ↓")
-                shortcut("Reorder current window", keys: "⌃ ⌥ ⌘ ← / →")
-                shortcut("Go to space", keys: "⌃ ⌥ 1 … 9")
-                shortcut("Move window to space", keys: "⌃ ⌥ ⇧ 1 … 9")
-                shortcut("Move window and follow", keys: "⌃ ⌥ ⌘ 1 … 9")
-                shortcut("Shrink / grow width", keys: "⌥ ⌘ 1 / 2")
+                shortcut("Previous or next window", keys: "⌃ ⌥ ← / →")
+                shortcut("Previous or next space", keys: "⌃ ⌥ ↑ / ↓")
+                shortcut("Move current window left or right", keys: "⌃ ⌥ ⌘ ← / →")
+                shortcut("Switch to space", keys: "⌃ ⌥ 1 … 9")
+                shortcut("Share window with space", keys: "⌃ ⌥ ⇧ 1 … 9")
+                shortcut("Move window and switch spaces", keys: "⌃ ⌥ ⌘ 1 … 9")
+                shortcut("Shrink or grow window width", keys: "⌥ ⌘ 1 / 2")
                 shortcut("Pause and restore windows", keys: "⌃ ⌥ esc")
                 shortcut("Open settings", keys: "⌃ ⌥ ,")
             } header: {
                 Text("Keyboard")
             } footer: {
-                Text("Add a window to another space from its menu in the Workspace tab. Shortcuts are fixed in this first version.")
+                Text("Right-click an app in the app bar to share or remove it. Shortcuts can't be changed yet.")
             }
         }
     }
@@ -256,23 +253,16 @@ struct SettingsView: View {
         Group {
             Section {
                 HStack {
-                    Label(model.accessibilityGranted ? "Accessibility enabled" : "Accessibility required",
-                          systemImage: model.accessibilityGranted ? "checkmark.circle.fill" : "lock")
+                    Label("Accessibility", systemImage: model.accessibilityGranted ? "checkmark.circle.fill" : "lock")
                         .foregroundStyle(model.accessibilityGranted ? Color.green : .secondary)
+                        .accessibilityValue(model.accessibilityGranted ? "Allowed" : "Required")
                     Spacer()
-                    Button(model.accessibilityGranted ? "Open Settings…" : "Grant Access…") { model.requestAccessibility() }
+                    Button(model.accessibilityGranted ? "Open Settings…" : "Allow…") { model.requestAccessibility() }
                 }
-                LabeledContent("Input Monitoring") {
-                    Button("Open Settings…") {
-                        model.requestInputMonitoring()
-                        openSettingsPane("com.apple.preference.security?Privacy_ListenEvent")
-                    }
-                }
-                Button("Check Permissions Again") { model.refreshPermissions() }
             } header: {
                 Text("Permissions")
             } footer: {
-                Text("Accessibility lets Stagehand move windows. Input Monitoring protects typing while the active window changes.")
+                Text("Accessibility lets Stagehand move windows, block conflicting scroll events during gestures, and protect typing during window switches.")
             }
             if !model.inputIssues.isEmpty {
                 Section("Needs attention") {
@@ -283,14 +273,24 @@ struct SettingsView: View {
                     }
                 }
             }
-            Section("Keyboard focus") {
-                Text("While switching windows, Stagehand holds typing in memory until it confirms the destination. Nothing is logged or saved. If confirmation fails, it warns you and withholds that input instead of sending it to the wrong app.")
+            Section {
+                Toggle("Diagnostic logging", isOn: $model.diagnosticLoggingEnabled)
+                    .toggleStyle(.switch)
+                Button("Show Log in Finder") { model.revealDiagnosticLog() }
+                    .disabled(!model.diagnosticLoggingEnabled)
+            } header: {
+                Text("Diagnostics")
+            } footer: {
+                Text("Records starts, pauses, window operations, focus checks, and failures. Logs exclude window titles and keyboard input.")
+            }
+            Section("Typing protection") {
+                Text("When you switch windows, Stagehand holds new keystrokes in memory until it confirms the destination. It never logs or saves them. If focus can't be confirmed, Stagehand discards those keystrokes and shows a warning.")
                     .foregroundStyle(.secondary)
             }
-            Section("About Stagehand") {
-                Text("Built for your Mac’s built-in display and ordinary windows on one macOS Desktop. Native fullscreen is excluded. Layout preferences are saved; space membership lasts for this Stagehand session. Pause or quit to restore original window positions.")
+            Section("Limits") {
+                Text("Stagehand works with standard windows on one built-in display and one macOS Desktop. It ignores native full-screen windows. Layout settings persist, but space membership resets when Stagehand quits. Pause or quit to restore windows to their original positions.")
                     .foregroundStyle(.secondary)
-                Text("Gesture recognition uses a private macOS trackpad API. If it is unavailable, keyboard navigation still works. Secure Input can prevent keyboard interception.")
+                Text("Gestures use a private macOS trackpad API. If that API is unavailable, keyboard shortcuts still work. Secure Input may prevent Stagehand from protecting keystrokes during a window switch.")
                     .foregroundStyle(.secondary)
             }
         }

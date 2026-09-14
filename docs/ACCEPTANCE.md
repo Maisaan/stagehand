@@ -1,11 +1,11 @@
 # Live acceptance
 
-Use disposable documents or text fields for typing checks, not a shell or a production form. These checks require the built app's Accessibility/Input Monitoring grants and the physical trackpad. They are not marked as passed by the automated suite.
+Use disposable documents or text fields for typing checks, not a shell or a production form. These checks require the built app's Accessibility grant and the physical trackpad. They are not marked as passed by the automated suite.
 
 ## Start and stop
 
 - Launch paused; confirm no windows move before Start.
-- Grant Accessibility and Input Monitoring to the built Stagehand.app.
+- Grant Accessibility to the built Stagehand.app. Leave Input Monitoring disabled.
 - Start with several ordinary windows on one native macOS Desktop.
 - Pause and Quit independently. Verify every managed window returns to its pre-Start frame. Stagehand must never minimize a window to the Dock.
 - Repeatedly pause/start during navigation. No stale operation should move windows after pause.

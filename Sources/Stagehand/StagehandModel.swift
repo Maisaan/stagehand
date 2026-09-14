@@ -21,6 +21,7 @@ final class StagehandModel: ObservableObject {
         didSet {
             UserDefaults.standard.set(gesturesEnabled, forKey: "gesturesEnabled")
             input.gesturesEnabled = gesturesEnabled && !isSuspended
+            updateInputStatus()
         }
     }
     @Published var gestureFingerCount: Int {
@@ -36,6 +37,19 @@ final class StagehandModel: ObservableObject {
             if isRunning && !isSuspended { enqueue(.preferences) }
         }
     }
+    @Published var diagnosticLoggingEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(diagnosticLoggingEnabled, forKey: DiagnosticLogger.preferenceKey)
+            windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
+            if diagnosticLoggingEnabled {
+                diagnostics.isEnabled = true
+                diagnostics.record("logging_enabled")
+            } else {
+                diagnostics.record("logging_disabled")
+                diagnostics.isEnabled = false
+            }
+        }
+    }
 
     var showSettings: (() -> Void)?
     var onStateChange: (() -> Void)?
@@ -44,6 +58,7 @@ final class StagehandModel: ObservableObject {
     private let input = InputController()
     private let focusGate = FocusInputGate()
     private let overlays: NavigationOverlays
+    private let diagnostics: DiagnosticLogger
     private let ribbonMotion = RibbonMotion()
     private var presentationFrames: [String: CGRect]?
     private var gestureBase: [String: CGRect]?
@@ -68,6 +83,7 @@ final class StagehandModel: ObservableObject {
     private var borderCornerRadius: CGFloat?
     private var isLayingOutWindows = false
     private var preferencesNeedLayout = false
+    private var layoutFailureReason: String?
 
     private struct PointerInteraction {
         let windowID: String
@@ -79,6 +95,7 @@ final class StagehandModel: ObservableObject {
         case action(NavigationAction)
         case maximize(Bool)
         case remove(String)
+        case share(windowID: String, spaceIndex: Int)
         case focus(String)
         case observedFocus(String)
         case refresh
@@ -94,11 +111,28 @@ final class StagehandModel: ObservableObject {
         var isWindowNavigation: Bool {
             self == .action(.focusNext) || self == .action(.focusPrevious)
         }
+
+        var diagnosticName: String {
+            switch self {
+            case .action(let action): "action.\(action)"
+            case .maximize: "maximize"
+            case .remove: "removeMembership"
+            case .share: "shareMembership"
+            case .focus: "focusWindow"
+            case .observedFocus: "observedFocus"
+            case .refresh: "refresh"
+            case .preferences: "preferences"
+            }
+        }
     }
 
-    init(overlays: NavigationOverlays = NavigationOverlays()) {
+    init(overlays: NavigationOverlays = NavigationOverlays(), diagnostics: DiagnosticLogger? = nil) {
         self.overlays = overlays
         let defaults = UserDefaults.standard
+        diagnosticLoggingEnabled = defaults.bool(forKey: DiagnosticLogger.preferenceKey)
+        self.diagnostics = diagnostics ?? DiagnosticLogger(
+            enabled: defaults.bool(forKey: DiagnosticLogger.preferenceKey)
+        )
         gesturesEnabled = defaults.object(forKey: "gesturesEnabled") as? Bool ?? false
         gestureFingerCount = defaults.integer(forKey: "gestureFingerCount") == 3 ? 3 : 4
         gap = GapInput.clamped(defaults.object(forKey: "windowGap") as? Double ?? 8)
@@ -108,6 +142,10 @@ final class StagehandModel: ObservableObject {
         input.onGesture = { [weak self] event in self?.handleGesture(event) }
         overlays.onFocusWindow = { [weak self] id in self?.focusWindow(id) }
         overlays.onSelectSpace = { [weak self] index in self?.navigate(.goToSpace(index: index)) }
+        overlays.onShareWindow = { [weak self] id, index in
+            self?.shareMembership(windowID: id, spaceIndex: index)
+        }
+        overlays.onRemoveWindow = { [weak self] id in self?.removeMembership(windowID: id) }
         overlays.canRevealNavigation = { [weak self] in
             guard let self, self.isRunning, !self.isSuspended else { return false }
             return self.desktopScope.refresh() == .home
@@ -131,19 +169,22 @@ final class StagehandModel: ObservableObject {
         windowSystem.onNativeDesktopChange = { [weak self] in
             self?.nativeDesktopChanged()
         }
+        windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
         focusGate.onNavigationAction = { [weak self] action in self?.navigate(action) }
         focusGate.onBeforeKeyboardEvent = { [weak self] in
             guard let self, self.isRunning, !self.isSuspended else { return }
-            while let action = self.input.takePendingGestureAction() {
-                self.gestureAxis = nil
-                self.gestureBase = nil
-                self.gesturePrepared.removeAll()
-                self.navigate(action)
+            while let completion = self.input.takePendingGestureCompletion() {
+                self.finishGesture(
+                    axis: completion.axis,
+                    displacement: completion.displacement,
+                    velocity: completion.velocity,
+                    recognizerAction: completion.recognizerAction
+                )
             }
         }
         focusGate.onAvailabilityChanged = { [weak self] in self?.updateInputStatus() }
         focusGate.onInputDiscarded = { [weak self] count in
-            self?.warning = "Focus could not be confirmed. \(count) buffered keyboard events were withheld rather than sent to the wrong window. Please check your last input."
+            self?.warning = "Stagehand couldn't confirm the new window, so it did not send \(count) buffered key \(count == 1 ? "event" : "events"). Check your last input."
             NSSound.beep()
         }
         focusGate.onTransferExpired = { [weak self] token in
@@ -152,9 +193,13 @@ final class StagehandModel: ObservableObject {
             let generation = self.workerGeneration
             Task { @MainActor [weak self] in
                 guard let self, self.isRunning, self.workerGeneration == generation else { return }
-                self.pause()
+                self.stop(
+                    reason: "input_transfer_expired",
+                    automatic: true,
+                    details: ["token": String(token)]
+                )
                 if self.warning == nil {
-                    self.warning = "Window switching took too long. Stagehand paused and restored your windows."
+                    self.warning = "Stagehand couldn't finish switching windows. It paused and restored your windows."
                 }
             }
         }
@@ -180,11 +225,6 @@ final class StagehandModel: ObservableObject {
         updateInputStatus()
     }
 
-    func requestInputMonitoring() {
-        _ = CGRequestListenEventAccess()
-        refreshPermissions()
-    }
-
     func requestAccessibility() {
         windowSystem.requestAccessibilityPermission()
         refreshPermissions()
@@ -193,12 +233,14 @@ final class StagehandModel: ObservableObject {
     func start() {
         refreshPermissions()
         guard accessibilityGranted else {
-            warning = "Enable Accessibility for Stagehand, then press Start."
+            diagnostics.record("start_failed", details: ["reason": "accessibility_permission_missing"])
+            warning = "Allow Stagehand in Accessibility settings, then start it again."
             return
         }
         guard !isRunning else { return }
         guard desktopScope.bindToCurrentDesktop() else {
-            warning = "Could not identify this macOS Desktop. Stagehand has not changed any windows."
+            diagnostics.record("start_failed", details: ["reason": "desktop_unavailable"])
+            warning = "Stagehand couldn't identify the current macOS Desktop, so it left your windows unchanged."
             return
         }
         warning = nil
@@ -214,12 +256,24 @@ final class StagehandModel: ObservableObject {
         focusGate.start()
         input.start()
         updateInputStatus()
+        diagnostics.record("started", details: workspaceDetails())
         enqueue(.refresh)
         onStateChange?()
     }
 
     func pause() {
+        stop(reason: "manual", automatic: false)
+    }
+
+    private func stop(reason: String, automatic: Bool, details: [String: String] = [:]) {
         guard isRunning else { return }
+        var context = workspaceDetails()
+        context["reason"] = reason
+        context.merge(details) { _, new in new }
+        diagnostics.record(
+            automatic ? "automatic_pause" : "paused",
+            details: context
+        )
         isRunning = false
         isSuspended = false
         state.isPaused = true
@@ -253,7 +307,28 @@ final class StagehandModel: ObservableObject {
         onStateChange?()
     }
 
-    func shutDown() { pause() }
+    func shutDown() { stop(reason: "application_termination", automatic: false) }
+
+    func revealDiagnosticLog() {
+        diagnostics.record("log_revealed")
+        NSWorkspace.shared.activateFileViewerSelecting([diagnostics.logURL])
+    }
+
+    private func workspaceDetails() -> [String: String] {
+        var details = [
+            "activeSpace": String(state.activeSpaceIndex + 1),
+            "pendingChanges": String(pending.count),
+            "suspended": String(isSuspended),
+            "windowCount": String(windows.count),
+            "workerActive": String(worker != nil)
+        ]
+        if let focusedWindow {
+            details["focusedBundleIdentifier"] = focusedWindow.bundleIdentifier
+            details["focusedPID"] = String(focusedWindow.pid)
+            details["focusedWindowID"] = focusedWindow.id
+        }
+        return details
+    }
 
     func navigate(_ action: NavigationAction) {
         switch action {
@@ -281,6 +356,11 @@ final class StagehandModel: ObservableObject {
     func removeMembership(windowID: String) {
         guard isRunning, !isSuspended else { return }
         enqueue(.remove(windowID))
+    }
+
+    func shareMembership(windowID: String, spaceIndex: Int) {
+        guard isRunning, !isSuspended else { return }
+        enqueue(.share(windowID: windowID, spaceIndex: spaceIndex))
     }
 
     func focusWindow(_ id: String) {
@@ -470,8 +550,8 @@ final class StagehandModel: ObservableObject {
         var issues = input.issues
         if isRunning && !isSuspended && !focusGate.isAvailable {
             issues.append(focusGate.isSecureInputEnabled
-                          ? "Secure Input is active. macOS prevents keyboard handoff protection in this mode."
-                          : "Keyboard handoff protection is unavailable. Check Accessibility and Input Monitoring permissions.")
+                          ? "Secure Input is on, so Stagehand can't protect typing while switching windows."
+                          : "Typing protection is unavailable. Re-enable Accessibility for Stagehand, then retry.")
         }
         if gesturesEnabled { issues.append(contentsOf: InputController.nativeGestureConflicts(fingerCount: gestureFingerCount)) }
         var seen = Set<String>()
@@ -604,6 +684,9 @@ final class StagehandModel: ObservableObject {
     }
 
     private func enqueue(_ change: Change) {
+        if ProcessInfo.processInfo.arguments.contains("--trace-gestures"), gestureAxis != nil {
+            NSLog("[DEBUG-gesture] layout requested during drag: %@", String(describing: change))
+        }
         guard isRunning, !isSuspended else { return }
         guard desktopScope.refresh() == .home else {
             nativeDesktopChanged()
@@ -615,6 +698,11 @@ final class StagehandModel: ObservableObject {
             focusGate.isAvailable ? focusGate.beginTransfer() : nil
         }
         pending.append((change, token))
+        diagnostics.record("change_queued", details: [
+            "operation": change.diagnosticName,
+            "pendingChanges": String(pending.count),
+            "transferToken": token.map(String.init) ?? "none"
+        ])
         guard worker == nil else { return }
         workerGeneration += 1
         let generation = workerGeneration
@@ -623,6 +711,11 @@ final class StagehandModel: ObservableObject {
             var batchMotionStart: [String: CGRect]?
             while self.isRunning && !self.isSuspended && !Task.isCancelled && !self.pending.isEmpty {
                 let (change, token) = self.pending.removeFirst()
+                self.diagnostics.record("change_started", details: [
+                    "operation": change.diagnosticName,
+                    "pendingChanges": String(self.pending.count),
+                    "transferToken": token.map(String.init) ?? "none"
+                ])
                 let previousState = self.transitionRollback ?? self.state
                 self.transitionRollback = previousState
                 let hadPreview = self.presentationFrames != nil
@@ -648,6 +741,7 @@ final class StagehandModel: ObservableObject {
                     }
                     self.state.maximizeWindows = enabled
                 case .remove(let id): self.state.removeFromCurrentSpace(windowID: id)
+                case .share(let id, let index): self.state.share(windowID: id, toSpace: index)
                 case .focus(let id): self.state.focus(windowID: id)
                 case .refresh, .preferences, .observedFocus: break
                 }
@@ -672,14 +766,20 @@ final class StagehandModel: ObservableObject {
                 let canSlide = previousState.activeSpaceIndex == self.state.activeSpaceIndex &&
                     (previousState.focusedWindowID != self.state.focusedWindowID || hadPreview) &&
                     !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+                self.layoutFailureReason = nil
                 let succeeded = await self.applyLayout(token: token, request: change.policy,
                                                        slideFrom: canSlide ? motionStart : nil)
                 guard generation == self.workerGeneration, !Task.isCancelled else { return }
                 if !succeeded {
                     self.state = previousState
-                    self.pause()
+                    self.stop(
+                        reason: self.layoutFailureReason ?? "layout_stopped_unexpectedly",
+                        automatic: true,
+                        details: ["operation": change.diagnosticName]
+                    )
                     return
                 }
+                self.diagnostics.record("change_completed", details: ["operation": change.diagnosticName])
                 self.transitionRollback = nil
             }
             guard generation == self.workerGeneration, !Task.isCancelled else { return }
@@ -699,6 +799,15 @@ final class StagehandModel: ObservableObject {
         return CGRect(x: frame.minX, y: primary.frame.maxY - frame.maxY, width: frame.width, height: frame.height)
     }
 
+    private func failLayout(_ reason: String, details: [String: String] = [:]) -> Bool {
+        layoutFailureReason = reason
+        var context = workspaceDetails()
+        context["reason"] = reason
+        context.merge(details) { _, new in new }
+        diagnostics.record("layout_failed", details: context)
+        return false
+    }
+
     private func applyLayout(token: UInt64?, request: LayoutRequestPolicy,
                              slideFrom: [String: CGRect]? = nil) async -> Bool {
         let layoutStart = ContinuousClock.now
@@ -708,7 +817,7 @@ final class StagehandModel: ObservableObject {
         }
         guard let availableFrame else {
             if let token { focusGate.cancelTransfer(token: token) }
-            return false
+            return failLayout("display_frame_unavailable")
         }
         // Native frame setters and focus confirmation are separate operations. Never
         // leave the old outline on screen or follow their intermediate notifications.
@@ -749,7 +858,11 @@ final class StagehandModel: ObservableObject {
                 if let start = slideFrom?[placement.windowID] { preparedFrame.origin.x = start.minX }
                 if pass > 0, acceptedFrames[placement.windowID] == preparedFrame { continue }
                 if !windowSystem.setFrame(windowID: placement.windowID, frame: preparedFrame), placement.isFocused {
-                    warning = "This app constrained its window size. Stagehand will use the size it allows."
+                    diagnostics.record("frame_write_constrained", details: [
+                        "pass": String(pass),
+                        "windowID": placement.windowID
+                    ])
+                    warning = "This app controls its window size. Stagehand will use the size it allows."
                 }
                 lastAppliedFrames[placement.windowID] = windowSystem.frame(windowID: placement.windowID)
             }
@@ -779,8 +892,18 @@ final class StagehandModel: ObservableObject {
                 }
                 if !focused || token.map({ expiredTokens.contains($0) }) == true {
                     if let token { focusGate.cancelTransfer(token: token) }
-                    warning = "Could not confirm focus on \(record.appName). Stagehand paused and restored your windows. Check for a dialog or permission change."
-                    return false
+                    warning = "Stagehand couldn't focus \(record.appName). It paused and restored your windows. Check for an open dialog or changed permissions."
+                    var details = [
+                        "bundleIdentifier": record.bundleIdentifier,
+                        "focusConfirmed": String(focused),
+                        "pid": String(record.pid),
+                        "transferExpired": String(token.map { expiredTokens.contains($0) } ?? false),
+                        "windowID": record.id
+                    ]
+                    if let report = windowSystem.lastFocusReport {
+                        details["focusReport"] = report.summary
+                    }
+                    return failLayout("focus_confirmation_failed", details: details)
                 }
                 var constrained = false
                 for placement in visible {
@@ -804,7 +927,9 @@ final class StagehandModel: ObservableObject {
                     guard pass < maximumPass else {
                         if let token { focusGate.cancelTransfer(token: token) }
                         warning = "Window sizes kept changing. Stagehand paused and restored your windows."
-                        return false
+                        return failLayout("window_size_constraints_unstable", details: [
+                            "layoutPasses": String(pass + 1)
+                        ])
                     }
                     continue
                 }
@@ -823,8 +948,11 @@ final class StagehandModel: ObservableObject {
                 }
                 guard focused, isRunning, !isSuspended, !Task.isCancelled else {
                     if let token { focusGate.cancelTransfer(token: token) }
-                    warning = "Could not activate the empty space. Stagehand paused and restored your windows."
-                    return false
+                    warning = "Stagehand couldn't open the empty space. It paused and restored your windows."
+                    return failLayout("empty_space_focus_failed", details: [
+                        "focusConfirmed": String(focused),
+                        "taskCancelled": String(Task.isCancelled)
+                    ])
                 }
                 destinationPID = ProcessInfo.processInfo.processIdentifier
             }
@@ -846,8 +974,12 @@ final class StagehandModel: ObservableObject {
                 return false
             }
             guard windowSystem.park(windowID: window.id) else {
-                warning = "\(window.appName) would not move out of this space. Stagehand paused and restored your windows."
-                return false
+                warning = "Stagehand couldn't move \(window.appName) out of this space. It paused and restored your windows."
+                return failLayout("window_parking_failed", details: [
+                    "bundleIdentifier": window.bundleIdentifier,
+                    "pid": String(window.pid),
+                    "windowID": window.id
+                ])
             }
         }
         guard preferenceFocusStillMatches(request) else { return true }
@@ -907,8 +1039,12 @@ final class StagehandModel: ObservableObject {
             if motionWrittenFrames[id]?.origin == frame.origin { continue }
             guard windowSystem.setPosition(windowID: id, position: frame.origin) else {
                 ribbonMotion.cancel()
-                warning = "A window stopped accepting ribbon movement. Stagehand paused and restored your windows."
-                pause()
+                warning = "Stagehand couldn't move one of your windows. It paused and restored them."
+                stop(
+                    reason: "ribbon_position_failed",
+                    automatic: true,
+                    details: ["windowID": id]
+                )
                 return
             }
             motionWrittenFrames[id] = frame
@@ -926,8 +1062,16 @@ final class StagehandModel: ObservableObject {
             guard let self, self.isRunning, !self.isSuspended, self.desktopScope.refresh() == .home else { return }
             for window in self.windows where !visibleIDs.contains(window.id) {
                 guard self.windowSystem.park(windowID: window.id) else {
-                    self.warning = "\(window.appName) would not move out of this space. Stagehand paused and restored your windows."
-                    self.pause()
+                    self.warning = "Stagehand couldn't move \(window.appName) out of this space. It paused and restored your windows."
+                    self.stop(
+                        reason: "ribbon_parking_failed",
+                        automatic: true,
+                        details: [
+                            "bundleIdentifier": window.bundleIdentifier,
+                            "pid": String(window.pid),
+                            "windowID": window.id
+                        ]
+                    )
                     return
                 }
             }
@@ -941,6 +1085,14 @@ final class StagehandModel: ObservableObject {
     }
 
     private func handleGesture(_ event: GestureNavigationEvent) {
+        if ProcessInfo.processInfo.arguments.contains("--trace-gestures") {
+            switch event {
+            case .changed: break
+            default:
+                NSLog("[DEBUG-gesture] delivered %@ running=%d suspended=%d worker=%d axis=%@", String(describing: event),
+                      isRunning, isSuspended, worker != nil, String(describing: gestureAxis))
+            }
+        }
         guard isRunning, !isSuspended else { return }
         switch event {
         case .began(let axis, let displacement):
@@ -958,23 +1110,42 @@ final class StagehandModel: ObservableObject {
             }
         case .changed(let displacement, _):
             previewGesture(displacement: displacement)
-        case .ended(_, _, let action):
-            guard gestureAxis != nil else { return }
-            gestureAxis = nil
-            if let action {
-                var destination = state
-                guard destination.apply(action) else {
-                    restoreGesturePreview()
-                    return
-                }
-                gestureBase = nil
-                gesturePrepared.removeAll()
-                navigate(action)
-            } else {
-                restoreGesturePreview()
-            }
+        case .ended(let displacement, let velocity, let action):
+            guard let gestureAxis else { return }
+            finishGesture(axis: gestureAxis, displacement: displacement,
+                          velocity: velocity, recognizerAction: action)
         case .cancelled:
             gestureAxis = nil
+            restoreGesturePreview()
+        }
+    }
+
+    private func finishGesture(axis: GestureAxis, displacement: Double, velocity: Double,
+                               recognizerAction: NavigationAction?) {
+        let resolvedAction: NavigationAction?
+        if axis == .horizontal, let gestureBase, let availableFrame {
+            resolvedAction = RibbonMotion.horizontalCompletionAction(
+                state: state,
+                from: gestureBase,
+                availableFrame: availableFrame,
+                gap: gap,
+                displacement: displacement,
+                velocity: velocity
+            )
+        } else {
+            resolvedAction = recognizerAction
+        }
+        gestureAxis = nil
+        if let resolvedAction {
+            var destination = state
+            guard destination.apply(resolvedAction) else {
+                restoreGesturePreview()
+                return
+            }
+            gestureBase = nil
+            gesturePrepared.removeAll()
+            navigate(resolvedAction)
+        } else {
             restoreGesturePreview()
         }
     }
@@ -994,7 +1165,7 @@ final class StagehandModel: ObservableObject {
             frames[id] = shifted
         }
         presentationFrames = frames
-        applyMotionFrames(frames)
+        ribbonMotion.follow(frames) { [weak self] in self?.applyMotionFrames($0) }
     }
 
     private func restoreGesturePreview() {
@@ -1040,6 +1211,7 @@ final class StagehandModel: ObservableObject {
         case .home:
             guard isSuspended else { return }
             isSuspended = false
+            diagnostics.record("desktop_resumed", details: workspaceDetails())
             input.gesturesEnabled = gesturesEnabled
             focusGate.start()
             input.start()
@@ -1049,6 +1221,9 @@ final class StagehandModel: ObservableObject {
             onStateChange?()
         case .away, .unknown:
             if !isSuspended {
+                diagnostics.record("desktop_suspended", details: [
+                    "relation": String(describing: desktopScope.relation)
+                ])
                 isSuspended = true
                 workerGeneration += 1
                 worker?.cancel()

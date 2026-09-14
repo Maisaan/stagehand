@@ -55,6 +55,24 @@ import Testing
     #expect(state.apply(.shareToSpace(index: 0)) == false)
 }
 
+@Test func aSpecificWindowCanBeSharedWithoutChangingFocus() {
+    var state = WorkspaceState(spaces: [
+        SpaceState(windowIDs: ["focused", "other"], focusedWindowID: "focused",
+                   widthFractions: ["other": 0.6]),
+        SpaceState()
+    ])
+
+    let shared = state.share(windowID: "other", toSpace: 1)
+    #expect(shared)
+    #expect(state.spaces[1].windowIDs == ["other"])
+    #expect(state.spaces[1].widthFraction(for: "other") == 0.6)
+    #expect(state.focusedWindowID == "focused")
+    let sharedMissing = state.share(windowID: "missing", toSpace: 1)
+    let sharedAgain = state.share(windowID: "other", toSpace: 1)
+    #expect(!sharedMissing)
+    #expect(!sharedAgain)
+}
+
 @Test func reconcileDoesNotRestoreMovedWindowsAndDeletesAllClosedMemberships() {
     var state = WorkspaceState()
     state.reconcile(windowIDs: ["a", "b", "c"])

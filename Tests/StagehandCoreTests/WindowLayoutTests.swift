@@ -156,6 +156,17 @@ private let screen = CGRect(x: 100, y: 40, width: 1000, height: 700)
     #expect(actual == expected)
 }
 
+@Test func scrollingClampsOversizedObservedWidthsToNinetyFivePercent() throws {
+    var state = WorkspaceState()
+    state.reconcile(windowIDs: ["a"])
+    let placement = try #require(WindowLayout.placements(
+        for: state,
+        availableFrame: screen,
+        observedWidths: ["a": screen.width * 1.2]
+    ).first)
+    #expect(abs(placement.frame.width - screen.width * SpaceState.maximumWidthFraction) < 0.001)
+}
+
 @Test func negativeGapCentersTheFocusedWindowAndOverlapsBothNeighbors() throws {
     let display = CGRect(x: 0, y: 0, width: 1000, height: 700)
     let state = WorkspaceState(spaces: [SpaceState(

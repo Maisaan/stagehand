@@ -50,6 +50,8 @@ final class NavigationOverlays {
     let hudModel = NavigationHUDModel()
     var onFocusWindow: ((String) -> Void)?
     var onSelectSpace: ((Int) -> Void)?
+    var onShareWindow: ((String, Int) -> Void)?
+    var onRemoveWindow: ((String) -> Void)?
     var canRevealNavigation: (() -> Bool)?
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
@@ -65,6 +67,8 @@ final class NavigationOverlays {
         self.animationDurationMultiplier = animationDurationMultiplier
         hudModel.onFocusWindow = { [weak self] id in self?.onFocusWindow?(id) }
         hudModel.onSelectSpace = { [weak self] index in self?.onSelectSpace?(index) }
+        hudModel.onShareWindow = { [weak self] id, index in self?.onShareWindow?(id, index) }
+        hudModel.onRemoveWindow = { [weak self] id in self?.onRemoveWindow?(id) }
         hudModel.onContentChange = { [weak self] in
             self?.presentHUD(dismissAfter: .milliseconds(800))
         }
@@ -72,7 +76,7 @@ final class NavigationOverlays {
 
     private func borderPanel() -> OverlayPanel {
         if let border { return border }
-        let panel = OverlayPanel()
+        let panel = OverlayPanel(level: .floating)
         panel.contentView = BorderView()
         panel.contentView?.wantsLayer = true
         panel.hasShadow = false
@@ -82,7 +86,7 @@ final class NavigationOverlays {
 
     private func hudPanel() -> OverlayPanel {
         if let hud { return hud }
-        let panel = OverlayPanel()
+        let panel = OverlayPanel(level: .statusBar)
         panel.contentView = HUDContainerView(model: hudModel)
         panel.hasShadow = false
         hud = panel
@@ -125,6 +129,7 @@ final class NavigationOverlays {
         hudModel.space = state.activeSpaceIndex + 1
         hudModel.windows = records
         hudModel.focusedID = state.focusedWindowID
+        hudModel.spaces = state.spaces
         hudModel.availableSpaceIndices = state.displayedSpaceIndices
         if canRevealNavigation != nil { installMouseMonitors() }
     }
@@ -372,12 +377,12 @@ private final class NavigationHostingView<Content: View>: NSHostingView<Content>
 }
 
 final class OverlayPanel: NSPanel {
-    init() {
+    init(level: NSWindow.Level = .floating) {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered, defer: false)
         isOpaque = false
         backgroundColor = .clear
-        level = .floating
+        self.level = level
         ignoresMouseEvents = true
         hidesOnDeactivate = false
         // A border belongs to the Desktop where it was presented. Joining all Spaces or
@@ -435,14 +440,18 @@ final class NavigationHUDModel: ObservableObject {
     @Published var warning: String?
     @Published var reduceMotion = false
     @Published var attachedToNotch = false
+    @Published var spaces: [SpaceState] = []
     @Published var availableSpaceIndices: [Int] = []
     @Published var showingSpaces = false
     var animationDurationMultiplier: Double = 1
     var onFocusWindow: ((String) -> Void)?
     var onSelectSpace: ((Int) -> Void)?
+    var onShareWindow: ((String, Int) -> Void)?
+    var onRemoveWindow: ((String) -> Void)?
     var onContentChange: (() -> Void)?
 
     var displayedItemCount: Int { showingSpaces ? availableSpaceIndices.count : windows.count }
+    var focusedAppName: String { windows.first { $0.id == focusedID }?.appName ?? "No windows" }
 
     func toggleSpaces() {
         showingSpaces.toggle()
@@ -459,6 +468,29 @@ final class NavigationHUDModel: ObservableObject {
         guard availableSpaceIndices.contains(index) else { return }
         showingSpaces = false
         onSelectSpace?(index)
+        onContentChange?()
+    }
+
+    func shareDestinations(for windowID: String) -> [Int] {
+        guard windows.contains(where: { $0.id == windowID }) else { return [] }
+        return spaces.indices.filter { !spaces[$0].windowIDs.contains(windowID) }
+    }
+
+    func canRemoveFromCurrentSpace(windowID: String) -> Bool {
+        spaces.indices.contains(space - 1) &&
+            spaces[space - 1].windowIDs.contains(windowID) &&
+            spaces.filter { $0.windowIDs.contains(windowID) }.count > 1
+    }
+
+    func shareWindow(id: String, withSpace index: Int) {
+        guard shareDestinations(for: id).contains(index) else { return }
+        onShareWindow?(id, index)
+        onContentChange?()
+    }
+
+    func removeWindowFromCurrentSpace(id: String) {
+        guard canRemoveFromCurrentSpace(windowID: id) else { return }
+        onRemoveWindow?(id)
         onContentChange?()
     }
 }
@@ -504,8 +536,8 @@ private struct NavigationHUD: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(model.showingSpaces ? "Show apps" : "Choose a space")
-                .accessibilityLabel("Space \(model.space), \(model.showingSpaces ? "show apps" : "choose a space")")
+                .help(model.showingSpaces ? "Show windows" : "Choose a space")
+                .accessibilityLabel(model.showingSpaces ? "Show windows in Space \(model.space)" : "Choose a space, currently Space \(model.space)")
                 Rectangle().fill(.white.opacity(0.15)).frame(width: 1, height: 18)
                 if model.showingSpaces {
                     spacePicker
@@ -530,6 +562,23 @@ private struct NavigationHUD: View {
                                 .buttonStyle(.plain)
                                 .help(window.title.isEmpty ? window.appName : "\(window.appName): \(window.title)")
                                 .accessibilityLabel("Focus \(window.appName)\(window.title.isEmpty ? "" : ", \(window.title)")")
+                                .contextMenu {
+                                    let destinations = model.shareDestinations(for: window.id)
+                                    if !destinations.isEmpty {
+                                        Menu("Share with") {
+                                            ForEach(destinations, id: \.self) { index in
+                                                Button("Space \(index + 1)") {
+                                                    model.shareWindow(id: window.id, withSpace: index)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if model.canRemoveFromCurrentSpace(windowID: window.id) {
+                                        Button("Remove from Space \(model.space)") {
+                                            model.removeWindowFromCurrentSpace(id: window.id)
+                                        }
+                                    }
+                                }
                                 .id(window.id)
                             }
                         }
@@ -548,12 +597,12 @@ private struct NavigationHUD: View {
                 .frame(height: 32)
                 }
             }
-            Text(model.showingSpaces ? "Choose a space" : model.windows.first(where: { $0.id == model.focusedID }).map {
-                $0.title.isEmpty ? $0.appName : "\($0.appName) · \($0.title)"
-            } ?? "Empty space")
-            .font(.system(size: 10, weight: .medium))
-            .foregroundStyle(.white.opacity(0.8))
-            .lineLimit(1)
+            if !model.showingSpaces {
+                Text(model.focusedAppName)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.white.opacity(0.8))
+                .lineLimit(1)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

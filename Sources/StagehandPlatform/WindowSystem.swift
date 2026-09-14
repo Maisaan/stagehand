@@ -245,7 +245,7 @@ public final class WindowSystem {
                 }
                 let record = WindowRecord(
                     id: id,
-                    appName: app.localizedName ?? "Application",
+                    appName: app.localizedName ?? "Unknown app",
                     title: attribute(element, kAXTitleAttribute) as? String ?? existing?.record.title ?? "",
                     bundleIdentifier: app.bundleIdentifier ?? "",
                     pid: app.processIdentifier,

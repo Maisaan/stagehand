@@ -20,36 +20,54 @@ public enum GestureNavigationEvent: Equatable, Sendable {
     case cancelled
 }
 
+public struct GestureNavigationCompletion: Equatable, Sendable {
+    public let axis: GestureAxis
+    public let displacement: Double
+    public let velocity: Double
+    public let recognizerAction: NavigationAction?
+}
+
 /// Preserve lifecycle boundaries while dropping obsolete visual frames if the main thread is busy.
 struct GestureEventBuffer {
-    private var events: [GestureNavigationEvent] = []
+    private var events: [(event: GestureNavigationEvent, axis: GestureAxis?)] = []
+    private var activeAxis: GestureAxis?
 
     mutating func append(_ event: GestureNavigationEvent) {
-        if case .changed = event, case .changed = events.last {
-            events[events.count - 1] = event
+        if case .began(let axis, _) = event { activeAxis = axis }
+        let buffered = (event, activeAxis)
+        if case .changed = event, case .changed = events.last?.event {
+            events[events.count - 1] = buffered
         } else {
-            events.append(event)
+            events.append(buffered)
         }
+        if case .ended = event { activeAxis = nil }
+        if case .cancelled = event { activeAxis = nil }
     }
 
     mutating func drain() -> [GestureNavigationEvent] {
-        let result = events
+        let result = events.map(\.event)
         events.removeAll(keepingCapacity: true)
         return result
     }
 
-    /// A keyboard event can reach the main run loop before its queued gesture delivery.
-    /// Claim the release and its earlier preview events together, so later delivery cannot
-    /// navigate twice or restore the preview over the committed window transition.
-    mutating func takeCommittedAction() -> NavigationAction? {
-        for (index, event) in events.enumerated() {
-            if case .ended(_, _, let action?) = event {
-                events.removeFirst(index + 1)
-                return action
-            }
+    /// A keyboard event can reach the main run loop before queued gesture delivery.
+    /// Claim the release and its earlier preview events together so the model can resolve
+    /// width-dependent completion before routing the keyboard event.
+    mutating func takeCompletion() -> GestureNavigationCompletion? {
+        for (index, buffered) in events.enumerated() {
+            guard case .ended(let displacement, let velocity, let action) = buffered.event,
+                  let axis = buffered.axis else { continue }
+            events.removeFirst(index + 1)
+            return GestureNavigationCompletion(
+                axis: axis,
+                displacement: displacement,
+                velocity: velocity,
+                recognizerAction: action
+            )
         }
         return nil
     }
+
 }
 
 /// One drag per contact sequence. Wait for all fingers to lift before accepting another.
@@ -61,6 +79,7 @@ struct NavigationGestureRecognizer: Sendable {
     private var samples: [(time: TimeInterval, displacement: Double)] = []
     private var axis: GestureAxis?
     private var finished = false
+    private(set) var cancellationReason: String?
     private(set) var hasContactSequence = false
     var isDragging: Bool { axis != nil && !finished }
 
@@ -73,7 +92,7 @@ struct NavigationGestureRecognizer: Sendable {
     }
 
     mutating func update(contacts: [GestureContact], timestamp: TimeInterval) -> GestureNavigationEvent? {
-        guard timestamp.isFinite, timestamp >= lastTime else { return cancel() }
+        guard timestamp.isFinite, timestamp >= lastTime else { return cancel(reason: "timestamp") }
         if contacts.isEmpty {
             let event = finish(timestamp: timestamp)
             self = Self(fingerCount: fingerCount)
@@ -82,16 +101,21 @@ struct NavigationGestureRecognizer: Sendable {
         let previousTimestamp = lastTime
         lastTime = timestamp
         guard !finished else { return nil }
-        guard contacts.count <= fingerCount else { return cancel() }
+        if contacts.count > fingerCount {
+            // Landing fingers are noisy and may briefly include a thumb or palm edge.
+            // Do not disable the intended gesture before its selected contacts establish
+            // an origin. An added contact after recognition starts still cancels it.
+            return origin.isEmpty ? nil : cancel(reason: "extra-contact")
+        }
         let coordinateBounds = origin.isEmpty ? 0.015...0.985 : 0.0...1.0
         guard contacts.allSatisfy({ $0.x.isFinite && $0.y.isFinite && coordinateBounds.contains($0.x) && coordinateBounds.contains($0.y) }),
               Set(contacts.map(\.id)).count == contacts.count else {
-            return cancel()
+            return cancel(reason: "invalid-contact")
         }
         guard contacts.count == fingerCount else {
             guard !origin.isEmpty else { return nil }
             // A normal staggered lift ends immediately. A replacement finger cancels.
-            guard contacts.allSatisfy({ contact in origin.contains(where: { $0.id == contact.id }) }) else { return cancel() }
+            guard contacts.allSatisfy({ contact in origin.contains(where: { $0.id == contact.id }) }) else { return cancel(reason: "replacement-on-lift") }
             if let axis, let previousDisplacement = samples.last?.displacement {
                 // The lift callback still contains movement from fingers touching the pad.
                 // Measure it against those same fingers in the preceding frame, not a new
@@ -100,10 +124,10 @@ struct NavigationGestureRecognizer: Sendable {
                     guard let previous = lastContacts.first(where: { $0.id == contact.id }) else { return nil }
                     return (contact.x - previous.x, contact.y - previous.y)
                 }
-                guard deltas.count == contacts.count else { return cancel() }
+                guard deltas.count == contacts.count else { return cancel(reason: "missing-lift-history") }
                 let dx = deltas.reduce(0) { $0 + $1.x } / Double(deltas.count)
                 let dy = deltas.reduce(0) { $0 + $1.y } / Double(deltas.count)
-                guard deltas.allSatisfy({ abs($0.x - dx) < 0.035 && abs($0.y - dy) < 0.035 }) else { return cancel() }
+                guard deltas.allSatisfy({ abs($0.x - dx) < 0.035 && abs($0.y - dy) < 0.035 }) else { return cancel(reason: "incoherent-lift") }
                 record(displacement: previousDisplacement + (axis == .horizontal ? dx : dy), timestamp: timestamp)
             }
             return finish(timestamp: timestamp)
@@ -118,18 +142,17 @@ struct NavigationGestureRecognizer: Sendable {
         // Intent comes from coherent movement, not a deadline after fingers land.
         // Slow starts and resting before moving must remain eligible until lift.
         guard ordered.map(\.id) == origin.map(\.id) else {
-            return cancel()
+            return cancel(reason: "replacement-contact")
         }
         let deltas = zip(ordered, origin).map { (x: $0.x - $1.x, y: $0.y - $1.y) }
         let dx = deltas.reduce(0) { $0 + $1.x } / Double(fingerCount)
         let dy = deltas.reduce(0) { $0 + $1.y } / Double(fingerCount)
-        // Be strict before choosing a swipe. Once locked, allow modest differences in
-        // along-axis travel as fingers extend, while keeping perpendicular drift bounded.
-        // Pinches, rotation and a stationary thumb still exceed these bounds.
-        let xTolerance = 0.035 + (axis == .horizontal ? abs(dx) * 0.25 : 0)
-        let yTolerance = 0.035 + (axis == .vertical ? abs(dy) * 0.25 : 0)
-        guard deltas.allSatisfy({ abs($0.x - dx) < xTolerance && abs($0.y - dy) < yTolerance }) else {
-            return cancel()
+        // Require coherent intent before choosing an axis. After the pan is established,
+        // follow its centroid like a native pan recognizer. Finger spacing naturally changes
+        // during a long swipe and must not cancel an already-visible interaction.
+        if axis == nil,
+           !deltas.allSatisfy({ abs($0.x - dx) < 0.035 && abs($0.y - dy) < 0.035 }) {
+            return cancel(reason: "incoherent-movement")
         }
         defer { lastContacts = ordered }
         let x = abs(dx), y = abs(dy)
@@ -146,7 +169,7 @@ struct NavigationGestureRecognizer: Sendable {
         else if y >= x * 1.35 { lockedAxis = .vertical }
         else {
             // A long diagonal is ambiguous. Do not unexpectedly choose an axis.
-            return max(x, y) >= 0.12 ? cancel() : nil
+            return max(x, y) >= 0.12 ? cancel(reason: "ambiguous-diagonal") : nil
         }
         axis = lockedAxis
         let displacement = lockedAxis == .horizontal ? dx : dy
@@ -187,8 +210,9 @@ struct NavigationGestureRecognizer: Sendable {
         return .ended(displacement: displacement, velocity: velocity, action: action)
     }
 
-    private mutating func cancel() -> GestureNavigationEvent? {
+    private mutating func cancel(reason: String) -> GestureNavigationEvent? {
         let wasDragging = isDragging
+        cancellationReason = reason
         finished = true
         return wasDragging ? .cancelled : nil
     }
