@@ -47,9 +47,9 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 - Repeat with the navigation overlay visible. App menus and input remain with the active real app.
 - Exercise a blocked/slow app or modal dialog. Failed focus must pause/restore and visibly report withheld input.
 - Check Setup when Secure Input is active. Do not assume interception remains available.
-- Enable four-finger gestures after resolving native conflicts. Test every direction, fast/slow swipes, diagonal starts, and staggered finger landing/lifting.
-- Three-finger macOS navigation and ordinary two-finger scrolling must remain intact.
-- Four-finger navigation must not also trigger Mission Control, native Desktop changes, content scrolling, clicks, or dragging.
+- Keep macOS navigation gestures set to four fingers, then enable Stagehand's three-finger gestures. Test every direction, fast/slow swipes, diagonal starts, and staggered finger landing/lifting.
+- macOS four-finger navigation and ordinary two-finger scrolling must remain intact.
+- Three-finger navigation must not also trigger native Desktop changes, content scrolling, clicks, or dragging.
 - Repeat on battery and after sleep/wake; check idle CPU and gesture availability.
 
 ## Interface

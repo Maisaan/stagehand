@@ -61,14 +61,10 @@ public final class InputController {
     public var gesturesEnabled = false {
         didSet { if isRunning && oldValue != gesturesEnabled { updateGestures() } }
     }
-    public var gestureFingerCount = 4 {
-        didSet {
-            gestureFingerCount = gestureFingerCount == 3 ? 3 : 4
-            if isRunning && oldValue != gestureFingerCount { updateGestures() }
-        }
-    }
     public private(set) var issues: [String] = []
     public var gesturesAvailable: Bool { gestures.isRunning }
+
+    static let navigationGestureFingerCount = 3
 
     private var isRunning = false
     private var eventHandler: EventHandlerRef?
@@ -148,33 +144,31 @@ public final class InputController {
         gestures.stop()
         issues = shortcutIssues
         if gesturesEnabled {
-            issues += Self.nativeGestureConflicts(fingerCount: gestureFingerCount)
+            issues += Self.nativeGestureConflicts()
             gestures.onGesture = { [weak self] event in
                 guard let self else { return }
                 if let onGesture = self.onGesture { onGesture(event) }
                 else if case .ended(_, _, let action?) = event { self.onAction?(action) }
             }
-            if let issue = gestures.start(fingerCount: gestureFingerCount) { issues.append(issue) }
+            if let issue = gestures.start(fingerCount: Self.navigationGestureFingerCount) { issues.append(issue) }
         }
         onStatusChange?()
     }
 
     /// macOS does not publish an API for these bindings. These preferences are hints only;
     /// System Settings > Trackpad > More Gestures is authoritative. Nothing is written.
-    public static func nativeGestureConflicts(fingerCount: Int = 4) -> [String] {
+    public static func nativeGestureConflicts() -> [String] {
         let domains = ["com.apple.AppleMultitouchTrackpad", "com.apple.driver.AppleBluetoothMultitouch.trackpad"]
-        let countName = fingerCount == 3 ? "Three" : "Four"
-        let label = fingerCount == 3 ? "three-finger" : "four-finger"
-        let keys = [("Trackpad\(countName)FingerHorizSwipeGesture", "horizontal"), ("Trackpad\(countName)FingerVertSwipeGesture", "vertical")]
+        let keys = [("TrackpadThreeFingerHorizSwipeGesture", "horizontal"), ("TrackpadThreeFingerVertSwipeGesture", "vertical")]
         var result: [String] = []
         for (key, direction) in keys {
             let values = domains.compactMap { domain -> Int? in
                 (CFPreferencesCopyAppValue(key as CFString, domain as CFString) as? NSNumber)?.intValue
             }
             if values.contains(where: { $0 != 0 }) {
-                result.append("macOS already uses a \(label) \(direction) gesture. Change or turn it off in System Settings > Trackpad > More Gestures.")
+                result.append("macOS already uses a three-finger \(direction) gesture. Set it to four fingers in System Settings > Trackpad > More Gestures.")
             } else if values.isEmpty {
-                result.append("Check System Settings > Trackpad > More Gestures for a \(label) \(direction) conflict. macOS did not report this setting.")
+                result.append("Check System Settings > Trackpad > More Gestures for a three-finger \(direction) conflict. macOS did not report this setting.")
             }
         }
         return result

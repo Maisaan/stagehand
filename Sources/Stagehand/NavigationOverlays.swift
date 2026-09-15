@@ -107,6 +107,10 @@ final class NavigationOverlays {
         return panel
     }
 
+    func setAppBarColor(_ color: NSColor) {
+        hudModel.appBarColor = color
+    }
+
     func updateBorder(frame: CGRect, visible: Bool, cornerRadius: CGFloat? = nil, focusChanged: Bool = false) {
         guard visible, let primary = NSScreen.screens.first else {
             border?.orderOut(nil)
@@ -479,6 +483,8 @@ enum WindowDropIndicatorEdge: Equatable {
 
 @MainActor
 final class NavigationHUDModel: ObservableObject {
+    static let defaultAppBarColor = NSColor.systemMint
+
     @Published var space = 1
     @Published var windows: [WindowRecord] = []
     @Published var focusedID: String?
@@ -488,6 +494,7 @@ final class NavigationHUDModel: ObservableObject {
     @Published var spaces: [SpaceState] = []
     @Published var availableSpaceIndices: [Int] = []
     @Published var showingSpaces = false
+    @Published var appBarColor = defaultAppBarColor
     @Published private(set) var draggedWindowID: String?
     @Published private(set) var dropTargetID: String?
     var animationDurationMultiplier: Double = 1
@@ -626,7 +633,8 @@ private struct NavigationHUD: View {
     }
 
     private var navigation: some View {
-        VStack(spacing: 6) {
+        let appBarColor = Color(nsColor: model.appBarColor)
+        return VStack(spacing: 6) {
             HStack(spacing: 8) {
                 Button(action: model.toggleSpaces) {
                     Text("\(model.space, format: .number.precision(.integerLength(2)))")
@@ -653,15 +661,15 @@ private struct NavigationHUD: View {
                                         ZStack {
                                             if window.id == model.focusedID {
                                                 RoundedRectangle(cornerRadius: 10)
-                                                    .fill(Color.mint.opacity(0.25))
-                                                    .overlay { RoundedRectangle(cornerRadius: 10).stroke(Color.mint.opacity(0.8), lineWidth: 1) }
+                                                    .fill(appBarColor.opacity(0.25))
+                                                    .overlay { RoundedRectangle(cornerRadius: 10).stroke(appBarColor.opacity(0.8), lineWidth: 1) }
                                                     .matchedGeometryEffect(id: "selection", in: selection)
                                                     .transition(.identity)
                                             }
                                             if window.id == model.dropTargetID {
                                                 RoundedRectangle(cornerRadius: 10)
-                                                    .fill(Color.white.opacity(0.12))
-                                                    .overlay { RoundedRectangle(cornerRadius: 10).stroke(Color.mint, lineWidth: 1.5) }
+                                                    .fill(appBarColor.opacity(0.12))
+                                                    .overlay { RoundedRectangle(cornerRadius: 10).stroke(appBarColor.opacity(0.8), lineWidth: 1.5) }
                                             }
                                         }
                                     }
@@ -669,8 +677,8 @@ private struct NavigationHUD: View {
                                         if let edge = model.dropIndicatorEdge(for: window.id) {
                                             HStack(spacing: 0) {
                                                 if edge == .trailing { Spacer(minLength: 0) }
-                                                Capsule().fill(Color.mint).frame(width: 3, height: 28)
-                                                    .shadow(color: Color.mint.opacity(0.8), radius: 3)
+                                                Capsule().fill(appBarColor).frame(width: 3, height: 28)
+                                                    .shadow(color: appBarColor.opacity(0.8), radius: 3)
                                                 if edge == .leading { Spacer(minLength: 0) }
                                             }
                                             .offset(x: edge == .leading ? -3 : 3)
@@ -709,7 +717,7 @@ private struct NavigationHUD: View {
                                     .padding(.vertical, 8)
                                     .foregroundStyle(.white)
                                     .background(Color(white: 0.1).opacity(0.96), in: RoundedRectangle(cornerRadius: 11))
-                                    .overlay { RoundedRectangle(cornerRadius: 11).stroke(Color.mint.opacity(0.8), lineWidth: 1) }
+                                    .overlay { RoundedRectangle(cornerRadius: 11).stroke(appBarColor.opacity(0.8), lineWidth: 1) }
                                     .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
                                     .environment(\.colorScheme, .dark)
                                 }
@@ -741,7 +749,7 @@ private struct NavigationHUD: View {
             if !model.showingSpaces {
                 Text(model.dropDescription ?? model.focusedAppName)
                 .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(model.dropDescription == nil ? Color.white.opacity(0.8) : Color.mint)
+                .foregroundStyle(model.dropDescription == nil ? Color.white.opacity(0.8) : appBarColor)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
             }
@@ -751,7 +759,8 @@ private struct NavigationHUD: View {
     }
 
     private var spacePicker: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        let appBarColor = Color(nsColor: model.appBarColor)
+        return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
                 ForEach(model.availableSpaceIndices, id: \.self) { index in
                     Button { model.selectSpace(index: index) } label: {
@@ -759,7 +768,7 @@ private struct NavigationHUD: View {
                             .font(.system(size: 12, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.white.opacity(index + 1 == model.space ? 1 : 0.7))
                             .frame(width: 32, height: 32)
-                            .background(index + 1 == model.space ? Color.mint.opacity(0.25) : Color.clear,
+                            .background(index + 1 == model.space ? appBarColor.opacity(0.25) : Color.clear,
                                         in: RoundedRectangle(cornerRadius: 10))
                             .contentShape(Rectangle())
                     }

@@ -402,13 +402,8 @@ func gestureSelectedFingerCountNavigatesSpacesOnFlickAndStaggeredLift(fingerCoun
     }
 }
 
-@MainActor @Test func gestureCountDefaultsToFourAndRejectsUnsupportedValues() {
-    let input = InputController()
-    #expect(input.gestureFingerCount == 4)
-    input.gestureFingerCount = 3
-    #expect(input.gestureFingerCount == 3)
-    input.gestureFingerCount = 5
-    #expect(input.gestureFingerCount == 4)
+@MainActor @Test func navigationGesturesUseThreeFingers() {
+    #expect(InputController.navigationGestureFingerCount == 3)
 }
 
 @Test func threeFingersNeverNavigate() {

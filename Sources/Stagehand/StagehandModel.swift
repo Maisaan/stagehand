@@ -109,13 +109,6 @@ final class StagehandModel: ObservableObject {
             updateInputStatus()
         }
     }
-    @Published var gestureFingerCount: Int {
-        didSet {
-            UserDefaults.standard.set(gestureFingerCount, forKey: "gestureFingerCount")
-            input.gestureFingerCount = gestureFingerCount
-            updateInputStatus()
-        }
-    }
     @Published var gap: Double {
         didSet {
             UserDefaults.standard.set(gap, forKey: "windowGap")
@@ -123,6 +116,7 @@ final class StagehandModel: ObservableObject {
         }
     }
     @Published private(set) var focusBorderColor: NSColor
+    @Published private(set) var appBarColor: NSColor
     @Published var diagnosticLoggingEnabled: Bool {
         didSet {
             UserDefaults.standard.set(diagnosticLoggingEnabled, forKey: DiagnosticLogger.preferenceKey)
@@ -176,6 +170,7 @@ final class StagehandModel: ObservableObject {
     private var preferencesNeedLayout = false
     private var layoutFailureReason: String?
     private static let focusBorderColorPreferenceKey = "focusBorderColor"
+    private static let appBarColorPreferenceKey = "appBarColor"
 
     private struct PointerInteraction {
         let windowID: String
@@ -237,9 +232,16 @@ final class StagehandModel: ObservableObject {
             enabled: defaults.bool(forKey: DiagnosticLogger.preferenceKey)
         )
         gesturesEnabled = defaults.object(forKey: "gesturesEnabled") as? Bool ?? false
-        gestureFingerCount = defaults.integer(forKey: "gestureFingerCount") == 3 ? 3 : 4
         gap = GapInput.clamped(defaults.object(forKey: "windowGap") as? Double ?? 8)
-        focusBorderColor = Self.savedFocusBorderColor(in: defaults) ?? BorderView.defaultColor
+        focusBorderColor = Self.savedColor(
+            forKey: Self.focusBorderColorPreferenceKey,
+            in: defaults,
+            alpha: BorderView.defaultColor.alphaComponent
+        ) ?? BorderView.defaultColor
+        appBarColor = Self.savedColor(
+            forKey: Self.appBarColorPreferenceKey,
+            in: defaults
+        ) ?? NavigationHUDModel.defaultAppBarColor
         state.maximizeWindows = defaults.object(forKey: "maximizeWindows") as? Bool
             ?? (defaults.string(forKey: "layoutMode") == "monocle")
         input.onAction = { [weak self] action in self?.navigate(action) }
@@ -258,8 +260,8 @@ final class StagehandModel: ObservableObject {
             guard let self, self.isRunning, !self.isSuspended else { return false }
             return self.desktopScope.refresh() == .home
         }
-        input.gestureFingerCount = gestureFingerCount
         overlays.setBorderColor(focusBorderColor)
+        overlays.setAppBarColor(appBarColor)
         input.onStatusChange = { [weak self] in self?.updateInputStatus() }
         windowSystem.onChange = { [weak self] in self?.scheduleRefresh() }
         windowSystem.onFocusedWindowChange = { [weak self] id in self?.observedFocusChanged(windowID: id) }
@@ -491,25 +493,44 @@ final class StagehandModel: ObservableObject {
     }
 
     func setFocusBorderColor(_ color: NSColor) {
-        guard let color = color.usingColorSpace(.sRGB) else { return }
-        let normalized = NSColor(srgbRed: color.redComponent, green: color.greenComponent,
-                                 blue: color.blueComponent, alpha: BorderView.defaultColor.alphaComponent)
+        guard let normalized = Self.normalizedColor(
+            color,
+            alpha: BorderView.defaultColor.alphaComponent
+        ) else { return }
         focusBorderColor = normalized
-        UserDefaults.standard.set(
-            [normalized.redComponent, normalized.greenComponent, normalized.blueComponent],
-            forKey: Self.focusBorderColorPreferenceKey
-        )
+        Self.saveColor(normalized, forKey: Self.focusBorderColorPreferenceKey)
         overlays.setBorderColor(normalized)
     }
 
-    private static func savedFocusBorderColor(in defaults: UserDefaults) -> NSColor? {
-        guard let values = defaults.array(forKey: focusBorderColorPreferenceKey), values.count == 3 else {
+    func setAppBarColor(_ color: NSColor) {
+        guard let normalized = Self.normalizedColor(color) else { return }
+        appBarColor = normalized
+        Self.saveColor(normalized, forKey: Self.appBarColorPreferenceKey)
+        overlays.setAppBarColor(normalized)
+    }
+
+    private static func normalizedColor(_ color: NSColor, alpha: CGFloat = 1) -> NSColor? {
+        guard let color = color.usingColorSpace(.sRGB) else { return nil }
+        return NSColor(srgbRed: color.redComponent, green: color.greenComponent,
+                       blue: color.blueComponent, alpha: alpha)
+    }
+
+    private static func saveColor(_ color: NSColor, forKey key: String) {
+        UserDefaults.standard.set(
+            [color.redComponent, color.greenComponent, color.blueComponent],
+            forKey: key
+        )
+    }
+
+    private static func savedColor(forKey key: String, in defaults: UserDefaults,
+                                   alpha: CGFloat = 1) -> NSColor? {
+        guard let values = defaults.array(forKey: key), values.count == 3 else {
             return nil
         }
         let components = values.compactMap { ($0 as? NSNumber)?.doubleValue }
         guard components.count == 3, components.allSatisfy({ (0 ... 1).contains($0) }) else { return nil }
         return NSColor(srgbRed: components[0], green: components[1], blue: components[2],
-                       alpha: BorderView.defaultColor.alphaComponent)
+                       alpha: alpha)
     }
 
     func removeMembership(windowID: String) {
@@ -739,7 +760,7 @@ final class StagehandModel: ObservableObject {
                           ? "Secure Input is on, so Stagehand can't protect typing while switching windows."
                           : "Typing protection is unavailable. Re-enable Accessibility for Stagehand, then retry.")
         }
-        if gesturesEnabled { issues.append(contentsOf: InputController.nativeGestureConflicts(fingerCount: gestureFingerCount)) }
+        if gesturesEnabled { issues.append(contentsOf: InputController.nativeGestureConflicts()) }
         var seen = Set<String>()
         inputIssues = issues.filter { seen.insert($0).inserted }
     }

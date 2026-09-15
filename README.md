@@ -68,7 +68,7 @@ New windows enter after the current window. Closing a real window removes it fro
 
 The gap accepts values from `-200` to `40` points. Negative values overlap windows and keep the active window on top. Maximize temporarily removes the gap.
 
-The app bar appears beneath the camera housing, or at the top center on displays without a notch. Hover there or navigate to reveal it. Click an app to focus it or the space number to change spaces. Choose the active border color under Appearance in Workspace settings. The app bar and focus border do not take keyboard focus or reserve screen space.
+The app bar appears beneath the camera housing, or at the top center on displays without a notch. Hover there or navigate to reveal it. Click an app to focus it or the space number to change spaces. Choose the active border color and app bar color under Appearance in Workspace settings. The app bar and focus border do not take keyboard focus or reserve screen space.
 
 ### Controls
 
@@ -88,13 +88,13 @@ Navigation stops at each end and does not wrap. Width shortcuts work only when m
 
 ### Trackpad gestures
 
-Gesture navigation is off on first launch. Choose three or four fingers. Four is the default.
+Gesture navigation is off on first launch. When enabled, Stagehand uses three-finger swipes.
 
 - Swipe left or right for the next or previous window.
 - Swipe up or down for the next or previous space.
 - A horizontal drag follows your fingers and commits on release. A short drag settles back.
 
-In System Settings > Trackpad > More Gestures, change or disable macOS gestures that use the same finger count. Three-finger dragging can also conflict. Stagehand reads system preferences as hints and never changes them. Finger landing and lifting edge cases still need testing on real hardware.
+Keep macOS navigation gestures set to four fingers so they do not overlap with Stagehand. Three-finger dragging can still conflict. Stagehand reads system preferences as hints and never changes them. Finger landing and lifting edge cases still need testing on real hardware.
 
 ## Known limitations
 

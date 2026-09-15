@@ -119,10 +119,18 @@ struct SettingsView: View {
                     ),
                     supportsOpacity: false
                 )
+                ColorPicker(
+                    "App bar color",
+                    selection: Binding(
+                        get: { Color(nsColor: model.appBarColor) },
+                        set: { model.setAppBarColor(NSColor($0)) }
+                    ),
+                    supportsOpacity: false
+                )
             } header: {
                 Text("Appearance")
             } footer: {
-                Text("The border marks the active window when Maximize windows is off.")
+                Text("The border marks the active window when Maximize windows is off. The app bar color marks the active app, space, and drop target.")
             }
             Section {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 100, maximum: 140), spacing: 8)], alignment: .leading, spacing: 8) {
@@ -249,27 +257,15 @@ struct SettingsView: View {
     private var controls: some View {
         Group {
             Section {
-                Toggle("Gesture navigation", isOn: $model.gesturesEnabled)
+                Toggle("Enable gesture navigation", isOn: $model.gesturesEnabled)
                     .toggleStyle(.switch)
-                HStack {
-                    Text("Swipe with")
-                    Spacer()
-                    Picker("Fingers", selection: $model.gestureFingerCount) {
-                        Text("Three fingers").tag(3)
-                        Text("Four fingers").tag(4)
-                    }
-                    .labelsHidden()
-                    .frame(width: 140)
-                    .disabled(!model.gesturesEnabled)
-                    .accessibilityLabel("Navigation gesture fingers")
-                }
                 Button("Trackpad Settings…") { openSettingsPane("com.apple.Trackpad-Settings.extension") }
             } header: {
                 Text("Trackpad")
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Swipe left for the next window and right for the previous one. Swipe up for the next space and down for the previous one. Each swipe moves one step.")
-                    Text("If macOS uses the same finger count, choose the other count here or turn off the conflicting gesture in Trackpad settings. Three-finger dragging may also conflict.")
+                    Text("Use a three-finger swipe. Swipe left or right to switch windows, and up or down to switch spaces. Each swipe moves one step.")
+                    Text("Keep macOS navigation gestures set to four fingers so they don't overlap with Stagehand. Three-finger dragging may still conflict.")
                 }
             }
             Section {
