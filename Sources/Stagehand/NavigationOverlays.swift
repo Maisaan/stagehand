@@ -29,14 +29,15 @@ struct NavigationHUDGeometry {
             notch = nil
         }
         let attached = notch != nil && warningHeight == nil
-        let limit = max(1, min(warningHeight == nil ? 520 : 580, visibleFrame.width - 32))
         let developerControlsVisible = warningHeight == nil && showsDeveloperControls
+        let maximumWidth: CGFloat = warningHeight != nil ? 580 : developerControlsVisible ? 620 : 520
+        let limit = max(1, min(maximumWidth, visibleFrame.width - 32))
         let navigationWidth = 60 + CGFloat(max(1, windowCount)) * 36
         let desiredWidth = warningHeight == nil
-            ? max(navigationWidth, developerControlsVisible ? 500 : 0)
+            ? max(navigationWidth, developerControlsVisible ? 580 : 0)
             : 580
         let width = min(limit, desiredWidth)
-        let height = warningHeight.map { max(72, $0) } ?? (developerControlsVisible ? 108 : 66)
+        let height = warningHeight.map { max(72, $0) } ?? (developerControlsVisible ? 210 : 66)
         let centerX = notch?.midX ?? screenFrame.midX
         let left = min(max(centerX - width / 2, visibleFrame.minX + 16), visibleFrame.maxX - 16 - width)
         let top = attached ? (notch?.minY ?? visibleFrame.maxY) : min(visibleFrame.maxY, screenFrame.maxY - safeAreaTop) - 6
@@ -817,44 +818,95 @@ private struct NavigationHUD: View {
     }
 
     private var animationControls: some View {
-        HStack(spacing: 8) {
-            Text("Switch")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.65))
-            Picker("Curve", selection: Binding(
-                get: { model.animationConfiguration.curve },
-                set: { model.setAnimationCurve($0) }
-            )) {
-                ForEach(RibbonAnimationCurve.allCases) { curve in
-                    Text(curve.title).tag(curve)
+        let configuration = model.animationConfiguration
+        let curve = configuration.curve
+        return HStack(alignment: .top, spacing: 14) {
+            VStack(spacing: 5) {
+                HStack {
+                    Text("Easing curve")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.65))
+                    Spacer()
+                    Menu {
+                        ForEach(RibbonAnimationPreset.allCases) { preset in
+                            Button(preset.title) { model.setAnimationCurve(preset.curve) }
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text(RibbonAnimationPreset.matching(curve)?.title ?? "Custom")
+                            Image(systemName: "chevron.down")
+                        }
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.8))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
                 }
+                RibbonCurveEditor(
+                    curve: Binding(
+                        get: { model.animationConfiguration.curve },
+                        set: { model.setAnimationCurve($0) }
+                    ),
+                    color: Color(nsColor: model.appBarColor)
+                )
+                HStack {
+                    Text("P1  \(curve.x1, format: .number.precision(.fractionLength(2))), \(curve.y1, format: .number.precision(.fractionLength(2)))")
+                    Spacer()
+                    Text("P2  \(curve.x2, format: .number.precision(.fractionLength(2))), \(curve.y2, format: .number.precision(.fractionLength(2)))")
+                }
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.55))
             }
-            .labelsHidden()
-            .frame(width: 104)
-            Slider(
-                value: Binding(
-                    get: { model.animationConfiguration.duration },
-                    set: { model.setAnimationDuration($0) }
-                ),
-                in: RibbonAnimationConfiguration.durationRange,
-                step: 0.01
-            )
-            .frame(width: 116)
-            .accessibilityLabel("Switch duration")
-            Text("\(Int((model.animationConfiguration.duration * 1_000).rounded())) ms")
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.8))
-                .frame(width: 48, alignment: .trailing)
-            Button(action: model.resetAnimationConfiguration) {
-                Image(systemName: "arrow.counterclockwise")
+            .frame(width: 270)
+
+            Rectangle()
+                .fill(.white.opacity(0.12))
+                .frame(width: 1, height: 126)
+
+            VStack(spacing: 8) {
+                HStack {
+                    Text("Timeline")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.65))
+                    Spacer()
+                    Text("\(Int((configuration.duration * 1_000).rounded())) ms")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.8))
+                    Button(action: model.resetAnimationConfiguration) {
+                        Image(systemName: "arrow.counterclockwise")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.white.opacity(0.7))
+                    .help("Reset animation controls")
+                    .accessibilityLabel("Reset animation controls")
+                }
+                Slider(
+                    value: Binding(
+                        get: { model.animationConfiguration.duration },
+                        set: { model.setAnimationDuration($0) }
+                    ),
+                    in: RibbonAnimationConfiguration.durationRange,
+                    step: 0.01
+                )
+                .accessibilityLabel("Switch duration")
+                MotionTimeline(
+                    duration: configuration.duration,
+                    curve: curve,
+                    color: Color(nsColor: model.appBarColor),
+                    reduceMotion: model.reduceMotion
+                )
+                HStack {
+                    Text("Start")
+                    Spacer()
+                    Text("Finish")
+                }
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.white.opacity(0.45))
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.white.opacity(0.7))
-            .help("Reset animation controls")
-            .accessibilityLabel("Reset animation controls")
         }
         .controlSize(.small)
-        .frame(maxWidth: .infinity)
+        .frame(height: 126)
     }
 
     private var spacePicker: some View {
@@ -880,17 +932,129 @@ private struct NavigationHUD: View {
     }
 }
 
+private struct RibbonCurveEditor: View {
+    @Binding var curve: RibbonAnimationCurve
+    let color: Color
+    @State private var selectedHandle: Int?
+
+    var body: some View {
+        GeometryReader { geometry in
+            let size = geometry.size
+            let start = point(x: 0, y: 0, in: size)
+            let end = point(x: 1, y: 1, in: size)
+            let first = point(x: curve.x1, y: curve.y1, in: size)
+            let second = point(x: curve.x2, y: curve.y2, in: size)
+            ZStack {
+                Canvas { context, size in
+                    var grid = Path()
+                    for fraction in [0.25, 0.5, 0.75] {
+                        grid.move(to: CGPoint(x: size.width * fraction, y: 0))
+                        grid.addLine(to: CGPoint(x: size.width * fraction, y: size.height))
+                        grid.move(to: CGPoint(x: 0, y: size.height * fraction))
+                        grid.addLine(to: CGPoint(x: size.width, y: size.height * fraction))
+                    }
+                    context.stroke(grid, with: .color(.white.opacity(0.08)), lineWidth: 1)
+
+                    var handles = Path()
+                    handles.move(to: start)
+                    handles.addLine(to: first)
+                    handles.move(to: end)
+                    handles.addLine(to: second)
+                    context.stroke(handles, with: .color(.white.opacity(0.3)), lineWidth: 1)
+
+                    var path = Path()
+                    path.move(to: start)
+                    path.addCurve(to: end, control1: first, control2: second)
+                    context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                }
+                Circle().fill(color).frame(width: 10, height: 10).position(first)
+                Circle().fill(color).frame(width: 10, height: 10).position(second)
+                Color.clear
+                    .contentShape(Rectangle())
+                    .gesture(DragGesture(minimumDistance: 0)
+                        .onChanged { value in updateCurve(location: value.location, size: size,
+                                                          first: first, second: second) }
+                        .onEnded { _ in selectedHandle = nil })
+            }
+            .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 6))
+            .overlay { RoundedRectangle(cornerRadius: 6).stroke(.white.opacity(0.12), lineWidth: 1) }
+        }
+        .frame(height: 86)
+        .accessibilityElement()
+        .accessibilityLabel("Cubic Bezier easing curve")
+        .accessibilityValue(curve.diagnosticDescription)
+    }
+
+    private func point(x: Double, y: Double, in size: CGSize) -> CGPoint {
+        CGPoint(x: size.width * x, y: size.height * (1.5 - y) / 2)
+    }
+
+    private func updateCurve(location: CGPoint, size: CGSize, first: CGPoint, second: CGPoint) {
+        guard size.width > 0, size.height > 0 else { return }
+        if selectedHandle == nil {
+            let firstDistance = hypot(location.x - first.x, location.y - first.y)
+            let secondDistance = hypot(location.x - second.x, location.y - second.y)
+            selectedHandle = firstDistance <= secondDistance ? 1 : 2
+        }
+        let x = Double(location.x / size.width)
+        let y = Double(1.5 - location.y / size.height * 2)
+        if selectedHandle == 1 {
+            curve = RibbonAnimationCurve(x1: x, y1: y, x2: curve.x2, y2: curve.y2)
+        } else {
+            curve = RibbonAnimationCurve(x1: curve.x1, y1: curve.y1, x2: x, y2: y)
+        }
+    }
+}
+
+private struct MotionTimeline: View {
+    let duration: Double
+    let curve: RibbonAnimationCurve
+    let color: Color
+    let reduceMotion: Bool
+    @State private var previewAtEnd = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button(action: play) {
+                Image(systemName: "play.fill")
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.white.opacity(0.8))
+            .help("Preview timing")
+            .accessibilityLabel("Preview timing")
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.white.opacity(0.12)).frame(height: 3)
+                    HStack {
+                        ForEach(0 ..< 5) { tick in
+                            Circle().fill(.white.opacity(0.3)).frame(width: 3, height: 3)
+                            if tick < 4 { Spacer() }
+                        }
+                    }
+                    Circle()
+                        .fill(color)
+                        .frame(width: 12, height: 12)
+                        .offset(x: previewAtEnd ? max(0, geometry.size.width - 12) : 0)
+                }
+                .frame(maxHeight: .infinity)
+            }
+            .frame(height: 20)
+        }
+    }
+
+    private func play() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { previewAtEnd = false }
+        DispatchQueue.main.async {
+            withAnimation(reduceMotion ? nil : curve.animation(duration: duration)) { previewAtEnd = true }
+        }
+    }
+}
+
 private extension RibbonAnimationCurve {
     func animation(duration: Double) -> SwiftUI.Animation {
-        switch self {
-        case .smoother:
-            .timingCurve(0.45, 0, 0.55, 1, duration: duration)
-        case .easeInOut:
-            .easeInOut(duration: duration)
-        case .easeOut:
-            .easeOut(duration: duration)
-        case .linear:
-            .linear(duration: duration)
-        }
+        .timingCurve(x1, y1, x2, y2, duration: duration)
     }
 }

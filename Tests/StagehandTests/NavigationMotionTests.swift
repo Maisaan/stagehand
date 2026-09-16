@@ -233,6 +233,20 @@ struct NavigationMotionTests {
         #expect(abs(transform.m42 - 66 * 0.4) < 0.001)
     }
 
+    @Test func developerMotionEditorFitsTheExpandedAppBar() {
+        _ = NSApplication.shared
+        let model = NavigationHUDModel()
+        model.developerControlsEnabled = true
+        let container = HUDContainerView(model: model)
+        container.attachedToNotch = true
+        container.frame = CGRect(x: 0, y: 0, width: 612, height: 226)
+        container.needsLayout = true
+        container.layoutSubtreeIfNeeded()
+
+        #expect(container.animatedView.bounds.size == CGSize(width: 580, height: 210))
+        #expect(container.hostingView.frame == container.animatedView.bounds)
+    }
+
     @Test func revisedHUDTimingStaysBelowThreeHundredMilliseconds() throws {
         _ = NSApplication.shared
         let overlays = NavigationOverlays(reduceMotion: { false })

@@ -2,7 +2,72 @@ import AppKit
 import QuartzCore
 import StagehandCore
 
-enum RibbonAnimationCurve: String, CaseIterable, Identifiable {
+struct RibbonAnimationCurve: Equatable {
+    static let smoother = Self(x1: 0.45, y1: 0, x2: 0.55, y2: 1)
+    static let easeInOut = Self(x1: 0.42, y1: 0, x2: 0.58, y2: 1)
+    static let easeOut = Self(x1: 0.22, y1: 1, x2: 0.36, y2: 1)
+    static let linear = Self(x1: 0, y1: 0, x2: 1, y2: 1)
+
+    let x1: Double
+    let y1: Double
+    let x2: Double
+    let y2: Double
+
+    init(x1: Double, y1: Double, x2: Double, y2: Double) {
+        self.x1 = Self.unitValue(x1)
+        self.y1 = Self.easingValue(y1)
+        self.x2 = Self.unitValue(x2)
+        self.y2 = Self.easingValue(y2)
+    }
+
+    var controlPoints: [Double] { [x1, y1, x2, y2] }
+
+    var diagnosticDescription: String {
+        controlPoints.map {
+            String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), $0)
+        }.joined(separator: ",")
+    }
+
+    func progress(at progress: Double) -> Double {
+        let progress = Self.unitValue(progress)
+        guard progress > 0, progress < 1 else { return progress }
+        if self == .linear { return progress }
+        var lower = 0.0
+        var upper = 1.0
+        for _ in 0 ..< 22 {
+            let parameter = (lower + upper) / 2
+            let sampledProgress = coordinate(at: parameter, firstControl: x1, secondControl: x2)
+            if abs(sampledProgress - progress) < 0.000_000_1 {
+                lower = parameter
+                upper = parameter
+                break
+            } else if sampledProgress < progress {
+                lower = parameter
+            } else {
+                upper = parameter
+            }
+        }
+        return coordinate(at: (lower + upper) / 2, firstControl: y1, secondControl: y2)
+    }
+
+    private func coordinate(at parameter: Double, firstControl: Double,
+                            secondControl: Double) -> Double {
+        let inverse = 1 - parameter
+        return 3 * inverse * inverse * parameter * firstControl
+            + 3 * inverse * parameter * parameter * secondControl
+            + parameter * parameter * parameter
+    }
+
+    private static func unitValue(_ value: Double) -> Double {
+        value.isFinite ? min(1, max(0, value)) : 0
+    }
+
+    private static func easingValue(_ value: Double) -> Double {
+        value.isFinite ? min(1.5, max(-0.5, value)) : 0
+    }
+}
+
+enum RibbonAnimationPreset: String, CaseIterable, Identifiable {
     case smoother
     case easeInOut
     case easeOut
@@ -19,23 +84,22 @@ enum RibbonAnimationCurve: String, CaseIterable, Identifiable {
         }
     }
 
-    func progress(at progress: Double) -> Double {
-        let progress = min(1, max(0, progress))
+    var curve: RibbonAnimationCurve {
         switch self {
-        case .smoother:
-            return progress * progress * progress * (progress * (progress * 6 - 15) + 10)
-        case .easeInOut:
-            return progress == 0 ? 0 : progress == 1 ? 1 : (1 - cos(.pi * progress)) / 2
-        case .easeOut:
-            return 1 - pow(1 - progress, 3)
-        case .linear:
-            return progress
+        case .smoother: .smoother
+        case .easeInOut: .easeInOut
+        case .easeOut: .easeOut
+        case .linear: .linear
         }
+    }
+
+    static func matching(_ curve: RibbonAnimationCurve) -> Self? {
+        allCases.first { $0.curve == curve }
     }
 }
 
 struct RibbonAnimationConfiguration: Equatable {
-    static let durationRange = 0.08 ... 0.6
+    static let durationRange = 0.06 ... 1.2
     static let `default` = Self(duration: 0.22, curve: .smoother)
 
     let duration: Double

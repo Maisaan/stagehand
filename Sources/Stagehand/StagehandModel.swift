@@ -262,8 +262,7 @@ final class StagehandModel: ObservableObject {
         ) ?? NavigationHUDModel.defaultAppBarColor
         developerControlsEnabled = defaults.bool(forKey: Self.developerControlsPreferenceKey)
         let savedDuration = defaults.object(forKey: Self.ribbonAnimationDurationPreferenceKey) as? Double
-        let savedCurve = defaults.string(forKey: Self.ribbonAnimationCurvePreferenceKey)
-            .flatMap(RibbonAnimationCurve.init(rawValue:))
+        let savedCurve = Self.savedRibbonAnimationCurve(in: defaults)
         ribbonAnimationConfiguration = Self.validatedRibbonAnimationConfiguration(
             duration: savedDuration ?? RibbonAnimationConfiguration.default.duration,
             curve: savedCurve ?? RibbonAnimationConfiguration.default.curve
@@ -549,8 +548,20 @@ final class StagehandModel: ObservableObject {
         ribbonAnimationConfiguration = configuration
         let defaults = UserDefaults.standard
         defaults.set(configuration.duration, forKey: Self.ribbonAnimationDurationPreferenceKey)
-        defaults.set(configuration.curve.rawValue, forKey: Self.ribbonAnimationCurvePreferenceKey)
+        defaults.set(configuration.curve.controlPoints, forKey: Self.ribbonAnimationCurvePreferenceKey)
         overlays.setRibbonAnimationConfiguration(configuration)
+    }
+
+    private static func savedRibbonAnimationCurve(in defaults: UserDefaults) -> RibbonAnimationCurve? {
+        if let values = defaults.array(forKey: Self.ribbonAnimationCurvePreferenceKey), values.count == 4 {
+            let points = values.compactMap { ($0 as? NSNumber)?.doubleValue }
+            if points.count == 4 {
+                return RibbonAnimationCurve(x1: points[0], y1: points[1], x2: points[2], y2: points[3])
+            }
+        }
+        guard let legacyValue = defaults.string(forKey: Self.ribbonAnimationCurvePreferenceKey),
+              let preset = RibbonAnimationPreset(rawValue: legacyValue) else { return nil }
+        return preset.curve
     }
 
     private static func validatedRibbonAnimationConfiguration(
@@ -1642,7 +1653,7 @@ final class StagehandModel: ObservableObject {
         )
         if diagnostics.isEnabled {
             diagnostics.record("ribbon_animation_started", details: [
-                "curve": animationConfiguration.curve.rawValue,
+                "curve": animationConfiguration.curve.diagnosticDescription,
                 "durationMilliseconds": String(Int((animationConfiguration.duration * 1_000).rounded())),
                 "focusedWindowID": state.focusedWindowID ?? "none",
                 "observedFocusedWindowID": windowSystem.focusedWindowID() ?? "none",

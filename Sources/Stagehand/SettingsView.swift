@@ -335,7 +335,7 @@ struct SettingsView: View {
             } header: {
                 Text("Development")
             } footer: {
-                Text("Adds easing and duration controls to the app bar. Hover at the top of the display to use them.")
+                Text("Adds a draggable easing graph and preview timeline to the app bar. Hover at the top of the display to use them.")
             }
             Section("Typing protection") {
                 Text("When you switch windows, Stagehand holds new keystrokes in memory until it confirms the destination. It never logs or saves them. If focus can't be confirmed, Stagehand discards those keystrokes and shows a warning.")

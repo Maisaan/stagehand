@@ -50,8 +50,8 @@ struct NavigationHUDGeometryTests {
             showsDeveloperControls: true
         )
 
-        #expect(geometry.contentFrame.width == 500)
-        #expect(geometry.contentFrame.height == 108)
+        #expect(geometry.contentFrame.width == 580)
+        #expect(geometry.contentFrame.height == 210)
         #expect(geometry.attachedToNotch)
     }
 

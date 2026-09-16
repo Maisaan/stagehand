@@ -46,7 +46,7 @@ struct AppBarAppearanceTests {
         let model = StagehandModel(overlays: overlays)
         let configuration = RibbonAnimationConfiguration(
             duration: 0.34,
-            curve: .easeOut
+            curve: RibbonAnimationCurve(x1: 0.17, y1: 0.68, x2: 0.73, y2: 0.24)
         )
 
         model.developerControlsEnabled = true
@@ -58,5 +58,21 @@ struct AppBarAppearanceTests {
         let restoredModel = StagehandModel()
         #expect(restoredModel.developerControlsEnabled)
         #expect(restoredModel.ribbonAnimationConfiguration == configuration)
+    }
+
+    @Test func legacyAnimationPresetMigratesToCubicBezierControls() {
+        _ = NSApplication.shared
+        let defaults = UserDefaults.standard
+        let key = "ribbonAnimationCurve"
+        let original = defaults.object(forKey: key)
+        defer {
+            if let original { defaults.set(original, forKey: key) }
+            else { defaults.removeObject(forKey: key) }
+        }
+        defaults.set("easeOut", forKey: key)
+
+        let model = StagehandModel()
+
+        #expect(model.ribbonAnimationConfiguration.curve == .easeOut)
     }
 }

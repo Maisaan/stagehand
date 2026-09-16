@@ -177,10 +177,16 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
 
 @MainActor @Test func ribbonAnimationCurvesProduceDistinctTiming() {
     let progress = 0.25
+    let custom = RibbonAnimationCurve(x1: 0.1, y1: 0.8, x2: 0.4, y2: 0.9)
+    let overshoot = RibbonAnimationCurve(x1: 0.1, y1: 1.5, x2: 0.2, y2: 1.5)
+    let clamped = RibbonAnimationCurve(x1: -1, y1: -2, x2: 2, y2: 3)
 
     #expect(RibbonAnimationCurve.linear.progress(at: progress) == progress)
     #expect(RibbonAnimationCurve.smoother.progress(at: progress) < progress)
     #expect(RibbonAnimationCurve.easeOut.progress(at: progress) > progress)
+    #expect(custom.progress(at: 0.5) > 0.5)
+    #expect(overshoot.progress(at: 0.5) > 1)
+    #expect(clamped.controlPoints == [0, -0.5, 1, 1.5])
     #expect(RibbonAnimationCurve.easeInOut.progress(at: -1) == 0)
     #expect(RibbonAnimationCurve.easeInOut.progress(at: 2) == 1)
 }
