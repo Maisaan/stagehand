@@ -36,11 +36,13 @@ enum NavigationTransitionOutcome: Equatable {
 func runFocusFirstNavigation(
     translate: () async -> RibbonTranslationOutcome,
     focus: () async -> Bool,
+    focusConfirmed: () -> Void,
     commitInput: () -> Void,
     revealBorder: () -> Void
 ) async -> NavigationTransitionOutcome {
     revealBorder()
     guard await focus() else { return .failed }
+    focusConfirmed()
     switch await translate() {
     case .superseded: return .superseded
     case .failed: return .failed
@@ -1397,43 +1399,8 @@ final class StagehandModel: ObservableObject {
                     lastAppliedFrames[placement.windowID] = current
                     continue
                 }
-                let recordsNavigationMotion = request == .navigation && diagnostics.isEnabled
-                let beforeFrame = recordsNavigationMotion
-                    ? windowSystem.observedFrame(windowID: placement.windowID) : nil
-                let parkedBefore = recordsNavigationMotion
-                    ? windowSystem.isParked(windowID: placement.windowID) : false
-                let observedFocusBefore = recordsNavigationMotion ? windowSystem.focusedWindowID() : nil
                 let frameWritten = windowSystem.setFrame(windowID: placement.windowID, frame: preparedFrame)
                 let actualFrame = windowSystem.frame(windowID: placement.windowID)
-                if recordsNavigationMotion {
-                    let observedFocusAfter = windowSystem.focusedWindowID()
-                    let membershipCount = state.spaces.count { $0.windowIDs.contains(placement.windowID) }
-                    recordWindowGeometry(
-                        event: "navigation_window_frame_applied",
-                        windowID: placement.windowID,
-                        requestedFrame: preparedFrame,
-                        beforeFrame: beforeFrame,
-                        actualFrame: windowSystem.observedFrame(windowID: placement.windowID),
-                        details: [
-                            "frameWriteAccepted": String(frameWritten),
-                            "isDestinationFocused": String(placement.isFocused),
-                            "membershipCount": String(membershipCount),
-                            "observedFocusedWindowIDAfter": observedFocusAfter ?? "none",
-                            "observedFocusedWindowIDBefore": observedFocusBefore ?? "none",
-                            "operation": operation,
-                            "parkedAfter": String(windowSystem.isParked(windowID: placement.windowID)),
-                            "parkedBefore": String(parkedBefore),
-                            "pass": String(pass + 1),
-                            "slidePrepared": String(slideFrom?[placement.windowID] != nil),
-                            "systemFocusedAfter": String(observedFocusAfter == placement.windowID),
-                            "systemFocusedBefore": String(observedFocusBefore == placement.windowID),
-                            "targetHeight": String(Double(placement.frame.height)),
-                            "targetWidth": String(Double(placement.frame.width)),
-                            "targetX": String(Double(placement.frame.minX)),
-                            "targetY": String(Double(placement.frame.minY))
-                        ]
-                    )
-                }
                 if !frameWritten, placement.isFocused {
                     recordWindowGeometry(
                         event: "frame_write_constrained",
@@ -1610,6 +1577,11 @@ final class StagehandModel: ObservableObject {
                     }
                     return true
                 },
+                focusConfirmed: {
+                    if request == .navigation {
+                        self.overlays.showNavigation(state: self.state, windows: self.windows)
+                    }
+                },
                 commitInput: {
                     if let token, let destinationPID {
                         self.focusGate.commitTransfer(token: token, processIdentifier: destinationPID)
@@ -1742,8 +1714,6 @@ final class StagehandModel: ObservableObject {
                 "operation": operation,
                 "windowCount": String(to.count)
             ])
-            recordRibbonGeometry(event: "ribbon_animation_window_started", from: from, to: to,
-                                 operation: operation)
         }
         let completed = await ribbonMotion.animate(
             from: from,
@@ -1760,8 +1730,6 @@ final class StagehandModel: ObservableObject {
                 "operation": operation,
                 "windowCount": String(to.count)
             ])
-            recordRibbonGeometry(event: "ribbon_animation_window_completed", from: from, to: to,
-                                 operation: operation)
         }
         for window in windows where !visibleIDs.contains(window.id) {
             let parkingSide = availableFrame.flatMap {
@@ -1788,28 +1756,6 @@ final class StagehandModel: ObservableObject {
         for id in visibleIDs { lastAppliedFrames[id] = windowSystem.frame(windowID: id) }
         lastTransition = Date()
         return true
-    }
-
-    private func recordRibbonGeometry(event: String, from: [String: CGRect], to: [String: CGRect],
-                                      operation: String) {
-        let observedFocus = windowSystem.focusedWindowID()
-        for (windowID, target) in to.sorted(by: { $0.key < $1.key }) {
-            recordWindowGeometry(
-                event: event,
-                windowID: windowID,
-                requestedFrame: target,
-                beforeFrame: from[windowID],
-                actualFrame: windowSystem.observedFrame(windowID: windowID),
-                details: [
-                    "isDestinationFocused": String(state.focusedWindowID == windowID),
-                    "membershipCount": String(state.spaces.count { $0.windowIDs.contains(windowID) }),
-                    "observedFocusedWindowID": observedFocus ?? "none",
-                    "operation": operation,
-                    "parked": String(windowSystem.isParked(windowID: windowID)),
-                    "systemFocused": String(observedFocus == windowID)
-                ]
-            )
-        }
     }
 
     private func handleGesture(_ event: GestureNavigationEvent) {

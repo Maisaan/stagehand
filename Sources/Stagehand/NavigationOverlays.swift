@@ -223,7 +223,7 @@ final class NavigationOverlays {
         let availableSpaceIndices = state.displayedSpaceIndices
         if hudModel.space != space { hudModel.space = space }
         if hudModel.windows != records { hudModel.windows = records }
-        if hudModel.focusedID != state.focusedWindowID { hudModel.focusedID = state.focusedWindowID }
+        hudModel.setFocusedID(state.focusedWindowID, animate: hud?.isVisible == true)
         if hudModel.spaces != state.spaces { hudModel.spaces = state.spaces }
         if hudModel.availableSpaceIndices != availableSpaceIndices {
             hudModel.availableSpaceIndices = availableSpaceIndices
@@ -608,6 +608,7 @@ final class NavigationHUDModel: ObservableObject {
     @Published var showingSpaces = false
     @Published var appBarColor = defaultAppBarColor
     @Published var developerControlsEnabled = false
+    @Published private(set) var animatesFocusIndicator = false
     @Published private(set) var animationConfiguration = RibbonAnimationConfiguration.default
     @Published private(set) var interfaceAnimationConfiguration = InterfaceAnimationConfiguration.default
     @Published private(set) var draggedWindowID: String?
@@ -622,6 +623,7 @@ final class NavigationHUDModel: ObservableObject {
     var onDropTargetChange: ((Bool) -> Void)?
     var onContentChange: (() -> Void)?
     var onPreviewHUDAnimation: (() -> Void)?
+    private var lastFocusChange: TimeInterval?
 
     var displayedItemCount: Int { showingSpaces ? availableSpaceIndices.count : windows.count }
     var focusedAppName: String { windows.first { $0.id == focusedID }?.appName ?? "No windows" }
@@ -630,6 +632,24 @@ final class NavigationHUDModel: ObservableObject {
               let edge = dropIndicatorEdge(for: dropTargetID),
               let appName = windows.first(where: { $0.id == dropTargetID })?.appName else { return nil }
         return "Move \(edge == .leading ? "before" : "after") \(appName)"
+    }
+
+    func setFocusedID(
+        _ id: String?,
+        animate: Bool,
+        at timestamp: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) {
+        guard focusedID != id else { return }
+        if animate {
+            animatesFocusIndicator = lastFocusChange.map {
+                timestamp - $0 >= animationConfiguration.duration
+            } ?? true
+            lastFocusChange = timestamp
+        } else {
+            animatesFocusIndicator = false
+            lastFocusChange = nil
+        }
+        focusedID = id
     }
 
     func setAnimationConfiguration(_ configuration: RibbonAnimationConfiguration) {
@@ -1004,10 +1024,14 @@ private struct NavigationHUD: View {
                             }
                         }
                         .frame(minWidth: 1)
-                        .animation(model.reduceMotion ? nil : model.animationConfiguration.curve.animation(
-                            duration: model.animationConfiguration.duration
-                        ),
-                                   value: model.focusedID)
+                        .animation(
+                            model.reduceMotion || !model.animatesFocusIndicator
+                                ? nil
+                                : model.animationConfiguration.curve.animation(
+                                    duration: model.animationConfiguration.duration
+                                ),
+                            value: model.focusedID
+                        )
                     }
                     .onChange(of: model.focusedID, initial: true) { _, id in
                         if let id { proxy.scrollTo(id, anchor: .center) }
@@ -1027,9 +1051,11 @@ private struct NavigationHUD: View {
                 .minimumScaleFactor(0.7)
                 .contentTransition(.opacity)
                 .animation(
-                    model.reduceMotion ? nil : RibbonAnimationCurve.ease.animation(
-                        duration: model.interfaceAnimationConfiguration.feedbackDuration
-                    ),
+                    model.reduceMotion || model.dropDescription == nil && !model.animatesFocusIndicator
+                        ? nil
+                        : RibbonAnimationCurve.ease.animation(
+                            duration: model.interfaceAnimationConfiguration.feedbackDuration
+                        ),
                     value: model.dropDescription ?? model.focusedAppName
                 )
             }

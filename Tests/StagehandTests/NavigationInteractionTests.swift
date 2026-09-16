@@ -77,6 +77,25 @@ struct NavigationInteractionTests {
         #expect(model.focusedAppName == "Example")
     }
 
+    @Test func appBarSkipsFocusIndicatorAnimationDuringRapidNavigation() {
+        let model = NavigationHUDModel()
+
+        model.setFocusedID("first", animate: false, at: 1)
+        #expect(!model.animatesFocusIndicator)
+
+        model.setFocusedID("second", animate: true, at: 2)
+        #expect(model.animatesFocusIndicator)
+
+        model.setFocusedID("third", animate: true, at: 2.1)
+        #expect(!model.animatesFocusIndicator)
+
+        model.setFocusedID("fourth", animate: true, at: 2.2)
+        #expect(!model.animatesFocusIndicator)
+
+        model.setFocusedID("first", animate: true, at: 2.5)
+        #expect(model.animatesFocusIndicator)
+    }
+
     @Test func appBarMembershipActionsUseTheClickedWindow() {
         let model = NavigationHUDModel()
         model.space = 1

@@ -33,11 +33,20 @@ public struct WindowFocusReport: Codable, Equatable, Sendable {
         func confirmsFocus(targetPID: Int32) -> Bool {
             guard targetApplicationActive else { return false }
             if targetWindowMatches { return true }
-            // Some apps provide their focused window but no system-wide focused
-            // application value. Require independent app and exact-window proof.
-            return focusedApplicationStatus == AXError.noValue.rawValue &&
-                frontmostPID == targetPID && directFocusedWindowStatus == AXError.success.rawValue &&
-                directTargetWindowMatches
+            // A busy accessibility server can fail either global lookup while
+            // AppKit and the target app still agree on the exact focused window.
+            // Accept that independent evidence, but never override a successful
+            // global read that identifies a different app or window.
+            let applicationUnavailable = Self.isUnavailable(focusedApplicationStatus)
+            let windowUnavailable = focusedApplicationPID == targetPID &&
+                focusedWindowStatus.map(Self.isUnavailable) == true
+            return (applicationUnavailable || windowUnavailable) && frontmostPID == targetPID &&
+                directFocusedWindowStatus == AXError.success.rawValue && directTargetWindowMatches
+        }
+
+        static func isUnavailable(_ status: Int32) -> Bool {
+            status == AXError.noValue.rawValue || status == AXError.cannotComplete.rawValue ||
+                status == AXError.invalidUIElement.rawValue
         }
     }
 

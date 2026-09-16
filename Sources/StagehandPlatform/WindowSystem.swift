@@ -570,14 +570,6 @@ public final class WindowSystem {
 
         func observe() -> WindowFocusReport.Observation {
             let application = system.copyAttribute(system.systemElement, kAXFocusedApplicationAttribute)
-            // The extra direct-app read is needed only for the noValue fallback
-            // or an explicitly requested diagnostic comparison.
-            let directWindow = recordsDiagnostics || application.error == .noValue
-                ? system.copyAttribute(appElement, kAXFocusedWindowAttribute)
-                : (value: nil, error: AXError.attributeUnsupported)
-            let directMatches = directWindow.value.map {
-                CFGetTypeID($0) == AXUIElementGetTypeID() && CFEqual($0, target)
-            } ?? false
             var focusedPID: pid_t?
             var windowStatus: Int32?
             var matches = false
@@ -598,6 +590,19 @@ public final class WindowSystem {
                     }
                 }
             }
+            // Direct target-app reads are a fallback for incomplete global AX
+            // results. Keeping them off the successful path avoids an extra
+            // synchronous accessibility round trip on every navigation.
+            let applicationUnavailable = WindowFocusReport.Observation.isUnavailable(application.error.rawValue)
+            let focusedWindowUnavailable = focusedPID == targetPID && windowStatus.map {
+                WindowFocusReport.Observation.isUnavailable($0)
+            } == true
+            let directWindow = applicationUnavailable || focusedWindowUnavailable
+                ? system.copyAttribute(appElement, kAXFocusedWindowAttribute)
+                : (value: nil, error: AXError.attributeUnsupported)
+            let directMatches = directWindow.value.map {
+                CFGetTypeID($0) == AXUIElementGetTypeID() && CFEqual($0, target)
+            } ?? false
             return WindowFocusReport.Observation(
                 frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
                 focusedApplicationPID: focusedPID,

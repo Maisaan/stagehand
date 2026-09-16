@@ -151,6 +151,28 @@ private func focusReading(active: Bool, matches: Bool, directMatches: Bool = fal
     #expect(report.elapsedMilliseconds == 8)
 }
 
+@Test @MainActor func focusAttemptAcceptsCapturedSystemSettingsFocusAfterGlobalAXTimeout() async throws {
+    // Minimized from a navigation failure after repeated focus changes. AppKit
+    // confirmed System Settings was frontmost and its direct focused window was
+    // the target, while the system-wide focused-application query timed out.
+    let readings = try JSONDecoder().decode([WindowFocusReport.Observation].self, from: Data(#"""
+    [
+      {
+        "directFocusedWindowStatus": 0, "directTargetWindowMatches": true,
+        "focusedApplicationStatus": -25204, "frontmostPID": 26830,
+        "targetApplicationActive": true, "targetWindowMatches": false
+      }
+    ]
+    """#.utf8))
+    let driver = FocusDriverFixture(targetPID: 26830, readings: readings)
+
+    let report = await WindowFocusAttempt.run(driver: driver)
+
+    #expect(report.outcome == .focused)
+    #expect(report.elapsedMilliseconds == 0)
+    #expect(driver.requests == [0])
+}
+
 @Test @MainActor func focusAttemptRejectsIncompleteOrContradictoryDirectFallbackEvidence() async {
     let unsafeReadings = [
         // Another app is still frontmost, despite the target's stale isActive flag.
@@ -159,9 +181,8 @@ private func focusReading(active: Bool, matches: Bool, directMatches: Bool = fal
         // Same app, wrong window. This must not release typing to its sibling.
         missingGlobalReading(directMatches: false),
         missingGlobalReading(directStatus: -25212),
-        // The fallback is for a missing global value, not a timeout or a
-        // successful global read reporting a different window.
-        missingGlobalReading(globalStatus: -25204),
+        // The fallback must not override a successful global read reporting a
+        // different window.
         missingGlobalReading(globalStatus: 0)
     ]
     for reading in unsafeReadings {

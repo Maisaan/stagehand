@@ -33,12 +33,13 @@ struct NavigationMotionTests {
                 events.append("focus")
                 return true
             },
+            focusConfirmed: { events.append("focusConfirmed") },
             commitInput: { events.append("commit") },
             revealBorder: { events.append("border") }
         )
 
         #expect(outcome == .completed)
-        #expect(events == ["border", "focus", "translate", "commit"])
+        #expect(events == ["border", "focus", "focusConfirmed", "translate", "commit"])
 
         events.removeAll()
         let superseded = await runFocusFirstNavigation(
@@ -50,11 +51,12 @@ struct NavigationMotionTests {
                 events.append("focus")
                 return true
             },
+            focusConfirmed: { events.append("focusConfirmed") },
             commitInput: { Issue.record("A superseded transition must not commit input") },
             revealBorder: { events.append("border") }
         )
         #expect(superseded == .superseded)
-        #expect(events == ["border", "focus", "translate"])
+        #expect(events == ["border", "focus", "focusConfirmed", "translate"])
     }
 
     @Test func offscreenRibbonFramesChooseTheirNearestParkingSide() {
