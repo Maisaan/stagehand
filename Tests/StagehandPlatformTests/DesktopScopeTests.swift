@@ -12,6 +12,21 @@ import Testing
     #expect(scope.refresh() == .home)
 }
 
+@MainActor @Test func desktopScopeSuspendsWhileUserSessionIsInactive() {
+    var sessionIsActive = true
+    let scope = DesktopScope(
+        currentDesktopID: { 41 },
+        userSessionIsActive: { sessionIsActive }
+    )
+    #expect(scope.bindToCurrentDesktop())
+
+    sessionIsActive = false
+    #expect(scope.refresh() == .away)
+
+    sessionIsActive = true
+    #expect(scope.refresh() == .home)
+}
+
 @MainActor @Test func desktopScopeDoesNotRebindWhenAwayOrDuringUnknownNotification() {
     var desktop: UInt64? = 41
     let scope = DesktopScope(currentDesktopID: { desktop })

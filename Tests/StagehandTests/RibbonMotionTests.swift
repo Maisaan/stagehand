@@ -156,8 +156,25 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     #expect(RibbonMotion.interpolate(from: from, to: to, progress: 0) == from)
     #expect(RibbonMotion.interpolate(from: from, to: to, progress: 1) == to)
     let middle = RibbonMotion.interpolate(from: from, to: to, progress: 0.5)["a"]!
-    #expect(middle.minX > 0 && middle.minX < 250)
+    #expect(abs(middle.minX - 250) < 0.001)
     #expect(middle.size == to["a"]?.size)
+}
+
+@MainActor @Test func ribbonSlideAcceleratesIntoAndDeceleratesOutOfOnscreenTranslation() throws {
+    let from = ["window": CGRect(x: 1800, y: 40, width: 1800, height: 1130)]
+    let to = ["window": CGRect(x: 0, y: 40, width: 1800, height: 1130)]
+    let frameCount = 12
+    let positions = try (0...frameCount).map { frame in
+        try #require(RibbonMotion.interpolate(
+            from: from,
+            to: to,
+            progress: Double(frame) / Double(frameCount)
+        )["window"]?.minX)
+    }
+    let translations = zip(positions, positions.dropFirst()).map { abs($1 - $0) }
+
+    #expect(try #require(translations.first) < #require(translations.dropFirst().first))
+    #expect(try #require(translations.last) < #require(translations.dropLast().last))
 }
 
 @MainActor @Test func ribbonSlideKeepsTheTargetsVerticalPosition() throws {
@@ -189,16 +206,16 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     #expect(!motion.isRunning)
 }
 
-@MainActor @Test func retargetedSlideNeverCompletesAnOutdatedAnimation() async throws {
-    let motion = RibbonMotion()
+@MainActor @Test func retargetedSlideNeverCompletesAnOutdatedAnimation() {
+    let driver = TestRibbonFrameDriver()
+    let motion = RibbonMotion(frameDriver: driver)
     let a = ["a": CGRect(x: 0, y: 0, width: 900, height: 700)]
     let b = ["a": CGRect(x: 900, y: 0, width: 900, height: 700)]
     var staleCompletions = 0
     var currentCompletions = 0
     motion.animate(from: a, to: b, update: { _ in }, completion: { staleCompletions += 1 })
-    await Task.yield()
+    #expect(motion.isRunning)
     motion.animate(from: motion.frames, to: a, duration: 0, update: { _ in }, completion: { currentCompletions += 1 })
-    try await Task.sleep(for: .milliseconds(30))
     #expect(staleCompletions == 0)
     #expect(currentCompletions == 1)
     #expect(!motion.isRunning)

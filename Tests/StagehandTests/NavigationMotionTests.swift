@@ -61,6 +61,26 @@ struct NavigationMotionTests {
         ) == nil)
     }
 
+    @Test func laggingWindowMotionResumesWhileTheWindowIsFocused() {
+        let laggingWindowIDs: Set<String> = ["lagging"]
+
+        #expect(!shouldDriveWindowMotion(
+            windowID: "lagging",
+            systemFocusedWindowID: "other",
+            laggingWindowIDs: laggingWindowIDs
+        ))
+        #expect(shouldDriveWindowMotion(
+            windowID: "lagging",
+            systemFocusedWindowID: "lagging",
+            laggingWindowIDs: laggingWindowIDs
+        ))
+        #expect(shouldDriveWindowMotion(
+            windowID: "ordinary",
+            systemFocusedWindowID: "other",
+            laggingWindowIDs: laggingWindowIDs
+        ))
+    }
+
     @Test func offscreenRibbonFramesChooseTheirNearestParkingSide() {
         let display = CGRect(x: 0, y: 0, width: 1800, height: 1169)
 

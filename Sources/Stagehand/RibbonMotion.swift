@@ -232,15 +232,9 @@ final class RibbonMotion {
 
     static func interpolate(from: [String: CGRect], to: [String: CGRect], progress: Double) -> [String: CGRect] {
         let progress = min(1, max(0, progress))
-        // Solve Emil's existing ease-out curve (0.23, 1, 0.32, 1).
-        var low = 0.0, high = 1.0
-        for _ in 0..<16 {
-            let t = (low + high) / 2
-            let x = 3 * (1 - t) * (1 - t) * t * 0.23 + 3 * (1 - t) * t * t * 0.32 + t * t * t
-            if x < progress { low = t } else { high = t }
-        }
-        let t = (low + high) / 2
-        let eased = progress == 0 ? 0 : progress == 1 ? 1 : 1 - pow(1 - t, 3)
+        // Large on-screen translations need zero velocity at both ends. The old
+        // entrance ease-out moved a third of a full-width window on its first tick.
+        let eased = progress == 0 ? 0 : progress == 1 ? 1 : (1 - cos(.pi * progress)) / 2
         var frames: [String: CGRect] = [:]
         frames.reserveCapacity(to.count)
         for (id, target) in to {

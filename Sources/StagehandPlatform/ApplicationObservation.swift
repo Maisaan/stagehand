@@ -8,9 +8,9 @@ struct ApplicationObservation {
     private(set) var attempts = 0
 
     mutating func register(using subscribe: (String) -> AXError) -> Bool {
-        guard attempts < 6, !pending.isEmpty else { return false }
+        guard !pending.isEmpty else { return false }
         attempts += 1
         pending = pending.filter { subscribe($0) == .cannotComplete }
-        return !pending.isEmpty && attempts < 6
+        return !pending.isEmpty
     }
 }

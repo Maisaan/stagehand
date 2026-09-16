@@ -38,6 +38,14 @@ func laggingOutgoingWindowID(
     return systemFocusedWindowID
 }
 
+func shouldDriveWindowMotion(
+    windowID: String,
+    systemFocusedWindowID: String?,
+    laggingWindowIDs: Set<String>
+) -> Bool {
+    windowID == systemFocusedWindowID || !laggingWindowIDs.contains(windowID)
+}
+
 func preferredParkingSide(for frame: CGRect?, relativeTo bounds: CGRect) -> WindowParkingSide? {
     guard let frame, !bounds.isEmpty, frame.midX.isFinite, bounds.midX.isFinite else { return nil }
     return frame.midX < bounds.midX ? .left : .right
@@ -766,13 +774,18 @@ final class StagehandModel: ObservableObject {
     }
 
     private func scheduleRefresh() {
-        guard isRunning, !isSuspended, !ribbonMotion.isRunning, gestureBase == nil, !isLayingOutWindows else { return }
+        guard isRunning, !isSuspended else { return }
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(100))
-            guard !Task.isCancelled, let self, self.isRunning, !self.isSuspended else { return }
-            if self.worker != nil || self.ribbonMotion.isRunning || self.gestureBase != nil { return }
-            self.refreshWindows()
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(100)) }
+                catch { return }
+                guard !Task.isCancelled, let self, self.isRunning, !self.isSuspended else { return }
+                guard self.worker == nil, !self.ribbonMotion.isRunning,
+                      self.gestureBase == nil, !self.isLayingOutWindows else { continue }
+                self.refreshWindows()
+                return
+            }
         }
     }
 
@@ -1153,6 +1166,7 @@ final class StagehandModel: ObservableObject {
                     }
                 }
             }
+            let motionFocusedWindowID = windowSystem.focusedWindowID()
             // Position neighbors first. Raising the focused real window last keeps clamped neighbors behind it.
             for placement in visible.sorted(by: { !$0.isFocused && $1.isFocused }) {
                 guard preferenceFocusStillMatches(request) else { return true }
@@ -1160,7 +1174,11 @@ final class StagehandModel: ObservableObject {
                     nativeDesktopChanged()
                     return false
                 }
-                if request == .navigation, motionLaggingWindowIDs.contains(placement.windowID) {
+                if request == .navigation, !shouldDriveWindowMotion(
+                    windowID: placement.windowID,
+                    systemFocusedWindowID: motionFocusedWindowID,
+                    laggingWindowIDs: motionLaggingWindowIDs
+                ) {
                     continue
                 }
                 // A correction pass only writes windows whose geometry actually changed.
@@ -1281,7 +1299,11 @@ final class StagehandModel: ObservableObject {
                 }
                 if request == .navigation {
                     for placement in visible where placement.isVisible &&
-                        motionLaggingWindowIDs.contains(placement.windowID) &&
+                        !shouldDriveWindowMotion(
+                            windowID: placement.windowID,
+                            systemFocusedWindowID: windowSystem.focusedWindowID(),
+                            laggingWindowIDs: motionLaggingWindowIDs
+                        ) &&
                         !laggingWindowsPositionedBeforeFocus.contains(placement.windowID) {
                         if pass > 0, acceptedFrames[placement.windowID] == placement.frame { continue }
                         let beforeFrame = diagnostics.isEnabled
@@ -1395,7 +1417,14 @@ final class StagehandModel: ObservableObject {
         let motionCandidates = placements.filter {
             $0.isVisible || slideFrom?[$0.windowID]?.intersects(availableFrame) == true
         }
-        let sliding = motionCandidates.filter { !motionLaggingWindowIDs.contains($0.windowID) }
+        let motionFocusedWindowID = windowSystem.focusedWindowID()
+        let sliding = motionCandidates.filter {
+            shouldDriveWindowMotion(
+                windowID: $0.windowID,
+                systemFocusedWindowID: motionFocusedWindowID,
+                laggingWindowIDs: motionLaggingWindowIDs
+            )
+        }
         let animatedWindowIDs = slideFrom == nil ? Set<String>() : Set(sliding.map(\.windowID))
         for window in windows where !visibleIDs.contains(window.id) && !animatedWindowIDs.contains(window.id) {
             guard preferenceFocusStillMatches(request) else { return true }
@@ -1473,9 +1502,16 @@ final class StagehandModel: ObservableObject {
             return
         }
         let displayedFrames = windowSystem.displayedFrames(windowIDs: frames.keys)
+        let motionFocusedWindowID = windowSystem.focusedWindowID()
         var movingFrames: [String: CGRect] = [:]
-        for (id, frame) in frames where !motionLaggingWindowIDs.contains(id) {
-            if let previousPosition = motionPreviousPositions[id],
+        for (id, frame) in frames where shouldDriveWindowMotion(
+            windowID: id,
+            systemFocusedWindowID: motionFocusedWindowID,
+            laggingWindowIDs: motionLaggingWindowIDs
+        ) {
+            if id != motionFocusedWindowID,
+               !motionLaggingWindowIDs.contains(id),
+               let previousPosition = motionPreviousPositions[id],
                let requestedPosition = motionWrittenPositions[id],
                let displayedFrame = displayedFrames[id] {
                 if !motionPresentationKeepsPace(
@@ -1749,9 +1785,14 @@ final class StagehandModel: ObservableObject {
         let preview = RibbonMotion.dragFrames(state: state, from: base, availableFrame: availableFrame,
                                               gap: gap, displacement: displacement)
         var frames: [String: CGRect] = [:]
+        let motionFocusedWindowID = windowSystem.focusedWindowID()
         for (id, shifted) in preview {
             guard shifted.intersects(availableFrame) || gesturePrepared.contains(id) else { continue }
-            if motionLaggingWindowIDs.contains(id) { continue }
+            if !shouldDriveWindowMotion(
+                windowID: id,
+                systemFocusedWindowID: motionFocusedWindowID,
+                laggingWindowIDs: motionLaggingWindowIDs
+            ) { continue }
             if !gesturePrepared.contains(id) {
                 let beforeFrame = diagnostics.isEnabled ? windowSystem.observedFrame(windowID: id) : nil
                 let parkedBefore = diagnostics.isEnabled ? windowSystem.isParked(windowID: id) : false

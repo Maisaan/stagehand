@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import Darwin
 
 public enum DesktopRelation: Equatable, Sendable {
@@ -12,12 +13,17 @@ public enum DesktopRelation: Equatable, Sendable {
 public final class DesktopScope {
     public private(set) var relation = DesktopRelation.unknown
     private let currentDesktopID: () -> UInt64?
+    private let userSessionIsActive: () -> Bool
     private var homeDesktopID: UInt64?
 
-    public init() { currentDesktopID = { NativeDesktopReader.currentID() } }
+    public init() {
+        currentDesktopID = { NativeDesktopReader.currentID() }
+        userSessionIsActive = { NativeUserSessionReader.isActive() }
+    }
 
-    init(currentDesktopID: @escaping () -> UInt64?) {
+    init(currentDesktopID: @escaping () -> UInt64?, userSessionIsActive: @escaping () -> Bool = { true }) {
         self.currentDesktopID = currentDesktopID
+        self.userSessionIsActive = userSessionIsActive
     }
 
     public func bindToCurrentDesktop() -> Bool {
@@ -35,6 +41,10 @@ public final class DesktopScope {
 
     @discardableResult
     public func refresh() -> DesktopRelation {
+        guard userSessionIsActive() else {
+            relation = .away
+            return relation
+        }
         guard let homeDesktopID, let id = currentDesktopID(), id != 0 else {
             relation = .unknown
             return relation
@@ -46,6 +56,13 @@ public final class DesktopScope {
     public func reset() {
         homeDesktopID = nil
         relation = .unknown
+    }
+}
+
+private enum NativeUserSessionReader {
+    static func isActive() -> Bool {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+        return (session["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue != true
     }
 }
 

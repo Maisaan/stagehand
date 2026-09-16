@@ -43,6 +43,7 @@ public final class WindowSystem {
     private var applicationObservations: [pid_t: ApplicationObservation] = [:]
     private var observationRetries: [pid_t: Task<Void, Never>] = [:]
     private let launchDiscovery = ApplicationLaunchDiscovery()
+    private var applicationInventoryTask: Task<Void, Never>?
     private var workspaceTokens: [NSObjectProtocol] = []
     private var parkingValidationIDs = Set<String>()
     private var nextID: UInt64 = 0
@@ -100,18 +101,8 @@ public final class WindowSystem {
                         self.removeObserver(pid: pid)
                     }
                     if name == NSWorkspace.didLaunchApplicationNotification || name == NSWorkspace.didActivateApplicationNotification,
-                       let app = NSRunningApplication(processIdentifier: pid),
-                       app.activationPolicy == .regular,
-                       pid != ProcessInfo.processInfo.processIdentifier,
-                       !self.windows.values.contains(where: { $0.record.pid == pid && $0.isAdmitted }) {
-                        self.launchDiscovery.schedule(pid: pid) { [weak self] in
-                            guard let self, self.started, !app.isTerminated,
-                                  !self.windows.values.contains(where: { $0.record.pid == pid && $0.isAdmitted }) else {
-                                return false
-                            }
-                            self.onChange?()
-                            return true
-                        }
+                       let app = NSRunningApplication(processIdentifier: pid) {
+                        self.scheduleDiscovery(for: app)
                     }
                     self.onChange?()
                 }
@@ -127,11 +118,24 @@ public final class WindowSystem {
                 self.onNativeDesktopChange?()
             }
         })
-        return scanWindows()
+        for name in [NSWorkspace.sessionDidBecomeActiveNotification,
+                     NSWorkspace.sessionDidResignActiveNotification] {
+            workspaceTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, self.started else { return }
+                    self.onNativeDesktopChange?()
+                }
+            })
+        }
+        let records = scanWindows()
+        startApplicationInventory()
+        return records
     }
 
     public func stop() {
         started = false
+        applicationInventoryTask?.cancel()
+        applicationInventoryTask = nil
         launchDiscovery.cancelAll()
         restoreAll()
         // A subsequent Start can happen on a different native Desktop. Keep
@@ -153,10 +157,7 @@ public final class WindowSystem {
     public func scanWindows() -> [WindowRecord] {
         guard isAccessibilityTrusted else { return nativeWindows.records }
         let runningApps = NSWorkspace.shared.runningApplications
-        let apps = runningApps.filter {
-            $0.processIdentifier != ProcessInfo.processInfo.processIdentifier &&
-            $0.activationPolicy == .regular && !$0.isTerminated
-        }
+        let apps = eligibleApplications(from: runningApps)
         let livePIDs = Set(apps.map(\.processIdentifier))
         for pid in Array(observers.keys) where !livePIDs.contains(pid) {
             removeObserver(pid: pid)
@@ -672,24 +673,7 @@ public final class WindowSystem {
         applicationObservations[pid] = ApplicationObservation()
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         if registerApplicationNotifications(element: element, pid: pid) {
-            observationRetries[pid] = Task { @MainActor [weak self] in
-                // A launch can precede the app's Accessibility server becoming ready.
-                // Retry only this app, with a fixed budget and no idle polling.
-                for delay in [100, 200, 400, 800, 1600] {
-                    do { try await Task.sleep(for: .milliseconds(delay)) }
-                    catch { return }
-                    guard let self, self.started, !Task.isCancelled else { return }
-                    guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else {
-                        self.removeObserver(pid: pid)
-                        return
-                    }
-                    let retry = self.registerApplicationNotifications(element: element, pid: pid)
-                    // Discover windows that appeared before registration succeeded.
-                    self.onChange?()
-                    if !retry { break }
-                }
-                self?.observationRetries.removeValue(forKey: pid)
-            }
+            scheduleObservationRetries(element: element, pid: pid)
         }
         for tracked in windows.values where tracked.record.pid == pid {
             observeWindow(tracked.element, observer: observer)
@@ -706,6 +690,70 @@ public final class WindowSystem {
         }
         applicationObservations[pid] = registration
         return retry
+    }
+
+    private func scheduleObservationRetries(element: AXUIElement, pid: pid_t) {
+        let delays = [100, 200, 400, 800, 1600, 3200, 5000]
+        observationRetries[pid] = Task { @MainActor [weak self] in
+            var attempt = 0
+            while !Task.isCancelled {
+                let delay = delays[min(attempt, delays.count - 1)]
+                do { try await Task.sleep(for: .milliseconds(delay)) }
+                catch { return }
+                guard let self, self.started, !Task.isCancelled else { return }
+                guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else {
+                    self.removeObserver(pid: pid)
+                    return
+                }
+                let retry = self.registerApplicationNotifications(element: element, pid: pid)
+                // Discover windows that appeared before registration succeeded.
+                self.onChange?()
+                if !retry { break }
+                attempt += 1
+            }
+            self?.observationRetries.removeValue(forKey: pid)
+        }
+    }
+
+    private func startApplicationInventory() {
+        applicationInventoryTask?.cancel()
+        applicationInventoryTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(2)) }
+                catch { return }
+                guard let self, self.started, !Task.isCancelled else { return }
+                var scheduled = false
+                for app in self.eligibleApplications(from: NSWorkspace.shared.runningApplications)
+                where self.observers[app.processIdentifier] == nil {
+                    scheduled = self.scheduleDiscovery(for: app) || scheduled
+                }
+                if scheduled { self.onChange?() }
+            }
+        }
+    }
+
+    @discardableResult
+    private func scheduleDiscovery(for app: NSRunningApplication) -> Bool {
+        let pid = app.processIdentifier
+        guard app.activationPolicy == .regular, !app.isTerminated,
+              pid != ProcessInfo.processInfo.processIdentifier,
+              !windows.values.contains(where: { $0.record.pid == pid && $0.isAdmitted }) else { return false }
+        return launchDiscovery.schedule(pid: pid) { [weak self] in
+            guard let self, self.started,
+                  let runningApp = NSRunningApplication(processIdentifier: pid), !runningApp.isTerminated,
+                  !self.windows.values.contains(where: { $0.record.pid == pid && $0.isAdmitted }) else {
+                return false
+            }
+            self.onChange?()
+            return true
+        }
+    }
+
+    private func eligibleApplications(from applications: [NSRunningApplication]) -> [NSRunningApplication] {
+        applications.filter {
+            $0.processIdentifier != ProcessInfo.processInfo.processIdentifier &&
+            $0.activationPolicy == .regular && !$0.isTerminated
+        }
     }
 
     private func removeObserver(pid: pid_t) {
