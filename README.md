@@ -106,8 +106,8 @@ Keep macOS navigation gestures set to four fingers so they do not overlap with S
 
 - Stagehand briefly buffers typing during a window switch and sends it to the confirmed destination. macOS does not report whether a posted key event reached a specific window, so this is not a proven zero-loss input system. Failed or expired transfers withhold input and show a warning. Secure Input or a disabled event tap can bypass the protection.
 - Pause and Quit restore the window frames captured at Start. A crash or forced termination cannot run that restoration.
-- Stagehand parks off-ribbon windows in a screen corner instead of minimizing them. macOS may leave a small corner visible. If parking fails, Stagehand restores the window and pauses.
-- Stagehand binds itself to the native macOS Desktop where you press Start. It suspends input and layout work when you leave, then resumes when you return. If it cannot identify the Desktop, it stays suspended.
+- Stagehand parks off-ribbon windows just beyond the left or right display edge instead of minimizing them. Apps that clamp window positions may leave part of an edge visible. If Stagehand cannot confirm parking, it restores the windows and pauses.
+- Stagehand manages only the native macOS Desktop where you press Start. It suspends input and layout work on other Desktops. If Desktop identity is temporarily unavailable, Stagehand keeps checking and resumes only after confirming the starting Desktop.
 - Desktop tracking uses a read-only private system API. Gesture support loads Apple's private `MultitouchSupport` framework. Either can break after a macOS update. This build is not intended for App Store distribution.
 - This version intentionally supports one built-in display. It ignores minimized and native-fullscreen windows. Multiple-display and native-fullscreen workflows are not supported.
 
