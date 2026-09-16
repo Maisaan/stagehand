@@ -2,11 +2,17 @@
 
 > Disclaimer: this is vibecoded slop. Treat it as an experimental local prototype, not a dependable window manager.
 
-I built Stagehand for a simple constraint. Sometimes the built-in MacBook display is the whole setup. The window managers I tried felt aimed at larger external displays or multi-monitor desks. Stagehand keeps real app windows in one horizontal ribbon, so I can move between them with shortcuts or trackpad gestures. The active app keeps its menus and input.
+## Why I built Stagehand
 
-Stagehand was inspired by [KiwiDesk](https://github.com/KiwiCanopy/KiwiDesk).
+Sometimes the built-in MacBook display is the whole setup. The window managers I tried felt aimed at larger external displays or multi-monitor desks. I wanted something designed for the trackpad and limited screen space.
 
-Stagehand has no third-party packages or remote services.
+That led to three choices:
+
+- **Use the trackpad first.** Once enabled, three-finger swipes navigate the whole workspace. The same navigation works with Control + Option + arrow keys when the keyboard is more convenient.
+- **Give each axis one job.** Windows run left and right in a ribbon. Stagehand's nine spaces stack above and below, so moving vertically changes spaces.
+- **Keep the app small and self-contained.** The current release bundle occupies 2.9 MiB on disk. It uses native Swift, AppKit, and SwiftUI, with no third-party packages or remote services.
+
+Stagehand moves real app windows, so the active app keeps its menus and input. It was inspired by [KiwiDesk](https://github.com/KiwiCanopy/KiwiDesk).
 
 ## Status
 
