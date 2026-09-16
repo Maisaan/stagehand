@@ -5,18 +5,14 @@ import StagehandCore
 import StagehandPlatform
 
 struct InterfaceAnimationConfiguration: Equatable {
-    static let durationRange = 0.0 ... 0.6
-    static let travelRange = 0.0 ... 40.0
-    static let scaleRange = 0.9 ... 1.0
-    static let opacityRange = 0.2 ... 1.0
     static let `default` = Self(
-        hudEnterDuration: 0.18,
-        hudExitDuration: 0.14,
+        hudEnterDuration: 0.14,
+        hudExitDuration: 0.26,
         attachedHUDTravel: 10,
         floatingHUDTravel: 6,
         hiddenHUDScale: 0.98,
-        feedbackDuration: 0.15,
-        pressedScale: 0.97,
+        feedbackDuration: 0.08,
+        pressedScale: 0.9,
         focusRevealDuration: 0.1,
         focusRevealOpacity: 0.72
     )
@@ -45,8 +41,7 @@ struct NavigationHUDGeometry {
 
     static func layout(screenFrame: CGRect, visibleFrame: CGRect, safeAreaTop: CGFloat,
                        auxiliaryLeft: CGRect?, auxiliaryRight: CGRect?, windowCount: Int,
-                       warningHeight: CGFloat? = nil,
-                       showsDeveloperControls: Bool = false) -> Self {
+                       warningHeight: CGFloat? = nil) -> Self {
         let notch: CGRect?
         if safeAreaTop > 0, let left = auxiliaryLeft, let right = auxiliaryRight,
            left.maxX < right.minX, left.maxX >= screenFrame.minX,
@@ -57,15 +52,12 @@ struct NavigationHUDGeometry {
             notch = nil
         }
         let attached = notch != nil && warningHeight == nil
-        let developerControlsVisible = warningHeight == nil && showsDeveloperControls
-        let maximumWidth: CGFloat = warningHeight != nil ? 580 : developerControlsVisible ? 620 : 520
+        let maximumWidth: CGFloat = warningHeight != nil ? 580 : 520
         let limit = max(1, min(maximumWidth, visibleFrame.width - 32))
         let navigationWidth = 60 + CGFloat(max(1, windowCount)) * 36
-        let desiredWidth = warningHeight == nil
-            ? max(navigationWidth, developerControlsVisible ? 580 : 0)
-            : 580
+        let desiredWidth = warningHeight == nil ? navigationWidth : 580
         let width = min(limit, desiredWidth)
-        let height = warningHeight.map { max(72, $0) } ?? (developerControlsVisible ? 304 : 66)
+        let height = warningHeight.map { max(72, $0) } ?? 66
         let centerX = notch?.midX ?? screenFrame.midX
         let left = min(max(centerX - width / 2, visibleFrame.minX + 16), visibleFrame.maxX - 16 - width)
         let top = attached ? (notch?.minY ?? visibleFrame.maxY) : min(visibleFrame.maxY, screenFrame.maxY - safeAreaTop) - 6
@@ -87,8 +79,6 @@ final class NavigationOverlays {
     var onShareWindow: ((String, Int) -> Void)?
     var onRemoveWindow: ((String) -> Void)?
     var onReorderWindow: ((String, Int) -> Void)?
-    var onAnimationConfigurationChange: ((RibbonAnimationConfiguration) -> Void)?
-    var onInterfaceAnimationConfigurationChange: ((InterfaceAnimationConfiguration) -> Void)?
     var canRevealNavigation: (() -> Bool)?
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
@@ -109,20 +99,11 @@ final class NavigationOverlays {
         hudModel.onShareWindow = { [weak self] id, index in self?.onShareWindow?(id, index) }
         hudModel.onRemoveWindow = { [weak self] id in self?.onRemoveWindow?(id) }
         hudModel.onReorderWindow = { [weak self] id, index in self?.onReorderWindow?(id, index) }
-        hudModel.onAnimationConfigurationChange = { [weak self] configuration in
-            self?.onAnimationConfigurationChange?(configuration)
-        }
-        hudModel.onInterfaceAnimationConfigurationChange = { [weak self] configuration in
-            self?.onInterfaceAnimationConfigurationChange?(configuration)
-        }
         hudModel.onDropTargetChange = { [weak self] isTargeted in
             self?.dropTargetChanged(isTargeted: isTargeted)
         }
         hudModel.onContentChange = { [weak self] in
             self?.presentHUD(dismissAfter: .milliseconds(1_500))
-        }
-        hudModel.onPreviewHUDAnimation = { [weak self] in
-            self?.previewHUDAnimation()
         }
     }
 
@@ -154,20 +135,6 @@ final class NavigationOverlays {
 
     func setAppBarColor(_ color: NSColor) {
         hudModel.appBarColor = color
-    }
-
-    func setDeveloperControlsEnabled(_ enabled: Bool) {
-        guard hudModel.developerControlsEnabled != enabled else { return }
-        hudModel.developerControlsEnabled = enabled
-        if hud?.isVisible == true { presentHUD(dismissAfter: .milliseconds(1_500)) }
-    }
-
-    func setRibbonAnimationConfiguration(_ configuration: RibbonAnimationConfiguration) {
-        hudModel.setAnimationConfiguration(configuration)
-    }
-
-    func setInterfaceAnimationConfiguration(_ configuration: InterfaceAnimationConfiguration) {
-        hudModel.setInterfaceAnimationConfiguration(configuration)
     }
 
     func updateBorder(frame: CGRect, visible: Bool, cornerRadius: CGFloat? = nil, focusChanged: Bool = false) {
@@ -249,8 +216,7 @@ final class NavigationOverlays {
             screenFrame: screen.frame, visibleFrame: screen.visibleFrame,
             safeAreaTop: screen.safeAreaInsets.top,
             auxiliaryLeft: screen.auxiliaryTopLeftArea, auxiliaryRight: screen.auxiliaryTopRightArea,
-            windowCount: hudModel.displayedItemCount,
-            showsDeveloperControls: hudModel.developerControlsEnabled)
+            windowCount: hudModel.displayedItemCount)
         let width = max(120, (screen.auxiliaryTopRightArea?.minX ?? 0) - (screen.auxiliaryTopLeftArea?.maxX ?? 0))
         hoverFrame = CGRect(x: geometry.contentFrame.midX - width / 2,
                             y: geometry.contentFrame.maxY - 4, width: width,
@@ -290,8 +256,7 @@ final class NavigationOverlays {
             screenFrame: screen.frame, visibleFrame: screen.visibleFrame,
             safeAreaTop: screen.safeAreaInsets.top,
             auxiliaryLeft: screen.auxiliaryTopLeftArea, auxiliaryRight: screen.auxiliaryTopRightArea,
-            windowCount: hudModel.displayedItemCount, warningHeight: warningHeight,
-            showsDeveloperControls: hudModel.developerControlsEnabled)
+            windowCount: hudModel.displayedItemCount, warningHeight: warningHeight)
         contentFrame = geometry.contentFrame
         updateHoverFrame()
         hudModel.attachedToNotch = geometry.attachedToNotch
@@ -337,22 +302,6 @@ final class NavigationOverlays {
             } catch { return }
             guard !Task.isCancelled else { return }
             _ = self.completeHUDDismiss(generation: generation)
-        }
-    }
-
-    private func previewHUDAnimation() {
-        guard hud?.isVisible == true,
-              let container = hud?.contentView as? HUDContainerView else { return }
-        let configuration = hudModel.interfaceAnimationConfiguration
-        container.setHidden(reduceMotion: hudModel.reduceMotion, configuration: configuration)
-        DispatchQueue.main.async { [weak self, weak container] in
-            guard let self, let container, self.hud?.isVisible == true else { return }
-            container.transition(
-                visible: true,
-                reduceMotion: self.hudModel.reduceMotion,
-                duration: configuration.hudEnterDuration * self.animationDurationMultiplier,
-                configuration: configuration
-            )
         }
     }
 
@@ -607,22 +556,18 @@ final class NavigationHUDModel: ObservableObject {
     @Published var availableSpaceIndices: [Int] = []
     @Published var showingSpaces = false
     @Published var appBarColor = defaultAppBarColor
-    @Published var developerControlsEnabled = false
     @Published private(set) var animatesFocusIndicator = false
-    @Published private(set) var animationConfiguration = RibbonAnimationConfiguration.default
-    @Published private(set) var interfaceAnimationConfiguration = InterfaceAnimationConfiguration.default
     @Published private(set) var draggedWindowID: String?
     @Published private(set) var dropTargetID: String?
+    let animationConfiguration = RibbonAnimationConfiguration.default
+    let interfaceAnimationConfiguration = InterfaceAnimationConfiguration.default
     var onFocusWindow: ((String) -> Void)?
     var onSelectSpace: ((Int) -> Void)?
     var onShareWindow: ((String, Int) -> Void)?
     var onRemoveWindow: ((String) -> Void)?
     var onReorderWindow: ((String, Int) -> Void)?
-    var onAnimationConfigurationChange: ((RibbonAnimationConfiguration) -> Void)?
-    var onInterfaceAnimationConfigurationChange: ((InterfaceAnimationConfiguration) -> Void)?
     var onDropTargetChange: ((Bool) -> Void)?
     var onContentChange: (() -> Void)?
-    var onPreviewHUDAnimation: (() -> Void)?
     private var lastFocusChange: TimeInterval?
 
     var displayedItemCount: Int { showingSpaces ? availableSpaceIndices.count : windows.count }
@@ -650,146 +595,6 @@ final class NavigationHUDModel: ObservableObject {
             lastFocusChange = nil
         }
         focusedID = id
-    }
-
-    func setAnimationConfiguration(_ configuration: RibbonAnimationConfiguration) {
-        guard animationConfiguration != configuration else { return }
-        animationConfiguration = configuration
-    }
-
-    func setInterfaceAnimationConfiguration(_ configuration: InterfaceAnimationConfiguration) {
-        guard interfaceAnimationConfiguration != configuration else { return }
-        interfaceAnimationConfiguration = configuration
-    }
-
-    func setAnimationDuration(_ duration: Double) {
-        changeAnimationConfiguration(duration: duration)
-    }
-
-    func setAnimationCurve(_ curve: RibbonAnimationCurve) {
-        changeAnimationConfiguration(curve: curve)
-    }
-
-    func setGestureTracking(_ tracking: Double) {
-        changeAnimationConfiguration(tracking: tracking)
-    }
-
-    func setGestureCommitProgress(_ commitProgress: Double) {
-        changeAnimationConfiguration(commitProgress: commitProgress)
-    }
-
-    func setGestureFlickDistance(_ flickDistance: Double) {
-        changeAnimationConfiguration(flickDistance: flickDistance)
-    }
-
-    func setGestureFlickVelocity(_ flickVelocity: Double) {
-        changeAnimationConfiguration(flickVelocity: flickVelocity)
-    }
-
-    func setGestureEdgeResistance(_ edgeResistance: Double) {
-        changeAnimationConfiguration(edgeResistance: edgeResistance)
-    }
-
-    func resetAnimationConfiguration() {
-        setAnimationConfiguration(RibbonAnimationConfiguration.default)
-        onAnimationConfigurationChange?(animationConfiguration)
-    }
-
-    func resetAllMotionConfiguration() {
-        resetAnimationConfiguration()
-        setInterfaceAnimationConfiguration(.default)
-        onInterfaceAnimationConfigurationChange?(interfaceAnimationConfiguration)
-    }
-
-    func previewHUDAnimation() {
-        onPreviewHUDAnimation?()
-    }
-
-    func setHUDEnterDuration(_ value: Double) {
-        changeInterfaceAnimationConfiguration(hudEnterDuration: value)
-    }
-
-    func setHUDExitDuration(_ value: Double) {
-        changeInterfaceAnimationConfiguration(hudExitDuration: value)
-    }
-
-    func setAttachedHUDTravel(_ value: Double) {
-        changeInterfaceAnimationConfiguration(attachedHUDTravel: value)
-    }
-
-    func setFloatingHUDTravel(_ value: Double) {
-        changeInterfaceAnimationConfiguration(floatingHUDTravel: value)
-    }
-
-    func setHiddenHUDScale(_ value: Double) {
-        changeInterfaceAnimationConfiguration(hiddenHUDScale: value)
-    }
-
-    func setFeedbackDuration(_ value: Double) {
-        changeInterfaceAnimationConfiguration(feedbackDuration: value)
-    }
-
-    func setPressedScale(_ value: Double) {
-        changeInterfaceAnimationConfiguration(pressedScale: value)
-    }
-
-    func setFocusRevealDuration(_ value: Double) {
-        changeInterfaceAnimationConfiguration(focusRevealDuration: value)
-    }
-
-    func setFocusRevealOpacity(_ value: Double) {
-        changeInterfaceAnimationConfiguration(focusRevealOpacity: value)
-    }
-
-    private func changeInterfaceAnimationConfiguration(
-        hudEnterDuration: Double? = nil,
-        hudExitDuration: Double? = nil,
-        attachedHUDTravel: Double? = nil,
-        floatingHUDTravel: Double? = nil,
-        hiddenHUDScale: Double? = nil,
-        feedbackDuration: Double? = nil,
-        pressedScale: Double? = nil,
-        focusRevealDuration: Double? = nil,
-        focusRevealOpacity: Double? = nil
-    ) {
-        let current = interfaceAnimationConfiguration
-        let configuration = InterfaceAnimationConfiguration(
-            hudEnterDuration: hudEnterDuration ?? current.hudEnterDuration,
-            hudExitDuration: hudExitDuration ?? current.hudExitDuration,
-            attachedHUDTravel: attachedHUDTravel ?? current.attachedHUDTravel,
-            floatingHUDTravel: floatingHUDTravel ?? current.floatingHUDTravel,
-            hiddenHUDScale: hiddenHUDScale ?? current.hiddenHUDScale,
-            feedbackDuration: feedbackDuration ?? current.feedbackDuration,
-            pressedScale: pressedScale ?? current.pressedScale,
-            focusRevealDuration: focusRevealDuration ?? current.focusRevealDuration,
-            focusRevealOpacity: focusRevealOpacity ?? current.focusRevealOpacity
-        )
-        guard configuration != current else { return }
-        interfaceAnimationConfiguration = configuration
-        onInterfaceAnimationConfigurationChange?(configuration)
-    }
-
-    private func changeAnimationConfiguration(
-        duration: Double? = nil,
-        curve: RibbonAnimationCurve? = nil,
-        tracking: Double? = nil,
-        commitProgress: Double? = nil,
-        flickDistance: Double? = nil,
-        flickVelocity: Double? = nil,
-        edgeResistance: Double? = nil
-    ) {
-        let configuration = RibbonAnimationConfiguration(
-            duration: duration ?? animationConfiguration.duration,
-            curve: curve ?? animationConfiguration.curve,
-            tracking: tracking ?? animationConfiguration.tracking,
-            commitProgress: commitProgress ?? animationConfiguration.commitProgress,
-            flickDistance: flickDistance ?? animationConfiguration.flickDistance,
-            flickVelocity: flickVelocity ?? animationConfiguration.flickVelocity,
-            edgeResistance: edgeResistance ?? animationConfiguration.edgeResistance
-        )
-        guard configuration != animationConfiguration else { return }
-        animationConfiguration = configuration
-        onAnimationConfigurationChange?(configuration)
     }
 
     func toggleSpaces() {
@@ -879,18 +684,9 @@ final class NavigationHUDModel: ObservableObject {
     }
 }
 
-private enum MotionEditorSection: String, CaseIterable, Identifiable {
-    case settle = "Settle"
-    case gesture = "Gesture"
-    case interface = "HUD"
-
-    var id: Self { self }
-}
-
 private struct NavigationHUD: View {
     @ObservedObject var model: NavigationHUDModel
     @Namespace private var selection
-    @State private var motionEditorSection = MotionEditorSection.settle
 
     var body: some View {
         Group {
@@ -1059,285 +855,9 @@ private struct NavigationHUD: View {
                     value: model.dropDescription ?? model.focusedAppName
                 )
             }
-            if model.developerControlsEnabled {
-                Divider().overlay(.white.opacity(0.12))
-                animationControls
-            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-    }
-
-    private var animationControls: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 10) {
-                Picker("Motion controls", selection: $motionEditorSection) {
-                    ForEach(MotionEditorSection.allCases) { section in
-                        Text(section.rawValue).tag(section)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 300)
-                Spacer()
-                if motionEditorSection == .interface {
-                    Button(action: model.previewHUDAnimation) {
-                        Label("Replay", systemImage: "play.fill")
-                            .font(.system(size: 10, weight: .medium))
-                    }
-                    .buttonStyle(ResponsiveButtonStyle(
-                        reduceMotion: model.reduceMotion,
-                        configuration: model.interfaceAnimationConfiguration
-                    ))
-                    .foregroundStyle(.white.opacity(0.75))
-                    .help("Replay the app bar entrance")
-                }
-                Button(action: model.resetAllMotionConfiguration) {
-                    Label("Reset", systemImage: "arrow.counterclockwise")
-                        .font(.system(size: 10, weight: .medium))
-                }
-                .buttonStyle(ResponsiveButtonStyle(
-                    reduceMotion: model.reduceMotion,
-                    configuration: model.interfaceAnimationConfiguration
-                ))
-                .foregroundStyle(.white.opacity(0.7))
-                .help("Reset all motion controls")
-            }
-
-            Group {
-                switch motionEditorSection {
-                case .settle: settleControls
-                case .gesture: gestureControls
-                case .interface: interfaceControls
-                }
-            }
-            .frame(maxHeight: .infinity)
-        }
-        .controlSize(.small)
-        .frame(height: 220)
-    }
-
-    private var settleControls: some View {
-        let configuration = model.animationConfiguration
-        let curve = configuration.curve
-        return HStack(alignment: .top, spacing: 14) {
-            VStack(spacing: 5) {
-                HStack {
-                    Text("Easing curve")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.65))
-                    Spacer()
-                    Menu {
-                        ForEach(RibbonAnimationPreset.allCases) { preset in
-                            Button(preset.title) { model.setAnimationCurve(preset.curve) }
-                        }
-                    } label: {
-                        HStack(spacing: 3) {
-                            Text(RibbonAnimationPreset.matching(curve)?.title ?? "Custom")
-                            Image(systemName: "chevron.down")
-                        }
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.8))
-                    }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                }
-                RibbonCurveEditor(
-                    curve: Binding(
-                        get: { model.animationConfiguration.curve },
-                        set: { model.setAnimationCurve($0) }
-                    ),
-                    color: Color(nsColor: model.appBarColor)
-                )
-                HStack {
-                    Text("P1  \(curve.x1, format: .number.precision(.fractionLength(2))), \(curve.y1, format: .number.precision(.fractionLength(2)))")
-                    Spacer()
-                    Text("P2  \(curve.x2, format: .number.precision(.fractionLength(2))), \(curve.y2, format: .number.precision(.fractionLength(2)))")
-                }
-                .font(.system(size: 9, weight: .medium, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.55))
-            }
-            .frame(width: 270)
-
-            Rectangle()
-                .fill(.white.opacity(0.12))
-                .frame(width: 1, height: 142)
-
-            VStack(spacing: 8) {
-                HStack {
-                    Text("Timeline")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.65))
-                    Spacer()
-                    Text("\(Int((configuration.duration * 1_000).rounded())) ms")
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.8))
-                }
-                Slider(
-                    value: Binding(
-                        get: { model.animationConfiguration.duration },
-                        set: { model.setAnimationDuration($0) }
-                    ),
-                    in: RibbonAnimationConfiguration.durationRange,
-                    step: 0.01
-                )
-                .accessibilityLabel("Switch duration")
-                MotionTimeline(
-                    duration: configuration.duration,
-                    curve: curve,
-                    color: Color(nsColor: model.appBarColor),
-                    reduceMotion: model.reduceMotion
-                )
-                HStack {
-                    Text("Start")
-                    Spacer()
-                    Text("Finish")
-                }
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(.white.opacity(0.45))
-            }
-        }
-    }
-
-    private var gestureControls: some View {
-        let configuration = model.animationConfiguration
-        return LazyVGrid(columns: motionControlColumns, spacing: 14) {
-            MotionTuningSlider(
-                title: "Tracking gain",
-                value: Binding(
-                    get: { model.animationConfiguration.tracking },
-                    set: { model.setGestureTracking($0) }
-                ),
-                range: RibbonAnimationConfiguration.trackingRange,
-                step: 0.1,
-                valueText: "×\(configuration.tracking.formatted(.number.precision(.fractionLength(1))))"
-            )
-            MotionTuningSlider(
-                title: "Commit point",
-                value: Binding(
-                    get: { model.animationConfiguration.commitProgress },
-                    set: { model.setGestureCommitProgress($0) }
-                ),
-                range: RibbonAnimationConfiguration.commitProgressRange,
-                step: 0.01,
-                valueText: configuration.commitProgress.formatted(.percent.precision(.fractionLength(0)))
-            )
-            MotionTuningSlider(
-                title: "Flick distance",
-                value: Binding(
-                    get: { model.animationConfiguration.flickDistance },
-                    set: { model.setGestureFlickDistance($0) }
-                ),
-                range: RibbonAnimationConfiguration.flickDistanceRange,
-                step: 0.005,
-                valueText: configuration.flickDistance.formatted(.number.precision(.fractionLength(3)))
-            )
-            MotionTuningSlider(
-                title: "Flick speed",
-                value: Binding(
-                    get: { model.animationConfiguration.flickVelocity },
-                    set: { model.setGestureFlickVelocity($0) }
-                ),
-                range: RibbonAnimationConfiguration.flickVelocityRange,
-                step: 0.05,
-                valueText: configuration.flickVelocity.formatted(.number.precision(.fractionLength(2)))
-            )
-            MotionTuningSlider(
-                title: "Edge resistance",
-                value: Binding(
-                    get: { model.animationConfiguration.edgeResistance },
-                    set: { model.setGestureEdgeResistance($0) }
-                ),
-                range: RibbonAnimationConfiguration.edgeResistanceRange,
-                step: 5,
-                valueText: "\(Int(configuration.edgeResistance.rounded())) pt"
-            )
-        }
-    }
-
-    private var interfaceControls: some View {
-        return LazyVGrid(columns: motionControlColumns, spacing: 12) {
-            interfaceSlider("Enter duration", value: Binding(
-                get: { model.interfaceAnimationConfiguration.hudEnterDuration },
-                set: { model.setHUDEnterDuration($0) }
-            ),
-                            range: InterfaceAnimationConfiguration.durationRange,
-                            step: 0.01, unit: "ms")
-            interfaceSlider("Exit duration", value: Binding(
-                get: { model.interfaceAnimationConfiguration.hudExitDuration },
-                set: { model.setHUDExitDuration($0) }
-            ),
-                            range: InterfaceAnimationConfiguration.durationRange,
-                            step: 0.01, unit: "ms")
-            interfaceSlider("Notch travel", value: Binding(
-                get: { model.interfaceAnimationConfiguration.attachedHUDTravel },
-                set: { model.setAttachedHUDTravel($0) }
-            ),
-                            range: InterfaceAnimationConfiguration.travelRange,
-                            step: 1, unit: "pt")
-            interfaceSlider("Floating travel", value: Binding(
-                get: { model.interfaceAnimationConfiguration.floatingHUDTravel },
-                set: { model.setFloatingHUDTravel($0) }
-            ),
-                            range: InterfaceAnimationConfiguration.travelRange,
-                            step: 1, unit: "pt")
-            interfaceSlider("Hidden scale", value: Binding(
-                get: { model.interfaceAnimationConfiguration.hiddenHUDScale },
-                set: { model.setHiddenHUDScale($0) }
-            ),
-                            range: InterfaceAnimationConfiguration.scaleRange,
-                            step: 0.005)
-            interfaceSlider("State fade", value: Binding(
-                get: { model.interfaceAnimationConfiguration.feedbackDuration },
-                set: { model.setFeedbackDuration($0) }
-            ),
-                            range: InterfaceAnimationConfiguration.durationRange,
-                            step: 0.01, unit: "ms")
-            interfaceSlider("Pressed scale", value: Binding(
-                get: { model.interfaceAnimationConfiguration.pressedScale },
-                set: { model.setPressedScale($0) }
-            ),
-                            range: InterfaceAnimationConfiguration.scaleRange,
-                            step: 0.005)
-            interfaceSlider("Focus flash", value: Binding(
-                get: { model.interfaceAnimationConfiguration.focusRevealDuration },
-                set: { model.setFocusRevealDuration($0) }
-            ),
-                            range: InterfaceAnimationConfiguration.durationRange,
-                            step: 0.01, unit: "ms")
-            interfaceSlider("Focus opacity", value: Binding(
-                get: { model.interfaceAnimationConfiguration.focusRevealOpacity },
-                set: { model.setFocusRevealOpacity($0) }
-            ),
-                            range: InterfaceAnimationConfiguration.opacityRange,
-                            step: 0.01)
-        }
-    }
-
-    private var motionControlColumns: [GridItem] {
-        [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14), GridItem(.flexible())]
-    }
-
-    private func interfaceSlider(
-        _ title: String,
-        value: Binding<Double>,
-        range: ClosedRange<Double>,
-        step: Double,
-        unit: String? = nil
-    ) -> some View {
-        let current = value.wrappedValue
-        let valueText = unit == "ms"
-            ? "\(Int((current * 1_000).rounded())) ms"
-            : unit.map { "\(Int(current.rounded())) \($0)" }
-                ?? current.formatted(.number.precision(.fractionLength(2)))
-        return MotionTuningSlider(
-            title: title,
-            value: value,
-            range: range,
-            step: step,
-            valueText: valueText
-        )
     }
 
     private var spacePicker: some View {
@@ -1363,151 +883,6 @@ private struct NavigationHUD: View {
             }
         }
         .frame(height: 32)
-    }
-}
-
-private struct RibbonCurveEditor: View {
-    @Binding var curve: RibbonAnimationCurve
-    let color: Color
-    @State private var selectedHandle: Int?
-
-    var body: some View {
-        GeometryReader { geometry in
-            let size = geometry.size
-            let start = point(x: 0, y: 0, in: size)
-            let end = point(x: 1, y: 1, in: size)
-            let first = point(x: curve.x1, y: curve.y1, in: size)
-            let second = point(x: curve.x2, y: curve.y2, in: size)
-            ZStack {
-                Canvas { context, size in
-                    var grid = Path()
-                    for fraction in [0.25, 0.5, 0.75] {
-                        grid.move(to: CGPoint(x: size.width * fraction, y: 0))
-                        grid.addLine(to: CGPoint(x: size.width * fraction, y: size.height))
-                        grid.move(to: CGPoint(x: 0, y: size.height * fraction))
-                        grid.addLine(to: CGPoint(x: size.width, y: size.height * fraction))
-                    }
-                    context.stroke(grid, with: .color(.white.opacity(0.08)), lineWidth: 1)
-
-                    var handles = Path()
-                    handles.move(to: start)
-                    handles.addLine(to: first)
-                    handles.move(to: end)
-                    handles.addLine(to: second)
-                    context.stroke(handles, with: .color(.white.opacity(0.3)), lineWidth: 1)
-
-                    var path = Path()
-                    path.move(to: start)
-                    path.addCurve(to: end, control1: first, control2: second)
-                    context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                }
-                Circle().fill(color).frame(width: 10, height: 10).position(first)
-                Circle().fill(color).frame(width: 10, height: 10).position(second)
-                Color.clear
-                    .contentShape(Rectangle())
-                    .gesture(DragGesture(minimumDistance: 0)
-                        .onChanged { value in updateCurve(location: value.location, size: size,
-                                                          first: first, second: second) }
-                        .onEnded { _ in selectedHandle = nil })
-            }
-            .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 6))
-            .overlay { RoundedRectangle(cornerRadius: 6).stroke(.white.opacity(0.12), lineWidth: 1) }
-        }
-        .frame(height: 86)
-        .accessibilityElement()
-        .accessibilityLabel("Cubic Bezier easing curve")
-        .accessibilityValue(curve.diagnosticDescription)
-    }
-
-    private func point(x: Double, y: Double, in size: CGSize) -> CGPoint {
-        CGPoint(x: size.width * x, y: size.height * (1.5 - y) / 2)
-    }
-
-    private func updateCurve(location: CGPoint, size: CGSize, first: CGPoint, second: CGPoint) {
-        guard size.width > 0, size.height > 0 else { return }
-        if selectedHandle == nil {
-            let firstDistance = hypot(location.x - first.x, location.y - first.y)
-            let secondDistance = hypot(location.x - second.x, location.y - second.y)
-            selectedHandle = firstDistance <= secondDistance ? 1 : 2
-        }
-        let x = Double(location.x / size.width)
-        let y = Double(1.5 - location.y / size.height * 2)
-        if selectedHandle == 1 {
-            curve = RibbonAnimationCurve(x1: x, y1: y, x2: curve.x2, y2: curve.y2)
-        } else {
-            curve = RibbonAnimationCurve(x1: curve.x1, y1: curve.y1, x2: x, y2: y)
-        }
-    }
-}
-
-private struct MotionTimeline: View {
-    let duration: Double
-    let curve: RibbonAnimationCurve
-    let color: Color
-    let reduceMotion: Bool
-    @State private var previewAtEnd = false
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Button(action: play) {
-                Image(systemName: "play.fill")
-                    .frame(width: 18, height: 18)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.white.opacity(0.8))
-            .help("Preview timing")
-            .accessibilityLabel("Preview timing")
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.12)).frame(height: 3)
-                    HStack {
-                        ForEach(0 ..< 5) { tick in
-                            Circle().fill(.white.opacity(0.3)).frame(width: 3, height: 3)
-                            if tick < 4 { Spacer() }
-                        }
-                    }
-                    Circle()
-                        .fill(color)
-                        .frame(width: 12, height: 12)
-                        .offset(x: previewAtEnd ? max(0, geometry.size.width - 12) : 0)
-                }
-                .frame(maxHeight: .infinity)
-            }
-            .frame(height: 20)
-        }
-    }
-
-    private func play() {
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) { previewAtEnd = false }
-        DispatchQueue.main.async {
-            withAnimation(reduceMotion ? nil : curve.animation(duration: duration)) { previewAtEnd = true }
-        }
-    }
-}
-
-private struct MotionTuningSlider: View {
-    let title: String
-    @Binding var value: Double
-    let range: ClosedRange<Double>
-    let step: Double
-    let valueText: String
-
-    var body: some View {
-        VStack(spacing: 4) {
-            HStack(spacing: 4) {
-                Text(title)
-                Spacer(minLength: 2)
-                Text(valueText).monospacedDigit().foregroundStyle(.white.opacity(0.8))
-            }
-            .font(.system(size: 9, weight: .medium))
-            .foregroundStyle(.white.opacity(0.6))
-            Slider(value: $value, in: range, step: step)
-                .accessibilityLabel(title)
-                .accessibilityValue(valueText)
-        }
-        .frame(maxWidth: .infinity)
     }
 }
 

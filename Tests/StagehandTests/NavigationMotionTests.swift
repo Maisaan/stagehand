@@ -211,95 +211,36 @@ struct NavigationMotionTests {
         #expect(abs(transform.m42 - (66 * 0.02 + 10)) < 0.001)
     }
 
-    @Test func customHUDMotionControlsScaleTravelAndFocusFlash() throws {
+    @Test func focusFlashUsesTheEstablishedTiming() throws {
         _ = NSApplication.shared
-        let configuration = InterfaceAnimationConfiguration(
-            hudEnterDuration: 0.3,
-            hudExitDuration: 0.12,
-            attachedHUDTravel: 18,
-            floatingHUDTravel: 11,
-            hiddenHUDScale: 0.94,
-            feedbackDuration: 0.1,
-            pressedScale: 0.96,
-            focusRevealDuration: 0.27,
-            focusRevealOpacity: 0.55
-        )
-        let container = HUDContainerView(model: NavigationHUDModel())
-        container.attachedToNotch = true
-        container.frame = CGRect(x: 0, y: 0, width: 272, height: 82)
-        container.needsLayout = true
-        container.layoutSubtreeIfNeeded()
-        container.setHidden(reduceMotion: false, configuration: configuration)
-        let transform = try #require(container.animatedView.layer).transform
-        #expect(transform.m11 == 0.94)
-        #expect(transform.m22 == 0.94)
-        #expect(abs(transform.m42 - (66 * 0.06 + 18)) < 0.001)
-
         let overlays = NavigationOverlays(reduceMotion: { false })
         defer { overlays.hide() }
-        overlays.setInterfaceAnimationConfiguration(configuration)
         overlays.updateBorder(
             frame: CGRect(x: 50, y: 50, width: 400, height: 300),
             visible: true,
             focusChanged: true
         )
         let reveal = try #require(overlays.border?.contentView?.layer?.animation(forKey: "focusReveal"))
-        #expect(reveal.duration == 0.27)
+        #expect(reveal.duration == 0.1)
     }
 
-    @Test func developerHUDReplayUsesTheCurrentEntranceTiming() async throws {
+    @Test func establishedHUDTimingStaysBelowThreeHundredMilliseconds() throws {
         _ = NSApplication.shared
-        let overlays = NavigationOverlays(reduceMotion: { false })
-        defer { overlays.hide() }
-        let configuration = InterfaceAnimationConfiguration(
-            hudEnterDuration: 0.31,
-            hudExitDuration: 0.12,
-            attachedHUDTravel: 12,
-            floatingHUDTravel: 8,
-            hiddenHUDScale: 0.96,
-            feedbackDuration: 0.1,
-            pressedScale: 0.97,
-            focusRevealDuration: 0.14,
-            focusRevealOpacity: 0.7
-        )
-        overlays.setInterfaceAnimationConfiguration(configuration)
-        overlays.showNavigation(state: WorkspaceState(), windows: [])
-        let layer = try #require(overlays.hud?.contentView as? HUDContainerView).animatedView.layer
-
-        overlays.hudModel.previewHUDAnimation()
-        await Task.yield()
-
-        #expect(layer?.animation(forKey: "hudOpacity")?.duration == 0.31)
-        #expect(layer?.animation(forKey: "hudTransform")?.duration == 0.31)
-    }
-
-    @Test func developerMotionEditorFitsTheExpandedAppBar() {
-        _ = NSApplication.shared
-        let model = NavigationHUDModel()
-        model.developerControlsEnabled = true
-        let container = HUDContainerView(model: model)
-        container.attachedToNotch = true
-        container.frame = CGRect(x: 0, y: 0, width: 612, height: 320)
-        container.needsLayout = true
-        container.layoutSubtreeIfNeeded()
-
-        #expect(container.animatedView.bounds.size == CGSize(width: 580, height: 304))
-        #expect(container.hostingView.frame == container.animatedView.bounds)
-    }
-
-    @Test func revisedHUDTimingStaysBelowThreeHundredMilliseconds() throws {
-        _ = NSApplication.shared
-        #expect(InterfaceAnimationConfiguration.default.focusRevealDuration == 0.1)
+        let configuration = InterfaceAnimationConfiguration.default
+        #expect(configuration.feedbackDuration == 0.08)
+        #expect(configuration.pressedScale == 0.9)
+        #expect(configuration.focusRevealDuration == 0.1)
+        #expect(configuration.focusRevealOpacity == 0.72)
         let overlays = NavigationOverlays(reduceMotion: { false })
         defer { overlays.hide() }
         overlays.showNavigation(state: WorkspaceState(), windows: [])
         let container = try #require(overlays.hud?.contentView as? HUDContainerView)
         let layer = try #require(container.animatedView.layer)
-        #expect(layer.animation(forKey: "hudOpacity")?.duration == 0.18)
-        #expect(layer.animation(forKey: "hudTransform")?.duration == 0.18)
-        #expect(overlays.beginHUDDismiss(generation: overlays.hudGeneration))
         #expect(layer.animation(forKey: "hudOpacity")?.duration == 0.14)
         #expect(layer.animation(forKey: "hudTransform")?.duration == 0.14)
+        #expect(overlays.beginHUDDismiss(generation: overlays.hudGeneration))
+        #expect(layer.animation(forKey: "hudOpacity")?.duration == 0.26)
+        #expect(layer.animation(forKey: "hudTransform")?.duration == 0.26)
     }
 
     @Test func borderGeometryUpdatesImmediatelyWithoutRestartingFocusReveal() throws {

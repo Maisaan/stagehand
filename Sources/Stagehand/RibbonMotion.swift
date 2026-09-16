@@ -71,52 +71,12 @@ struct RibbonAnimationCurve: Equatable {
     }
 }
 
-enum RibbonAnimationPreset: String, CaseIterable, Identifiable {
-    case smoother
-    case easeInOut
-    case easeOut
-    case ease
-    case linear
-
-    var id: Self { self }
-
-    var title: String {
-        switch self {
-        case .smoother: "Move"
-        case .easeInOut: "Standard move"
-        case .easeOut: "Enter / exit"
-        case .ease: "Hover / color"
-        case .linear: "Linear"
-        }
-    }
-
-    var curve: RibbonAnimationCurve {
-        switch self {
-        case .smoother: .smoother
-        case .easeInOut: .easeInOut
-        case .easeOut: .easeOut
-        case .ease: .ease
-        case .linear: .linear
-        }
-    }
-
-    static func matching(_ curve: RibbonAnimationCurve) -> Self? {
-        allCases.first { $0.curve == curve }
-    }
-}
-
 struct RibbonAnimationConfiguration: Equatable {
-    static let durationRange = 0.0 ... 1.2
-    static let trackingRange = 1.0 ... 8.0
-    static let commitProgressRange = 0.1 ... 0.8
-    static let flickDistanceRange = 0.0 ... 0.1
-    static let flickVelocityRange = 0.1 ... 1.5
-    static let edgeResistanceRange = 20.0 ... 140.0
     static let `default` = Self(
-        duration: 0.2,
-        curve: .smoother,
-        tracking: 4,
-        commitProgress: 0.3,
+        duration: 0.3,
+        curve: .easeOut,
+        tracking: 5,
+        commitProgress: 0.4,
         flickDistance: 0.02,
         flickVelocity: 0.45,
         edgeResistance: 60
@@ -133,8 +93,8 @@ struct RibbonAnimationConfiguration: Equatable {
     init(
         duration: Double,
         curve: RibbonAnimationCurve,
-        tracking: Double = 4,
-        commitProgress: Double = 0.3,
+        tracking: Double = 5,
+        commitProgress: Double = 0.4,
         flickDistance: Double = 0.02,
         flickVelocity: Double = 0.45,
         edgeResistance: Double = 60

@@ -39,22 +39,6 @@ struct NavigationHUDGeometryTests {
         #expect(geometry.contentFrame.midX == screen.midX)
     }
 
-    @Test func developerControlsExpandTheAppBar() {
-        let geometry = NavigationHUDGeometry.layout(
-            screenFrame: screen,
-            visibleFrame: visible,
-            safeAreaTop: 32,
-            auxiliaryLeft: CGRect(x: 0, y: 950, width: 650, height: 32),
-            auxiliaryRight: CGRect(x: 862, y: 950, width: 650, height: 32),
-            windowCount: 2,
-            showsDeveloperControls: true
-        )
-
-        #expect(geometry.contentFrame.width == 580)
-        #expect(geometry.contentFrame.height == 304)
-        #expect(geometry.attachedToNotch)
-    }
-
     @Test func actualNotchCenterIsUsedOnAnOffsetDisplay() {
         let geometry = NavigationHUDGeometry.layout(
             screenFrame: screen.offsetBy(dx: -1512, dy: 100),

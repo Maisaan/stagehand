@@ -62,8 +62,8 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
         observedTravel.append(abs((try #require(preview["a"])).minX - (try #require(base["a"])).minX))
     }
 
-    #expect(abs((try #require(observedTravel.first)) - 160) < 0.001)
-    #expect(abs((try #require(observedTravel.last)) - 160) < 0.001)
+    #expect(abs((try #require(observedTravel.first)) - 200) < 0.001)
+    #expect(abs((try #require(observedTravel.last)) - 200) < 0.001)
 }
 
 @MainActor @Test func swipeCompletionUsesVisibleProgressForDifferentWindowWidths() throws {
@@ -85,14 +85,15 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
             observedWidths: widths
         ).map { ($0.windowID, $0.frame) })
         let distance = abs((try #require(target["a"])).minX - (try #require(base["a"])).minX)
-        let displacementForFullTravel = Double(distance / viewport.width / 4)
+        let configuration = RibbonAnimationConfiguration.default
+        let displacementForFullTravel = Double(distance / viewport.width) / configuration.tracking
 
         #expect(RibbonMotion.horizontalCompletionAction(
             state: state,
             from: base,
             availableFrame: viewport,
             gap: 8,
-            displacement: -displacementForFullTravel * 0.29,
+            displacement: -displacementForFullTravel * (configuration.commitProgress - 0.01),
             velocity: 0
         ) == nil)
         #expect(RibbonMotion.horizontalCompletionAction(
@@ -100,7 +101,7 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
             from: base,
             availableFrame: viewport,
             gap: 8,
-            displacement: -displacementForFullTravel * 0.31,
+            displacement: -displacementForFullTravel * (configuration.commitProgress + 0.01),
             velocity: 0
         ) == .focusNext)
         if leadingWidth == 950 {
@@ -132,7 +133,8 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     for direction in [-1.0, 1] {
         let full = RibbonMotion.dragFrames(state: state, from: base, availableFrame: viewport, gap: -55, displacement: direction * 0.25)
         let distance = abs((try #require(full["b"])).minX - (try #require(base["b"])).minX)
-        let halfDisplacement = direction * Double(distance / viewport.width / 4 / 2)
+        let halfDisplacement = direction * Double(distance / viewport.width)
+            / RibbonAnimationConfiguration.default.tracking / 2
         let half = RibbonMotion.dragFrames(state: state, from: base, availableFrame: viewport, gap: -55, displacement: halfDisplacement)
         for (id, start) in base {
             let frame = try #require(half[id])
@@ -192,17 +194,14 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     #expect(RibbonAnimationCurve.easeInOut.progress(at: 2) == 1)
 }
 
-@MainActor @Test func defaultRibbonMotionUsesThePurposeBuiltMoveCurve() {
-    #expect(RibbonAnimationConfiguration.default.duration == 0.2)
-    #expect(RibbonAnimationConfiguration.default.curve.controlPoints == [0.65, 0, 0.35, 1])
-    #expect(RibbonAnimationConfiguration.default.tracking == 4)
-    #expect(RibbonAnimationConfiguration.default.commitProgress == 0.3)
+@MainActor @Test func defaultRibbonMotionUsesTheEstablishedConfiguration() {
+    #expect(RibbonAnimationConfiguration.default.duration == 0.3)
+    #expect(RibbonAnimationConfiguration.default.curve.controlPoints == [0.16, 1, 0.3, 1])
+    #expect(RibbonAnimationConfiguration.default.tracking == 5)
+    #expect(RibbonAnimationConfiguration.default.commitProgress == 0.4)
     #expect(RibbonAnimationConfiguration.default.flickDistance == 0.02)
     #expect(RibbonAnimationConfiguration.default.flickVelocity == 0.45)
     #expect(RibbonAnimationConfiguration.default.edgeResistance == 60)
-    #expect(RibbonAnimationPreset.matching(.smoother) == .smoother)
-    #expect(RibbonAnimationPreset.matching(.easeOut) == .easeOut)
-    #expect(RibbonAnimationPreset.matching(.ease) == .ease)
 }
 
 @MainActor @Test func gestureTuningChangesTrackingCommitAndBoundaryFeedback() throws {

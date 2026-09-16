@@ -131,14 +131,7 @@ final class StagehandModel: ObservableObject {
     }
     @Published private(set) var focusBorderColor: NSColor
     @Published private(set) var appBarColor: NSColor
-    @Published var developerControlsEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(developerControlsEnabled, forKey: Self.developerControlsPreferenceKey)
-            overlays.setDeveloperControlsEnabled(developerControlsEnabled)
-        }
-    }
-    @Published private(set) var ribbonAnimationConfiguration: RibbonAnimationConfiguration
-    @Published private(set) var interfaceAnimationConfiguration: InterfaceAnimationConfiguration
+    private let ribbonAnimationConfiguration = RibbonAnimationConfiguration.default
     @Published var diagnosticLoggingEnabled: Bool {
         didSet {
             UserDefaults.standard.set(diagnosticLoggingEnabled, forKey: DiagnosticLogger.preferenceKey)
@@ -190,15 +183,6 @@ final class StagehandModel: ObservableObject {
     private var layoutFailureReason: String?
     private static let focusBorderColorPreferenceKey = "focusBorderColor"
     private static let appBarColorPreferenceKey = "appBarColor"
-    private static let developerControlsPreferenceKey = "developerControlsEnabled"
-    private static let ribbonAnimationDurationPreferenceKey = "ribbonAnimationDuration"
-    private static let ribbonAnimationCurvePreferenceKey = "ribbonAnimationCurve"
-    private static let ribbonGestureTrackingPreferenceKey = "ribbonGestureTracking"
-    private static let ribbonGestureCommitProgressPreferenceKey = "ribbonGestureCommitProgress"
-    private static let ribbonGestureFlickDistancePreferenceKey = "ribbonGestureFlickDistance"
-    private static let ribbonGestureFlickVelocityPreferenceKey = "ribbonGestureFlickVelocity"
-    private static let ribbonGestureEdgeResistancePreferenceKey = "ribbonGestureEdgeResistance"
-    private static let interfaceAnimationConfigurationPreferenceKey = "interfaceAnimationConfiguration"
 
     private struct PointerInteraction {
         let windowID: String
@@ -276,26 +260,6 @@ final class StagehandModel: ObservableObject {
             forKey: Self.appBarColorPreferenceKey,
             in: defaults
         ) ?? NavigationHUDModel.defaultAppBarColor
-        developerControlsEnabled = defaults.bool(forKey: Self.developerControlsPreferenceKey)
-        let savedDuration = defaults.object(forKey: Self.ribbonAnimationDurationPreferenceKey) as? Double
-        let savedCurve = Self.savedRibbonAnimationCurve(in: defaults)
-        ribbonAnimationConfiguration = Self.validatedRibbonAnimationConfiguration(
-            duration: savedDuration ?? RibbonAnimationConfiguration.default.duration,
-            curve: savedCurve ?? RibbonAnimationConfiguration.default.curve,
-            tracking: defaults.object(forKey: Self.ribbonGestureTrackingPreferenceKey) as? Double
-                ?? RibbonAnimationConfiguration.default.tracking,
-            commitProgress: defaults.object(forKey: Self.ribbonGestureCommitProgressPreferenceKey) as? Double
-                ?? RibbonAnimationConfiguration.default.commitProgress,
-            flickDistance: defaults.object(forKey: Self.ribbonGestureFlickDistancePreferenceKey) as? Double
-                ?? RibbonAnimationConfiguration.default.flickDistance,
-            flickVelocity: defaults.object(forKey: Self.ribbonGestureFlickVelocityPreferenceKey) as? Double
-                ?? RibbonAnimationConfiguration.default.flickVelocity,
-            edgeResistance: defaults.object(forKey: Self.ribbonGestureEdgeResistancePreferenceKey) as? Double
-                ?? RibbonAnimationConfiguration.default.edgeResistance
-        )
-        interfaceAnimationConfiguration = Self.validatedInterfaceAnimationConfiguration(
-            Self.savedInterfaceAnimationConfiguration(in: defaults) ?? .default
-        )
         state.maximizeWindows = defaults.object(forKey: "maximizeWindows") as? Bool
             ?? (defaults.string(forKey: "layoutMode") == "monocle")
         input.onAction = { [weak self] action in self?.navigate(action) }
@@ -310,21 +274,12 @@ final class StagehandModel: ObservableObject {
             guard let self else { return }
             self.reorderWindow(windowID: id, toIndex: index, spaceIndex: self.state.activeSpaceIndex)
         }
-        overlays.onAnimationConfigurationChange = { [weak self] configuration in
-            self?.setRibbonAnimationConfiguration(configuration)
-        }
-        overlays.onInterfaceAnimationConfigurationChange = { [weak self] configuration in
-            self?.setInterfaceAnimationConfiguration(configuration)
-        }
         overlays.canRevealNavigation = { [weak self] in
             guard let self, self.isRunning, !self.isSuspended else { return false }
             return self.desktopScope.refresh() == .home
         }
         overlays.setBorderColor(focusBorderColor)
         overlays.setAppBarColor(appBarColor)
-        overlays.setDeveloperControlsEnabled(developerControlsEnabled)
-        overlays.setRibbonAnimationConfiguration(ribbonAnimationConfiguration)
-        overlays.setInterfaceAnimationConfiguration(interfaceAnimationConfiguration)
         input.onStatusChange = { [weak self] in self?.updateInputStatus() }
         windowSystem.onChange = { [weak self] in self?.scheduleRefresh() }
         windowSystem.onFocusedWindowChange = { [weak self] id in self?.observedFocusChanged(windowID: id) }
@@ -570,154 +525,6 @@ final class StagehandModel: ObservableObject {
         appBarColor = normalized
         Self.saveColor(normalized, forKey: Self.appBarColorPreferenceKey)
         overlays.setAppBarColor(normalized)
-    }
-
-    func setRibbonAnimationConfiguration(_ configuration: RibbonAnimationConfiguration) {
-        let configuration = Self.validatedRibbonAnimationConfiguration(
-            duration: configuration.duration,
-            curve: configuration.curve,
-            tracking: configuration.tracking,
-            commitProgress: configuration.commitProgress,
-            flickDistance: configuration.flickDistance,
-            flickVelocity: configuration.flickVelocity,
-            edgeResistance: configuration.edgeResistance
-        )
-        guard configuration != ribbonAnimationConfiguration else { return }
-        ribbonAnimationConfiguration = configuration
-        let defaults = UserDefaults.standard
-        defaults.set(configuration.duration, forKey: Self.ribbonAnimationDurationPreferenceKey)
-        defaults.set(configuration.curve.controlPoints, forKey: Self.ribbonAnimationCurvePreferenceKey)
-        defaults.set(configuration.tracking, forKey: Self.ribbonGestureTrackingPreferenceKey)
-        defaults.set(configuration.commitProgress, forKey: Self.ribbonGestureCommitProgressPreferenceKey)
-        defaults.set(configuration.flickDistance, forKey: Self.ribbonGestureFlickDistancePreferenceKey)
-        defaults.set(configuration.flickVelocity, forKey: Self.ribbonGestureFlickVelocityPreferenceKey)
-        defaults.set(configuration.edgeResistance, forKey: Self.ribbonGestureEdgeResistancePreferenceKey)
-        overlays.setRibbonAnimationConfiguration(configuration)
-    }
-
-    func setInterfaceAnimationConfiguration(_ configuration: InterfaceAnimationConfiguration) {
-        let configuration = Self.validatedInterfaceAnimationConfiguration(configuration)
-        guard configuration != interfaceAnimationConfiguration else { return }
-        interfaceAnimationConfiguration = configuration
-        UserDefaults.standard.set([
-            "hudEnterDuration": configuration.hudEnterDuration,
-            "hudExitDuration": configuration.hudExitDuration,
-            "attachedHUDTravel": configuration.attachedHUDTravel,
-            "floatingHUDTravel": configuration.floatingHUDTravel,
-            "hiddenHUDScale": configuration.hiddenHUDScale,
-            "feedbackDuration": configuration.feedbackDuration,
-            "pressedScale": configuration.pressedScale,
-            "focusRevealDuration": configuration.focusRevealDuration,
-            "focusRevealOpacity": configuration.focusRevealOpacity
-        ], forKey: Self.interfaceAnimationConfigurationPreferenceKey)
-        overlays.setInterfaceAnimationConfiguration(configuration)
-    }
-
-    private static func savedInterfaceAnimationConfiguration(
-        in defaults: UserDefaults
-    ) -> InterfaceAnimationConfiguration? {
-        guard let values = defaults.dictionary(
-            forKey: Self.interfaceAnimationConfigurationPreferenceKey
-        ) else { return nil }
-        let fallback = InterfaceAnimationConfiguration.default
-        func value(_ key: String, fallback: Double) -> Double {
-            (values[key] as? NSNumber)?.doubleValue ?? fallback
-        }
-        return InterfaceAnimationConfiguration(
-            hudEnterDuration: value("hudEnterDuration", fallback: fallback.hudEnterDuration),
-            hudExitDuration: value("hudExitDuration", fallback: fallback.hudExitDuration),
-            attachedHUDTravel: value("attachedHUDTravel", fallback: fallback.attachedHUDTravel),
-            floatingHUDTravel: value("floatingHUDTravel", fallback: fallback.floatingHUDTravel),
-            hiddenHUDScale: value("hiddenHUDScale", fallback: fallback.hiddenHUDScale),
-            feedbackDuration: value("feedbackDuration", fallback: fallback.feedbackDuration),
-            pressedScale: value("pressedScale", fallback: fallback.pressedScale),
-            focusRevealDuration: value("focusRevealDuration", fallback: fallback.focusRevealDuration),
-            focusRevealOpacity: value("focusRevealOpacity", fallback: fallback.focusRevealOpacity)
-        )
-    }
-
-    private static func validatedInterfaceAnimationConfiguration(
-        _ configuration: InterfaceAnimationConfiguration
-    ) -> InterfaceAnimationConfiguration {
-        let fallback = InterfaceAnimationConfiguration.default
-        return InterfaceAnimationConfiguration(
-            hudEnterDuration: clamped(configuration.hudEnterDuration,
-                                      to: InterfaceAnimationConfiguration.durationRange,
-                                      fallback: fallback.hudEnterDuration),
-            hudExitDuration: clamped(configuration.hudExitDuration,
-                                     to: InterfaceAnimationConfiguration.durationRange,
-                                     fallback: fallback.hudExitDuration),
-            attachedHUDTravel: clamped(configuration.attachedHUDTravel,
-                                       to: InterfaceAnimationConfiguration.travelRange,
-                                       fallback: fallback.attachedHUDTravel),
-            floatingHUDTravel: clamped(configuration.floatingHUDTravel,
-                                       to: InterfaceAnimationConfiguration.travelRange,
-                                       fallback: fallback.floatingHUDTravel),
-            hiddenHUDScale: clamped(configuration.hiddenHUDScale,
-                                    to: InterfaceAnimationConfiguration.scaleRange,
-                                    fallback: fallback.hiddenHUDScale),
-            feedbackDuration: clamped(configuration.feedbackDuration,
-                                      to: InterfaceAnimationConfiguration.durationRange,
-                                      fallback: fallback.feedbackDuration),
-            pressedScale: clamped(configuration.pressedScale,
-                                  to: InterfaceAnimationConfiguration.scaleRange,
-                                  fallback: fallback.pressedScale),
-            focusRevealDuration: clamped(configuration.focusRevealDuration,
-                                         to: InterfaceAnimationConfiguration.durationRange,
-                                         fallback: fallback.focusRevealDuration),
-            focusRevealOpacity: clamped(configuration.focusRevealOpacity,
-                                        to: InterfaceAnimationConfiguration.opacityRange,
-                                        fallback: fallback.focusRevealOpacity)
-        )
-    }
-
-    private static func savedRibbonAnimationCurve(in defaults: UserDefaults) -> RibbonAnimationCurve? {
-        if let values = defaults.array(forKey: Self.ribbonAnimationCurvePreferenceKey), values.count == 4 {
-            let points = values.compactMap { ($0 as? NSNumber)?.doubleValue }
-            if points.count == 4 {
-                return RibbonAnimationCurve(x1: points[0], y1: points[1], x2: points[2], y2: points[3])
-            }
-        }
-        guard let legacyValue = defaults.string(forKey: Self.ribbonAnimationCurvePreferenceKey),
-              let preset = RibbonAnimationPreset(rawValue: legacyValue) else { return nil }
-        return preset.curve
-    }
-
-    private static func validatedRibbonAnimationConfiguration(
-        duration: Double,
-        curve: RibbonAnimationCurve,
-        tracking: Double,
-        commitProgress: Double,
-        flickDistance: Double,
-        flickVelocity: Double,
-        edgeResistance: Double
-    ) -> RibbonAnimationConfiguration {
-        let duration = duration.isFinite
-            ? min(max(duration, RibbonAnimationConfiguration.durationRange.lowerBound),
-                  RibbonAnimationConfiguration.durationRange.upperBound)
-            : RibbonAnimationConfiguration.default.duration
-        return RibbonAnimationConfiguration(
-            duration: duration,
-            curve: curve,
-            tracking: clamped(tracking, to: RibbonAnimationConfiguration.trackingRange,
-                              fallback: RibbonAnimationConfiguration.default.tracking),
-            commitProgress: clamped(commitProgress, to: RibbonAnimationConfiguration.commitProgressRange,
-                                    fallback: RibbonAnimationConfiguration.default.commitProgress),
-            flickDistance: clamped(flickDistance, to: RibbonAnimationConfiguration.flickDistanceRange,
-                                   fallback: RibbonAnimationConfiguration.default.flickDistance),
-            flickVelocity: clamped(flickVelocity, to: RibbonAnimationConfiguration.flickVelocityRange,
-                                   fallback: RibbonAnimationConfiguration.default.flickVelocity),
-            edgeResistance: clamped(edgeResistance, to: RibbonAnimationConfiguration.edgeResistanceRange,
-                                    fallback: RibbonAnimationConfiguration.default.edgeResistance)
-        )
-    }
-
-    private static func clamped(
-        _ value: Double,
-        to range: ClosedRange<Double>,
-        fallback: Double
-    ) -> Double {
-        value.isFinite ? min(max(value, range.lowerBound), range.upperBound) : fallback
     }
 
     private static func normalizedColor(_ color: NSColor, alpha: CGFloat = 1) -> NSColor? {

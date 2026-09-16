@@ -92,7 +92,7 @@ struct NavigationInteractionTests {
         model.setFocusedID("fourth", animate: true, at: 2.2)
         #expect(!model.animatesFocusIndicator)
 
-        model.setFocusedID("first", animate: true, at: 2.5)
+        model.setFocusedID("first", animate: true, at: 2.51)
         #expect(model.animatesFocusIndicator)
     }
 

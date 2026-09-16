@@ -329,14 +329,6 @@ struct SettingsView: View {
             } footer: {
                 Text("Records starts, pauses, window operations, focus checks, and failures. Logs exclude window titles and keyboard input.")
             }
-            Section {
-                Toggle("Developer controls", isOn: $model.developerControlsEnabled)
-                    .toggleStyle(.switch)
-            } header: {
-                Text("Development")
-            } footer: {
-                Text("Adds live controls for easing, timing, gesture thresholds, edge resistance, app bar motion, button feedback, and focus flashes. Hover at the top of the display to use them.")
-            }
             Section("Typing protection") {
                 Text("When you switch windows, Stagehand holds new keystrokes in memory until it confirms the destination. It never logs or saves them. If focus can't be confirmed, Stagehand discards those keystrokes and shows a warning.")
                     .foregroundStyle(.secondary)
