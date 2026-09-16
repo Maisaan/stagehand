@@ -3,6 +3,7 @@ import Foundation
 @MainActor
 final class DiagnosticLogger {
     static let preferenceKey = "diagnosticLoggingEnabled"
+    private static let retentionDuration: TimeInterval = 24 * 60 * 60
 
     static var defaultLogURL: URL {
         let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
@@ -17,7 +18,9 @@ final class DiagnosticLogger {
 
     private let now: () -> Date
     private let encoder: JSONEncoder
+    private let decoder = JSONDecoder()
     private var handle: FileHandle?
+    private var nextPruneDate: Date?
 
     init(logURL: URL = DiagnosticLogger.defaultLogURL, enabled: Bool, now: @escaping () -> Date = Date.init) {
         self.logURL = logURL
@@ -25,15 +28,23 @@ final class DiagnosticLogger {
         self.now = now
         encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
+        do {
+            try pruneExpiredEntries(at: now())
+        } catch {
+            NSLog("Stagehand diagnostic log retention failed: %@", error.localizedDescription)
+        }
     }
 
     func record(_ event: String, details: @autoclosure () -> [String: String] = [:]) {
         guard isEnabled else { return }
-        let entry = Entry(timestamp: now().ISO8601Format(), event: event, details: details())
+        let timestamp = now()
+        let entry = Entry(timestamp: timestamp.ISO8601Format(), event: event, details: details())
         do {
+            try pruneExpiredEntries(at: timestamp)
             var data = try encoder.encode(entry)
             data.append(0x0A)
             try appendHandle().write(contentsOf: data)
+            schedulePrune(for: timestamp)
         } catch {
             closeHandle()
             NSLog("Stagehand diagnostic log write failed: %@", error.localizedDescription)
@@ -110,9 +121,54 @@ final class DiagnosticLogger {
         handle = nil
     }
 
+    private func pruneExpiredEntries(at date: Date) throws {
+        if let nextPruneDate, date < nextPruneDate { return }
+
+        closeHandle()
+        guard FileManager.default.fileExists(atPath: logURL.path) else {
+            nextPruneDate = date.addingTimeInterval(Self.retentionDuration)
+            return
+        }
+
+        let cutoff = date.addingTimeInterval(-Self.retentionDuration)
+        let data = try Data(contentsOf: logURL)
+        var retained = Data()
+        var oldestRetainedDate: Date?
+        var removedEntry = false
+
+        for line in data.split(separator: 0x0A) {
+            guard
+                let entry = try? decoder.decode(TimestampedEntry.self, from: line),
+                let timestamp = try? Date(entry.timestamp, strategy: .iso8601),
+                timestamp > cutoff
+            else {
+                removedEntry = true
+                continue
+            }
+
+            retained.append(contentsOf: line)
+            retained.append(0x0A)
+            oldestRetainedDate = min(oldestRetainedDate ?? timestamp, timestamp)
+        }
+
+        if removedEntry {
+            try retained.write(to: logURL, options: .atomic)
+        }
+        nextPruneDate = (oldestRetainedDate ?? date).addingTimeInterval(Self.retentionDuration)
+    }
+
+    private func schedulePrune(for timestamp: Date) {
+        let expiration = timestamp.addingTimeInterval(Self.retentionDuration)
+        nextPruneDate = min(nextPruneDate ?? expiration, expiration)
+    }
+
     private struct Entry: Encodable {
         let timestamp: String
         let event: String
         let details: [String: String]
+    }
+
+    private struct TimestampedEntry: Decodable {
+        let timestamp: String
     }
 }

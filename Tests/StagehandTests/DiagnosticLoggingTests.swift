@@ -76,3 +76,52 @@ import Testing
     #expect(!FileManager.default.fileExists(atPath: logURL.path))
     logger.clear()
 }
+
+@Test @MainActor func diagnosticLogRetainsOnlyThePrevious24Hours() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("StagehandDiagnosticRetentionTests-\(UUID().uuidString)", isDirectory: true)
+    let logURL = directory.appendingPathComponent("stagehand.log")
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    var currentDate = Date(timeIntervalSince1970: 0)
+    let logger = DiagnosticLogger(logURL: logURL, enabled: true, now: { currentDate })
+    logger.record("expired")
+
+    currentDate.addTimeInterval(60 * 60)
+    logger.record("at_retention_limit")
+
+    currentDate.addTimeInterval(22 * 60 * 60)
+    logger.record("retained")
+
+    currentDate.addTimeInterval(2 * 60 * 60)
+    logger.record("current")
+
+    let contents = try String(contentsOf: logURL, encoding: .utf8)
+    #expect(!contents.contains("\"event\":\"expired\""))
+    #expect(!contents.contains("\"event\":\"at_retention_limit\""))
+    #expect(contents.contains("\"event\":\"retained\""))
+    #expect(contents.contains("\"event\":\"current\""))
+}
+
+@Test @MainActor func diagnosticLogPrunesExpiredEntriesWhenOpened() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("StagehandDiagnosticStartupRetentionTests-\(UUID().uuidString)", isDirectory: true)
+    let logURL = directory.appendingPathComponent("stagehand.log")
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let currentDate = Date(timeIntervalSince1970: 48 * 60 * 60)
+    let retainedDate = currentDate.addingTimeInterval(-60 * 60)
+    let existingLog = """
+    {"details":{},"event":"expired","timestamp":"1970-01-01T00:00:00Z"}
+    {"details":{},"event":"retained","timestamp":"\(retainedDate.ISO8601Format())"}
+
+    """
+    try existingLog.write(to: logURL, atomically: true, encoding: .utf8)
+
+    _ = DiagnosticLogger(logURL: logURL, enabled: false, now: { currentDate })
+
+    let contents = try String(contentsOf: logURL, encoding: .utf8)
+    #expect(!contents.contains("\"event\":\"expired\""))
+    #expect(contents.contains("\"event\":\"retained\""))
+}
