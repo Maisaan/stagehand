@@ -1,9 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title description">
   <title id="title">Stagehand app icon</title>
-  <desc id="description">A wide white bar divided into three window segments on a black tile.</desc>
-  <rect x="64" y="64" width="896" height="896" rx="208" fill="#000000"/>
+  <desc id="description">The white Stagehand window mark on a solid black background.</desc>
+  <rect width="1024" height="1024" fill="#000000"/>
 
-  <rect x="156" y="360" width="712" height="304" rx="64" fill="#FFFFFF"/>
-  <path fill="#000000" d="m341 360 40 0 64 304-40 0Z"/>
-  <path fill="#000000" d="m578 360 40 0 64 304-40 0Z"/>
+  <g transform="translate(112 300.2353) scale(4.70588235)" fill="#FFFFFF">
+    <path d="M54.4713 80.3648C55.1486 85.4996 50.5079 90 44.5359 90H10C4.47715 90 0 86.1255 0 81.3462V12.1154C0 7.336 4.47715 3.46154 10 3.46154H35.4046C40.4887 3.46154 44.7635 6.76271 45.3401 11.134L54.4713 80.3648Z"/>
+    <path d="M125.643 77.8478C125.666 82.6415 121.182 86.5385 115.643 86.5385H68.6921C63.608 86.5385 59.3331 83.2373 58.7566 78.866L49.6253 9.63522C48.9481 4.50041 53.5887 0 59.5608 0H115.302C120.808 0 125.279 3.85204 125.302 8.617L125.643 77.8478Z"/>
+    <path d="M170 81.3462C170 86.1255 165.523 90 160 90H139.721C134.215 90 129.745 86.148 129.721 81.3831L129.38 12.1523C129.356 7.35854 133.84 3.46154 139.38 3.46154H160C165.523 3.46154 170 7.336 170 12.1154V81.3462Z"/>
+  </g>
 </svg>

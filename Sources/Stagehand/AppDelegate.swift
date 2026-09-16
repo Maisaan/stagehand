@@ -77,10 +77,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.mainMenu = makeApplicationMenu()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem?.button {
-            button.image = NSImage(
-                systemSymbolName: "rectangle.leadinghalf.inset.filled",
-                accessibilityDescription: "Stagehand"
-            )
+            if let url = Bundle.main.url(forResource: "StagehandMenuBar", withExtension: "svg"),
+               let image = NSImage(contentsOf: url) {
+                image.size = NSSize(width: 18, height: 10)
+                image.isTemplate = true
+                image.accessibilityDescription = "Stagehand"
+                button.image = image
+            }
+            button.imageScaling = .scaleProportionallyDown
             button.toolTip = "Stagehand"
             button.target = self
             button.action = #selector(statusItemClicked(_:))
