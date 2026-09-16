@@ -125,6 +125,13 @@ final class StagehandModel: ObservableObject {
     }
     @Published private(set) var focusBorderColor: NSColor
     @Published private(set) var appBarColor: NSColor
+    @Published var developerControlsEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(developerControlsEnabled, forKey: Self.developerControlsPreferenceKey)
+            overlays.setDeveloperControlsEnabled(developerControlsEnabled)
+        }
+    }
+    @Published private(set) var ribbonAnimationConfiguration: RibbonAnimationConfiguration
     @Published var diagnosticLoggingEnabled: Bool {
         didSet {
             UserDefaults.standard.set(diagnosticLoggingEnabled, forKey: DiagnosticLogger.preferenceKey)
@@ -179,6 +186,9 @@ final class StagehandModel: ObservableObject {
     private var layoutFailureReason: String?
     private static let focusBorderColorPreferenceKey = "focusBorderColor"
     private static let appBarColorPreferenceKey = "appBarColor"
+    private static let developerControlsPreferenceKey = "developerControlsEnabled"
+    private static let ribbonAnimationDurationPreferenceKey = "ribbonAnimationDuration"
+    private static let ribbonAnimationCurvePreferenceKey = "ribbonAnimationCurve"
 
     private struct PointerInteraction {
         let windowID: String
@@ -250,6 +260,14 @@ final class StagehandModel: ObservableObject {
             forKey: Self.appBarColorPreferenceKey,
             in: defaults
         ) ?? NavigationHUDModel.defaultAppBarColor
+        developerControlsEnabled = defaults.bool(forKey: Self.developerControlsPreferenceKey)
+        let savedDuration = defaults.object(forKey: Self.ribbonAnimationDurationPreferenceKey) as? Double
+        let savedCurve = defaults.string(forKey: Self.ribbonAnimationCurvePreferenceKey)
+            .flatMap(RibbonAnimationCurve.init(rawValue:))
+        ribbonAnimationConfiguration = Self.validatedRibbonAnimationConfiguration(
+            duration: savedDuration ?? RibbonAnimationConfiguration.default.duration,
+            curve: savedCurve ?? RibbonAnimationConfiguration.default.curve
+        )
         state.maximizeWindows = defaults.object(forKey: "maximizeWindows") as? Bool
             ?? (defaults.string(forKey: "layoutMode") == "monocle")
         input.onAction = { [weak self] action in self?.navigate(action) }
@@ -264,12 +282,17 @@ final class StagehandModel: ObservableObject {
             guard let self else { return }
             self.reorderWindow(windowID: id, toIndex: index, spaceIndex: self.state.activeSpaceIndex)
         }
+        overlays.onAnimationConfigurationChange = { [weak self] configuration in
+            self?.setRibbonAnimationConfiguration(configuration)
+        }
         overlays.canRevealNavigation = { [weak self] in
             guard let self, self.isRunning, !self.isSuspended else { return false }
             return self.desktopScope.refresh() == .home
         }
         overlays.setBorderColor(focusBorderColor)
         overlays.setAppBarColor(appBarColor)
+        overlays.setDeveloperControlsEnabled(developerControlsEnabled)
+        overlays.setRibbonAnimationConfiguration(ribbonAnimationConfiguration)
         input.onStatusChange = { [weak self] in self?.updateInputStatus() }
         windowSystem.onChange = { [weak self] in self?.scheduleRefresh() }
         windowSystem.onFocusedWindowChange = { [weak self] id in self?.observedFocusChanged(windowID: id) }
@@ -515,6 +538,33 @@ final class StagehandModel: ObservableObject {
         appBarColor = normalized
         Self.saveColor(normalized, forKey: Self.appBarColorPreferenceKey)
         overlays.setAppBarColor(normalized)
+    }
+
+    func setRibbonAnimationConfiguration(_ configuration: RibbonAnimationConfiguration) {
+        let configuration = Self.validatedRibbonAnimationConfiguration(
+            duration: configuration.duration,
+            curve: configuration.curve
+        )
+        guard configuration != ribbonAnimationConfiguration else { return }
+        ribbonAnimationConfiguration = configuration
+        let defaults = UserDefaults.standard
+        defaults.set(configuration.duration, forKey: Self.ribbonAnimationDurationPreferenceKey)
+        defaults.set(configuration.curve.rawValue, forKey: Self.ribbonAnimationCurvePreferenceKey)
+        overlays.setRibbonAnimationConfiguration(configuration)
+    }
+
+    private static func validatedRibbonAnimationConfiguration(
+        duration: Double,
+        curve: RibbonAnimationCurve
+    ) -> RibbonAnimationConfiguration {
+        let duration = duration.isFinite
+            ? min(max(duration, RibbonAnimationConfiguration.durationRange.lowerBound),
+                  RibbonAnimationConfiguration.durationRange.upperBound)
+            : RibbonAnimationConfiguration.default.duration
+        return RibbonAnimationConfiguration(
+            duration: duration,
+            curve: curve
+        )
     }
 
     private static func normalizedColor(_ color: NSColor, alpha: CGFloat = 1) -> NSColor? {
@@ -1585,8 +1635,15 @@ final class StagehandModel: ObservableObject {
         motionWrittenPositions = from.mapValues {
             RibbonMotion.pixelAligned($0.origin, backingScaleFactor: motionBackingScaleFactor)
         }
+        let animationConfiguration = RibbonAnimationConfiguration(
+            duration: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+                ? 0 : ribbonAnimationConfiguration.duration,
+            curve: ribbonAnimationConfiguration.curve
+        )
         if diagnostics.isEnabled {
             diagnostics.record("ribbon_animation_started", details: [
+                "curve": animationConfiguration.curve.rawValue,
+                "durationMilliseconds": String(Int((animationConfiguration.duration * 1_000).rounded())),
                 "focusedWindowID": state.focusedWindowID ?? "none",
                 "observedFocusedWindowID": windowSystem.focusedWindowID() ?? "none",
                 "operation": operation,
@@ -1596,7 +1653,7 @@ final class StagehandModel: ObservableObject {
                                  operation: operation)
         }
         ribbonMotion.animate(from: from, to: to,
-                             duration: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.2,
+                             configuration: animationConfiguration,
                              update: { [weak self] in self?.applyMotionFrames($0) }, completion: { [weak self] in
             guard let self, self.isRunning, !self.isSuspended, self.desktopScope.refresh() == .home else { return }
             for (id, frame) in to where visibleIDs.contains(id) && self.motionLaggingWindowIDs.contains(id) {
@@ -1871,7 +1928,7 @@ final class StagehandModel: ObservableObject {
         overlays.updateBorder(frame: .zero, visible: false)
     }
 
-    private func nativeDesktopChanged(remainingChecks: Int = 5) {
+    private func nativeDesktopChanged() {
         guard isRunning else { return }
         desktopCheckTask?.cancel()
         switch desktopScope.refresh() {
@@ -1916,13 +1973,14 @@ final class StagehandModel: ObservableObject {
                 updateInputStatus()
                 onStateChange?()
             }
-            // Native transitions can briefly have no active Desktop ID. Retry only that transient
-            // state; otherwise the native Desktop notification wakes us when the user returns.
-            if desktopScope.relation == .unknown, remainingChecks > 0 {
+            // WindowServer can report an unavailable Desktop throughout the lock
+            // screen and briefly after unlock. Keep checking until it reports the
+            // bound Desktop instead of relying on one early session notification.
+            if desktopScope.relation == .unknown {
                 desktopCheckTask = Task { [weak self] in
-                    try? await Task.sleep(for: .milliseconds(200))
+                    try? await Task.sleep(for: .milliseconds(500))
                     guard !Task.isCancelled else { return }
-                    self?.nativeDesktopChanged(remainingChecks: remainingChecks - 1)
+                    self?.nativeDesktopChanged()
                 }
             }
         }

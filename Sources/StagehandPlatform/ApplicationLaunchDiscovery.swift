@@ -15,6 +15,7 @@ final class ApplicationLaunchDiscovery {
     @discardableResult
     func schedule(pid: Int32, refresh: @escaping @MainActor () -> Bool) -> Bool {
         guard tasks[pid] == nil else { return false }
+        guard refresh() else { return true }
         tasks[pid] = Task { @MainActor [weak self, delays] in
             for delay in delays {
                 do { try await Task.sleep(for: delay) }

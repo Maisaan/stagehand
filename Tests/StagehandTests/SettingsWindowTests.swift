@@ -11,6 +11,10 @@ import Testing
 
     #expect(window.styleMask.contains(.resizable))
     #expect(window.contentMinSize == NSSize(width: 520, height: 480))
+    #expect(window.collectionBehavior.contains(.auxiliary))
+    #expect(window.collectionBehavior.contains(.fullScreenNone))
+    #expect(!window.collectionBehavior.contains(.canJoinAllApplications))
+    #expect(!window.collectionBehavior.contains(.fullScreenAuxiliary))
 
     // Measure the SwiftUI root itself. The hosting view's bounds alone can grow while
     // a fixed-size root remains 680 × 610 inside it.

@@ -12,6 +12,13 @@ public struct WindowRecord: Identifiable, Equatable, Sendable {
     public let isResizable: Bool
 }
 
+func canManageWindows(
+    for activationPolicy: NSApplication.ActivationPolicy,
+    hasVisibleOrTrackedWindow: Bool
+) -> Bool {
+    activationPolicy == .regular || activationPolicy == .accessory && hasVisibleOrTrackedWindow
+}
+
 /// Controls external windows through Accessibility and registered Stagehand windows through AppKit.
 @MainActor
 public final class WindowSystem {
@@ -157,14 +164,15 @@ public final class WindowSystem {
     public func scanWindows() -> [WindowRecord] {
         guard isAccessibilityTrusted else { return nativeWindows.records }
         let runningApps = NSWorkspace.shared.runningApplications
-        let apps = eligibleApplications(from: runningApps)
+        let visibleWindows = onScreenWindows()
+        let accessoryPIDs = Set(visibleWindows.map(\.pid)).union(windows.values.map(\.record.pid))
+        let apps = eligibleApplications(from: runningApps, accessoryPIDs: accessoryPIDs)
         let livePIDs = Set(apps.map(\.processIdentifier))
         for pid in Array(observers.keys) where !livePIDs.contains(pid) {
             removeObserver(pid: pid)
         }
         var seen = Set<String>()
         var result: [WindowRecord] = []
-        let visibleWindows = onScreenWindows()
         if focusDiagnosticsEnabled {
             print("Scan t=\(ProcessInfo.processInfo.systemUptime) runningApps=\(runningApps.count) eligibleApps=\(apps.count) cgVisibleWindows=\(visibleWindows.count)")
         }
@@ -723,7 +731,11 @@ public final class WindowSystem {
                 catch { return }
                 guard let self, self.started, !Task.isCancelled else { return }
                 var scheduled = false
-                for app in self.eligibleApplications(from: NSWorkspace.shared.runningApplications)
+                let visiblePIDs = Set(self.onScreenWindows().map(\.pid))
+                for app in self.eligibleApplications(
+                    from: NSWorkspace.shared.runningApplications,
+                    accessoryPIDs: visiblePIDs
+                )
                 where self.observers[app.processIdentifier] == nil {
                     scheduled = self.scheduleDiscovery(for: app) || scheduled
                 }
@@ -735,8 +747,7 @@ public final class WindowSystem {
     @discardableResult
     private func scheduleDiscovery(for app: NSRunningApplication) -> Bool {
         let pid = app.processIdentifier
-        guard app.activationPolicy == .regular, !app.isTerminated,
-              pid != ProcessInfo.processInfo.processIdentifier,
+        guard !app.isTerminated, pid != ProcessInfo.processInfo.processIdentifier,
               !windows.values.contains(where: { $0.record.pid == pid && $0.isAdmitted }) else { return false }
         return launchDiscovery.schedule(pid: pid) { [weak self] in
             guard let self, self.started,
@@ -749,10 +760,16 @@ public final class WindowSystem {
         }
     }
 
-    private func eligibleApplications(from applications: [NSRunningApplication]) -> [NSRunningApplication] {
+    private func eligibleApplications(
+        from applications: [NSRunningApplication],
+        accessoryPIDs: Set<pid_t>
+    ) -> [NSRunningApplication] {
         applications.filter {
             $0.processIdentifier != ProcessInfo.processInfo.processIdentifier &&
-            $0.activationPolicy == .regular && !$0.isTerminated
+            canManageWindows(
+                for: $0.activationPolicy,
+                hasVisibleOrTrackedWindow: accessoryPIDs.contains($0.processIdentifier)
+            ) && !$0.isTerminated
         }
     }
 

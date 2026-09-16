@@ -8,11 +8,9 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     private var handler: ((TimeInterval) -> Void)?
     private(set) var startCount = 0
     private(set) var stopCount = 0
-    private(set) var maximumFramesPerSecond: Int?
 
-    func start(maximumFramesPerSecond: Int, onFrame: @escaping (TimeInterval) -> Void) -> Bool {
+    func start(onFrame: @escaping (TimeInterval) -> Void) -> Bool {
         startCount += 1
-        self.maximumFramesPerSecond = maximumFramesPerSecond
         handler = onFrame
         return true
     }
@@ -177,6 +175,16 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     #expect(try #require(translations.last) < #require(translations.dropLast().last))
 }
 
+@MainActor @Test func ribbonAnimationCurvesProduceDistinctTiming() {
+    let progress = 0.25
+
+    #expect(RibbonAnimationCurve.linear.progress(at: progress) == progress)
+    #expect(RibbonAnimationCurve.smoother.progress(at: progress) < progress)
+    #expect(RibbonAnimationCurve.easeOut.progress(at: progress) > progress)
+    #expect(RibbonAnimationCurve.easeInOut.progress(at: -1) == 0)
+    #expect(RibbonAnimationCurve.easeInOut.progress(at: 2) == 1)
+}
+
 @MainActor @Test func ribbonSlideKeepsTheTargetsVerticalPosition() throws {
     let driver = TestRibbonFrameDriver()
     let motion = RibbonMotion(frameDriver: driver)
@@ -187,7 +195,11 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
 
     // A delayed vertical position report must not turn horizontal navigation
     // into an upward slide.
-    motion.animate(from: ["window": reported], to: ["window": target], duration: 0.2,
+    motion.animate(from: ["window": reported], to: ["window": target],
+                   configuration: RibbonAnimationConfiguration(
+                    duration: 0.2,
+                    curve: .smoother
+                   ),
                    update: { frames in
         if let frame = frames["window"] { updates.append(frame) }
     }, completion: { completions += 1 })
@@ -215,7 +227,16 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     var currentCompletions = 0
     motion.animate(from: a, to: b, update: { _ in }, completion: { staleCompletions += 1 })
     #expect(motion.isRunning)
-    motion.animate(from: motion.frames, to: a, duration: 0, update: { _ in }, completion: { currentCompletions += 1 })
+    motion.animate(
+        from: motion.frames,
+        to: a,
+        configuration: RibbonAnimationConfiguration(
+            duration: 0,
+            curve: .smoother
+        ),
+        update: { _ in },
+        completion: { currentCompletions += 1 }
+    )
     #expect(staleCompletions == 0)
     #expect(currentCompletions == 1)
     #expect(!motion.isRunning)
@@ -227,10 +248,18 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     let start = ["a": CGRect(x: 0, y: 0, width: 900, height: 700)]
     let target = ["a": CGRect(x: 100, y: 0, width: 900, height: 700)]
     var completions = 0
-    motion.animate(from: start, to: target, duration: 0,
+    motion.animate(from: start, to: target,
+                   configuration: RibbonAnimationConfiguration(
+                    duration: 0,
+                    curve: .smoother
+                   ),
                    update: { _ in motion.cancel() }, completion: { completions += 1 })
     #expect(completions == 0)
-    motion.animate(from: start, to: target, duration: 0.01,
+    motion.animate(from: start, to: target,
+                   configuration: RibbonAnimationConfiguration(
+                    duration: 0.01,
+                    curve: .smoother
+                   ),
                    update: { frames in if frames == target { motion.cancel() } },
                    completion: { completions += 1 })
     try await Task.sleep(for: .milliseconds(40))
@@ -247,7 +276,6 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     motion.follow(frames: { first }, update: { updates.append($0) })
     motion.follow(frames: { latest }, update: { updates.append($0) })
     #expect(driver.startCount == 1)
-    #expect(driver.maximumFramesPerSecond == 60)
     #expect(updates.isEmpty)
 
     driver.emit(at: 1)

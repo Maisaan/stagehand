@@ -17,7 +17,8 @@ struct NavigationHUDGeometry {
 
     static func layout(screenFrame: CGRect, visibleFrame: CGRect, safeAreaTop: CGFloat,
                        auxiliaryLeft: CGRect?, auxiliaryRight: CGRect?, windowCount: Int,
-                       warningHeight: CGFloat? = nil) -> Self {
+                       warningHeight: CGFloat? = nil,
+                       showsDeveloperControls: Bool = false) -> Self {
         let notch: CGRect?
         if safeAreaTop > 0, let left = auxiliaryLeft, let right = auxiliaryRight,
            left.maxX < right.minX, left.maxX >= screenFrame.minX,
@@ -29,9 +30,13 @@ struct NavigationHUDGeometry {
         }
         let attached = notch != nil && warningHeight == nil
         let limit = max(1, min(warningHeight == nil ? 520 : 580, visibleFrame.width - 32))
-        let desiredWidth = warningHeight == nil ? 60 + CGFloat(max(1, windowCount)) * 36 : 580
+        let developerControlsVisible = warningHeight == nil && showsDeveloperControls
+        let navigationWidth = 60 + CGFloat(max(1, windowCount)) * 36
+        let desiredWidth = warningHeight == nil
+            ? max(navigationWidth, developerControlsVisible ? 500 : 0)
+            : 580
         let width = min(limit, desiredWidth)
-        let height = warningHeight.map { max(72, $0) } ?? 66
+        let height = warningHeight.map { max(72, $0) } ?? (developerControlsVisible ? 108 : 66)
         let centerX = notch?.midX ?? screenFrame.midX
         let left = min(max(centerX - width / 2, visibleFrame.minX + 16), visibleFrame.maxX - 16 - width)
         let top = attached ? (notch?.minY ?? visibleFrame.maxY) : min(visibleFrame.maxY, screenFrame.maxY - safeAreaTop) - 6
@@ -53,6 +58,7 @@ final class NavigationOverlays {
     var onShareWindow: ((String, Int) -> Void)?
     var onRemoveWindow: ((String) -> Void)?
     var onReorderWindow: ((String, Int) -> Void)?
+    var onAnimationConfigurationChange: ((RibbonAnimationConfiguration) -> Void)?
     var canRevealNavigation: (() -> Bool)?
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
@@ -73,6 +79,9 @@ final class NavigationOverlays {
         hudModel.onShareWindow = { [weak self] id, index in self?.onShareWindow?(id, index) }
         hudModel.onRemoveWindow = { [weak self] id in self?.onRemoveWindow?(id) }
         hudModel.onReorderWindow = { [weak self] id, index in self?.onReorderWindow?(id, index) }
+        hudModel.onAnimationConfigurationChange = { [weak self] configuration in
+            self?.onAnimationConfigurationChange?(configuration)
+        }
         hudModel.onDropTargetChange = { [weak self] isTargeted in
             self?.dropTargetChanged(isTargeted: isTargeted)
         }
@@ -109,6 +118,16 @@ final class NavigationOverlays {
 
     func setAppBarColor(_ color: NSColor) {
         hudModel.appBarColor = color
+    }
+
+    func setDeveloperControlsEnabled(_ enabled: Bool) {
+        guard hudModel.developerControlsEnabled != enabled else { return }
+        hudModel.developerControlsEnabled = enabled
+        if hud?.isVisible == true { presentHUD(dismissAfter: .milliseconds(1_500)) }
+    }
+
+    func setRibbonAnimationConfiguration(_ configuration: RibbonAnimationConfiguration) {
+        hudModel.setAnimationConfiguration(configuration)
     }
 
     func updateBorder(frame: CGRect, visible: Bool, cornerRadius: CGFloat? = nil, focusChanged: Bool = false) {
@@ -187,7 +206,8 @@ final class NavigationOverlays {
             screenFrame: screen.frame, visibleFrame: screen.visibleFrame,
             safeAreaTop: screen.safeAreaInsets.top,
             auxiliaryLeft: screen.auxiliaryTopLeftArea, auxiliaryRight: screen.auxiliaryTopRightArea,
-            windowCount: hudModel.displayedItemCount)
+            windowCount: hudModel.displayedItemCount,
+            showsDeveloperControls: hudModel.developerControlsEnabled)
         let width = max(120, (screen.auxiliaryTopRightArea?.minX ?? 0) - (screen.auxiliaryTopLeftArea?.maxX ?? 0))
         hoverFrame = CGRect(x: geometry.contentFrame.midX - width / 2,
                             y: geometry.contentFrame.maxY - 4, width: width,
@@ -216,7 +236,6 @@ final class NavigationOverlays {
         hud.ignoresMouseEvents = hudModel.warning != nil
         guard let container = hud.contentView as? HUDContainerView else { return }
         hudModel.reduceMotion = reduceMotion()
-        hudModel.animationDurationMultiplier = animationDurationMultiplier
         let warningHeight = hudModel.warning.map { message in
             let textWidth = max(1, min(580, screen.visibleFrame.width - 32) - 64)
             return ceil((message as NSString).boundingRect(
@@ -228,7 +247,8 @@ final class NavigationOverlays {
             screenFrame: screen.frame, visibleFrame: screen.visibleFrame,
             safeAreaTop: screen.safeAreaInsets.top,
             auxiliaryLeft: screen.auxiliaryTopLeftArea, auxiliaryRight: screen.auxiliaryTopRightArea,
-            windowCount: hudModel.displayedItemCount, warningHeight: warningHeight)
+            windowCount: hudModel.displayedItemCount, warningHeight: warningHeight,
+            showsDeveloperControls: hudModel.developerControlsEnabled)
         contentFrame = geometry.contentFrame
         updateHoverFrame()
         hudModel.attachedToNotch = geometry.attachedToNotch
@@ -495,14 +515,16 @@ final class NavigationHUDModel: ObservableObject {
     @Published var availableSpaceIndices: [Int] = []
     @Published var showingSpaces = false
     @Published var appBarColor = defaultAppBarColor
+    @Published var developerControlsEnabled = false
+    @Published private(set) var animationConfiguration = RibbonAnimationConfiguration.default
     @Published private(set) var draggedWindowID: String?
     @Published private(set) var dropTargetID: String?
-    var animationDurationMultiplier: Double = 1
     var onFocusWindow: ((String) -> Void)?
     var onSelectSpace: ((Int) -> Void)?
     var onShareWindow: ((String, Int) -> Void)?
     var onRemoveWindow: ((String) -> Void)?
     var onReorderWindow: ((String, Int) -> Void)?
+    var onAnimationConfigurationChange: ((RibbonAnimationConfiguration) -> Void)?
     var onDropTargetChange: ((Bool) -> Void)?
     var onContentChange: (() -> Void)?
 
@@ -513,6 +535,37 @@ final class NavigationHUDModel: ObservableObject {
               let edge = dropIndicatorEdge(for: dropTargetID),
               let appName = windows.first(where: { $0.id == dropTargetID })?.appName else { return nil }
         return "Move \(edge == .leading ? "before" : "after") \(appName)"
+    }
+
+    func setAnimationConfiguration(_ configuration: RibbonAnimationConfiguration) {
+        guard animationConfiguration != configuration else { return }
+        animationConfiguration = configuration
+    }
+
+    func setAnimationDuration(_ duration: Double) {
+        changeAnimationConfiguration(duration: duration)
+    }
+
+    func setAnimationCurve(_ curve: RibbonAnimationCurve) {
+        changeAnimationConfiguration(curve: curve)
+    }
+
+    func resetAnimationConfiguration() {
+        setAnimationConfiguration(RibbonAnimationConfiguration.default)
+        onAnimationConfigurationChange?(animationConfiguration)
+    }
+
+    private func changeAnimationConfiguration(
+        duration: Double? = nil,
+        curve: RibbonAnimationCurve? = nil
+    ) {
+        let configuration = RibbonAnimationConfiguration(
+            duration: duration ?? animationConfiguration.duration,
+            curve: curve ?? animationConfiguration.curve
+        )
+        guard configuration != animationConfiguration else { return }
+        animationConfiguration = configuration
+        onAnimationConfigurationChange?(configuration)
     }
 
     func toggleSpaces() {
@@ -732,8 +785,9 @@ private struct NavigationHUD: View {
                             }
                         }
                         .frame(minWidth: 1)
-                        .animation(model.reduceMotion ? nil : .timingCurve(0.77, 0, 0.175, 1,
-                                                                          duration: 0.2 * model.animationDurationMultiplier),
+                        .animation(model.reduceMotion ? nil : model.animationConfiguration.curve.animation(
+                            duration: model.animationConfiguration.duration
+                        ),
                                    value: model.focusedID)
                     }
                     .onChange(of: model.focusedID, initial: true) { _, id in
@@ -753,9 +807,54 @@ private struct NavigationHUD: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
             }
+            if model.developerControlsEnabled {
+                Divider().overlay(.white.opacity(0.12))
+                animationControls
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    private var animationControls: some View {
+        HStack(spacing: 8) {
+            Text("Switch")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.65))
+            Picker("Curve", selection: Binding(
+                get: { model.animationConfiguration.curve },
+                set: { model.setAnimationCurve($0) }
+            )) {
+                ForEach(RibbonAnimationCurve.allCases) { curve in
+                    Text(curve.title).tag(curve)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 104)
+            Slider(
+                value: Binding(
+                    get: { model.animationConfiguration.duration },
+                    set: { model.setAnimationDuration($0) }
+                ),
+                in: RibbonAnimationConfiguration.durationRange,
+                step: 0.01
+            )
+            .frame(width: 116)
+            .accessibilityLabel("Switch duration")
+            Text("\(Int((model.animationConfiguration.duration * 1_000).rounded())) ms")
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.8))
+                .frame(width: 48, alignment: .trailing)
+            Button(action: model.resetAnimationConfiguration) {
+                Image(systemName: "arrow.counterclockwise")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.white.opacity(0.7))
+            .help("Reset animation controls")
+            .accessibilityLabel("Reset animation controls")
+        }
+        .controlSize(.small)
+        .frame(maxWidth: .infinity)
     }
 
     private var spacePicker: some View {
@@ -778,5 +877,20 @@ private struct NavigationHUD: View {
             }
         }
         .frame(height: 32)
+    }
+}
+
+private extension RibbonAnimationCurve {
+    func animation(duration: Double) -> SwiftUI.Animation {
+        switch self {
+        case .smoother:
+            .timingCurve(0.45, 0, 0.55, 1, duration: duration)
+        case .easeInOut:
+            .easeInOut(duration: duration)
+        case .easeOut:
+            .easeOut(duration: duration)
+        case .linear:
+            .linear(duration: duration)
+        }
     }
 }

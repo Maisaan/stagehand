@@ -42,7 +42,10 @@ public final class DesktopScope {
     @discardableResult
     public func refresh() -> DesktopRelation {
         guard userSessionIsActive() else {
-            relation = .away
+            // The session-active notification can arrive before WindowServer clears
+            // its locked flag. Keep this retryable instead of treating the lock
+            // screen as another Desktop.
+            relation = .unknown
             return relation
         }
         guard let homeDesktopID, let id = currentDesktopID(), id != 0 else {

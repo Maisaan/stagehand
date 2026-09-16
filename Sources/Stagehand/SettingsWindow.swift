@@ -10,6 +10,9 @@ enum SettingsWindow {
         window.title = "Stagehand"
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
+        // Settings belongs to Stage Manager as a utility window, but must never
+        // join another app's native full-screen Space.
+        window.collectionBehavior = [.auxiliary, .fullScreenNone]
         window.contentView = NSHostingView(rootView: SettingsView(model: model))
         window.contentMinSize = NSSize(width: 520, height: 480)
         window.center()

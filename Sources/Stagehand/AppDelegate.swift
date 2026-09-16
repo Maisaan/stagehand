@@ -2,9 +2,26 @@ import AppKit
 import SwiftUI
 import StagehandCore
 
+enum StatusItemClick: Equatable {
+    case openWindow
+    case showMenu
+}
+
+func statusItemClick(for eventType: NSEvent.EventType?) -> StatusItemClick {
+    eventType == .rightMouseUp ? .showMenu : .openWindow
+}
+
+struct StatusMenuState {
+    let isRunning: Bool
+    let isSuspended: Bool
+    let activeSpaceIndex: Int
+    let spaces: [(index: Int, windowCount: Int)]
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem?
+    private var statusMenu: NSMenu?
     private var settingsWindow: NSWindow?
     private var model: StagehandModel?
     private var activationObserver: NSObjectProtocol?
@@ -57,9 +74,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         model.showSettings = { [weak self] in self?.openSettings() }
         model.onStateChange = { [weak self] in self?.updateMenu() }
-        installApplicationMenu()
+        NSApp.mainMenu = makeApplicationMenu()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem?.button?.image = NSImage(systemSymbolName: "rectangle.leadinghalf.inset.filled", accessibilityDescription: "Stagehand")
+        if let button = statusItem?.button {
+            button.image = NSImage(
+                systemSymbolName: "rectangle.leadinghalf.inset.filled",
+                accessibilityDescription: "Stagehand"
+            )
+            button.toolTip = "Stagehand"
+            button.target = self
+            button.action = #selector(statusItemClicked(_:))
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        }
         updateMenu()
         activationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
@@ -81,7 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return true
     }
 
-    @objc private func openSettings() {
+    @objc func openSettings() {
         guard let model else { return }
         if settingsWindow == nil {
             let window = SettingsWindow.make(model: model)
@@ -94,18 +120,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let settingsWindow { model.registerSettingsWindow(settingsWindow) }
     }
 
-    @objc private func toggleRunning() {
+    @objc func closeSettingsWindow() {
+        settingsWindow?.performClose(nil)
+    }
+
+    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        switch statusItemClick(for: NSApp.currentEvent?.type) {
+        case .openWindow:
+            openSettings()
+        case .showMenu:
+            guard let menu = statusMenu else { return }
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY), in: sender)
+        }
+    }
+
+    @objc func toggleRunning() {
         guard let model else { return }
         model.isRunning ? model.pause() : model.start()
     }
 
-    @objc private func changeSpace(_ sender: NSMenuItem) {
+    @objc func changeSpace(_ sender: NSMenuItem) {
         model?.navigate(.goToSpace(index: sender.tag))
     }
 
-    @objc private func quit() { NSApp.terminate(nil) }
+    @objc func quit() { NSApp.terminate(nil) }
 
-    private func installApplicationMenu() {
+    func makeApplicationMenu() -> NSMenu {
         let main = NSMenu()
         let appMenu = NSMenu(title: "Stagehand")
         let appItem = NSMenuItem()
@@ -114,8 +154,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let settings = appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         appMenu.addItem(.separator())
-        let quitItem = appMenu.addItem(withTitle: "Quit Stagehand", action: #selector(quit), keyEquivalent: "q")
-        quitItem.target = self
+        let close = appMenu.addItem(
+            withTitle: "Close Stagehand Window",
+            action: #selector(closeSettingsWindow),
+            keyEquivalent: "q"
+        )
+        close.target = self
         let editMenu = NSMenu(title: "Edit")
         let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
         editItem.submenu = editMenu
@@ -123,7 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         for (title, selector, key) in [("Cut", "cut:", "x"), ("Copy", "copy:", "c"), ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] {
             editMenu.addItem(withTitle: title, action: NSSelectorFromString(selector), keyEquivalent: key)
         }
-        NSApp.mainMenu = main
+        return main
     }
 
     /// Render the real native settings views without starting window management or input monitoring.
@@ -173,37 +217,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func updateMenu() {
-        guard let model else { return }
+    func makeStatusMenu(state: StatusMenuState) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        let title = NSMenuItem(title: model.isSuspended ? "Waiting for its Desktop" : model.isRunning ? "Space \(model.state.activeSpaceIndex + 1)" : "Paused", action: nil, keyEquivalent: "")
-        title.isEnabled = false
-        menu.addItem(title)
-        menu.addItem(.separator())
-        if model.isRunning {
-            for index in model.state.displayedSpaceIndices {
-                let count = model.state.spaces[index].windowIDs.count
-                let item = NSMenuItem(title: "Space \(index + 1)  ·  \(count) \(count == 1 ? "window" : "windows")",
-                                      action: #selector(changeSpace(_:)), keyEquivalent: "")
-                item.target = self
-                item.tag = index
-                item.state = index == model.state.activeSpaceIndex ? .on : .off
-                item.isEnabled = !model.isSuspended
-                menu.addItem(item)
-            }
-            menu.addItem(.separator())
-        }
-        let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
-        settings.target = self
-        menu.addItem(settings)
-        let toggle = NSMenuItem(title: model.isRunning ? "Pause Stagehand" : "Start Stagehand", action: #selector(toggleRunning), keyEquivalent: "")
+
+        let open = NSMenuItem(title: "Open Stagehand", action: #selector(openSettings), keyEquivalent: "")
+        open.target = self
+        menu.addItem(open)
+
+        let toggle = NSMenuItem(
+            title: state.isRunning ? "Pause Stagehand" : "Start Stagehand",
+            action: #selector(toggleRunning),
+            keyEquivalent: ""
+        )
         toggle.target = self
         menu.addItem(toggle)
+
+        if state.isRunning {
+            menu.addItem(.separator())
+            let spaces = NSMenu(title: "Spaces")
+            for space in state.spaces {
+                let noun = space.windowCount == 1 ? "window" : "windows"
+                let item = NSMenuItem(
+                    title: "Space \(space.index + 1) (\(space.windowCount) \(noun))",
+                    action: #selector(changeSpace(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.tag = space.index
+                item.state = space.index == state.activeSpaceIndex ? .on : .off
+                item.isEnabled = !state.isSuspended
+                spaces.addItem(item)
+            }
+            let spacesItem = NSMenuItem(title: "Spaces", action: nil, keyEquivalent: "")
+            spacesItem.submenu = spaces
+            menu.addItem(spacesItem)
+        }
+
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Quit Stagehand", action: #selector(quit), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "Quit Stagehand", action: #selector(quit), keyEquivalent: "")
         quit.target = self
         menu.addItem(quit)
-        statusItem?.menu = menu
+        return menu
+    }
+
+    private func updateMenu() {
+        guard let model else { return }
+        statusItem?.button?.toolTip = model.isSuspended
+            ? "Stagehand: waiting for its Desktop"
+            : model.isRunning ? "Stagehand: running" : "Stagehand: paused"
+        statusMenu = makeStatusMenu(state: StatusMenuState(
+            isRunning: model.isRunning,
+            isSuspended: model.isSuspended,
+            activeSpaceIndex: model.state.activeSpaceIndex,
+            spaces: model.state.displayedSpaceIndices.map {
+                (index: $0, windowCount: model.state.spaces[$0].windowIDs.count)
+            }
+        ))
     }
 }

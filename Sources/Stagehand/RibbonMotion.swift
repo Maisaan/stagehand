@@ -2,9 +2,49 @@ import AppKit
 import QuartzCore
 import StagehandCore
 
+enum RibbonAnimationCurve: String, CaseIterable, Identifiable {
+    case smoother
+    case easeInOut
+    case easeOut
+    case linear
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .smoother: "Smoother"
+        case .easeInOut: "Ease in/out"
+        case .easeOut: "Ease out"
+        case .linear: "Linear"
+        }
+    }
+
+    func progress(at progress: Double) -> Double {
+        let progress = min(1, max(0, progress))
+        switch self {
+        case .smoother:
+            return progress * progress * progress * (progress * (progress * 6 - 15) + 10)
+        case .easeInOut:
+            return progress == 0 ? 0 : progress == 1 ? 1 : (1 - cos(.pi * progress)) / 2
+        case .easeOut:
+            return 1 - pow(1 - progress, 3)
+        case .linear:
+            return progress
+        }
+    }
+}
+
+struct RibbonAnimationConfiguration: Equatable {
+    static let durationRange = 0.08 ... 0.6
+    static let `default` = Self(duration: 0.22, curve: .smoother)
+
+    let duration: Double
+    let curve: RibbonAnimationCurve
+}
+
 @MainActor
 protocol RibbonFrameDriving: AnyObject {
-    func start(maximumFramesPerSecond: Int, onFrame: @escaping (TimeInterval) -> Void) -> Bool
+    func start(onFrame: @escaping (TimeInterval) -> Void) -> Bool
     func stop()
 }
 
@@ -13,7 +53,7 @@ private final class SystemRibbonFrameDriver: NSObject, RibbonFrameDriving {
     private var displayLink: CADisplayLink?
     private var onFrame: ((TimeInterval) -> Void)?
 
-    func start(maximumFramesPerSecond: Int, onFrame: @escaping (TimeInterval) -> Void) -> Bool {
+    func start(onFrame: @escaping (TimeInterval) -> Void) -> Bool {
         stop()
         guard let screen = NSScreen.screens.first(where: { screen in
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
@@ -26,7 +66,7 @@ private final class SystemRibbonFrameDriver: NSObject, RibbonFrameDriving {
         let displayLink = screen.displayLink(target: self, selector: #selector(displayFrame(_:)))
         self.onFrame = onFrame
         self.displayLink = displayLink
-        let maximum = Float(min(maximumFramesPerSecond, max(1, screen.maximumFramesPerSecond)))
+        let maximum = Float(max(1, screen.maximumFramesPerSecond))
         displayLink.preferredFrameRateRange = CAFrameRateRange(
             minimum: maximum,
             maximum: maximum,
@@ -54,14 +94,13 @@ final class RibbonMotion {
         let from: [String: CGRect]
         let to: [String: CGRect]
         let start: TimeInterval
-        let duration: Double
+        let configuration: RibbonAnimationConfiguration
         let update: ([String: CGRect]) -> Void
         let completion: () -> Void
     }
 
     private static let screenWidthsPerTrackpadWidth = 4.0
     private static let completionProgress = 0.3
-    private static let maximumFramesPerSecond = 60
     private let frameDriver: RibbonFrameDriving
     private var animation: Animation?
     private var followingFrames: (() -> [String: CGRect])?
@@ -175,12 +214,13 @@ final class RibbonMotion {
         }
     }
 
-    func animate(from: [String: CGRect], to: [String: CGRect], duration: Double = 0.2,
+    func animate(from: [String: CGRect], to: [String: CGRect],
+                 configuration: RibbonAnimationConfiguration = .default,
                  update: @escaping ([String: CGRect]) -> Void, completion: @escaping () -> Void) {
         cancel()
         let currentGeneration = generation
         frames = from
-        guard duration > 0, from != to else {
+        guard configuration.duration > 0, from != to else {
             frames = to
             update(to)
             guard generation == currentGeneration else { return }
@@ -191,7 +231,7 @@ final class RibbonMotion {
             from: from,
             to: to,
             start: CACurrentMediaTime(),
-            duration: duration,
+            configuration: configuration,
             update: update,
             completion: completion
         )
@@ -206,7 +246,7 @@ final class RibbonMotion {
     }
 
     private func startFrameDriver() -> Bool {
-        frameDriver.start(maximumFramesPerSecond: Self.maximumFramesPerSecond) { [weak self] timestamp in
+        frameDriver.start { [weak self] timestamp in
             self?.advance(to: timestamp)
         }
     }
@@ -219,8 +259,13 @@ final class RibbonMotion {
         }
         guard let animation else { return }
         let currentGeneration = generation
-        let progress = min(1, max(0, (timestamp - animation.start) / animation.duration))
-        frames = Self.interpolate(from: animation.from, to: animation.to, progress: progress)
+        let progress = min(1, max(0, (timestamp - animation.start) / animation.configuration.duration))
+        frames = Self.interpolate(
+            from: animation.from,
+            to: animation.to,
+            progress: progress,
+            curve: animation.configuration.curve
+        )
         animation.update(frames)
         guard generation == currentGeneration else { return }
         if progress >= 1 {
@@ -230,11 +275,10 @@ final class RibbonMotion {
         }
     }
 
-    static func interpolate(from: [String: CGRect], to: [String: CGRect], progress: Double) -> [String: CGRect] {
+    static func interpolate(from: [String: CGRect], to: [String: CGRect], progress: Double,
+                            curve: RibbonAnimationCurve = .smoother) -> [String: CGRect] {
         let progress = min(1, max(0, progress))
-        // Large on-screen translations need zero velocity at both ends. The old
-        // entrance ease-out moved a third of a full-width window on its first tick.
-        let eased = progress == 0 ? 0 : progress == 1 ? 1 : (1 - cos(.pi * progress)) / 2
+        let eased = curve.progress(at: progress)
         var frames: [String: CGRect] = [:]
         frames.reserveCapacity(to.count)
         for (id, target) in to {

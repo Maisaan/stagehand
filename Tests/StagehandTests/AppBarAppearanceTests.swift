@@ -24,4 +24,39 @@ struct AppBarAppearanceTests {
         let restoredModel = StagehandModel()
         #expect(restoredModel.appBarColor == expected)
     }
+
+    @Test func developerAnimationControlsUpdateTheAppBarAndPersist() {
+        _ = NSApplication.shared
+        let defaults = UserDefaults.standard
+        let keys = [
+            "developerControlsEnabled",
+            "ribbonAnimationDuration",
+            "ribbonAnimationCurve"
+        ]
+        let originalValues = Dictionary(uniqueKeysWithValues: keys.map { ($0, defaults.object(forKey: $0)) })
+        defer {
+            for key in keys {
+                if let value = originalValues[key] { defaults.set(value, forKey: key) }
+                else { defaults.removeObject(forKey: key) }
+            }
+        }
+        for key in keys { defaults.removeObject(forKey: key) }
+        let overlays = NavigationOverlays()
+        defer { overlays.hide() }
+        let model = StagehandModel(overlays: overlays)
+        let configuration = RibbonAnimationConfiguration(
+            duration: 0.34,
+            curve: .easeOut
+        )
+
+        model.developerControlsEnabled = true
+        overlays.hudModel.setAnimationDuration(configuration.duration)
+        overlays.hudModel.setAnimationCurve(configuration.curve)
+
+        #expect(overlays.hudModel.developerControlsEnabled)
+        #expect(overlays.hudModel.animationConfiguration == configuration)
+        let restoredModel = StagehandModel()
+        #expect(restoredModel.developerControlsEnabled)
+        #expect(restoredModel.ribbonAnimationConfiguration == configuration)
+    }
 }

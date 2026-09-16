@@ -21,7 +21,7 @@ import Testing
     #expect(scope.bindToCurrentDesktop())
 
     sessionIsActive = false
-    #expect(scope.refresh() == .away)
+    #expect(scope.refresh() == .unknown)
 
     sessionIsActive = true
     #expect(scope.refresh() == .home)
