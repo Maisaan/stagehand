@@ -38,7 +38,6 @@ public final class WindowSystem {
     private struct TrackedWindow {
         let element: AXUIElement
         var record: WindowRecord
-        var windowNumber: CGWindowID?
         var originalFrame: CGRect?
         var parking = WindowParking()
         var parkedFrame: CGRect? { parking.restoreFrame }
@@ -273,17 +272,11 @@ public final class WindowSystem {
                     frame: windows[id]?.parkedFrame ?? currentFrame,
                     isResizable: sizeStatus == .success ? resizable.boolValue : existing?.record.isResizable ?? false
                 )
-                let matchingNumbers = visibleWindows.compactMap { window -> CGWindowID? in
-                    window.pid == app.processIdentifier && sameBounds(window.frame, currentFrame)
-                        ? window.number : nil
-                }
-                let windowNumber = matchingNumbers.count == 1 ? matchingNumbers[0] : existing?.windowNumber
                 if windows[id] != nil {
                     windows[id]?.record = record
-                    windows[id]?.windowNumber = windowNumber
                     windows[id]?.isAdmitted = true
                 } else {
-                    windows[id] = TrackedWindow(element: element, record: record, windowNumber: windowNumber)
+                    windows[id] = TrackedWindow(element: element, record: record)
                     if let observer = observers[app.processIdentifier] { observeWindow(element, observer: observer) }
                 }
                 seen.insert(id)
@@ -319,37 +312,6 @@ public final class WindowSystem {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.frame(windowID: windowID) }
         guard let tracked = windows[windowID] else { return nil }
         return readFrame(tracked.element)
-    }
-
-    /// Reads WindowServer's current presentation bounds. AXPosition can report a
-    /// requested destination while macOS is still animating the visible window.
-    public func displayedFrames<WindowIDs: Collection>(windowIDs: WindowIDs) -> [String: CGRect]
-    where WindowIDs.Element == String {
-        var frames: [String: CGRect] = [:]
-        frames.reserveCapacity(windowIDs.count)
-        for id in windowIDs where nativeWindows.contains(windowID: id) {
-            frames[id] = nativeWindows.frame(windowID: id)
-        }
-        var trackedNumbers: [CGWindowID: String] = [:]
-        trackedNumbers.reserveCapacity(windowIDs.count)
-        for id in windowIDs {
-            guard let tracked = windows[id], let number = tracked.windowNumber else { continue }
-            trackedNumbers[number] = id
-        }
-        guard !trackedNumbers.isEmpty,
-              let metadata = CGWindowListCopyWindowInfo(
-                  [.optionOnScreenOnly, .excludeDesktopElements],
-                  kCGNullWindowID
-              ) as? [[String: Any]] else { return frames }
-        for window in metadata {
-            guard let rawNumber = window[kCGWindowNumber as String] as? NSNumber,
-                  let number = CGWindowID(exactly: rawNumber.int64Value),
-                  let id = trackedNumbers[number],
-                  let bounds = window[kCGWindowBounds as String] as? [String: Any],
-                  let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { continue }
-            frames[id] = frame
-        }
-        return frames
     }
 
     public func isParked(windowID: String) -> Bool {
@@ -801,17 +763,15 @@ public final class WindowSystem {
         return (error == .success ? value : nil, error)
     }
 
-    private func onScreenWindows() -> [(number: CGWindowID, pid: pid_t, frame: CGRect)] {
+    private func onScreenWindows() -> [(pid: pid_t, frame: CGRect)] {
         guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
             as? [[String: Any]] else { return [] }
         return info.compactMap { window in
-            guard let rawNumber = window[kCGWindowNumber as String] as? NSNumber,
-                  let number = CGWindowID(exactly: rawNumber.int64Value),
-                  let pid = window[kCGWindowOwnerPID as String] as? NSNumber,
+            guard let pid = window[kCGWindowOwnerPID as String] as? NSNumber,
                   let layer = window[kCGWindowLayer as String] as? NSNumber, layer.intValue == 0,
                   let bounds = window[kCGWindowBounds as String] as? [String: Any],
                   let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return nil }
-            return (number, pid.int32Value, frame)
+            return (pid.int32Value, frame)
         }
     }
 

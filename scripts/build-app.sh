@@ -4,8 +4,8 @@ set -euo pipefail
 stagehand_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$stagehand_root"
 
-swift build -c release
-stagehand_bin="$(swift build -c release --show-bin-path)"
+swift build -c release -Xswiftc -Osize
+stagehand_bin="$(swift build -c release -Xswiftc -Osize --show-bin-path)"
 stagehand_bundle="$stagehand_root/dist/Stagehand.app"
 mkdir -p "$stagehand_bundle/Contents/MacOS" "$stagehand_bundle/Contents/Resources"
 install -m 755 "$stagehand_bin/Stagehand" "$stagehand_bundle/Contents/MacOS/Stagehand"

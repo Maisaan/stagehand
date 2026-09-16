@@ -13,37 +13,41 @@ func shouldSlideRibbon(from previousState: WorkspaceState, to state: WorkspaceSt
     return state.focusedWindowID != nil
 }
 
-func motionPresentationKeepsPace(
-    previousPosition: CGPoint,
-    requestedPosition: CGPoint,
-    displayedFrame: CGRect
-) -> Bool {
-    // WindowServer presentation normally trails an AX write by a few points.
-    // Treat only a visible divergence as native window animation.
-    let presentationTolerance: CGFloat = 8
-    guard abs(requestedPosition.y - displayedFrame.minY) <= presentationTolerance else { return false }
-    let lowerX = min(previousPosition.x, requestedPosition.x) - presentationTolerance
-    let upperX = max(previousPosition.x, requestedPosition.x) + presentationTolerance
-    return displayedFrame.minX >= lowerX && displayedFrame.minX <= upperX
+func framesMatch(observed: CGRect, target: CGRect, tolerance: CGFloat = 1) -> Bool {
+    abs(observed.minX - target.minX) <= tolerance
+        && abs(observed.minY - target.minY) <= tolerance
+        && abs(observed.width - target.width) <= tolerance
+        && abs(observed.height - target.height) <= tolerance
 }
 
-func laggingOutgoingWindowID(
-    destinationWindowID: String?,
-    systemFocusedWindowID: String?,
-    laggingWindowIDs: Set<String>
-) -> String? {
-    guard let systemFocusedWindowID,
-          systemFocusedWindowID != destinationWindowID,
-          laggingWindowIDs.contains(systemFocusedWindowID) else { return nil }
-    return systemFocusedWindowID
+enum RibbonTranslationOutcome: Equatable {
+    case readyForFocus
+    case superseded
+    case failed
 }
 
-func shouldDriveWindowMotion(
-    windowID: String,
-    systemFocusedWindowID: String?,
-    laggingWindowIDs: Set<String>
-) -> Bool {
-    windowID == systemFocusedWindowID || !laggingWindowIDs.contains(windowID)
+enum NavigationTransitionOutcome: Equatable {
+    case completed
+    case superseded
+    case failed
+}
+
+@MainActor
+func runFocusFirstNavigation(
+    translate: () async -> RibbonTranslationOutcome,
+    focus: () async -> Bool,
+    commitInput: () -> Void,
+    revealBorder: () -> Void
+) async -> NavigationTransitionOutcome {
+    revealBorder()
+    guard await focus() else { return .failed }
+    switch await translate() {
+    case .superseded: return .superseded
+    case .failed: return .failed
+    case .readyForFocus: break
+    }
+    commitInput()
+    return .completed
 }
 
 func preferredParkingSide(for frame: CGRect?, relativeTo bounds: CGRect) -> WindowParkingSide? {
@@ -132,6 +136,7 @@ final class StagehandModel: ObservableObject {
         }
     }
     @Published private(set) var ribbonAnimationConfiguration: RibbonAnimationConfiguration
+    @Published private(set) var interfaceAnimationConfiguration: InterfaceAnimationConfiguration
     @Published var diagnosticLoggingEnabled: Bool {
         didSet {
             UserDefaults.standard.set(diagnosticLoggingEnabled, forKey: DiagnosticLogger.preferenceKey)
@@ -160,15 +165,12 @@ final class StagehandModel: ObservableObject {
     private var gesturePrepared: Set<String> = []
     private var gestureAxis: GestureAxis?
     private var motionWrittenPositions: [String: CGPoint] = [:]
-    private var motionPreviousPositions: [String: CGPoint] = [:]
-    private var motionPresentationMisses: [String: Int] = [:]
-    private var motionLaggingWindowIDs = Set<String>()
     private var motionBackingScaleFactor: CGFloat = 1
     private let emptySpace = EmptySpaceWindow()
     private var refreshTask: Task<Void, Never>?
     private var observedFocusTask: Task<Void, Never>?
     private var worker: Task<Void, Never>?
-    private var pending: [(Change, UInt64?)] = []
+    private var pending: [PendingChange] = []
     private var lastAppliedFrames: [String: CGRect] = [:]
     private var preferredHeights: [String: CGFloat] = [:]
     private var lastTransition = Date.distantPast
@@ -189,6 +191,12 @@ final class StagehandModel: ObservableObject {
     private static let developerControlsPreferenceKey = "developerControlsEnabled"
     private static let ribbonAnimationDurationPreferenceKey = "ribbonAnimationDuration"
     private static let ribbonAnimationCurvePreferenceKey = "ribbonAnimationCurve"
+    private static let ribbonGestureTrackingPreferenceKey = "ribbonGestureTracking"
+    private static let ribbonGestureCommitProgressPreferenceKey = "ribbonGestureCommitProgress"
+    private static let ribbonGestureFlickDistancePreferenceKey = "ribbonGestureFlickDistance"
+    private static let ribbonGestureFlickVelocityPreferenceKey = "ribbonGestureFlickVelocity"
+    private static let ribbonGestureEdgeResistancePreferenceKey = "ribbonGestureEdgeResistance"
+    private static let interfaceAnimationConfigurationPreferenceKey = "interfaceAnimationConfiguration"
 
     private struct PointerInteraction {
         let windowID: String
@@ -242,6 +250,12 @@ final class StagehandModel: ObservableObject {
         }
     }
 
+    private struct PendingChange {
+        let change: Change
+        let token: UInt64?
+        let initialHorizontalVelocity: CGFloat?
+    }
+
     init(overlays: NavigationOverlays = NavigationOverlays(), diagnostics: DiagnosticLogger? = nil) {
         self.overlays = overlays
         let defaults = UserDefaults.standard
@@ -265,7 +279,20 @@ final class StagehandModel: ObservableObject {
         let savedCurve = Self.savedRibbonAnimationCurve(in: defaults)
         ribbonAnimationConfiguration = Self.validatedRibbonAnimationConfiguration(
             duration: savedDuration ?? RibbonAnimationConfiguration.default.duration,
-            curve: savedCurve ?? RibbonAnimationConfiguration.default.curve
+            curve: savedCurve ?? RibbonAnimationConfiguration.default.curve,
+            tracking: defaults.object(forKey: Self.ribbonGestureTrackingPreferenceKey) as? Double
+                ?? RibbonAnimationConfiguration.default.tracking,
+            commitProgress: defaults.object(forKey: Self.ribbonGestureCommitProgressPreferenceKey) as? Double
+                ?? RibbonAnimationConfiguration.default.commitProgress,
+            flickDistance: defaults.object(forKey: Self.ribbonGestureFlickDistancePreferenceKey) as? Double
+                ?? RibbonAnimationConfiguration.default.flickDistance,
+            flickVelocity: defaults.object(forKey: Self.ribbonGestureFlickVelocityPreferenceKey) as? Double
+                ?? RibbonAnimationConfiguration.default.flickVelocity,
+            edgeResistance: defaults.object(forKey: Self.ribbonGestureEdgeResistancePreferenceKey) as? Double
+                ?? RibbonAnimationConfiguration.default.edgeResistance
+        )
+        interfaceAnimationConfiguration = Self.validatedInterfaceAnimationConfiguration(
+            Self.savedInterfaceAnimationConfiguration(in: defaults) ?? .default
         )
         state.maximizeWindows = defaults.object(forKey: "maximizeWindows") as? Bool
             ?? (defaults.string(forKey: "layoutMode") == "monocle")
@@ -284,6 +311,9 @@ final class StagehandModel: ObservableObject {
         overlays.onAnimationConfigurationChange = { [weak self] configuration in
             self?.setRibbonAnimationConfiguration(configuration)
         }
+        overlays.onInterfaceAnimationConfigurationChange = { [weak self] configuration in
+            self?.setInterfaceAnimationConfiguration(configuration)
+        }
         overlays.canRevealNavigation = { [weak self] in
             guard let self, self.isRunning, !self.isSuspended else { return false }
             return self.desktopScope.refresh() == .home
@@ -292,6 +322,7 @@ final class StagehandModel: ObservableObject {
         overlays.setAppBarColor(appBarColor)
         overlays.setDeveloperControlsEnabled(developerControlsEnabled)
         overlays.setRibbonAnimationConfiguration(ribbonAnimationConfiguration)
+        overlays.setInterfaceAnimationConfiguration(interfaceAnimationConfiguration)
         input.onStatusChange = { [weak self] in self?.updateInputStatus() }
         windowSystem.onChange = { [weak self] in self?.scheduleRefresh() }
         windowSystem.onFocusedWindowChange = { [weak self] id in self?.observedFocusChanged(windowID: id) }
@@ -499,7 +530,7 @@ final class StagehandModel: ObservableObject {
         )
     }
 
-    func navigate(_ action: NavigationAction) {
+    func navigate(_ action: NavigationAction, initialHorizontalVelocity: CGFloat? = nil) {
         switch action {
         case .showSettings: showSettings?()
         case .togglePause: isRunning ? pause() : start()
@@ -511,7 +542,7 @@ final class StagehandModel: ObservableObject {
                 gestureBase = nil
                 gesturePrepared.removeAll()
             }
-            enqueue(.action(action))
+            enqueue(.action(action), initialHorizontalVelocity: initialHorizontalVelocity)
         }
     }
 
@@ -542,14 +573,100 @@ final class StagehandModel: ObservableObject {
     func setRibbonAnimationConfiguration(_ configuration: RibbonAnimationConfiguration) {
         let configuration = Self.validatedRibbonAnimationConfiguration(
             duration: configuration.duration,
-            curve: configuration.curve
+            curve: configuration.curve,
+            tracking: configuration.tracking,
+            commitProgress: configuration.commitProgress,
+            flickDistance: configuration.flickDistance,
+            flickVelocity: configuration.flickVelocity,
+            edgeResistance: configuration.edgeResistance
         )
         guard configuration != ribbonAnimationConfiguration else { return }
         ribbonAnimationConfiguration = configuration
         let defaults = UserDefaults.standard
         defaults.set(configuration.duration, forKey: Self.ribbonAnimationDurationPreferenceKey)
         defaults.set(configuration.curve.controlPoints, forKey: Self.ribbonAnimationCurvePreferenceKey)
+        defaults.set(configuration.tracking, forKey: Self.ribbonGestureTrackingPreferenceKey)
+        defaults.set(configuration.commitProgress, forKey: Self.ribbonGestureCommitProgressPreferenceKey)
+        defaults.set(configuration.flickDistance, forKey: Self.ribbonGestureFlickDistancePreferenceKey)
+        defaults.set(configuration.flickVelocity, forKey: Self.ribbonGestureFlickVelocityPreferenceKey)
+        defaults.set(configuration.edgeResistance, forKey: Self.ribbonGestureEdgeResistancePreferenceKey)
         overlays.setRibbonAnimationConfiguration(configuration)
+    }
+
+    func setInterfaceAnimationConfiguration(_ configuration: InterfaceAnimationConfiguration) {
+        let configuration = Self.validatedInterfaceAnimationConfiguration(configuration)
+        guard configuration != interfaceAnimationConfiguration else { return }
+        interfaceAnimationConfiguration = configuration
+        UserDefaults.standard.set([
+            "hudEnterDuration": configuration.hudEnterDuration,
+            "hudExitDuration": configuration.hudExitDuration,
+            "attachedHUDTravel": configuration.attachedHUDTravel,
+            "floatingHUDTravel": configuration.floatingHUDTravel,
+            "hiddenHUDScale": configuration.hiddenHUDScale,
+            "feedbackDuration": configuration.feedbackDuration,
+            "pressedScale": configuration.pressedScale,
+            "focusRevealDuration": configuration.focusRevealDuration,
+            "focusRevealOpacity": configuration.focusRevealOpacity
+        ], forKey: Self.interfaceAnimationConfigurationPreferenceKey)
+        overlays.setInterfaceAnimationConfiguration(configuration)
+    }
+
+    private static func savedInterfaceAnimationConfiguration(
+        in defaults: UserDefaults
+    ) -> InterfaceAnimationConfiguration? {
+        guard let values = defaults.dictionary(
+            forKey: Self.interfaceAnimationConfigurationPreferenceKey
+        ) else { return nil }
+        let fallback = InterfaceAnimationConfiguration.default
+        func value(_ key: String, fallback: Double) -> Double {
+            (values[key] as? NSNumber)?.doubleValue ?? fallback
+        }
+        return InterfaceAnimationConfiguration(
+            hudEnterDuration: value("hudEnterDuration", fallback: fallback.hudEnterDuration),
+            hudExitDuration: value("hudExitDuration", fallback: fallback.hudExitDuration),
+            attachedHUDTravel: value("attachedHUDTravel", fallback: fallback.attachedHUDTravel),
+            floatingHUDTravel: value("floatingHUDTravel", fallback: fallback.floatingHUDTravel),
+            hiddenHUDScale: value("hiddenHUDScale", fallback: fallback.hiddenHUDScale),
+            feedbackDuration: value("feedbackDuration", fallback: fallback.feedbackDuration),
+            pressedScale: value("pressedScale", fallback: fallback.pressedScale),
+            focusRevealDuration: value("focusRevealDuration", fallback: fallback.focusRevealDuration),
+            focusRevealOpacity: value("focusRevealOpacity", fallback: fallback.focusRevealOpacity)
+        )
+    }
+
+    private static func validatedInterfaceAnimationConfiguration(
+        _ configuration: InterfaceAnimationConfiguration
+    ) -> InterfaceAnimationConfiguration {
+        let fallback = InterfaceAnimationConfiguration.default
+        return InterfaceAnimationConfiguration(
+            hudEnterDuration: clamped(configuration.hudEnterDuration,
+                                      to: InterfaceAnimationConfiguration.durationRange,
+                                      fallback: fallback.hudEnterDuration),
+            hudExitDuration: clamped(configuration.hudExitDuration,
+                                     to: InterfaceAnimationConfiguration.durationRange,
+                                     fallback: fallback.hudExitDuration),
+            attachedHUDTravel: clamped(configuration.attachedHUDTravel,
+                                       to: InterfaceAnimationConfiguration.travelRange,
+                                       fallback: fallback.attachedHUDTravel),
+            floatingHUDTravel: clamped(configuration.floatingHUDTravel,
+                                       to: InterfaceAnimationConfiguration.travelRange,
+                                       fallback: fallback.floatingHUDTravel),
+            hiddenHUDScale: clamped(configuration.hiddenHUDScale,
+                                    to: InterfaceAnimationConfiguration.scaleRange,
+                                    fallback: fallback.hiddenHUDScale),
+            feedbackDuration: clamped(configuration.feedbackDuration,
+                                      to: InterfaceAnimationConfiguration.durationRange,
+                                      fallback: fallback.feedbackDuration),
+            pressedScale: clamped(configuration.pressedScale,
+                                  to: InterfaceAnimationConfiguration.scaleRange,
+                                  fallback: fallback.pressedScale),
+            focusRevealDuration: clamped(configuration.focusRevealDuration,
+                                         to: InterfaceAnimationConfiguration.durationRange,
+                                         fallback: fallback.focusRevealDuration),
+            focusRevealOpacity: clamped(configuration.focusRevealOpacity,
+                                        to: InterfaceAnimationConfiguration.opacityRange,
+                                        fallback: fallback.focusRevealOpacity)
+        )
     }
 
     private static func savedRibbonAnimationCurve(in defaults: UserDefaults) -> RibbonAnimationCurve? {
@@ -566,7 +683,12 @@ final class StagehandModel: ObservableObject {
 
     private static func validatedRibbonAnimationConfiguration(
         duration: Double,
-        curve: RibbonAnimationCurve
+        curve: RibbonAnimationCurve,
+        tracking: Double,
+        commitProgress: Double,
+        flickDistance: Double,
+        flickVelocity: Double,
+        edgeResistance: Double
     ) -> RibbonAnimationConfiguration {
         let duration = duration.isFinite
             ? min(max(duration, RibbonAnimationConfiguration.durationRange.lowerBound),
@@ -574,8 +696,26 @@ final class StagehandModel: ObservableObject {
             : RibbonAnimationConfiguration.default.duration
         return RibbonAnimationConfiguration(
             duration: duration,
-            curve: curve
+            curve: curve,
+            tracking: clamped(tracking, to: RibbonAnimationConfiguration.trackingRange,
+                              fallback: RibbonAnimationConfiguration.default.tracking),
+            commitProgress: clamped(commitProgress, to: RibbonAnimationConfiguration.commitProgressRange,
+                                    fallback: RibbonAnimationConfiguration.default.commitProgress),
+            flickDistance: clamped(flickDistance, to: RibbonAnimationConfiguration.flickDistanceRange,
+                                   fallback: RibbonAnimationConfiguration.default.flickDistance),
+            flickVelocity: clamped(flickVelocity, to: RibbonAnimationConfiguration.flickVelocityRange,
+                                   fallback: RibbonAnimationConfiguration.default.flickVelocity),
+            edgeResistance: clamped(edgeResistance, to: RibbonAnimationConfiguration.edgeResistanceRange,
+                                    fallback: RibbonAnimationConfiguration.default.edgeResistance)
         )
+    }
+
+    private static func clamped(
+        _ value: Double,
+        to range: ClosedRange<Double>,
+        fallback: Double
+    ) -> Double {
+        value.isFinite ? min(max(value, range.lowerBound), range.upperBound) : fallback
     }
 
     private static func normalizedColor(_ color: NSColor, alpha: CGFloat = 1) -> NSColor? {
@@ -886,7 +1026,6 @@ final class StagehandModel: ObservableObject {
         let oldState = state
         let oldIDs = Set(windows.map(\.id))
         windows = current
-        motionLaggingWindowIDs.formIntersection(current.map(\.id))
         workspaceRestoration.reconcile(state: &state, windowIDs: current.map(\.id),
                                        trackedWindowIDs: windowSystem.trackedWindowIDs)
         let hasNewWindows = current.contains { !oldIDs.contains($0.id) }
@@ -966,7 +1105,7 @@ final class StagehandModel: ObservableObject {
         onStateChange?()
     }
 
-    private func enqueue(_ change: Change) {
+    private func enqueue(_ change: Change, initialHorizontalVelocity: CGFloat? = nil) {
         if traceGestures, gestureAxis != nil {
             NSLog("[DEBUG-gesture] layout requested during drag: %@", String(describing: change))
         }
@@ -975,25 +1114,35 @@ final class StagehandModel: ObservableObject {
             nativeDesktopChanged()
             return
         }
-        if change == .preferences, pending.contains(where: { $0.0 == .preferences }) { return }
+        if change == .preferences, pending.contains(where: { $0.change == .preferences }) { return }
         // Capture typing before the asynchronous AX activation starts.
         let token = change.policy.beginInputTransfer {
             focusGate.isAvailable ? focusGate.beginTransfer() : nil
         }
-        pending.append((change, token))
+        pending.append(PendingChange(
+            change: change,
+            token: token,
+            initialHorizontalVelocity: initialHorizontalVelocity
+        ))
         diagnostics.record("change_queued", details: [
             "operation": change.diagnosticName,
             "pendingChanges": String(pending.count),
             "transferToken": token.map(String.init) ?? "none"
         ])
+        if change.isWindowNavigation, worker != nil, ribbonMotion.isAnimating {
+            ribbonMotion.cancel()
+        }
         guard worker == nil else { return }
         workerGeneration += 1
         let generation = workerGeneration
         worker = Task { [weak self] in
             guard let self else { return }
             var batchMotionStart: [String: CGRect]?
+            var batchInitialHorizontalVelocity: CGFloat?
             while self.isRunning && !self.isSuspended && !Task.isCancelled && !self.pending.isEmpty {
-                let (change, token) = self.pending.removeFirst()
+                let pendingChange = self.pending.removeFirst()
+                let change = pendingChange.change
+                let token = pendingChange.token
                 self.diagnostics.record("change_started", details: [
                     "operation": change.diagnosticName,
                     "pendingChanges": String(self.pending.count),
@@ -1003,6 +1152,8 @@ final class StagehandModel: ObservableObject {
                 self.transitionRollback = previousState
                 let hadPreview = self.presentationFrames != nil
                 let motionStart = batchMotionStart ?? self.navigationFrames()
+                let initialHorizontalVelocity = batchInitialHorizontalVelocity
+                    ?? pendingChange.initialHorizontalVelocity
                 self.ribbonMotion.cancel()
                 self.presentationFrames = nil
                 if self.gestureAxis != nil { self.input.cancelGestureSequence() }
@@ -1010,7 +1161,12 @@ final class StagehandModel: ObservableObject {
                 self.gestureAxis = nil
                 self.gesturePrepared.removeAll()
                 switch change {
-                case .action(let action): self.state.apply(action)
+                case .action(let action):
+                    guard self.state.apply(action) else {
+                        if let token { self.focusGate.cancelTransfer(token: token) }
+                        self.transitionRollback = nil
+                        continue
+                    }
                 case .maximize(let enabled):
                     if enabled && !self.state.maximizeWindows {
                         // A resize may finish before the debounced refresh observes it.
@@ -1038,14 +1194,16 @@ final class StagehandModel: ObservableObject {
                     self.state.focus(windowID: id, inSpace: spaceIndex)
                 case .refresh, .preferences, .observedFocus: break
                 }
-                if change.isWindowNavigation, self.pending.first?.0.isWindowNavigation == true,
+                if change.isWindowNavigation, self.pending.first?.change.isWindowNavigation == true,
                    let token, self.focusGate.cancelTransferIfEmpty(token: token) {
                     // Keep every navigation step in state, but avoid flashing intermediate
                     // windows when no typing belongs to them. Never merge input tokens.
                     batchMotionStart = motionStart
+                    batchInitialHorizontalVelocity = initialHorizontalVelocity
                     continue
                 }
                 batchMotionStart = nil
+                batchInitialHorizontalVelocity = nil
                 if change.policy == .preferences {
                     self.preferencesNeedLayout = true
                     guard let prepared = change.policy.prepare(
@@ -1088,7 +1246,9 @@ final class StagehandModel: ObservableObject {
                 self.layoutFailureReason = nil
                 let succeeded = await self.applyLayout(token: token, request: change.policy,
                                                        operation: change.diagnosticName,
-                                                       slideFrom: canSlide ? motionStart : nil)
+                                                       slideFrom: canSlide ? motionStart : nil,
+                                                       initialHorizontalVelocity: canSlide
+                                                        ? initialHorizontalVelocity : nil)
                 guard generation == self.workerGeneration, !Task.isCancelled else { return }
                 if !succeeded {
                     self.state = previousState
@@ -1131,8 +1291,61 @@ final class StagehandModel: ObservableObject {
         return false
     }
 
+    private func focusManagedWindow(_ record: WindowRecord, token: UInt64?,
+                                    request: LayoutRequestPolicy, operation: String) async -> Bool {
+        let observedFocusBefore = diagnostics.isEnabled ? windowSystem.focusedWindowID() : nil
+        let focused = await request.confirmFocus(
+            windowID: record.id,
+            currentFocus: { windowSystem.focusedWindowID() },
+            activate: { await windowSystem.focus(windowID: record.id) }
+        )
+        if request == .navigation, diagnostics.isEnabled {
+            let observedFocusAfter = windowSystem.focusedWindowID()
+            var details = [
+                "focusConfirmed": String(focused),
+                "membershipCount": String(state.spaces.count { $0.windowIDs.contains(record.id) }),
+                "observedFocusedWindowIDAfter": observedFocusAfter ?? "none",
+                "observedFocusedWindowIDBefore": observedFocusBefore ?? "none",
+                "operation": operation,
+                "parkedAfter": String(windowSystem.isParked(windowID: record.id)),
+                "systemFocusedAfter": String(observedFocusAfter == record.id),
+                "systemFocusedBefore": String(observedFocusBefore == record.id),
+                "windowID": record.id
+            ]
+            if observedFocusBefore != record.id, let report = windowSystem.lastFocusReport {
+                details["focusReport"] = report.summary
+            }
+            diagnostics.record("navigation_focus_confirmed", details: details)
+        }
+        if request == .preferences, !focused { return true }
+        lastFocusTokenExpired = token.map { expiredTokens.contains($0) } ?? false
+        guard desktopScope.refresh() == .home else {
+            nativeDesktopChanged()
+            return false
+        }
+        guard isRunning, !isSuspended, !Task.isCancelled else {
+            if let token { focusGate.cancelTransfer(token: token) }
+            return false
+        }
+        guard focused, token.map({ expiredTokens.contains($0) }) != true else {
+            if let token { focusGate.cancelTransfer(token: token) }
+            warning = "Stagehand couldn't focus \(record.appName). It paused and restored your windows. Check for an open dialog or changed permissions."
+            var details = [
+                "bundleIdentifier": record.bundleIdentifier,
+                "focusConfirmed": String(focused),
+                "pid": String(record.pid),
+                "transferExpired": String(token.map { expiredTokens.contains($0) } ?? false),
+                "windowID": record.id
+            ]
+            if let report = windowSystem.lastFocusReport { details["focusReport"] = report.summary }
+            return failLayout("focus_confirmation_failed", details: details)
+        }
+        return true
+    }
+
     private func applyLayout(token: UInt64?, request: LayoutRequestPolicy, operation: String,
-                             slideFrom: [String: CGRect]? = nil) async -> Bool {
+                             slideFrom: [String: CGRect]? = nil,
+                             initialHorizontalVelocity: CGFloat? = nil) async -> Bool {
         let layoutStart = ContinuousClock.now
         guard desktopScope.refresh() == .home else {
             nativeDesktopChanged()
@@ -1161,8 +1374,6 @@ final class StagehandModel: ObservableObject {
         var constraintObservations: [(pass: Int, windowID: String, requested: CGRect,
                                       actual: CGRect, axes: String)] = []
         var destinationPID: Int32?
-        var destinationFocusedBeforeFrame = false
-        var laggingWindowsPositionedBeforeFocus = Set<String>()
         // Read accepted sizes after focus, then repack and center app-constrained windows.
         // Repacking may reveal another window. Bound this by the number of windows;
         // the input gate's deadline also applies to the whole transition.
@@ -1173,79 +1384,19 @@ final class StagehandModel: ObservableObject {
                                                  observedWidths: observedWidths, preferredHeights: preferredHeights,
                                                  observedHeights: observedHeights)
             let visible = placements.filter { $0.isVisible || slideFrom?[$0.windowID]?.intersects(availableFrame) == true }
-            if pass == 0, request == .navigation,
-               let outgoingID = laggingOutgoingWindowID(
-                   destinationWindowID: state.focusedWindowID,
-                   systemFocusedWindowID: windowSystem.focusedWindowID(),
-                   laggingWindowIDs: motionLaggingWindowIDs
-               ),
-               let outgoing = visible.first(where: { $0.windowID == outgoingID }) {
-                let beforeFrame = diagnostics.isEnabled ? windowSystem.observedFrame(windowID: outgoingID) : nil
-                let frameWritten = windowSystem.setFrame(windowID: outgoingID, frame: outgoing.frame)
-                let actualFrame = windowSystem.frame(windowID: outgoingID)
-                if frameWritten { laggingWindowsPositionedBeforeFocus.insert(outgoingID) }
-                lastAppliedFrames[outgoingID] = actualFrame
-                if diagnostics.isEnabled {
-                    recordWindowGeometry(
-                        event: "window_motion_positioned_before_focus",
-                        windowID: outgoingID,
-                        requestedFrame: outgoing.frame,
-                        beforeFrame: beforeFrame,
-                        actualFrame: windowSystem.observedFrame(windowID: outgoingID),
-                        details: [
-                            "frameWriteAccepted": String(frameWritten),
-                            "operation": operation
-                        ]
-                    )
-                }
-            }
-            // Once WindowServer shows that an app animates AX moves while inactive,
-            // focus its destination before moving it and do not drive more animation frames.
-            if pass == 0, request == .navigation, let focusedID = state.focusedWindowID,
-               motionLaggingWindowIDs.contains(focusedID) {
-                let observedFocus = windowSystem.focusedWindowID()
-                if focusedID != observedFocus {
-                    destinationFocusedBeforeFrame = await windowSystem.focus(windowID: focusedID)
-                    if diagnostics.isEnabled {
-                        var details = [
-                            "focusConfirmed": String(destinationFocusedBeforeFrame),
-                            "observedFocusedWindowIDAfter": windowSystem.focusedWindowID() ?? "none",
-                            "observedFocusedWindowIDBefore": observedFocus ?? "none",
-                            "operation": operation,
-                            "windowID": focusedID
-                        ]
-                        if let report = windowSystem.lastFocusReport { details["focusReport"] = report.summary }
-                        diagnostics.record("navigation_focus_before_frame", details: details)
-                    }
-                    guard desktopScope.refresh() == .home else {
-                        nativeDesktopChanged()
-                        return false
-                    }
-                    guard isRunning, !isSuspended, !Task.isCancelled else {
-                        if let token { focusGate.cancelTransfer(token: token) }
-                        return false
-                    }
-                }
-            }
-            let motionFocusedWindowID = windowSystem.focusedWindowID()
             // Position neighbors first. Raising the focused real window last keeps clamped neighbors behind it.
             for placement in visible.sorted(by: { !$0.isFocused && $1.isFocused }) {
-                guard preferenceFocusStillMatches(request) else { return true }
-                guard desktopScope.refresh() == .home else {
-                    nativeDesktopChanged()
-                    return false
-                }
-                if request == .navigation, !shouldDriveWindowMotion(
-                    windowID: placement.windowID,
-                    systemFocusedWindowID: motionFocusedWindowID,
-                    laggingWindowIDs: motionLaggingWindowIDs
-                ) {
-                    continue
-                }
                 // A correction pass only writes windows whose geometry actually changed.
                 var preparedFrame = placement.frame
                 if let start = slideFrom?[placement.windowID] { preparedFrame.origin.x = start.minX }
                 if pass > 0, acceptedFrames[placement.windowID] == preparedFrame { continue }
+                if !windowSystem.isParked(windowID: placement.windowID),
+                   let current = windowSystem.frame(windowID: placement.windowID),
+                   framesMatch(observed: current, target: preparedFrame) {
+                    acceptedFrames[placement.windowID] = current
+                    lastAppliedFrames[placement.windowID] = current
+                    continue
+                }
                 let recordsNavigationMotion = request == .navigation && diagnostics.isEnabled
                 let beforeFrame = recordsNavigationMotion
                     ? windowSystem.observedFrame(windowID: placement.windowID) : nil
@@ -1300,95 +1451,14 @@ final class StagehandModel: ObservableObject {
                 let preparation = layoutStart.duration(to: .now).components
                 lastLayoutMilliseconds = Int(preparation.seconds * 1_000 + preparation.attoseconds / 1_000_000_000_000_000)
                 if request == .navigation { emptySpace.hide() }
-                guard desktopScope.refresh() == .home else {
-                    nativeDesktopChanged()
-                    return false
-                }
-                let observedFocusBefore = diagnostics.isEnabled ? windowSystem.focusedWindowID() : nil
-                let focused: Bool
-                if destinationFocusedBeforeFrame, windowSystem.focusedWindowID() == focusedID {
-                    focused = true
-                } else {
-                    focused = await request.confirmFocus(
-                        windowID: focusedID,
-                        currentFocus: { windowSystem.focusedWindowID() },
-                        activate: { await windowSystem.focus(windowID: focusedID) }
-                    )
-                }
-                if request == .navigation, diagnostics.isEnabled {
-                    let observedFocusAfter = windowSystem.focusedWindowID()
-                    var details = [
-                        "focusConfirmed": String(focused),
-                        "membershipCount": String(state.spaces.count { $0.windowIDs.contains(focusedID) }),
-                        "observedFocusedWindowIDAfter": observedFocusAfter ?? "none",
-                        "observedFocusedWindowIDBefore": observedFocusBefore ?? "none",
-                        "operation": operation,
-                        "parkedAfter": String(windowSystem.isParked(windowID: focusedID)),
-                        "systemFocusedAfter": String(observedFocusAfter == focusedID),
-                        "systemFocusedBefore": String(observedFocusBefore == focusedID),
-                        "windowID": focusedID
-                    ]
-                    if observedFocusBefore != focusedID, let report = windowSystem.lastFocusReport {
-                        details["focusReport"] = report.summary
-                    }
-                    diagnostics.record("navigation_focus_confirmed", details: details)
-                }
-                if request == .preferences, !focused { return true }
-                lastFocusTokenExpired = token.map { expiredTokens.contains($0) } ?? false
-                guard desktopScope.refresh() == .home else {
-                    nativeDesktopChanged()
-                    return false
-                }
-                guard isRunning, !isSuspended, !Task.isCancelled else {
-                    if let token { focusGate.cancelTransfer(token: token) }
-                    return false
-                }
-                if !focused || token.map({ expiredTokens.contains($0) }) == true {
-                    if let token { focusGate.cancelTransfer(token: token) }
-                    warning = "Stagehand couldn't focus \(record.appName). It paused and restored your windows. Check for an open dialog or changed permissions."
-                    var details = [
-                        "bundleIdentifier": record.bundleIdentifier,
-                        "focusConfirmed": String(focused),
-                        "pid": String(record.pid),
-                        "transferExpired": String(token.map { expiredTokens.contains($0) } ?? false),
-                        "windowID": record.id
-                    ]
-                    if let report = windowSystem.lastFocusReport {
-                        details["focusReport"] = report.summary
-                    }
-                    return failLayout("focus_confirmation_failed", details: details)
-                }
-                if request == .navigation {
-                    for placement in visible where placement.isVisible &&
-                        !shouldDriveWindowMotion(
-                            windowID: placement.windowID,
-                            systemFocusedWindowID: windowSystem.focusedWindowID(),
-                            laggingWindowIDs: motionLaggingWindowIDs
-                        ) &&
-                        !laggingWindowsPositionedBeforeFocus.contains(placement.windowID) {
-                        if pass > 0, acceptedFrames[placement.windowID] == placement.frame { continue }
-                        let beforeFrame = diagnostics.isEnabled
-                            ? windowSystem.observedFrame(windowID: placement.windowID) : nil
-                        let frameWritten = windowSystem.setFrame(windowID: placement.windowID, frame: placement.frame)
-                        let actualFrame = windowSystem.frame(windowID: placement.windowID)
-                        if diagnostics.isEnabled {
-                            recordWindowGeometry(
-                                event: "window_motion_deferred",
-                                windowID: placement.windowID,
-                                requestedFrame: placement.frame,
-                                beforeFrame: beforeFrame,
-                                actualFrame: windowSystem.observedFrame(windowID: placement.windowID),
-                                details: [
-                                    "frameWriteAccepted": String(frameWritten),
-                                    "operation": operation
-                                ]
-                            )
-                        }
-                        if !frameWritten, placement.isFocused {
-                            warning = "This app controls its window size. Stagehand will use the size it allows."
-                        }
-                        lastAppliedFrames[placement.windowID] = actualFrame
-                    }
+                if slideFrom == nil {
+                    guard await focusManagedWindow(
+                        record,
+                        token: token,
+                        request: request,
+                        operation: operation
+                    ) else { return false }
+                    destinationPID = record.pid
                 }
                 var constrained = false
                 for placement in visible {
@@ -1443,7 +1513,6 @@ final class StagehandModel: ObservableObject {
                     }
                     continue
                 }
-                destinationPID = record.pid
             } else {
                 guard request == .navigation else { return true }
                 // An empty space owns a real blank window so typing cannot leak to a parked app.
@@ -1468,31 +1537,18 @@ final class StagehandModel: ObservableObject {
             }
             break
         }
-        if let token, let destinationPID {
-            focusGate.commitTransfer(token: token, processIdentifier: destinationPID)
-            // Posting to a process is asynchronous, not an OS delivery acknowledgement.
-            try? await Task.sleep(for: .milliseconds(12))
-            guard isRunning, !isSuspended, !Task.isCancelled else { return false }
-        }
         let visibleIDs = Set(placements.filter(\.isVisible).map(\.windowID))
         let motionCandidates = placements.filter {
             $0.isVisible || slideFrom?[$0.windowID]?.intersects(availableFrame) == true
         }
-        let motionFocusedWindowID = windowSystem.focusedWindowID()
-        let sliding = motionCandidates.filter {
-            shouldDriveWindowMotion(
-                windowID: $0.windowID,
-                systemFocusedWindowID: motionFocusedWindowID,
-                laggingWindowIDs: motionLaggingWindowIDs
-            )
-        }
+        let sliding = motionCandidates
         let animatedWindowIDs = slideFrom == nil ? Set<String>() : Set(sliding.map(\.windowID))
+        guard preferenceFocusStillMatches(request) else { return true }
+        guard desktopScope.refresh() == .home else {
+            nativeDesktopChanged()
+            return false
+        }
         for window in windows where !visibleIDs.contains(window.id) && !animatedWindowIDs.contains(window.id) {
-            guard preferenceFocusStillMatches(request) else { return true }
-            guard desktopScope.refresh() == .home else {
-                nativeDesktopChanged()
-                return false
-            }
             let parkingSide = preferredParkingSide(
                 for: placements.first(where: { $0.windowID == window.id })?.frame,
                 relativeTo: availableFrame
@@ -1512,20 +1568,84 @@ final class StagehandModel: ObservableObject {
         }
         guard preferenceFocusStillMatches(request) else { return true }
         preferencesNeedLayout = false
-        lastTransition = Date()
         if slideFrom != nil {
             let starts = Dictionary(uniqueKeysWithValues: sliding.compactMap { placement in
                 windowSystem.frame(windowID: placement.windowID).map { (placement.windowID, $0) }
             })
             let targets = Dictionary(uniqueKeysWithValues: sliding.map { ($0.windowID, $0.frame) })
-            settleRibbon(from: starts, to: targets, visibleIDs: visibleIDs, operation: operation)
-        }
-        if let focused = state.focusedWindowID, let frame = windowSystem.frame(windowID: focused) {
-            updateFocusBorder(windowID: focused, frame: frame)
+            let outcome = await runFocusFirstNavigation(
+                translate: {
+                    let completed = await self.settleRibbon(
+                        from: starts,
+                        to: targets,
+                        visibleIDs: visibleIDs,
+                        operation: operation,
+                        initialHorizontalVelocity: initialHorizontalVelocity
+                    )
+                    if completed { return .readyForFocus }
+                    guard self.isRunning, !self.isSuspended, !Task.isCancelled else { return .failed }
+                    guard !self.pending.isEmpty else { return .readyForFocus }
+                    guard let token else { return .superseded }
+                    return self.focusGate.cancelTransferIfEmpty(token: token)
+                        ? .superseded : .readyForFocus
+                },
+                focus: {
+                    guard let focusedID = self.state.focusedWindowID,
+                          let record = self.windows.first(where: { $0.id == focusedID }),
+                          await self.focusManagedWindow(
+                            record,
+                            token: token,
+                            request: request,
+                            operation: operation
+                          ) else { return false }
+                    destinationPID = record.pid
+                    if let target = placements.first(where: { $0.windowID == focusedID })?.frame,
+                       let actual = self.windowSystem.frame(windowID: focusedID),
+                       !framesMatch(observed: actual, target: target) {
+                        _ = self.windowSystem.setFrame(windowID: focusedID, frame: target)
+                        self.lastAppliedFrames[focusedID] = self.windowSystem.frame(windowID: focusedID)
+                    }
+                    if let frame = self.windowSystem.frame(windowID: focusedID) {
+                        self.updateFocusBorder(windowID: focusedID, frame: frame)
+                    }
+                    return true
+                },
+                commitInput: {
+                    if let token, let destinationPID {
+                        self.focusGate.commitTransfer(token: token, processIdentifier: destinationPID)
+                    }
+                },
+                revealBorder: {
+                    if let focused = self.state.focusedWindowID,
+                       let frame = self.windowSystem.frame(windowID: focused) {
+                        self.updateFocusBorder(windowID: focused, frame: frame)
+                    } else {
+                        self.hideFocusBorder()
+                    }
+                }
+            )
+            switch outcome {
+            case .superseded: return true
+            case .failed: return false
+            case .completed: break
+            }
+            if token != nil, destinationPID != nil {
+                try? await Task.sleep(for: .milliseconds(12))
+                guard isRunning, !isSuspended, !Task.isCancelled else { return false }
+            }
         } else {
-            borderWindowID = nil
-            borderCornerRadius = nil
-            overlays.updateBorder(frame: .zero, visible: false)
+            lastTransition = Date()
+            if let token, let destinationPID {
+                focusGate.commitTransfer(token: token, processIdentifier: destinationPID)
+                // Posting to a process is asynchronous, not an OS delivery acknowledgement.
+                try? await Task.sleep(for: .milliseconds(12))
+                guard isRunning, !isSuspended, !Task.isCancelled else { return false }
+            }
+            if let focused = state.focusedWindowID, let frame = windowSystem.frame(windowID: focused) {
+                updateFocusBorder(windowID: focused, frame: frame)
+            } else {
+                hideFocusBorder()
+            }
         }
         if request == .navigation { overlays.showNavigation(state: state, windows: windows) }
         else { overlays.updateNavigation(state: state, windows: windows) }
@@ -1550,7 +1670,7 @@ final class StagehandModel: ObservableObject {
     }
 
     private func applyMotionFrames(_ frames: [String: CGRect]) {
-        guard isRunning, !isSuspended, desktopScope.refresh() == .home else {
+        guard isRunning, !isSuspended, desktopScope.relation == .home else {
             ribbonMotion.cancel()
             if isRunning { nativeDesktopChanged() }
             return
@@ -1562,47 +1682,8 @@ final class StagehandModel: ObservableObject {
             scheduleRefresh()
             return
         }
-        let displayedFrames = windowSystem.displayedFrames(windowIDs: frames.keys)
-        let motionFocusedWindowID = windowSystem.focusedWindowID()
-        var movingFrames: [String: CGRect] = [:]
-        for (id, frame) in frames where shouldDriveWindowMotion(
-            windowID: id,
-            systemFocusedWindowID: motionFocusedWindowID,
-            laggingWindowIDs: motionLaggingWindowIDs
-        ) {
-            if id != motionFocusedWindowID,
-               !motionLaggingWindowIDs.contains(id),
-               let previousPosition = motionPreviousPositions[id],
-               let requestedPosition = motionWrittenPositions[id],
-               let displayedFrame = displayedFrames[id] {
-                if !motionPresentationKeepsPace(
-                    previousPosition: previousPosition,
-                    requestedPosition: requestedPosition,
-                    displayedFrame: displayedFrame
-                ) {
-                    let misses = (motionPresentationMisses[id] ?? 0) + 1
-                    motionPresentationMisses[id] = misses
-                    if misses >= 2 {
-                        motionLaggingWindowIDs.insert(id)
-                        var requestedFrame = frame
-                        requestedFrame.origin = requestedPosition
-                        recordWindowGeometry(
-                            event: "window_motion_lag_detected",
-                            windowID: id,
-                            requestedFrame: requestedFrame,
-                            actualFrame: displayedFrame,
-                            details: ["consecutiveMisses": String(misses)]
-                        )
-                    }
-                    continue
-                }
-                motionPresentationMisses[id] = 0
-            }
-            movingFrames[id] = frame
-        }
-        let previousWrittenPositions = motionWrittenPositions
         if let failure = writeRibbonPositions(
-            frames: movingFrames,
+            frames: frames,
             writtenPositions: &motionWrittenPositions,
             backingScaleFactor: motionBackingScaleFactor,
             setPosition: { windowSystem.setPosition(windowID: $0, position: $1) },
@@ -1623,15 +1704,12 @@ final class StagehandModel: ObservableObject {
             )
             return
         }
-        for id in movingFrames.keys where previousWrittenPositions[id] != motionWrittenPositions[id] {
-            motionPreviousPositions[id] = previousWrittenPositions[id]
-            guard let acceptedPosition = windowSystem.observedFrame(windowID: id)?.origin else { continue }
-            motionWrittenPositions[id] = RibbonMotion.pixelAligned(
-                acceptedPosition,
-                backingScaleFactor: motionBackingScaleFactor
-            )
-        }
-        if gestureBase == nil, let focused = state.focusedWindowID, var frame = frames[focused] {
+        // The border is a Stagehand overlay, so it can follow the destination at
+        // display cadence without activating that app or disturbing ribbon motion.
+        if gestureBase == nil,
+           let focused = state.focusedWindowID,
+           borderWindowID == focused,
+           var frame = frames[focused] {
             frame.origin = motionWrittenPositions[focused]
                 ?? RibbonMotion.pixelAligned(frame.origin, backingScaleFactor: motionBackingScaleFactor)
             updateFocusBorder(windowID: focused, frame: frame)
@@ -1639,23 +1717,27 @@ final class StagehandModel: ObservableObject {
     }
 
     private func settleRibbon(from: [String: CGRect], to: [String: CGRect], visibleIDs: Set<String>,
-                              operation: String) {
+                              operation: String, initialHorizontalVelocity: CGFloat? = nil) async -> Bool {
         motionBackingScaleFactor = builtInScreen?.backingScaleFactor ?? 1
-        motionPreviousPositions.removeAll()
-        motionPresentationMisses.removeAll()
         motionWrittenPositions = from.mapValues {
             RibbonMotion.pixelAligned($0.origin, backingScaleFactor: motionBackingScaleFactor)
         }
         let animationConfiguration = RibbonAnimationConfiguration(
             duration: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
                 ? 0 : ribbonAnimationConfiguration.duration,
-            curve: ribbonAnimationConfiguration.curve
+            curve: ribbonAnimationConfiguration.curve,
+            tracking: ribbonAnimationConfiguration.tracking,
+            commitProgress: ribbonAnimationConfiguration.commitProgress,
+            flickDistance: ribbonAnimationConfiguration.flickDistance,
+            flickVelocity: ribbonAnimationConfiguration.flickVelocity,
+            edgeResistance: ribbonAnimationConfiguration.edgeResistance
         )
         if diagnostics.isEnabled {
             diagnostics.record("ribbon_animation_started", details: [
                 "curve": animationConfiguration.curve.diagnosticDescription,
                 "durationMilliseconds": String(Int((animationConfiguration.duration * 1_000).rounded())),
                 "focusedWindowID": state.focusedWindowID ?? "none",
+                "initialHorizontalVelocity": initialHorizontalVelocity.map { String(Double($0)) } ?? "none",
                 "observedFocusedWindowID": windowSystem.focusedWindowID() ?? "none",
                 "operation": operation,
                 "windowCount": String(to.count)
@@ -1663,66 +1745,49 @@ final class StagehandModel: ObservableObject {
             recordRibbonGeometry(event: "ribbon_animation_window_started", from: from, to: to,
                                  operation: operation)
         }
-        ribbonMotion.animate(from: from, to: to,
-                             configuration: animationConfiguration,
-                             update: { [weak self] in self?.applyMotionFrames($0) }, completion: { [weak self] in
-            guard let self, self.isRunning, !self.isSuspended, self.desktopScope.refresh() == .home else { return }
-            for (id, frame) in to where visibleIDs.contains(id) && self.motionLaggingWindowIDs.contains(id) {
-                let beforeFrame = self.diagnostics.isEnabled ? self.windowSystem.observedFrame(windowID: id) : nil
-                let frameWritten = self.windowSystem.setFrame(windowID: id, frame: frame)
-                if self.diagnostics.isEnabled {
-                    self.recordWindowGeometry(
-                        event: "window_motion_deferred",
-                        windowID: id,
-                        requestedFrame: frame,
-                        beforeFrame: beforeFrame,
-                        actualFrame: self.windowSystem.observedFrame(windowID: id),
-                        details: [
-                            "frameWriteAccepted": String(frameWritten),
-                            "operation": operation
-                        ]
-                    )
-                }
-            }
-            if self.diagnostics.isEnabled {
-                self.diagnostics.record("ribbon_animation_completed", details: [
-                    "focusedWindowID": self.state.focusedWindowID ?? "none",
-                    "observedFocusedWindowID": self.windowSystem.focusedWindowID() ?? "none",
-                    "operation": operation,
-                    "windowCount": String(to.count)
-                ])
-                self.recordRibbonGeometry(event: "ribbon_animation_window_completed", from: from, to: to,
-                                          operation: operation)
-            }
-            for window in self.windows where !visibleIDs.contains(window.id) {
-                let parkingSide = self.availableFrame.flatMap {
+        let completed = await ribbonMotion.animate(
+            from: from,
+            to: to,
+            configuration: animationConfiguration,
+            initialHorizontalVelocity: initialHorizontalVelocity,
+            update: { [weak self] in self?.applyMotionFrames($0) }
+        )
+        guard completed, isRunning, !isSuspended, desktopScope.refresh() == .home else { return false }
+        if diagnostics.isEnabled {
+            diagnostics.record("ribbon_animation_completed", details: [
+                "focusedWindowID": state.focusedWindowID ?? "none",
+                "observedFocusedWindowID": windowSystem.focusedWindowID() ?? "none",
+                "operation": operation,
+                "windowCount": String(to.count)
+            ])
+            recordRibbonGeometry(event: "ribbon_animation_window_completed", from: from, to: to,
+                                 operation: operation)
+        }
+        for window in windows where !visibleIDs.contains(window.id) {
+            let parkingSide = availableFrame.flatMap {
                     preferredParkingSide(for: to[window.id], relativeTo: $0)
-                }
-                if parkWindow(
-                    windowID: window.id,
-                    park: { self.windowSystem.park(windowID: $0, preferredSide: parkingSide) },
-                    observedFrame: { self.windowSystem.observedFrame(windowID: $0) }
-                ) == .failed {
-                    self.warning = "Stagehand couldn't move \(window.appName) out of this space. It paused and restored your windows."
-                    self.stop(
-                        reason: "ribbon_parking_failed",
-                        automatic: true,
-                        details: [
-                            "bundleIdentifier": window.bundleIdentifier,
-                            "pid": String(window.pid),
-                            "windowID": window.id
-                        ]
-                    )
-                    return
-                }
             }
-            for id in visibleIDs { self.lastAppliedFrames[id] = self.windowSystem.frame(windowID: id) }
-            if let focused = self.state.focusedWindowID, let actual = self.lastAppliedFrames[focused] {
-                self.updateFocusBorder(windowID: focused, frame: actual)
+            if parkWindow(
+                windowID: window.id,
+                park: { windowSystem.park(windowID: $0, preferredSide: parkingSide) },
+                observedFrame: { windowSystem.observedFrame(windowID: $0) }
+            ) == .failed {
+                warning = "Stagehand couldn't move \(window.appName) out of this space. It paused and restored your windows."
+                stop(
+                    reason: "ribbon_parking_failed",
+                    automatic: true,
+                    details: [
+                        "bundleIdentifier": window.bundleIdentifier,
+                        "pid": String(window.pid),
+                        "windowID": window.id
+                    ]
+                )
+                return false
             }
-            self.lastTransition = Date()
-            self.scheduleRefresh()
-        })
+        }
+        for id in visibleIDs { lastAppliedFrames[id] = windowSystem.frame(windowID: id) }
+        lastTransition = Date()
+        return true
     }
 
     private func recordRibbonGeometry(event: String, from: [String: CGRect], to: [String: CGRect],
@@ -1764,8 +1829,6 @@ final class StagehandModel: ObservableObject {
             if worker == nil, axis == .horizontal, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
                 let frames = navigationFrames()
                 ribbonMotion.cancel()
-                motionPreviousPositions.removeAll()
-                motionPresentationMisses.removeAll()
                 gestureBase = frames
                 presentationFrames = frames.filter { $0.value.intersects(availableFrame ?? .zero) }
                 gesturePrepared = Set(presentationFrames?.keys.map { $0 } ?? [])
@@ -1806,7 +1869,8 @@ final class StagehandModel: ObservableObject {
                 availableFrame: availableFrame,
                 gap: gap,
                 displacement: displacement,
-                velocity: velocity
+                velocity: velocity,
+                configuration: ribbonAnimationConfiguration
             )
         } else {
             resolvedAction = recognizerAction
@@ -1821,17 +1885,22 @@ final class StagehandModel: ObservableObject {
             ])
         }
         gestureAxis = nil
+        let initialHorizontalVelocity = axis == .horizontal && velocity.isFinite
+            ? availableFrame.map {
+                CGFloat(velocity * Double($0.width) * ribbonAnimationConfiguration.tracking)
+            }
+            : nil
         if let resolvedAction {
             var destination = state
             guard destination.apply(resolvedAction) else {
-                restoreGesturePreview()
+                restoreGesturePreview(initialHorizontalVelocity: initialHorizontalVelocity)
                 return
             }
             gestureBase = nil
             gesturePrepared.removeAll()
-            navigate(resolvedAction)
+            navigate(resolvedAction, initialHorizontalVelocity: initialHorizontalVelocity)
         } else {
-            restoreGesturePreview()
+            restoreGesturePreview(initialHorizontalVelocity: initialHorizontalVelocity)
         }
     }
 
@@ -1839,7 +1908,7 @@ final class StagehandModel: ObservableObject {
         guard let base = gestureBase, let availableFrame, gestureAxis == .horizontal,
               worker == nil, displacement.isFinite else { return }
         ribbonMotion.follow(frames: { [weak self] in
-            guard let self, self.gestureBase != nil, self.desktopScope.refresh() == .home else { return [:] }
+            guard let self, self.gestureBase != nil, self.desktopScope.relation == .home else { return [:] }
             return self.gesturePreviewFrames(
                 from: base,
                 availableFrame: availableFrame,
@@ -1851,16 +1920,11 @@ final class StagehandModel: ObservableObject {
     private func gesturePreviewFrames(from base: [String: CGRect], availableFrame: CGRect,
                                       displacement: Double) -> [String: CGRect] {
         let preview = RibbonMotion.dragFrames(state: state, from: base, availableFrame: availableFrame,
-                                              gap: gap, displacement: displacement)
+                                              gap: gap, displacement: displacement,
+                                              configuration: ribbonAnimationConfiguration)
         var frames: [String: CGRect] = [:]
-        let motionFocusedWindowID = windowSystem.focusedWindowID()
         for (id, shifted) in preview {
             guard shifted.intersects(availableFrame) || gesturePrepared.contains(id) else { continue }
-            if !shouldDriveWindowMotion(
-                windowID: id,
-                systemFocusedWindowID: motionFocusedWindowID,
-                laggingWindowIDs: motionLaggingWindowIDs
-            ) { continue }
             if !gesturePrepared.contains(id) {
                 let beforeFrame = diagnostics.isEnabled ? windowSystem.observedFrame(windowID: id) : nil
                 let parkedBefore = diagnostics.isEnabled ? windowSystem.isParked(windowID: id) : false
@@ -1902,16 +1966,30 @@ final class StagehandModel: ObservableObject {
         return frames
     }
 
-    private func restoreGesturePreview() {
+    private func restoreGesturePreview(initialHorizontalVelocity: CGFloat? = nil) {
         guard let base = gestureBase, let availableFrame else { return }
         let starts = presentationFrames ?? [:]
         let targets = base.filter { gesturePrepared.contains($0.key) }
         gestureBase = nil
         presentationFrames = nil
         gesturePrepared.removeAll()
-        settleRibbon(from: starts, to: targets,
-                     visibleIDs: Set(base.filter { $0.value.intersects(availableFrame) }.keys),
-                     operation: "gesture.preview.restore")
+        let visibleIDs = Set(base.filter { $0.value.intersects(availableFrame) }.keys)
+        Task { [weak self] in
+            guard let self else { return }
+            let completed = await self.settleRibbon(
+                from: starts,
+                to: targets,
+                visibleIDs: visibleIDs,
+                operation: "gesture.preview.restore",
+                initialHorizontalVelocity: initialHorizontalVelocity
+            )
+            guard completed else { return }
+            if let focused = self.state.focusedWindowID,
+               let frame = self.windowSystem.frame(windowID: focused) {
+                self.updateFocusBorder(windowID: focused, frame: frame)
+            }
+            self.scheduleRefresh()
+        }
     }
 
     private func preferenceFocusStillMatches(_ request: LayoutRequestPolicy) -> Bool {

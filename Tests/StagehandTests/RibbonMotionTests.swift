@@ -184,11 +184,78 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     #expect(RibbonAnimationCurve.linear.progress(at: progress) == progress)
     #expect(RibbonAnimationCurve.smoother.progress(at: progress) < progress)
     #expect(RibbonAnimationCurve.easeOut.progress(at: progress) > progress)
+    #expect(RibbonAnimationCurve.ease.progress(at: progress) > progress)
     #expect(custom.progress(at: 0.5) > 0.5)
     #expect(overshoot.progress(at: 0.5) > 1)
     #expect(clamped.controlPoints == [0, -0.5, 1, 1.5])
     #expect(RibbonAnimationCurve.easeInOut.progress(at: -1) == 0)
     #expect(RibbonAnimationCurve.easeInOut.progress(at: 2) == 1)
+}
+
+@MainActor @Test func defaultRibbonMotionUsesThePurposeBuiltMoveCurve() {
+    #expect(RibbonAnimationConfiguration.default.duration == 0.2)
+    #expect(RibbonAnimationConfiguration.default.curve.controlPoints == [0.65, 0, 0.35, 1])
+    #expect(RibbonAnimationConfiguration.default.tracking == 4)
+    #expect(RibbonAnimationConfiguration.default.commitProgress == 0.3)
+    #expect(RibbonAnimationConfiguration.default.flickDistance == 0.02)
+    #expect(RibbonAnimationConfiguration.default.flickVelocity == 0.45)
+    #expect(RibbonAnimationConfiguration.default.edgeResistance == 60)
+    #expect(RibbonAnimationPreset.matching(.smoother) == .smoother)
+    #expect(RibbonAnimationPreset.matching(.easeOut) == .easeOut)
+    #expect(RibbonAnimationPreset.matching(.ease) == .ease)
+}
+
+@MainActor @Test func gestureTuningChangesTrackingCommitAndBoundaryFeedback() throws {
+    let viewport = CGRect(x: 0, y: 40, width: 1000, height: 700)
+    let state = WorkspaceState(spaces: [SpaceState(windowIDs: ["a", "b"], focusedWindowID: "a")])
+    let base = Dictionary(uniqueKeysWithValues: WindowLayout.placements(
+        for: state,
+        availableFrame: viewport,
+        observedWidths: ["a": 900, "b": 900]
+    ).map { ($0.windowID, $0.frame) })
+    let slow = RibbonAnimationConfiguration(duration: 0.2, curve: .smoother, tracking: 2)
+    let fast = RibbonAnimationConfiguration(duration: 0.2, curve: .smoother, tracking: 6)
+    let slowPreview = RibbonMotion.dragFrames(
+        state: state, from: base, availableFrame: viewport, gap: 8,
+        displacement: -0.02, configuration: slow
+    )
+    let fastPreview = RibbonMotion.dragFrames(
+        state: state, from: base, availableFrame: viewport, gap: 8,
+        displacement: -0.02, configuration: fast
+    )
+    #expect(abs((try #require(fastPreview["a"])).minX - (try #require(base["a"])).minX)
+            > abs((try #require(slowPreview["a"])).minX - (try #require(base["a"])).minX))
+
+    let strict = RibbonAnimationConfiguration(
+        duration: 0.2, curve: .smoother, commitProgress: 0.8,
+        flickDistance: 0.05, flickVelocity: 1.2
+    )
+    let loose = RibbonAnimationConfiguration(
+        duration: 0.2, curve: .smoother, commitProgress: 0.1,
+        flickDistance: 0.01, flickVelocity: 0.2
+    )
+    #expect(RibbonMotion.horizontalCompletionAction(
+        state: state, from: base, availableFrame: viewport, gap: 8,
+        displacement: -0.02, velocity: -0.5, configuration: strict
+    ) == nil)
+    #expect(RibbonMotion.horizontalCompletionAction(
+        state: state, from: base, availableFrame: viewport, gap: 8,
+        displacement: -0.02, velocity: -0.5, configuration: loose
+    ) == .focusNext)
+
+    var boundary = state
+    boundary.focus(windowID: "a")
+    let firm = RibbonAnimationConfiguration(duration: 0.2, curve: .smoother, edgeResistance: 20)
+    let soft = RibbonAnimationConfiguration(duration: 0.2, curve: .smoother, edgeResistance: 140)
+    let firmPreview = RibbonMotion.dragFrames(
+        state: boundary, from: base, availableFrame: viewport, gap: 8,
+        displacement: 0.2, configuration: firm
+    )
+    let softPreview = RibbonMotion.dragFrames(
+        state: boundary, from: base, availableFrame: viewport, gap: 8,
+        displacement: 0.2, configuration: soft
+    )
+    #expect((try #require(softPreview["a"])).minX > (try #require(firmPreview["a"])).minX)
 }
 
 @MainActor @Test func ribbonSlideKeepsTheTargetsVerticalPosition() throws {
@@ -224,6 +291,135 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     #expect(!motion.isRunning)
 }
 
+@MainActor @Test func gestureReleaseHandoffPreservesHorizontalVelocity() throws {
+    let driver = TestRibbonFrameDriver()
+    let motion = RibbonMotion(frameDriver: driver, currentTime: { 100 })
+    let from = ["window": CGRect(x: 500, y: 40, width: 900, height: 700)]
+    let to = ["window": CGRect(x: 0, y: 40, width: 900, height: 700)]
+    let releaseVelocity = CGFloat(-2_500)
+    var updates: [CGRect] = []
+    var completions = 0
+
+    motion.animate(
+        from: from,
+        to: to,
+        configuration: RibbonAnimationConfiguration(
+            duration: 0.22,
+            curve: RibbonAnimationCurve(x1: 0.22, y1: 0.55, x2: 0.32, y2: 1)
+        ),
+        initialHorizontalVelocity: releaseVelocity,
+        update: { frames in
+            if let frame = frames["window"] { updates.append(frame) }
+        },
+        completion: { completions += 1 }
+    )
+    driver.emit(at: 100.001)
+    driver.emit(at: 100.002)
+
+    let first = try #require(updates.first)
+    let second = try #require(updates.last)
+    let settleVelocity = (second.minX - first.minX) / 0.001
+    #expect(abs((settleVelocity - releaseVelocity) / releaseVelocity) < 0.1)
+
+    driver.emit(at: 100.3)
+    #expect(updates.last == to["window"])
+    #expect(completions == 1)
+}
+
+@MainActor @Test func fastGestureSettleDoesNotSpringPastCommittedTarget() throws {
+    let driver = TestRibbonFrameDriver()
+    let motion = RibbonMotion(frameDriver: driver, currentTime: { 100 })
+    let from = ["window": CGRect(x: 0, y: 40, width: 900, height: 700)]
+    let to = ["window": CGRect(x: 100, y: 40, width: 900, height: 700)]
+    var positions: [CGFloat] = []
+
+    motion.animate(
+        from: from,
+        to: to,
+        configuration: RibbonAnimationConfiguration(
+            duration: 0.7,
+            curve: RibbonAnimationCurve(x1: 0.184, y1: 0.935, x2: 0.305, y2: 0.989)
+        ),
+        initialHorizontalVelocity: 20_000,
+        update: { frames in
+            if let frame = frames["window"] { positions.append(frame.minX) }
+        },
+        completion: {}
+    )
+    for frame in 1...84 {
+        driver.emit(at: 100 + Double(frame) / 120)
+    }
+
+    #expect(!positions.isEmpty)
+    #expect(positions.allSatisfy { 0...100 ~= $0 })
+    #expect(zip(positions, positions.dropFirst()).allSatisfy { $0 <= $1 })
+    #expect(positions.last == 100)
+}
+
+@MainActor @Test func gestureSettleKeepsBackgroundWindowsOnOneTimeline() throws {
+    let driver = TestRibbonFrameDriver()
+    let motion = RibbonMotion(frameDriver: driver, currentTime: { 100 })
+    let frame = CGRect(x: 0, y: 40, width: 900, height: 700)
+    let from = ["primary": frame, "short": frame, "opposite": frame]
+    let to = [
+        "primary": frame.offsetBy(dx: 1_000, dy: 0),
+        "short": frame.offsetBy(dx: 100, dy: 0),
+        "opposite": frame.offsetBy(dx: -300, dy: 0)
+    ]
+    var update: [String: CGRect] = [:]
+
+    motion.animate(
+        from: from,
+        to: to,
+        configuration: RibbonAnimationConfiguration(
+            duration: 0.7,
+            curve: RibbonAnimationCurve(x1: 0.184, y1: 0.935, x2: 0.305, y2: 0.989)
+        ),
+        initialHorizontalVelocity: 20_000,
+        update: { update = $0 },
+        completion: {}
+    )
+    driver.emit(at: 100 + 1.0 / 120)
+
+    let primaryProgress = try #require(update["primary"]?.minX) / 1_000
+    let shortProgress = try #require(update["short"]?.minX) / 100
+    let oppositeProgress = try #require(update["opposite"]?.minX) / -300
+    #expect(primaryProgress > 0 && primaryProgress < 1)
+    #expect(abs(shortProgress - primaryProgress) < 0.001)
+    #expect(abs(oppositeProgress - primaryProgress) < 0.001)
+}
+
+@MainActor @Test func boundaryReleaseDoesNotAddAnotherTranslation() {
+    for (start, outwardVelocity) in [(CGFloat(-55), CGFloat(-8_000)), (55, 8_000)] {
+        let driver = TestRibbonFrameDriver()
+        let motion = RibbonMotion(frameDriver: driver, currentTime: { 100 })
+        let from = ["window": CGRect(x: start, y: 40, width: 900, height: 700)]
+        let to = ["window": CGRect(x: 0, y: 40, width: 900, height: 700)]
+        var positions: [CGFloat] = []
+
+        motion.animate(
+            from: from,
+            to: to,
+            configuration: RibbonAnimationConfiguration(duration: 0.4, curve: .easeOut),
+            initialHorizontalVelocity: outwardVelocity,
+            update: { frames in
+                if let frame = frames["window"] { positions.append(frame.minX) }
+            },
+            completion: {}
+        )
+        for frame in 1...48 { driver.emit(at: 100 + Double(frame) / 120) }
+
+        #expect(!positions.isEmpty)
+        #expect(positions.allSatisfy { min(start, 0)...max(start, 0) ~= $0 })
+        if start < 0 {
+            #expect(zip(positions, positions.dropFirst()).allSatisfy { $0 <= $1 })
+        } else {
+            #expect(zip(positions, positions.dropFirst()).allSatisfy { $0 >= $1 })
+        }
+        #expect(positions.last == 0)
+    }
+}
+
 @MainActor @Test func retargetedSlideNeverCompletesAnOutdatedAnimation() {
     let driver = TestRibbonFrameDriver()
     let motion = RibbonMotion(frameDriver: driver)
@@ -247,6 +443,58 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     #expect(currentCompletions == 1)
     #expect(!motion.isRunning)
     #expect(motion.frames == a)
+}
+
+@MainActor @Test func awaitedRibbonAnimationResolvesForCompletionAndCancellation() async {
+    let driver = TestRibbonFrameDriver()
+    let motion = RibbonMotion(frameDriver: driver, currentTime: { 100 })
+    let from = ["window": CGRect(x: 0, y: 40, width: 900, height: 700)]
+    let to = ["window": CGRect(x: 900, y: 40, width: 900, height: 700)]
+
+    let completed = Task { @MainActor in
+        await motion.animate(
+            from: from,
+            to: to,
+            configuration: RibbonAnimationConfiguration(duration: 0.2, curve: .linear),
+            update: { _ in }
+        )
+    }
+    await Task.yield()
+    driver.emit(at: 100.2)
+    #expect(await completed.value)
+
+    let cancelled = Task { @MainActor in
+        await motion.animate(
+            from: from,
+            to: to,
+            configuration: RibbonAnimationConfiguration(duration: 0.2, curve: .linear),
+            update: { _ in }
+        )
+    }
+    await Task.yield()
+    motion.cancel()
+    #expect(await !cancelled.value)
+}
+
+@MainActor @Test func ribbonAnimationUpdatesOnEveryDisplayRefresh() {
+    let driver = TestRibbonFrameDriver()
+    let motion = RibbonMotion(frameDriver: driver, currentTime: { 100 })
+    let from = ["window": CGRect(x: 0, y: 40, width: 900, height: 700)]
+    let to = ["window": CGRect(x: 900, y: 40, width: 900, height: 700)]
+    var updates = 0
+
+    motion.animate(
+        from: from,
+        to: to,
+        configuration: RibbonAnimationConfiguration(duration: 0.1, curve: .linear),
+        update: { _ in updates += 1 },
+        completion: {}
+    )
+    for frame in 1..<12 { driver.emit(at: 100 + Double(frame) / 120) }
+    driver.emit(at: 100.101)
+
+    #expect(updates == 12)
+    #expect(motion.frames == to)
 }
 
 @MainActor @Test func cancellingDuringTheFinalPositionWriteCannotRunStaleCleanup() async throws {

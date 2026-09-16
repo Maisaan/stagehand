@@ -66,6 +66,7 @@ public final class FocusInputGate {
     private var source: CFRunLoopSource?
     private let eventMarker: Int64 = 0x53544748414E44
     private let maximumEvents = 128
+    private let transferTimeoutMilliseconds = 2_000
     private let postEvent: (CGEvent, Int32) -> Void
 
     public init() {
@@ -123,7 +124,10 @@ public final class FocusInputGate {
             self.onTransferExpired?(token)
         }
         deadlines[token] = deadline
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500), execute: deadline)
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + .milliseconds(transferTimeoutMilliseconds),
+            execute: deadline
+        )
         return token
     }
 

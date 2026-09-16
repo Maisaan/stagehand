@@ -31,7 +31,13 @@ struct AppBarAppearanceTests {
         let keys = [
             "developerControlsEnabled",
             "ribbonAnimationDuration",
-            "ribbonAnimationCurve"
+            "ribbonAnimationCurve",
+            "ribbonGestureTracking",
+            "ribbonGestureCommitProgress",
+            "ribbonGestureFlickDistance",
+            "ribbonGestureFlickVelocity",
+            "ribbonGestureEdgeResistance",
+            "interfaceAnimationConfiguration"
         ]
         let originalValues = Dictionary(uniqueKeysWithValues: keys.map { ($0, defaults.object(forKey: $0)) })
         defer {
@@ -46,18 +52,41 @@ struct AppBarAppearanceTests {
         let model = StagehandModel(overlays: overlays)
         let configuration = RibbonAnimationConfiguration(
             duration: 0.34,
-            curve: RibbonAnimationCurve(x1: 0.17, y1: 0.68, x2: 0.73, y2: 0.24)
+            curve: RibbonAnimationCurve(x1: 0.17, y1: 0.68, x2: 0.73, y2: 0.24),
+            tracking: 5.2,
+            commitProgress: 0.42,
+            flickDistance: 0.035,
+            flickVelocity: 0.7,
+            edgeResistance: 85
+        )
+        let interfaceConfiguration = InterfaceAnimationConfiguration(
+            hudEnterDuration: 0.24,
+            hudExitDuration: 0.12,
+            attachedHUDTravel: 16,
+            floatingHUDTravel: 9,
+            hiddenHUDScale: 0.965,
+            feedbackDuration: 0.11,
+            pressedScale: 0.95,
+            focusRevealDuration: 0.2,
+            focusRevealOpacity: 0.6
         )
 
         model.developerControlsEnabled = true
         overlays.hudModel.setAnimationDuration(configuration.duration)
         overlays.hudModel.setAnimationCurve(configuration.curve)
+        overlays.hudModel.setGestureTracking(configuration.tracking)
+        overlays.hudModel.setGestureCommitProgress(configuration.commitProgress)
+        overlays.hudModel.setGestureFlickDistance(configuration.flickDistance)
+        overlays.hudModel.setGestureFlickVelocity(configuration.flickVelocity)
+        overlays.hudModel.setGestureEdgeResistance(configuration.edgeResistance)
+        model.setInterfaceAnimationConfiguration(interfaceConfiguration)
 
         #expect(overlays.hudModel.developerControlsEnabled)
         #expect(overlays.hudModel.animationConfiguration == configuration)
         let restoredModel = StagehandModel()
         #expect(restoredModel.developerControlsEnabled)
         #expect(restoredModel.ribbonAnimationConfiguration == configuration)
+        #expect(restoredModel.interfaceAnimationConfiguration == interfaceConfiguration)
     }
 
     @Test func legacyAnimationPresetMigratesToCubicBezierControls() {

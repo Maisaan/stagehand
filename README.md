@@ -10,7 +10,7 @@ That led to three choices:
 
 - **Use the trackpad first.** Once enabled, three-finger swipes navigate the whole workspace. The same navigation works with Control + Option + arrow keys when the keyboard is more convenient.
 - **Give each axis one job.** Windows run left and right in a ribbon. Stagehand's nine spaces stack above and below, so moving vertically changes spaces.
-- **Keep the app small and self-contained.** The current release bundle occupies 2.9 MiB on disk. It uses native Swift, AppKit, and SwiftUI, with no third-party packages or remote services.
+- **Keep the app lightweight and self-contained.** The small app bundle uses native Swift, AppKit, and SwiftUI, with no third-party packages or remote services.
 
 Stagehand moves real app windows, so the active app keeps its menus and input. It was inspired by [KiwiDesk](https://github.com/KiwiCanopy/KiwiDesk).
 

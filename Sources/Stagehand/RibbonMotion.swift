@@ -3,9 +3,13 @@ import QuartzCore
 import StagehandCore
 
 struct RibbonAnimationCurve: Equatable {
-    static let smoother = Self(x1: 0.45, y1: 0, x2: 0.55, y2: 1)
+    /// Strong ease-in-out for objects that remain onscreen and move to a new position.
+    static let smoother = Self(x1: 0.65, y1: 0, x2: 0.35, y2: 1)
     static let easeInOut = Self(x1: 0.42, y1: 0, x2: 0.58, y2: 1)
-    static let easeOut = Self(x1: 0.22, y1: 1, x2: 0.36, y2: 1)
+    /// Fast initial response for elements entering or leaving the interface.
+    static let easeOut = Self(x1: 0.16, y1: 1, x2: 0.3, y2: 1)
+    /// Gentle curve for color, opacity and pressed-state feedback.
+    static let ease = Self(x1: 0.25, y1: 0.1, x2: 0.25, y2: 1)
     static let linear = Self(x1: 0, y1: 0, x2: 1, y2: 1)
 
     let x1: Double
@@ -71,15 +75,17 @@ enum RibbonAnimationPreset: String, CaseIterable, Identifiable {
     case smoother
     case easeInOut
     case easeOut
+    case ease
     case linear
 
     var id: Self { self }
 
     var title: String {
         switch self {
-        case .smoother: "Smoother"
-        case .easeInOut: "Ease in/out"
-        case .easeOut: "Ease out"
+        case .smoother: "Move"
+        case .easeInOut: "Standard move"
+        case .easeOut: "Enter / exit"
+        case .ease: "Hover / color"
         case .linear: "Linear"
         }
     }
@@ -89,6 +95,7 @@ enum RibbonAnimationPreset: String, CaseIterable, Identifiable {
         case .smoother: .smoother
         case .easeInOut: .easeInOut
         case .easeOut: .easeOut
+        case .ease: .ease
         case .linear: .linear
         }
     }
@@ -99,11 +106,47 @@ enum RibbonAnimationPreset: String, CaseIterable, Identifiable {
 }
 
 struct RibbonAnimationConfiguration: Equatable {
-    static let durationRange = 0.06 ... 1.2
-    static let `default` = Self(duration: 0.22, curve: .smoother)
+    static let durationRange = 0.0 ... 1.2
+    static let trackingRange = 1.0 ... 8.0
+    static let commitProgressRange = 0.1 ... 0.8
+    static let flickDistanceRange = 0.0 ... 0.1
+    static let flickVelocityRange = 0.1 ... 1.5
+    static let edgeResistanceRange = 20.0 ... 140.0
+    static let `default` = Self(
+        duration: 0.2,
+        curve: .smoother,
+        tracking: 4,
+        commitProgress: 0.3,
+        flickDistance: 0.02,
+        flickVelocity: 0.45,
+        edgeResistance: 60
+    )
 
     let duration: Double
     let curve: RibbonAnimationCurve
+    let tracking: Double
+    let commitProgress: Double
+    let flickDistance: Double
+    let flickVelocity: Double
+    let edgeResistance: Double
+
+    init(
+        duration: Double,
+        curve: RibbonAnimationCurve,
+        tracking: Double = 4,
+        commitProgress: Double = 0.3,
+        flickDistance: Double = 0.02,
+        flickVelocity: Double = 0.45,
+        edgeResistance: Double = 60
+    ) {
+        self.duration = duration
+        self.curve = curve
+        self.tracking = tracking
+        self.commitProgress = commitProgress
+        self.flickDistance = flickDistance
+        self.flickVelocity = flickVelocity
+        self.edgeResistance = edgeResistance
+    }
 }
 
 @MainActor
@@ -154,40 +197,50 @@ private final class SystemRibbonFrameDriver: NSObject, RibbonFrameDriving {
 /// Short-lived horizontal animation. No resize calls, snapshots or idle timer.
 @MainActor
 final class RibbonMotion {
+    private struct Timeline {
+        let duration: TimeInterval
+        let curve: RibbonAnimationCurve
+    }
+
     private struct Animation {
         let from: [String: CGRect]
         let to: [String: CGRect]
         let start: TimeInterval
-        let configuration: RibbonAnimationConfiguration
+        let timeline: Timeline
         let update: ([String: CGRect]) -> Void
+        let cancellation: () -> Void
         let completion: () -> Void
     }
 
-    private static let screenWidthsPerTrackpadWidth = 4.0
-    private static let completionProgress = 0.3
     private let frameDriver: RibbonFrameDriving
+    private let currentTime: () -> TimeInterval
     private var animation: Animation?
     private var followingFrames: (() -> [String: CGRect])?
     private var followingUpdate: (([String: CGRect]) -> Void)?
     private var generation: UInt64 = 0
     private(set) var frames: [String: CGRect] = [:]
     var isRunning: Bool { animation != nil || followingUpdate != nil }
+    var isAnimating: Bool { animation != nil }
 
-    init(frameDriver: RibbonFrameDriving = SystemRibbonFrameDriver()) {
+    init(frameDriver: RibbonFrameDriving = SystemRibbonFrameDriver(),
+         currentTime: @escaping () -> TimeInterval = CACurrentMediaTime) {
         self.frameDriver = frameDriver
+        self.currentTime = currentTime
     }
 
     static func dragFrames(state: WorkspaceState, from: [String: CGRect], availableFrame: CGRect,
-                           gap: CGFloat, displacement: Double) -> [String: CGRect] {
+                           gap: CGFloat, displacement: Double,
+                           configuration: RibbonAnimationConfiguration = .default) -> [String: CGRect] {
         guard displacement.isFinite, displacement != 0 else { return from }
         guard let transition = horizontalTransition(state: state, from: from, availableFrame: availableFrame,
                                                     gap: gap, displacement: displacement) else {
-            let travel = CGFloat(displacement) * availableFrame.width * screenWidthsPerTrackpadWidth
-            let resistance = travel / (1 + abs(travel) / 60)
+            let travel = CGFloat(displacement) * availableFrame.width * configuration.tracking
+            let resistance = travel / (1 + abs(travel) / configuration.edgeResistance)
             return from.mapValues { $0.offsetBy(dx: resistance, dy: 0) }
         }
         let progress = transitionProgress(displacement: displacement, distance: transition.distance,
-                                          availableWidth: availableFrame.width)
+                                          availableWidth: availableFrame.width,
+                                          tracking: configuration.tracking)
         var frames = from
         for (id, target) in transition.frames {
             guard let start = from[id] else { continue }
@@ -198,14 +251,18 @@ final class RibbonMotion {
 
     static func horizontalCompletionAction(state: WorkspaceState, from: [String: CGRect], availableFrame: CGRect,
                                            gap: CGFloat, displacement: Double,
-                                           velocity: Double) -> NavigationAction? {
+                                           velocity: Double,
+                                           configuration: RibbonAnimationConfiguration = .default) -> NavigationAction? {
         guard displacement.isFinite, velocity.isFinite,
               let transition = horizontalTransition(state: state, from: from, availableFrame: availableFrame,
                                                     gap: gap, displacement: displacement) else { return nil }
         let progress = transitionProgress(displacement: displacement, distance: transition.distance,
-                                          availableWidth: availableFrame.width)
-        let flick = abs(displacement) >= 0.02 && abs(velocity) >= 0.45 && displacement * velocity > 0
-        return progress >= completionProgress || flick ? transition.action : nil
+                                          availableWidth: availableFrame.width,
+                                          tracking: configuration.tracking)
+        let flick = abs(displacement) >= configuration.flickDistance
+            && abs(velocity) >= configuration.flickVelocity
+            && displacement * velocity > 0
+        return progress >= configuration.commitProgress || flick ? transition.action : nil
     }
 
     private static func horizontalTransition(state: WorkspaceState, from: [String: CGRect],
@@ -242,21 +299,23 @@ final class RibbonMotion {
     }
 
     private static func transitionProgress(displacement: Double, distance: CGFloat,
-                                           availableWidth: CGFloat) -> CGFloat {
+                                           availableWidth: CGFloat, tracking: Double) -> CGFloat {
         if abs(displacement) >= 0.25 { return 1 }
         guard distance > 0, availableWidth.isFinite, availableWidth > 0 else {
             return min(1, CGFloat(abs(displacement) / 0.25))
         }
-        let travel = CGFloat(abs(displacement)) * availableWidth * screenWidthsPerTrackpadWidth
+        let travel = CGFloat(abs(displacement)) * availableWidth * tracking
         return min(1, travel / distance)
     }
 
     func cancel() {
+        let cancellation = animation?.cancellation
         generation &+= 1
         frameDriver.stop()
         animation = nil
         followingFrames = nil
         followingUpdate = nil
+        cancellation?()
     }
 
     /// Trackpad callbacks can arrive between display refreshes. Keep only the newest
@@ -280,7 +339,10 @@ final class RibbonMotion {
 
     func animate(from: [String: CGRect], to: [String: CGRect],
                  configuration: RibbonAnimationConfiguration = .default,
-                 update: @escaping ([String: CGRect]) -> Void, completion: @escaping () -> Void) {
+                 initialHorizontalVelocity: CGFloat? = nil,
+                 update: @escaping ([String: CGRect]) -> Void,
+                 cancellation: @escaping () -> Void = {},
+                 completion: @escaping () -> Void) {
         cancel()
         let currentGeneration = generation
         frames = from
@@ -294,9 +356,16 @@ final class RibbonMotion {
         animation = Animation(
             from: from,
             to: to,
-            start: CACurrentMediaTime(),
-            configuration: configuration,
+            start: currentTime(),
+            timeline: Self.timeline(
+                from: from,
+                to: to,
+                duration: configuration.duration,
+                curve: configuration.curve,
+                initialHorizontalVelocity: initialHorizontalVelocity
+            ),
             update: update,
+            cancellation: cancellation,
             completion: completion
         )
         guard startFrameDriver() else {
@@ -306,6 +375,23 @@ final class RibbonMotion {
             guard generation == currentGeneration else { return }
             completion()
             return
+        }
+    }
+
+    func animate(from: [String: CGRect], to: [String: CGRect],
+                 configuration: RibbonAnimationConfiguration = .default,
+                 initialHorizontalVelocity: CGFloat? = nil,
+                 update: @escaping ([String: CGRect]) -> Void) async -> Bool {
+        await withCheckedContinuation { continuation in
+            animate(
+                from: from,
+                to: to,
+                configuration: configuration,
+                initialHorizontalVelocity: initialHorizontalVelocity,
+                update: update,
+                cancellation: { continuation.resume(returning: false) },
+                completion: { continuation.resume(returning: true) }
+            )
         }
     }
 
@@ -323,12 +409,12 @@ final class RibbonMotion {
         }
         guard let animation else { return }
         let currentGeneration = generation
-        let progress = min(1, max(0, (timestamp - animation.start) / animation.configuration.duration))
+        let progress = min(1, max(0, (timestamp - animation.start) / animation.timeline.duration))
         frames = Self.interpolate(
             from: animation.from,
             to: animation.to,
             progress: progress,
-            curve: animation.configuration.curve
+            curve: animation.timeline.curve
         )
         animation.update(frames)
         guard generation == currentGeneration else { return }
@@ -340,9 +426,20 @@ final class RibbonMotion {
     }
 
     static func interpolate(from: [String: CGRect], to: [String: CGRect], progress: Double,
-                            curve: RibbonAnimationCurve = .smoother) -> [String: CGRect] {
+                            curve: RibbonAnimationCurve = .smoother,
+                            duration: TimeInterval? = nil,
+                            initialHorizontalVelocity: CGFloat? = nil) -> [String: CGRect] {
         let progress = min(1, max(0, progress))
-        let eased = curve.progress(at: progress)
+        let timeline = timeline(
+            from: from,
+            to: to,
+            duration: duration ?? 1,
+            curve: curve,
+            initialHorizontalVelocity: initialHorizontalVelocity
+        )
+        let requestedDuration = duration ?? timeline.duration
+        let elapsed = (requestedDuration > 0 ? requestedDuration : timeline.duration) * progress
+        let eased = timeline.curve.progress(at: min(1, elapsed / timeline.duration))
         var frames: [String: CGRect] = [:]
         frames.reserveCapacity(to.count)
         for (id, target) in to {
@@ -352,6 +449,41 @@ final class RibbonMotion {
                                 y: target.minY, width: target.width, height: target.height)
         }
         return frames
+    }
+
+    private static func timeline(
+        from: [String: CGRect],
+        to: [String: CGRect],
+        duration: TimeInterval,
+        curve: RibbonAnimationCurve,
+        initialHorizontalVelocity: CGFloat?
+    ) -> Timeline {
+        let configured = Timeline(duration: duration.isFinite && duration > 0 ? duration : 1, curve: curve)
+        guard duration.isFinite, duration > 0,
+              let initialHorizontalVelocity, initialHorizontalVelocity.isFinite,
+              initialHorizontalVelocity != 0 else { return configured }
+        let deltas = to.compactMap { id, target -> CGFloat? in
+            guard let start = from[id] else { return nil }
+            let delta = target.minX - start.minX
+            return delta.isFinite && delta != 0 ? delta : nil
+        }
+        guard !deltas.isEmpty else { return configured }
+        let aligned = deltas.filter { $0 * initialHorizontalVelocity > 0 }
+        // At either end of the ribbon the release velocity points away from every
+        // target. Continuing that velocity adds a second edge translation before
+        // returning. Use the configured curve for the monotonic return instead.
+        guard let referenceDelta = aligned.max(by: { abs($0) < abs($1) }) else { return configured }
+        let progressVelocity = Double(initialHorizontalVelocity / referenceDelta)
+        guard progressVelocity.isFinite, progressVelocity > 0 else { return configured }
+        // Use one velocity-matched timeline for the whole ribbon. A shared progress
+        // keeps clamped offscreen neighbors and the focused window visually connected.
+        let x1 = max(0.01, curve.x1)
+        let matchedDuration = min(duration, 1 / (x1 * progressVelocity))
+        let y1 = min(1, x1 * progressVelocity * matchedDuration)
+        return Timeline(
+            duration: matchedDuration,
+            curve: RibbonAnimationCurve(x1: x1, y1: y1, x2: curve.x2, y2: 1)
+        )
     }
 
     static func pixelAligned(_ position: CGPoint, backingScaleFactor: CGFloat) -> CGPoint {

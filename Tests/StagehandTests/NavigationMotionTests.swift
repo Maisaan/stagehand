@@ -22,63 +22,39 @@ struct NavigationMotionTests {
         ))
     }
 
-    @Test func windowMotionRejectsPresentationOutsideTheRequestedHorizontalSegment() {
-        #expect(motionPresentationKeepsPace(
-            previousPosition: CGPoint(x: 300, y: 60),
-            requestedPosition: CGPoint(x: 400, y: 60),
-            displayedFrame: CGRect(x: 300, y: 60, width: 900, height: 700)
-        ))
-        #expect(!motionPresentationKeepsPace(
-            previousPosition: CGPoint(x: 300, y: 60),
-            requestedPosition: CGPoint(x: 400, y: 60),
-            displayedFrame: CGRect(x: 250, y: 60, width: 900, height: 700)
-        ))
-        #expect(!motionPresentationKeepsPace(
-            previousPosition: CGPoint(x: 300, y: 60),
-            requestedPosition: CGPoint(x: 400, y: 60),
-            displayedFrame: CGRect(x: 300, y: 692, width: 900, height: 700)
-        ))
-    }
+    @Test func appActivationBeginsBeforeRibbonTranslation() async {
+        var events: [String] = []
+        let outcome = await runFocusFirstNavigation(
+            translate: {
+                events.append("translate")
+                return .readyForFocus
+            },
+            focus: {
+                events.append("focus")
+                return true
+            },
+            commitInput: { events.append("commit") },
+            revealBorder: { events.append("border") }
+        )
 
-    @Test func windowMotionAllowsSmallWindowServerPresentationDelay() {
-        #expect(motionPresentationKeepsPace(
-            previousPosition: CGPoint(x: -1525, y: 67),
-            requestedPosition: CGPoint(x: -1526, y: 67),
-            displayedFrame: CGRect(x: -1531, y: 67, width: 1710, height: 1074)
-        ))
-    }
+        #expect(outcome == .completed)
+        #expect(events == ["border", "focus", "translate", "commit"])
 
-    @Test func laggingOutgoingWindowIsIdentifiedBeforeTheFocusHandoff() {
-        #expect(laggingOutgoingWindowID(
-            destinationWindowID: "destination",
-            systemFocusedWindowID: "outgoing",
-            laggingWindowIDs: ["outgoing"]
-        ) == "outgoing")
-        #expect(laggingOutgoingWindowID(
-            destinationWindowID: "destination",
-            systemFocusedWindowID: "destination",
-            laggingWindowIDs: ["outgoing"]
-        ) == nil)
-    }
-
-    @Test func laggingWindowMotionResumesWhileTheWindowIsFocused() {
-        let laggingWindowIDs: Set<String> = ["lagging"]
-
-        #expect(!shouldDriveWindowMotion(
-            windowID: "lagging",
-            systemFocusedWindowID: "other",
-            laggingWindowIDs: laggingWindowIDs
-        ))
-        #expect(shouldDriveWindowMotion(
-            windowID: "lagging",
-            systemFocusedWindowID: "lagging",
-            laggingWindowIDs: laggingWindowIDs
-        ))
-        #expect(shouldDriveWindowMotion(
-            windowID: "ordinary",
-            systemFocusedWindowID: "other",
-            laggingWindowIDs: laggingWindowIDs
-        ))
+        events.removeAll()
+        let superseded = await runFocusFirstNavigation(
+            translate: {
+                events.append("translate")
+                return .superseded
+            },
+            focus: {
+                events.append("focus")
+                return true
+            },
+            commitInput: { Issue.record("A superseded transition must not commit input") },
+            revealBorder: { events.append("border") }
+        )
+        #expect(superseded == .superseded)
+        #expect(events == ["border", "focus", "translate"])
     }
 
     @Test func offscreenRibbonFramesChooseTheirNearestParkingSide() {
@@ -183,7 +159,7 @@ struct NavigationMotionTests {
         let entering = try #require(container.animatedView.layer?.presentation())
         #expect(entering.transform.m11 < 1)
         #expect(abs(entering.frame.midX - container.bounds.midX) <= 0.5)
-        let enteringUpwardOffset = container.hiddenTravel * (1 - entering.transform.m11) / 0.05
+        let enteringUpwardOffset = container.hiddenTravel * (1 - entering.transform.m11) / 0.02
         #expect(abs(entering.frame.maxY - container.animatedView.frame.maxY - enteringUpwardOffset) <= 0.5)
         #expect(panel.frame == panelFrame)
 
@@ -193,7 +169,7 @@ struct NavigationMotionTests {
         let exiting = try #require(container.animatedView.layer?.presentation())
         #expect(exiting.transform.m11 < 1)
         #expect(abs(exiting.frame.midX - container.bounds.midX) <= 0.5)
-        let exitingUpwardOffset = container.hiddenTravel * (1 - exiting.transform.m11) / 0.05
+        let exitingUpwardOffset = container.hiddenTravel * (1 - exiting.transform.m11) / 0.02
         #expect(abs(exiting.frame.maxY - container.animatedView.frame.maxY - exitingUpwardOffset) <= 0.5)
         #expect(panel.frame == panelFrame)
     }
@@ -228,9 +204,71 @@ struct NavigationMotionTests {
         #expect(container.layer?.masksToBounds == true)
         container.setHidden(reduceMotion: false)
         let transform = try #require(container.animatedView.layer).transform
-        #expect(transform.m11 == 0.95)
-        #expect(transform.m22 == 0.95)
-        #expect(abs(transform.m42 - 66 * 0.4) < 0.001)
+        #expect(transform.m11 == 0.98)
+        #expect(transform.m22 == 0.98)
+        #expect(abs(transform.m42 - (66 * 0.02 + 10)) < 0.001)
+    }
+
+    @Test func customHUDMotionControlsScaleTravelAndFocusFlash() throws {
+        _ = NSApplication.shared
+        let configuration = InterfaceAnimationConfiguration(
+            hudEnterDuration: 0.3,
+            hudExitDuration: 0.12,
+            attachedHUDTravel: 18,
+            floatingHUDTravel: 11,
+            hiddenHUDScale: 0.94,
+            feedbackDuration: 0.1,
+            pressedScale: 0.96,
+            focusRevealDuration: 0.27,
+            focusRevealOpacity: 0.55
+        )
+        let container = HUDContainerView(model: NavigationHUDModel())
+        container.attachedToNotch = true
+        container.frame = CGRect(x: 0, y: 0, width: 272, height: 82)
+        container.needsLayout = true
+        container.layoutSubtreeIfNeeded()
+        container.setHidden(reduceMotion: false, configuration: configuration)
+        let transform = try #require(container.animatedView.layer).transform
+        #expect(transform.m11 == 0.94)
+        #expect(transform.m22 == 0.94)
+        #expect(abs(transform.m42 - (66 * 0.06 + 18)) < 0.001)
+
+        let overlays = NavigationOverlays(reduceMotion: { false })
+        defer { overlays.hide() }
+        overlays.setInterfaceAnimationConfiguration(configuration)
+        overlays.updateBorder(
+            frame: CGRect(x: 50, y: 50, width: 400, height: 300),
+            visible: true,
+            focusChanged: true
+        )
+        let reveal = try #require(overlays.border?.contentView?.layer?.animation(forKey: "focusReveal"))
+        #expect(reveal.duration == 0.27)
+    }
+
+    @Test func developerHUDReplayUsesTheCurrentEntranceTiming() async throws {
+        _ = NSApplication.shared
+        let overlays = NavigationOverlays(reduceMotion: { false })
+        defer { overlays.hide() }
+        let configuration = InterfaceAnimationConfiguration(
+            hudEnterDuration: 0.31,
+            hudExitDuration: 0.12,
+            attachedHUDTravel: 12,
+            floatingHUDTravel: 8,
+            hiddenHUDScale: 0.96,
+            feedbackDuration: 0.1,
+            pressedScale: 0.97,
+            focusRevealDuration: 0.14,
+            focusRevealOpacity: 0.7
+        )
+        overlays.setInterfaceAnimationConfiguration(configuration)
+        overlays.showNavigation(state: WorkspaceState(), windows: [])
+        let layer = try #require(overlays.hud?.contentView as? HUDContainerView).animatedView.layer
+
+        overlays.hudModel.previewHUDAnimation()
+        await Task.yield()
+
+        #expect(layer?.animation(forKey: "hudOpacity")?.duration == 0.31)
+        #expect(layer?.animation(forKey: "hudTransform")?.duration == 0.31)
     }
 
     @Test func developerMotionEditorFitsTheExpandedAppBar() {
@@ -239,26 +277,27 @@ struct NavigationMotionTests {
         model.developerControlsEnabled = true
         let container = HUDContainerView(model: model)
         container.attachedToNotch = true
-        container.frame = CGRect(x: 0, y: 0, width: 612, height: 226)
+        container.frame = CGRect(x: 0, y: 0, width: 612, height: 320)
         container.needsLayout = true
         container.layoutSubtreeIfNeeded()
 
-        #expect(container.animatedView.bounds.size == CGSize(width: 580, height: 210))
+        #expect(container.animatedView.bounds.size == CGSize(width: 580, height: 304))
         #expect(container.hostingView.frame == container.animatedView.bounds)
     }
 
     @Test func revisedHUDTimingStaysBelowThreeHundredMilliseconds() throws {
         _ = NSApplication.shared
+        #expect(InterfaceAnimationConfiguration.default.focusRevealDuration == 0.1)
         let overlays = NavigationOverlays(reduceMotion: { false })
         defer { overlays.hide() }
         overlays.showNavigation(state: WorkspaceState(), windows: [])
         let container = try #require(overlays.hud?.contentView as? HUDContainerView)
         let layer = try #require(container.animatedView.layer)
-        #expect(layer.animation(forKey: "hudOpacity")?.duration == 0.25)
-        #expect(layer.animation(forKey: "hudTransform")?.duration == 0.25)
+        #expect(layer.animation(forKey: "hudOpacity")?.duration == 0.18)
+        #expect(layer.animation(forKey: "hudTransform")?.duration == 0.18)
         #expect(overlays.beginHUDDismiss(generation: overlays.hudGeneration))
-        #expect(layer.animation(forKey: "hudOpacity")?.duration == 0.2)
-        #expect(layer.animation(forKey: "hudTransform")?.duration == 0.2)
+        #expect(layer.animation(forKey: "hudOpacity")?.duration == 0.14)
+        #expect(layer.animation(forKey: "hudTransform")?.duration == 0.14)
     }
 
     @Test func borderGeometryUpdatesImmediatelyWithoutRestartingFocusReveal() throws {

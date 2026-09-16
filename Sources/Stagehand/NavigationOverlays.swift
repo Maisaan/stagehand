@@ -4,6 +4,34 @@ import QuartzCore
 import StagehandCore
 import StagehandPlatform
 
+struct InterfaceAnimationConfiguration: Equatable {
+    static let durationRange = 0.0 ... 0.6
+    static let travelRange = 0.0 ... 40.0
+    static let scaleRange = 0.9 ... 1.0
+    static let opacityRange = 0.2 ... 1.0
+    static let `default` = Self(
+        hudEnterDuration: 0.18,
+        hudExitDuration: 0.14,
+        attachedHUDTravel: 10,
+        floatingHUDTravel: 6,
+        hiddenHUDScale: 0.98,
+        feedbackDuration: 0.15,
+        pressedScale: 0.97,
+        focusRevealDuration: 0.1,
+        focusRevealOpacity: 0.72
+    )
+
+    let hudEnterDuration: Double
+    let hudExitDuration: Double
+    let attachedHUDTravel: Double
+    let floatingHUDTravel: Double
+    let hiddenHUDScale: Double
+    let feedbackDuration: Double
+    let pressedScale: Double
+    let focusRevealDuration: Double
+    let focusRevealOpacity: Double
+}
+
 struct NavigationHUDGeometry {
     static let padding: CGFloat = 16
     let contentFrame: CGRect
@@ -37,7 +65,7 @@ struct NavigationHUDGeometry {
             ? max(navigationWidth, developerControlsVisible ? 580 : 0)
             : 580
         let width = min(limit, desiredWidth)
-        let height = warningHeight.map { max(72, $0) } ?? (developerControlsVisible ? 210 : 66)
+        let height = warningHeight.map { max(72, $0) } ?? (developerControlsVisible ? 304 : 66)
         let centerX = notch?.midX ?? screenFrame.midX
         let left = min(max(centerX - width / 2, visibleFrame.minX + 16), visibleFrame.maxX - 16 - width)
         let top = attached ? (notch?.minY ?? visibleFrame.maxY) : min(visibleFrame.maxY, screenFrame.maxY - safeAreaTop) - 6
@@ -60,6 +88,7 @@ final class NavigationOverlays {
     var onRemoveWindow: ((String) -> Void)?
     var onReorderWindow: ((String, Int) -> Void)?
     var onAnimationConfigurationChange: ((RibbonAnimationConfiguration) -> Void)?
+    var onInterfaceAnimationConfigurationChange: ((InterfaceAnimationConfiguration) -> Void)?
     var canRevealNavigation: (() -> Bool)?
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
@@ -83,11 +112,17 @@ final class NavigationOverlays {
         hudModel.onAnimationConfigurationChange = { [weak self] configuration in
             self?.onAnimationConfigurationChange?(configuration)
         }
+        hudModel.onInterfaceAnimationConfigurationChange = { [weak self] configuration in
+            self?.onInterfaceAnimationConfigurationChange?(configuration)
+        }
         hudModel.onDropTargetChange = { [weak self] isTargeted in
             self?.dropTargetChanged(isTargeted: isTargeted)
         }
         hudModel.onContentChange = { [weak self] in
             self?.presentHUD(dismissAfter: .milliseconds(1_500))
+        }
+        hudModel.onPreviewHUDAnimation = { [weak self] in
+            self?.previewHUDAnimation()
         }
     }
 
@@ -131,6 +166,10 @@ final class NavigationOverlays {
         hudModel.setAnimationConfiguration(configuration)
     }
 
+    func setInterfaceAnimationConfiguration(_ configuration: InterfaceAnimationConfiguration) {
+        hudModel.setInterfaceAnimationConfiguration(configuration)
+    }
+
     func updateBorder(frame: CGRect, visible: Bool, cornerRadius: CGFloat? = nil, focusChanged: Bool = false) {
         guard visible, let primary = NSScreen.screens.first else {
             border?.orderOut(nil)
@@ -147,11 +186,14 @@ final class NavigationOverlays {
         border.setFrame(converted, display: radiusChanged || border.frame.size != converted.size)
         if !border.isVisible { border.orderFrontRegardless() }
         if focusChanged, let layer = border.contentView?.layer {
+            let configuration = hudModel.interfaceAnimationConfiguration
             let reveal = CABasicAnimation(keyPath: "opacity")
-            reveal.fromValue = layer.animation(forKey: "focusReveal") == nil ? 0.72 : (layer.presentation()?.opacity ?? 0.72)
+            reveal.fromValue = layer.animation(forKey: "focusReveal") == nil
+                ? configuration.focusRevealOpacity
+                : (layer.presentation()?.opacity ?? Float(configuration.focusRevealOpacity))
             reveal.toValue = 1
-            reveal.duration = 0.125 * animationDurationMultiplier
-            reveal.timingFunction = CAMediaTimingFunction(controlPoints: 0.23, 1, 0.32, 1)
+            reveal.duration = configuration.focusRevealDuration * animationDurationMultiplier
+            reveal.timingFunction = RibbonAnimationCurve.ease.mediaTimingFunction
             layer.add(reveal, forKey: "focusReveal")
         }
     }
@@ -263,12 +305,20 @@ final class NavigationOverlays {
         hudIsExiting = false
         dismissTask?.cancel()
         if !wasVisible {
-            container.setHidden(reduceMotion: hudModel.reduceMotion)
+            container.setHidden(
+                reduceMotion: hudModel.reduceMotion,
+                configuration: hudModel.interfaceAnimationConfiguration
+            )
             hud.orderFrontRegardless()
         }
         if !wasVisible || wasExiting {
-            container.transition(visible: true, reduceMotion: hudModel.reduceMotion,
-                                 duration: 0.25 * animationDurationMultiplier)
+            let configuration = hudModel.interfaceAnimationConfiguration
+            container.transition(
+                visible: true,
+                reduceMotion: hudModel.reduceMotion,
+                duration: configuration.hudEnterDuration * animationDurationMultiplier,
+                configuration: configuration
+            )
         }
         if !pointerKeepsHUDVisible && !dropTargetKeepsHUDVisible { scheduleDismiss(after: dismissAfter) }
     }
@@ -279,9 +329,30 @@ final class NavigationOverlays {
         dismissTask = Task { [weak self] in
             do { try await Task.sleep(for: delay) } catch { return }
             guard !Task.isCancelled, let self, self.beginHUDDismiss(generation: generation) else { return }
-            do { try await Task.sleep(for: .seconds(0.2 * self.animationDurationMultiplier)) } catch { return }
+            do {
+                try await Task.sleep(for: .seconds(
+                    self.hudModel.interfaceAnimationConfiguration.hudExitDuration
+                        * self.animationDurationMultiplier
+                ))
+            } catch { return }
             guard !Task.isCancelled else { return }
             _ = self.completeHUDDismiss(generation: generation)
+        }
+    }
+
+    private func previewHUDAnimation() {
+        guard hud?.isVisible == true,
+              let container = hud?.contentView as? HUDContainerView else { return }
+        let configuration = hudModel.interfaceAnimationConfiguration
+        container.setHidden(reduceMotion: hudModel.reduceMotion, configuration: configuration)
+        DispatchQueue.main.async { [weak self, weak container] in
+            guard let self, let container, self.hud?.isVisible == true else { return }
+            container.transition(
+                visible: true,
+                reduceMotion: self.hudModel.reduceMotion,
+                duration: configuration.hudEnterDuration * self.animationDurationMultiplier,
+                configuration: configuration
+            )
         }
     }
 
@@ -291,8 +362,13 @@ final class NavigationOverlays {
               !dropTargetKeepsHUDVisible,
               let container = hud?.contentView as? HUDContainerView else { return false }
         hudIsExiting = true
-        container.transition(visible: false, reduceMotion: reduceMotion(),
-                             duration: 0.2 * animationDurationMultiplier)
+        let configuration = hudModel.interfaceAnimationConfiguration
+        container.transition(
+            visible: false,
+            reduceMotion: reduceMotion(),
+            duration: configuration.hudExitDuration * animationDurationMultiplier,
+            configuration: configuration
+        )
         return true
     }
 
@@ -344,7 +420,12 @@ final class HUDContainerView: NSView {
     let animatedView = NSView()
     let hostingView: NSView
     var attachedToNotch = false
-    var hiddenTravel: CGFloat { animatedView.bounds.height * (attachedToNotch ? 0.35 : 0.12) }
+    private var motionConfiguration = InterfaceAnimationConfiguration.default
+    var hiddenTravel: CGFloat {
+        CGFloat(attachedToNotch
+            ? motionConfiguration.attachedHUDTravel
+            : motionConfiguration.floatingHUDTravel)
+    }
 
     init(model: NavigationHUDModel) {
         hostingView = NavigationHostingView(rootView: NavigationHUD(model: model))
@@ -377,7 +458,7 @@ final class HUDContainerView: NSView {
 
     private func hiddenTransform(reduceMotion: Bool) -> CATransform3D {
         guard !reduceMotion else { return CATransform3DIdentity }
-        let scale: CGFloat = 0.95
+        let scale = CGFloat(motionConfiguration.hiddenHUDScale)
         let size = animatedView.bounds.size
         // AppKit owns this backing layer's bottom-left anchor and resets custom anchors
         // at commit. Compensate the scale in the transform to keep its top center fixed.
@@ -386,8 +467,12 @@ final class HUDContainerView: NSView {
         return CATransform3DScale(CATransform3DMakeTranslation(x, y, 0), scale, scale, 1)
     }
 
-    func setHidden(reduceMotion: Bool) {
+    func setHidden(
+        reduceMotion: Bool,
+        configuration: InterfaceAnimationConfiguration = .default
+    ) {
         guard let layer = animatedView.layer else { return }
+        motionConfiguration = configuration
         layer.removeAllAnimations()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -396,8 +481,14 @@ final class HUDContainerView: NSView {
         CATransaction.commit()
     }
 
-    func transition(visible: Bool, reduceMotion: Bool, duration: Double) {
+    func transition(
+        visible: Bool,
+        reduceMotion: Bool,
+        duration: Double,
+        configuration: InterfaceAnimationConfiguration = .default
+    ) {
         guard let layer = animatedView.layer else { return }
+        motionConfiguration = configuration
         let current = layer.presentation() ?? layer
         let opacity = current.opacity
         let transform = current.transform
@@ -414,7 +505,7 @@ final class HUDContainerView: NSView {
         fade.toValue = targetOpacity
         fade.beginTime = layer.convertTime(CACurrentMediaTime(), from: nil)
         fade.duration = duration
-        fade.timingFunction = CAMediaTimingFunction(controlPoints: 0.23, 1, 0.32, 1)
+        fade.timingFunction = RibbonAnimationCurve.easeOut.mediaTimingFunction
         layer.add(fade, forKey: "hudOpacity")
         if reduceMotion {
             layer.removeAnimation(forKey: "hudTransform")
@@ -518,6 +609,7 @@ final class NavigationHUDModel: ObservableObject {
     @Published var appBarColor = defaultAppBarColor
     @Published var developerControlsEnabled = false
     @Published private(set) var animationConfiguration = RibbonAnimationConfiguration.default
+    @Published private(set) var interfaceAnimationConfiguration = InterfaceAnimationConfiguration.default
     @Published private(set) var draggedWindowID: String?
     @Published private(set) var dropTargetID: String?
     var onFocusWindow: ((String) -> Void)?
@@ -526,8 +618,10 @@ final class NavigationHUDModel: ObservableObject {
     var onRemoveWindow: ((String) -> Void)?
     var onReorderWindow: ((String, Int) -> Void)?
     var onAnimationConfigurationChange: ((RibbonAnimationConfiguration) -> Void)?
+    var onInterfaceAnimationConfigurationChange: ((InterfaceAnimationConfiguration) -> Void)?
     var onDropTargetChange: ((Bool) -> Void)?
     var onContentChange: (() -> Void)?
+    var onPreviewHUDAnimation: (() -> Void)?
 
     var displayedItemCount: Int { showingSpaces ? availableSpaceIndices.count : windows.count }
     var focusedAppName: String { windows.first { $0.id == focusedID }?.appName ?? "No windows" }
@@ -543,6 +637,11 @@ final class NavigationHUDModel: ObservableObject {
         animationConfiguration = configuration
     }
 
+    func setInterfaceAnimationConfiguration(_ configuration: InterfaceAnimationConfiguration) {
+        guard interfaceAnimationConfiguration != configuration else { return }
+        interfaceAnimationConfiguration = configuration
+    }
+
     func setAnimationDuration(_ duration: Double) {
         changeAnimationConfiguration(duration: duration)
     }
@@ -551,18 +650,122 @@ final class NavigationHUDModel: ObservableObject {
         changeAnimationConfiguration(curve: curve)
     }
 
+    func setGestureTracking(_ tracking: Double) {
+        changeAnimationConfiguration(tracking: tracking)
+    }
+
+    func setGestureCommitProgress(_ commitProgress: Double) {
+        changeAnimationConfiguration(commitProgress: commitProgress)
+    }
+
+    func setGestureFlickDistance(_ flickDistance: Double) {
+        changeAnimationConfiguration(flickDistance: flickDistance)
+    }
+
+    func setGestureFlickVelocity(_ flickVelocity: Double) {
+        changeAnimationConfiguration(flickVelocity: flickVelocity)
+    }
+
+    func setGestureEdgeResistance(_ edgeResistance: Double) {
+        changeAnimationConfiguration(edgeResistance: edgeResistance)
+    }
+
     func resetAnimationConfiguration() {
         setAnimationConfiguration(RibbonAnimationConfiguration.default)
         onAnimationConfigurationChange?(animationConfiguration)
     }
 
+    func resetAllMotionConfiguration() {
+        resetAnimationConfiguration()
+        setInterfaceAnimationConfiguration(.default)
+        onInterfaceAnimationConfigurationChange?(interfaceAnimationConfiguration)
+    }
+
+    func previewHUDAnimation() {
+        onPreviewHUDAnimation?()
+    }
+
+    func setHUDEnterDuration(_ value: Double) {
+        changeInterfaceAnimationConfiguration(hudEnterDuration: value)
+    }
+
+    func setHUDExitDuration(_ value: Double) {
+        changeInterfaceAnimationConfiguration(hudExitDuration: value)
+    }
+
+    func setAttachedHUDTravel(_ value: Double) {
+        changeInterfaceAnimationConfiguration(attachedHUDTravel: value)
+    }
+
+    func setFloatingHUDTravel(_ value: Double) {
+        changeInterfaceAnimationConfiguration(floatingHUDTravel: value)
+    }
+
+    func setHiddenHUDScale(_ value: Double) {
+        changeInterfaceAnimationConfiguration(hiddenHUDScale: value)
+    }
+
+    func setFeedbackDuration(_ value: Double) {
+        changeInterfaceAnimationConfiguration(feedbackDuration: value)
+    }
+
+    func setPressedScale(_ value: Double) {
+        changeInterfaceAnimationConfiguration(pressedScale: value)
+    }
+
+    func setFocusRevealDuration(_ value: Double) {
+        changeInterfaceAnimationConfiguration(focusRevealDuration: value)
+    }
+
+    func setFocusRevealOpacity(_ value: Double) {
+        changeInterfaceAnimationConfiguration(focusRevealOpacity: value)
+    }
+
+    private func changeInterfaceAnimationConfiguration(
+        hudEnterDuration: Double? = nil,
+        hudExitDuration: Double? = nil,
+        attachedHUDTravel: Double? = nil,
+        floatingHUDTravel: Double? = nil,
+        hiddenHUDScale: Double? = nil,
+        feedbackDuration: Double? = nil,
+        pressedScale: Double? = nil,
+        focusRevealDuration: Double? = nil,
+        focusRevealOpacity: Double? = nil
+    ) {
+        let current = interfaceAnimationConfiguration
+        let configuration = InterfaceAnimationConfiguration(
+            hudEnterDuration: hudEnterDuration ?? current.hudEnterDuration,
+            hudExitDuration: hudExitDuration ?? current.hudExitDuration,
+            attachedHUDTravel: attachedHUDTravel ?? current.attachedHUDTravel,
+            floatingHUDTravel: floatingHUDTravel ?? current.floatingHUDTravel,
+            hiddenHUDScale: hiddenHUDScale ?? current.hiddenHUDScale,
+            feedbackDuration: feedbackDuration ?? current.feedbackDuration,
+            pressedScale: pressedScale ?? current.pressedScale,
+            focusRevealDuration: focusRevealDuration ?? current.focusRevealDuration,
+            focusRevealOpacity: focusRevealOpacity ?? current.focusRevealOpacity
+        )
+        guard configuration != current else { return }
+        interfaceAnimationConfiguration = configuration
+        onInterfaceAnimationConfigurationChange?(configuration)
+    }
+
     private func changeAnimationConfiguration(
         duration: Double? = nil,
-        curve: RibbonAnimationCurve? = nil
+        curve: RibbonAnimationCurve? = nil,
+        tracking: Double? = nil,
+        commitProgress: Double? = nil,
+        flickDistance: Double? = nil,
+        flickVelocity: Double? = nil,
+        edgeResistance: Double? = nil
     ) {
         let configuration = RibbonAnimationConfiguration(
             duration: duration ?? animationConfiguration.duration,
-            curve: curve ?? animationConfiguration.curve
+            curve: curve ?? animationConfiguration.curve,
+            tracking: tracking ?? animationConfiguration.tracking,
+            commitProgress: commitProgress ?? animationConfiguration.commitProgress,
+            flickDistance: flickDistance ?? animationConfiguration.flickDistance,
+            flickVelocity: flickVelocity ?? animationConfiguration.flickVelocity,
+            edgeResistance: edgeResistance ?? animationConfiguration.edgeResistance
         )
         guard configuration != animationConfiguration else { return }
         animationConfiguration = configuration
@@ -656,9 +859,18 @@ final class NavigationHUDModel: ObservableObject {
     }
 }
 
+private enum MotionEditorSection: String, CaseIterable, Identifiable {
+    case settle = "Settle"
+    case gesture = "Gesture"
+    case interface = "HUD"
+
+    var id: Self { self }
+}
+
 private struct NavigationHUD: View {
     @ObservedObject var model: NavigationHUDModel
     @Namespace private var selection
+    @State private var motionEditorSection = MotionEditorSection.settle
 
     var body: some View {
         Group {
@@ -697,7 +909,10 @@ private struct NavigationHUD: View {
                         .frame(width: 22, height: 32)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ResponsiveButtonStyle(
+                    reduceMotion: model.reduceMotion,
+                    configuration: model.interfaceAnimationConfiguration
+                ))
                 .help(model.showingSpaces ? "Show windows" : "Choose a space")
                 .accessibilityLabel(model.showingSpaces ? "Show windows in Space \(model.space)" : "Choose a space, currently Space \(model.space)")
                 Rectangle().fill(.white.opacity(0.15)).frame(width: 1, height: 18)
@@ -739,7 +954,10 @@ private struct NavigationHUD: View {
                                         }
                                     }
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(ResponsiveButtonStyle(
+                                    reduceMotion: model.reduceMotion,
+                                    configuration: model.interfaceAnimationConfiguration
+                                ))
                                 .help(window.title.isEmpty ? window.appName : "\(window.appName): \(window.title)")
                                 .accessibilityLabel("Focus \(window.appName)\(window.title.isEmpty ? "" : ", \(window.title)")")
                                 .contextMenu {
@@ -807,6 +1025,13 @@ private struct NavigationHUD: View {
                 .foregroundStyle(model.dropDescription == nil ? Color.white.opacity(0.8) : appBarColor)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
+                .contentTransition(.opacity)
+                .animation(
+                    model.reduceMotion ? nil : RibbonAnimationCurve.ease.animation(
+                        duration: model.interfaceAnimationConfiguration.feedbackDuration
+                    ),
+                    value: model.dropDescription ?? model.focusedAppName
+                )
             }
             if model.developerControlsEnabled {
                 Divider().overlay(.white.opacity(0.12))
@@ -818,6 +1043,55 @@ private struct NavigationHUD: View {
     }
 
     private var animationControls: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Picker("Motion controls", selection: $motionEditorSection) {
+                    ForEach(MotionEditorSection.allCases) { section in
+                        Text(section.rawValue).tag(section)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 300)
+                Spacer()
+                if motionEditorSection == .interface {
+                    Button(action: model.previewHUDAnimation) {
+                        Label("Replay", systemImage: "play.fill")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .buttonStyle(ResponsiveButtonStyle(
+                        reduceMotion: model.reduceMotion,
+                        configuration: model.interfaceAnimationConfiguration
+                    ))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .help("Replay the app bar entrance")
+                }
+                Button(action: model.resetAllMotionConfiguration) {
+                    Label("Reset", systemImage: "arrow.counterclockwise")
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .buttonStyle(ResponsiveButtonStyle(
+                    reduceMotion: model.reduceMotion,
+                    configuration: model.interfaceAnimationConfiguration
+                ))
+                .foregroundStyle(.white.opacity(0.7))
+                .help("Reset all motion controls")
+            }
+
+            Group {
+                switch motionEditorSection {
+                case .settle: settleControls
+                case .gesture: gestureControls
+                case .interface: interfaceControls
+                }
+            }
+            .frame(maxHeight: .infinity)
+        }
+        .controlSize(.small)
+        .frame(height: 220)
+    }
+
+    private var settleControls: some View {
         let configuration = model.animationConfiguration
         let curve = configuration.curve
         return HStack(alignment: .top, spacing: 14) {
@@ -862,7 +1136,7 @@ private struct NavigationHUD: View {
 
             Rectangle()
                 .fill(.white.opacity(0.12))
-                .frame(width: 1, height: 126)
+                .frame(width: 1, height: 142)
 
             VStack(spacing: 8) {
                 HStack {
@@ -873,13 +1147,6 @@ private struct NavigationHUD: View {
                     Text("\(Int((configuration.duration * 1_000).rounded())) ms")
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.8))
-                    Button(action: model.resetAnimationConfiguration) {
-                        Image(systemName: "arrow.counterclockwise")
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.white.opacity(0.7))
-                    .help("Reset animation controls")
-                    .accessibilityLabel("Reset animation controls")
                 }
                 Slider(
                     value: Binding(
@@ -905,8 +1172,146 @@ private struct NavigationHUD: View {
                 .foregroundStyle(.white.opacity(0.45))
             }
         }
-        .controlSize(.small)
-        .frame(height: 126)
+    }
+
+    private var gestureControls: some View {
+        let configuration = model.animationConfiguration
+        return LazyVGrid(columns: motionControlColumns, spacing: 14) {
+            MotionTuningSlider(
+                title: "Tracking gain",
+                value: Binding(
+                    get: { model.animationConfiguration.tracking },
+                    set: { model.setGestureTracking($0) }
+                ),
+                range: RibbonAnimationConfiguration.trackingRange,
+                step: 0.1,
+                valueText: "×\(configuration.tracking.formatted(.number.precision(.fractionLength(1))))"
+            )
+            MotionTuningSlider(
+                title: "Commit point",
+                value: Binding(
+                    get: { model.animationConfiguration.commitProgress },
+                    set: { model.setGestureCommitProgress($0) }
+                ),
+                range: RibbonAnimationConfiguration.commitProgressRange,
+                step: 0.01,
+                valueText: configuration.commitProgress.formatted(.percent.precision(.fractionLength(0)))
+            )
+            MotionTuningSlider(
+                title: "Flick distance",
+                value: Binding(
+                    get: { model.animationConfiguration.flickDistance },
+                    set: { model.setGestureFlickDistance($0) }
+                ),
+                range: RibbonAnimationConfiguration.flickDistanceRange,
+                step: 0.005,
+                valueText: configuration.flickDistance.formatted(.number.precision(.fractionLength(3)))
+            )
+            MotionTuningSlider(
+                title: "Flick speed",
+                value: Binding(
+                    get: { model.animationConfiguration.flickVelocity },
+                    set: { model.setGestureFlickVelocity($0) }
+                ),
+                range: RibbonAnimationConfiguration.flickVelocityRange,
+                step: 0.05,
+                valueText: configuration.flickVelocity.formatted(.number.precision(.fractionLength(2)))
+            )
+            MotionTuningSlider(
+                title: "Edge resistance",
+                value: Binding(
+                    get: { model.animationConfiguration.edgeResistance },
+                    set: { model.setGestureEdgeResistance($0) }
+                ),
+                range: RibbonAnimationConfiguration.edgeResistanceRange,
+                step: 5,
+                valueText: "\(Int(configuration.edgeResistance.rounded())) pt"
+            )
+        }
+    }
+
+    private var interfaceControls: some View {
+        return LazyVGrid(columns: motionControlColumns, spacing: 12) {
+            interfaceSlider("Enter duration", value: Binding(
+                get: { model.interfaceAnimationConfiguration.hudEnterDuration },
+                set: { model.setHUDEnterDuration($0) }
+            ),
+                            range: InterfaceAnimationConfiguration.durationRange,
+                            step: 0.01, unit: "ms")
+            interfaceSlider("Exit duration", value: Binding(
+                get: { model.interfaceAnimationConfiguration.hudExitDuration },
+                set: { model.setHUDExitDuration($0) }
+            ),
+                            range: InterfaceAnimationConfiguration.durationRange,
+                            step: 0.01, unit: "ms")
+            interfaceSlider("Notch travel", value: Binding(
+                get: { model.interfaceAnimationConfiguration.attachedHUDTravel },
+                set: { model.setAttachedHUDTravel($0) }
+            ),
+                            range: InterfaceAnimationConfiguration.travelRange,
+                            step: 1, unit: "pt")
+            interfaceSlider("Floating travel", value: Binding(
+                get: { model.interfaceAnimationConfiguration.floatingHUDTravel },
+                set: { model.setFloatingHUDTravel($0) }
+            ),
+                            range: InterfaceAnimationConfiguration.travelRange,
+                            step: 1, unit: "pt")
+            interfaceSlider("Hidden scale", value: Binding(
+                get: { model.interfaceAnimationConfiguration.hiddenHUDScale },
+                set: { model.setHiddenHUDScale($0) }
+            ),
+                            range: InterfaceAnimationConfiguration.scaleRange,
+                            step: 0.005)
+            interfaceSlider("State fade", value: Binding(
+                get: { model.interfaceAnimationConfiguration.feedbackDuration },
+                set: { model.setFeedbackDuration($0) }
+            ),
+                            range: InterfaceAnimationConfiguration.durationRange,
+                            step: 0.01, unit: "ms")
+            interfaceSlider("Pressed scale", value: Binding(
+                get: { model.interfaceAnimationConfiguration.pressedScale },
+                set: { model.setPressedScale($0) }
+            ),
+                            range: InterfaceAnimationConfiguration.scaleRange,
+                            step: 0.005)
+            interfaceSlider("Focus flash", value: Binding(
+                get: { model.interfaceAnimationConfiguration.focusRevealDuration },
+                set: { model.setFocusRevealDuration($0) }
+            ),
+                            range: InterfaceAnimationConfiguration.durationRange,
+                            step: 0.01, unit: "ms")
+            interfaceSlider("Focus opacity", value: Binding(
+                get: { model.interfaceAnimationConfiguration.focusRevealOpacity },
+                set: { model.setFocusRevealOpacity($0) }
+            ),
+                            range: InterfaceAnimationConfiguration.opacityRange,
+                            step: 0.01)
+        }
+    }
+
+    private var motionControlColumns: [GridItem] {
+        [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14), GridItem(.flexible())]
+    }
+
+    private func interfaceSlider(
+        _ title: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        step: Double,
+        unit: String? = nil
+    ) -> some View {
+        let current = value.wrappedValue
+        let valueText = unit == "ms"
+            ? "\(Int((current * 1_000).rounded())) ms"
+            : unit.map { "\(Int(current.rounded())) \($0)" }
+                ?? current.formatted(.number.precision(.fractionLength(2)))
+        return MotionTuningSlider(
+            title: title,
+            value: value,
+            range: range,
+            step: step,
+            valueText: valueText
+        )
     }
 
     private var spacePicker: some View {
@@ -923,7 +1328,10 @@ private struct NavigationHUD: View {
                                         in: RoundedRectangle(cornerRadius: 10))
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(ResponsiveButtonStyle(
+                        reduceMotion: model.reduceMotion,
+                        configuration: model.interfaceAnimationConfiguration
+                    ))
                     .accessibilityLabel("Go to space \(index + 1)")
                 }
             }
@@ -1053,8 +1461,58 @@ private struct MotionTimeline: View {
     }
 }
 
+private struct MotionTuningSlider: View {
+    let title: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+    let valueText: String
+
+    var body: some View {
+        VStack(spacing: 4) {
+            HStack(spacing: 4) {
+                Text(title)
+                Spacer(minLength: 2)
+                Text(valueText).monospacedDigit().foregroundStyle(.white.opacity(0.8))
+            }
+            .font(.system(size: 9, weight: .medium))
+            .foregroundStyle(.white.opacity(0.6))
+            Slider(value: $value, in: range, step: step)
+                .accessibilityLabel(title)
+                .accessibilityValue(valueText)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
 private extension RibbonAnimationCurve {
+    var mediaTimingFunction: CAMediaTimingFunction {
+        CAMediaTimingFunction(
+            controlPoints: Float(x1), Float(y1), Float(x2), Float(y2)
+        )
+    }
+
     func animation(duration: Double) -> SwiftUI.Animation {
         .timingCurve(x1, y1, x2, y2, duration: duration)
+    }
+}
+
+private struct ResponsiveButtonStyle: ButtonStyle {
+    let reduceMotion: Bool
+    let configuration: InterfaceAnimationConfiguration
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(
+                configuration.isPressed && !reduceMotion
+                    ? self.configuration.pressedScale
+                    : 1
+            )
+            .animation(
+                reduceMotion ? nil : RibbonAnimationCurve.ease.animation(
+                    duration: self.configuration.feedbackDuration
+                ),
+                value: configuration.isPressed
+            )
     }
 }
