@@ -71,6 +71,14 @@ struct RibbonAnimationCurve: Equatable {
     }
 }
 
+extension RibbonAnimationCurve {
+    var mediaTimingFunction: CAMediaTimingFunction {
+        CAMediaTimingFunction(
+            controlPoints: Float(x1), Float(y1), Float(x2), Float(y2)
+        )
+    }
+}
+
 struct RibbonAnimationConfiguration: Equatable {
     static let `default` = Self(
         duration: 0.3,

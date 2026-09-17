@@ -891,12 +891,6 @@ private struct NavigationHUD: View {
 }
 
 private extension RibbonAnimationCurve {
-    var mediaTimingFunction: CAMediaTimingFunction {
-        CAMediaTimingFunction(
-            controlPoints: Float(x1), Float(y1), Float(x2), Float(y2)
-        )
-    }
-
     func animation(duration: Double) -> SwiftUI.Animation {
         .timingCurve(x1, y1, x2, y2, duration: duration)
     }

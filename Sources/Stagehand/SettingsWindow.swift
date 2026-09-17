@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import SwiftUI
 
 @MainActor
@@ -31,6 +32,42 @@ enum SettingsWindow {
 @MainActor
 private final class SettingsPanelWindow: NSWindow {
     private static let windowControlInset: CGFloat = 26
+    private static let transitionDuration = 0.25
+    private static let reducedMotionDuration = 0.15
+    private static let hiddenScale: CGFloat = 0.96
+    private var transitionGeneration: UInt64 = 0
+    private var isDismissing = false
+
+    override func makeKeyAndOrderFront(_ sender: Any?) {
+        let wasVisible = isVisible
+        let wasDismissing = isDismissing
+        let shouldAnimate = NSApp.currentEvent?.type != .keyDown
+        transitionGeneration &+= 1
+        isDismissing = false
+
+        if shouldAnimate, !wasVisible { setHiddenAppearance() }
+        else if !shouldAnimate { setVisibleAppearance() }
+        super.makeKeyAndOrderFront(sender)
+        guard shouldAnimate, !wasVisible || wasDismissing else { return }
+        transition(visible: true)
+    }
+
+    override func performClose(_ sender: Any?) {
+        guard isVisible, !isDismissing else { return }
+        guard NSApp.currentEvent?.type != .keyDown else {
+            super.performClose(sender)
+            return
+        }
+
+        isDismissing = true
+        transitionGeneration &+= 1
+        let generation = transitionGeneration
+        transition(visible: false) { [weak self] in
+            guard let self, self.isDismissing, self.transitionGeneration == generation else { return }
+            self.isDismissing = false
+            self.finishClosing(sender)
+        }
+    }
 
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
         frameRect
@@ -58,5 +95,80 @@ private final class SettingsPanelWindow: NSWindow {
                 y: button.frame.minY + offset.y
             ))
         }
+    }
+
+    private var animatedLayer: CALayer? {
+        guard let frameView = contentView?.superview else { return nil }
+        frameView.wantsLayer = true
+        return frameView.layer
+    }
+
+    private var hiddenTransform: CATransform3D {
+        CATransform3DMakeScale(Self.hiddenScale, Self.hiddenScale, 1)
+    }
+
+    private func setHiddenAppearance() {
+        guard let layer = animatedLayer else { return }
+        layer.removeAllAnimations()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.opacity = 0
+        layer.transform = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            ? CATransform3DIdentity
+            : hiddenTransform
+        CATransaction.commit()
+    }
+
+    private func setVisibleAppearance() {
+        guard let layer = animatedLayer else { return }
+        layer.removeAllAnimations()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.opacity = 1
+        layer.transform = CATransform3DIdentity
+        CATransaction.commit()
+    }
+
+    private func transition(visible: Bool, completion: (() -> Void)? = nil) {
+        guard let layer = animatedLayer else {
+            completion?()
+            return
+        }
+
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let current = layer.presentation() ?? layer
+        let currentOpacity = current.opacity
+        let currentTransform = current.transform
+        let targetOpacity: Float = visible ? 1 : 0
+        let targetTransform = visible || reduceMotion ? CATransform3DIdentity : hiddenTransform
+        let duration = reduceMotion ? Self.reducedMotionDuration : Self.transitionDuration
+
+        layer.removeAllAnimations()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        CATransaction.setCompletionBlock(completion)
+        layer.opacity = targetOpacity
+        layer.transform = targetTransform
+
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = currentOpacity
+        fade.toValue = targetOpacity
+        fade.duration = duration
+        fade.timingFunction = RibbonAnimationCurve.easeOut.mediaTimingFunction
+        layer.add(fade, forKey: "settingsOpacity")
+
+        if !reduceMotion {
+            let scale = CABasicAnimation(keyPath: "transform")
+            scale.fromValue = NSValue(caTransform3D: currentTransform)
+            scale.toValue = NSValue(caTransform3D: targetTransform)
+            scale.duration = duration
+            scale.timingFunction = fade.timingFunction
+            layer.add(scale, forKey: "settingsTransform")
+        }
+        CATransaction.commit()
+    }
+
+    private func finishClosing(_ sender: Any?) {
+        super.performClose(sender)
     }
 }
