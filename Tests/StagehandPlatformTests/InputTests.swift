@@ -529,6 +529,7 @@ func gestureSelectedFingerCountNavigatesSpacesOnFlickAndStaggeredLift(fingerCoun
     let keys = bindings.map { "\($0.key):\($0.modifiers)" }
     #expect(Set(keys).count == bindings.count)
     #expect(bindings.allSatisfy { $0.isDefault })
+    #expect(bindings.first { $0.id == "focusPrevious" }?.label == "⌃ ⌥ ←")
 }
 
 @Test func controlOptionShiftNumberSharesWithSpace() throws {

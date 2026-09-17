@@ -24,7 +24,9 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
     public let action: NavigationAction
 
     public var label: String {
-        Self.modifierLabel(modifiers) + keyLabel
+        [Self.modifierLabel(modifiers), keyLabel]
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 
     public var isDefault: Bool {
@@ -170,13 +172,13 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
     }
 
     public static func modifierLabel(_ modifiers: UInt32) -> String {
-        var label = ""
-        if modifiers & UInt32(controlKey) != 0 { label += "⌃" }
-        if modifiers & UInt32(optionKey) != 0 { label += "⌥" }
-        if modifiers & UInt32(shiftKey) != 0 { label += "⇧" }
-        if modifiers & UInt32(cmdKey) != 0 { label += "⌘" }
-        if modifiers & UInt32(alphaLock) != 0 { label += "⇪" }
-        return label
+        var labels: [String] = []
+        if modifiers & UInt32(controlKey) != 0 { labels.append("⌃") }
+        if modifiers & UInt32(optionKey) != 0 { labels.append("⌥") }
+        if modifiers & UInt32(shiftKey) != 0 { labels.append("⇧") }
+        if modifiers & UInt32(cmdKey) != 0 { labels.append("⌘") }
+        if modifiers & UInt32(alphaLock) != 0 { labels.append("⇪") }
+        return labels.joined(separator: " ")
     }
 
     var chord: UInt64 {
