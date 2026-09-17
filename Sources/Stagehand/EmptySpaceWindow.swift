@@ -19,7 +19,9 @@ final class EmptySpaceWindow {
         window.setFrame(CGRect(x: frame.minX, y: primary.frame.maxY - frame.maxY,
                                width: frame.width, height: frame.height), display: true)
         window.contentView = NSHostingView(rootView: VStack(spacing: 16) {
-            Image(systemName: "rectangle.dashed").font(.system(size: 46, weight: .ultraLight)).foregroundStyle(.mint)
+            PhosphorIcon(.rectangleDashed)
+                .frame(width: 52, height: 52)
+                .foregroundStyle(.mint)
             Text("Space \(space)").font(.system(size: 24, weight: .medium))
             Text("No windows here yet.").foregroundStyle(.secondary)
             Text("Use your space shortcuts or swipe vertically.\nFrom another space, use the Share window shortcut for this space.")

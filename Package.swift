@@ -8,7 +8,11 @@ let package = Package(
     targets: [
         .target(name: "StagehandCore"),
         .target(name: "StagehandPlatform", dependencies: ["StagehandCore"]),
-        .executableTarget(name: "Stagehand", dependencies: ["StagehandCore", "StagehandPlatform"]),
+        .executableTarget(
+            name: "Stagehand",
+            dependencies: ["StagehandCore", "StagehandPlatform"],
+            resources: [.copy("Resources/Phosphor")]
+        ),
         .testTarget(name: "StagehandCoreTests", dependencies: ["StagehandCore"]),
         .testTarget(name: "StagehandPlatformTests", dependencies: ["StagehandPlatform", "StagehandCore"]),
         .testTarget(name: "StagehandTests", dependencies: ["Stagehand"])

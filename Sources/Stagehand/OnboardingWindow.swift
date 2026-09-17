@@ -73,7 +73,7 @@ struct OnboardingView: View {
             .padding(.horizontal, 34)
             .padding(.bottom, 28)
         }
-        .frame(width: 520, height: 600)
+        .frame(minWidth: 520, maxWidth: .infinity, minHeight: 600, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -244,8 +244,16 @@ private struct OverviewOnboardingPage: View {
                 .padding(.top, 10)
 
             HStack(spacing: 20) {
-                Label("Windows", systemImage: "arrow.left.and.right")
-                Label("Spaces", systemImage: "arrow.up.and.down")
+                HStack(spacing: 6) {
+                    PhosphorIcon(.arrowsLeftRight)
+                        .frame(width: 15, height: 15)
+                    Text("Windows")
+                }
+                HStack(spacing: 6) {
+                    PhosphorIcon(.arrowsDownUp)
+                        .frame(width: 15, height: 15)
+                    Text("Spaces")
+                }
             }
             .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(.white.opacity(0.8))
@@ -288,9 +296,9 @@ private struct WorkspaceArtwork: View {
         }
         .frame(width: 370, height: 218)
         .overlay(alignment: .bottom) {
-            Image(systemName: "arrow.left.and.right")
-                .font(.system(size: 14, weight: .bold))
+            PhosphorIcon(.arrowsLeftRight)
                 .foregroundStyle(.white)
+                .frame(width: 18, height: 18)
                 .frame(width: 38, height: 38)
                 .background(.blue.gradient, in: Circle())
                 .shadow(color: .black.opacity(0.35), radius: 10, y: 5)
@@ -332,10 +340,9 @@ private struct AccessibilityOnboardingPage: View {
                     .fill(Color.blue.opacity(0.28))
                     .frame(width: 166, height: 166)
                     .blur(radius: 34)
-                Image(systemName: model.accessibilityGranted ? "checkmark.shield.fill" : "hand.raised.fill")
-                    .font(.system(size: 66, weight: .medium))
-                    .symbolRenderingMode(.palette)
-                    .foregroundStyle(.white, model.accessibilityGranted ? Color.green : Color.blue)
+                PhosphorIcon(model.accessibilityGranted ? .shieldCheck : .handPalm)
+                    .foregroundStyle(model.accessibilityGranted ? Color.green : Color.blue)
+                    .frame(width: 76, height: 76)
                     .shadow(color: .black.opacity(0.35), radius: 14, y: 8)
             }
             .frame(height: 202)
@@ -354,9 +361,9 @@ private struct AccessibilityOnboardingPage: View {
                 .padding(.top, 10)
 
             HStack(spacing: 13) {
-                Image(systemName: "accessibility")
-                    .font(.system(size: 20, weight: .semibold))
+                PhosphorIcon(.personArmsSpread)
                     .foregroundStyle(.white)
+                    .frame(width: 22, height: 22)
                     .frame(width: 38, height: 38)
                     .background(.blue.gradient, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
@@ -371,7 +378,11 @@ private struct AccessibilityOnboardingPage: View {
                 Spacer()
 
                 if model.accessibilityGranted {
-                    Label("Granted", systemImage: "checkmark.circle.fill")
+                    HStack(spacing: 5) {
+                        PhosphorIcon(.checkCircle)
+                            .frame(width: 14, height: 14)
+                        Text("Granted")
+                    }
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.green)
                 } else {
@@ -410,9 +421,9 @@ private struct ReadyOnboardingPage: View {
                     )
                     .frame(width: 124, height: 124)
                     .overlay {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 54, weight: .bold))
+                        PhosphorIcon(.check)
                             .foregroundStyle(.white)
+                            .frame(width: 58, height: 58)
                     }
                     .shadow(color: .black.opacity(0.4), radius: 18, y: 12)
             }
@@ -432,7 +443,8 @@ private struct ReadyOnboardingPage: View {
                 .padding(.top, 10)
 
             HStack(spacing: 8) {
-                Image(systemName: "menubar.rectangle")
+                PhosphorIcon(.browser)
+                    .frame(width: 14, height: 14)
                 Text("Stagehand lives in your menu bar")
             }
             .font(.system(size: 12, weight: .semibold))

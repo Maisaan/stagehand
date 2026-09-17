@@ -12,12 +12,12 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 
     var id: Self { self }
 
-    var icon: String {
+    var icon: PhosphorIconName {
         switch self {
-        case .general: "gearshape.fill"
-        case .windows: "rectangle.3.group"
-        case .shortcuts: "keyboard"
-        case .about: "info.circle.fill"
+        case .general: .gearSix
+        case .windows: .cardsThree
+        case .shortcuts: .keyboard
+        case .about: .info
         }
     }
 
@@ -53,7 +53,6 @@ struct SettingsView: View {
     @ObservedObject var model: StagehandModel
     let showOnboarding: () -> Void
     let expandAboutDetails: Bool
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.controlActiveState) private var controlActiveState
     @State private var page: SettingsPage
     @State private var gapInput: Double
@@ -80,7 +79,7 @@ struct SettingsView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            List(selection: $page) {
+            List {
                 sidebarRow(.general)
                 Section("Settings") {
                     sidebarRow(.windows)
@@ -92,10 +91,12 @@ struct SettingsView: View {
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
-            .frame(width: 220)
+            .padding(.top, 45)
+            .frame(width: 224)
             .background(Color.clear)
 
-            Divider()
+            Color.white.opacity(0.08)
+                .frame(width: 1)
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 20) {
@@ -112,8 +113,22 @@ struct SettingsView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .background(settingsBackgroundColor)
         .frame(minWidth: 700, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
+        .background {
+            ZStack {
+                Rectangle().fill(.thickMaterial)
+                if controlActiveState == .inactive {
+                    Color.black.opacity(0.64)
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        }
+        .ignoresSafeArea(.container, edges: .top)
+        .tint(.blue)
         .alert("Shortcut unavailable", isPresented: Binding(
             get: { shortcutError != nil },
             set: { if !$0 { shortcutError = nil } }
@@ -132,25 +147,31 @@ struct SettingsView: View {
         }
     }
 
-    private var settingsBackgroundColor: Color {
-        guard colorScheme == .dark else { return Color(nsColor: .windowBackgroundColor) }
-        return controlActiveState == .key
-            ? Color(white: 42.0 / 255)
-            : Color(white: 38.0 / 255)
-    }
-
     private func sidebarRow(_ item: SettingsPage) -> some View {
-        HStack(spacing: 10) {
-            SettingsSidebarIcon(symbol: item.icon, color: item.color)
-            Text(item.rawValue)
-            Spacer(minLength: 0)
-            if item == .general, model.warning != nil || !model.inputIssues.isEmpty {
-                Image(systemName: "exclamationmark.circle.fill")
-                    .foregroundStyle(.orange)
-                    .accessibilityLabel("Needs attention")
+        Button { page = item } label: {
+            HStack(spacing: 10) {
+                SettingsSidebarIcon(symbol: item.icon, color: item.color)
+                Text(item.rawValue)
+                Spacer(minLength: 0)
+                if item == .general, model.warning != nil || !model.inputIssues.isEmpty {
+                    PhosphorIcon(.warningCircle)
+                        .frame(width: 14, height: 14)
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel("Needs attention")
+                }
             }
+            .padding(.vertical, 8)
+            .background {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(item == page ? Color.white.opacity(0.08) : Color.clear)
+                    .padding(.leading, -8)
+                    .padding(.trailing, -4)
+            }
+            .contentShape(Rectangle())
         }
-        .tag(item)
+        .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 0, leading: 4, bottom: 0, trailing: 0))
+        .listRowBackground(Color.clear)
     }
 
     private var general: some View {
@@ -199,6 +220,9 @@ struct SettingsView: View {
                                 model.requestAccessibility()
                             }
                         }
+                        .buttonStyle(.borderedProminent)
+                        .buttonBorderShape(.roundedRectangle(radius: 8))
+                        .controlSize(.regular)
                     }
                 }
             }
@@ -213,6 +237,9 @@ struct SettingsView: View {
                     Divider()
                     SettingsRow("Trackpad settings") {
                         Button("Open…") { openSettingsPane("com.apple.Trackpad-Settings.extension") }
+                            .buttonStyle(.borderedProminent)
+                            .buttonBorderShape(.roundedRectangle(radius: 8))
+                            .controlSize(.regular)
                     }
                 }
             } footer: {
@@ -282,12 +309,19 @@ struct SettingsView: View {
 
     private func warningRow(_ message: String, dismissible: Bool) -> some View {
         SettingsRow {
-            Label(message, systemImage: "exclamationmark.triangle.fill")
+            HStack(spacing: 7) {
+                PhosphorIcon(.warning)
+                    .frame(width: 16, height: 16)
+                Text(message)
+            }
                 .foregroundStyle(.orange)
                 .fixedSize(horizontal: false, vertical: true)
         } trailing: {
             if dismissible {
-                Button { model.dismissWarning() } label: { Image(systemName: "xmark") }
+                Button { model.dismissWarning() } label: {
+                    PhosphorIcon(.x)
+                        .frame(width: 12, height: 12)
+                }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Dismiss warning")
             }
@@ -393,7 +427,8 @@ struct SettingsView: View {
 
     private func windowRow(_ window: WindowRecord, inSpace spaceIndex: Int) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: "line.3.horizontal")
+            PhosphorIcon(.list)
+                .frame(width: 14, height: 14)
                 .foregroundStyle(.tertiary)
                 .help("Drag to reorder")
                 .accessibilityHidden(true)
@@ -439,8 +474,8 @@ struct SettingsView: View {
                     }
                 }
             } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.system(size: 16))
+                PhosphorIcon(.dotsThreeCircle)
+                    .frame(width: 16, height: 16)
                     .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
             }
@@ -569,7 +604,8 @@ struct SettingsView: View {
             .frame(width: 104, height: 24)
             if !binding.isDefault {
                 Button { model.resetShortcut(id: binding.id) } label: {
-                    Image(systemName: "arrow.counterclockwise")
+                    PhosphorIcon(.arrowCounterClockwise)
+                        .frame(width: 14, height: 14)
                 }
                 .buttonStyle(.borderless)
                 .help("Reset \(binding.title) to \(ShortcutBinding.defaultBinding(id: binding.id)?.label ?? "its default")")
@@ -621,6 +657,9 @@ struct SettingsView: View {
                 SettingsCard {
                     SettingsRow("Run onboarding again") {
                         Button("Open…", action: showOnboarding)
+                            .buttonStyle(.borderedProminent)
+                            .buttonBorderShape(.roundedRectangle(radius: 8))
+                            .controlSize(.regular)
                     }
                 }
             }
@@ -696,11 +735,11 @@ private struct SettingsCard<Content: View>: View {
         VStack(spacing: 0) {
             content
         }
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(Color.white.opacity(0.05))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
         }
     }
 }
@@ -777,10 +816,9 @@ private struct SettingsDisclosureRow<Content: View>: View {
                 }
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .semibold))
+                    PhosphorIcon(.caretRight)
+                        .frame(width: 11, height: 11)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                        .accessibilityHidden(true)
                     Text(title)
                         .font(.body.weight(.medium))
                     Spacer(minLength: 0)
@@ -822,13 +860,13 @@ private struct StatusLabel: View {
 }
 
 private struct SettingsSidebarIcon: View {
-    let symbol: String
+    let symbol: PhosphorIconName
     let color: Color
 
     var body: some View {
-        Image(systemName: symbol)
-            .font(.system(size: 11, weight: .semibold))
+        PhosphorIcon(symbol)
             .foregroundStyle(.white)
+            .frame(width: 14, height: 14)
             .frame(width: 22, height: 22)
             .background(color.gradient, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             .accessibilityHidden(true)

@@ -5,6 +5,7 @@ struct QuickControlsView: View {
     @ObservedObject var model: StagehandModel
     let openSettings: () -> Void
     let requestAccessibility: () -> Void
+    @Environment(\.controlActiveState) private var controlActiveState
     @State private var gapInput: Double
 
     init(
@@ -32,7 +33,7 @@ struct QuickControlsView: View {
                     .toggleStyle(.switch)
                 }
 
-                Divider()
+                QuickDivider()
 
                 QuickRow("Gesture navigation") {
                     Toggle("Gesture navigation", isOn: $model.gesturesEnabled)
@@ -40,7 +41,7 @@ struct QuickControlsView: View {
                         .toggleStyle(.switch)
                 }
 
-                Divider()
+                QuickDivider()
 
                 QuickRow("Diagnostic logging") {
                     Toggle("Diagnostic logging", isOn: $model.diagnosticLoggingEnabled)
@@ -48,7 +49,7 @@ struct QuickControlsView: View {
                         .toggleStyle(.switch)
                 }
 
-                Divider()
+                QuickDivider()
 
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
@@ -69,7 +70,7 @@ struct QuickControlsView: View {
                 }
                 .padding(12)
 
-                Divider()
+                QuickDivider()
 
                 QuickRow("Space color") {
                     HStack(spacing: 8) {
@@ -95,23 +96,36 @@ struct QuickControlsView: View {
             Button {
                 openSettings()
             } label: {
-                Label("Open Settings…", systemImage: "gearshape")
+                HStack(spacing: 7) {
+                    PhosphorIcon(.gear)
+                        .frame(width: 15, height: 15)
+                    Text("Open Settings…")
+                }
                     .font(.callout.weight(.medium))
                     .foregroundStyle(.primary)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 9)
-                    .background(Color(nsColor: .controlBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .background(Color.white.opacity(0.05))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
                     }
-                    .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .buttonStyle(.plain)
         }
         .padding(14)
         .frame(width: 340)
+        .background {
+            ZStack {
+                Rectangle().fill(.thickMaterial)
+                if controlActiveState == .inactive {
+                    Color.black.opacity(0.64)
+                }
+            }
+        }
+        .tint(.blue)
         .onChange(of: model.gap) { _, value in
             gapInput = GapInput.clamped(value)
         }
@@ -170,12 +184,19 @@ private struct QuickCard<Content: View>: View {
         VStack(spacing: 0) {
             content
         }
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .background(Color.white.opacity(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
         }
+    }
+}
+
+private struct QuickDivider: View {
+    var body: some View {
+        Color.white.opacity(0.08)
+            .frame(height: 1)
     }
 }
 

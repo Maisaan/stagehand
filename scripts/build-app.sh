@@ -12,6 +12,8 @@ install -m 755 "$stagehand_bin/Stagehand" "$stagehand_bundle/Contents/MacOS/Stag
 install -m 644 "$stagehand_root/Resources/Info.plist" "$stagehand_bundle/Contents/Info.plist"
 install -m 644 "$stagehand_root/Resources/Stagehand.icns" "$stagehand_bundle/Contents/Resources/Stagehand.icns"
 install -m 644 "$stagehand_root/Resources/StagehandMenuBar.svg" "$stagehand_bundle/Contents/Resources/StagehandMenuBar.svg"
+rm -rf "$stagehand_bundle/Contents/Resources/Phosphor"
+cp -R "$stagehand_root/Sources/Stagehand/Resources/Phosphor" "$stagehand_bundle/Contents/Resources/Phosphor"
 
 # SwiftPM keeps local and debug symbols in release executables. They are useful in
 # the build directory, but add no runtime value to the installed application.

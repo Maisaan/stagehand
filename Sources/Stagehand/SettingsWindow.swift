@@ -16,6 +16,8 @@ enum SettingsWindow {
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.toolbarStyle = .unified
+        window.isOpaque = false
+        window.backgroundColor = .clear
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
         // Settings belongs to Stage Manager as a utility window, but must never

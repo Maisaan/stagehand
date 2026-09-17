@@ -530,7 +530,8 @@ struct AppIcon: View {
             if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) {
                 Image(nsImage: NSWorkspace.shared.icon(forFile: url.path)).resizable()
             } else {
-                Image(systemName: "macwindow").resizable().scaledToFit().padding(4)
+                PhosphorIcon(.appWindow)
+                    .padding(4)
             }
         }
         .frame(width: size, height: size)
@@ -696,7 +697,9 @@ private struct NavigationHUD: View {
         Group {
             if let warning = model.warning {
                 HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    PhosphorIcon(.warning)
+                        .frame(width: 16, height: 16)
+                        .foregroundStyle(.orange)
                     Text(warning).font(.system(size: 12)).foregroundStyle(.white)
                         .fixedSize(horizontal: false, vertical: true)
                 }
