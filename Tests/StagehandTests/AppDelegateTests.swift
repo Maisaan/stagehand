@@ -1,4 +1,5 @@
 import AppKit
+import StagehandPlatform
 import Testing
 @testable import Stagehand
 
@@ -37,4 +38,14 @@ import Testing
         animate: false
     )
     try checkControlPositions()
+}
+
+@MainActor
+@Test func settingsWindowFocusBorderUsesItsVisibleCornerRadius() throws {
+    let window = SettingsWindow.make(model: StagehandModel())
+    window.orderFrontRegardless()
+    defer { window.close() }
+
+    let windowNumber = try #require(CGWindowID(exactly: window.windowNumber))
+    #expect(WindowCornerRadius.cornerRadius(windowNumber: windowNumber) == SettingsWindow.cornerRadius)
 }

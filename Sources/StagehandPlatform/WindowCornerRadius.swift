@@ -1,11 +1,22 @@
 import AppKit
 import Darwin
 
+@MainActor
+public protocol FocusBorderCornerRadiusProviding: AnyObject {
+    var focusBorderCornerRadius: CGFloat { get }
+}
+
 /// Reads a window's native corner metadata using its exact WindowServer identity.
 @MainActor
 public enum WindowCornerRadius {
     public static func cornerRadius(windowNumber: CGWindowID) -> CGFloat? {
         guard windowNumber != kCGNullWindowID else { return nil }
+        if let window = NSApp?.windows.first(where: {
+            CGWindowID(exactly: $0.windowNumber) == windowNumber
+        }), let provider = window as? FocusBorderCornerRadiusProviding {
+            let radius = provider.focusBorderCornerRadius
+            if radius.isFinite, radius >= 0 { return radius }
+        }
         return nativeRadius(windowNumber)
     }
 

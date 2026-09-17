@@ -1,9 +1,12 @@
 import AppKit
 import QuartzCore
+import StagehandPlatform
 import SwiftUI
 
 @MainActor
 enum SettingsWindow {
+    static let cornerRadius: CGFloat = 26
+
     static func make(model: StagehandModel, showOnboarding: @escaping () -> Void = {}) -> NSWindow {
         let window = SettingsPanelWindow(
             contentRect: NSRect(x: 0, y: 0, width: 760, height: 680),
@@ -32,13 +35,14 @@ enum SettingsWindow {
 }
 
 @MainActor
-private final class SettingsPanelWindow: NSWindow {
+private final class SettingsPanelWindow: NSWindow, FocusBorderCornerRadiusProviding {
     private static let windowControlInset: CGFloat = 26
     private static let transitionDuration = 0.25
     private static let reducedMotionDuration = 0.15
     private static let hiddenScale: CGFloat = 0.96
     private var transitionGeneration: UInt64 = 0
     private var isDismissing = false
+    var focusBorderCornerRadius: CGFloat { SettingsWindow.cornerRadius }
 
     override func makeKeyAndOrderFront(_ sender: Any?) {
         let wasVisible = isVisible

@@ -123,9 +123,9 @@ struct SettingsView: View {
                 }
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: SettingsWindow.cornerRadius, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
+            RoundedRectangle(cornerRadius: SettingsWindow.cornerRadius, style: .continuous)
                 .stroke(Color.white.opacity(0.12), lineWidth: 1)
         }
         .ignoresSafeArea(.container, edges: .top)
