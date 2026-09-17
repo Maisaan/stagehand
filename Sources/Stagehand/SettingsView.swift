@@ -843,9 +843,10 @@ private struct SettingsDisclosureRow<Content: View>: View {
                     .padding(.leading, 20)
                     .padding(.trailing, 4)
                     .padding(.bottom, 14)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
+                    .transition(.opacity)
             }
         }
+        .clipped()
         .padding(.horizontal, 12)
     }
 }
