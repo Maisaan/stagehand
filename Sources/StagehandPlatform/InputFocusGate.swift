@@ -79,7 +79,10 @@ public final class FocusInputGate {
     }
 
     public func start() {
-        guard tap == nil else { return }
+        if tap != nil {
+            guard !tapIsAvailable else { return }
+            removeTap()
+        }
         guard AXIsProcessTrusted() else {
             tapIsAvailable = false
             onAvailabilityChanged?()
@@ -110,15 +113,19 @@ public final class FocusInputGate {
 
     public func stop() {
         cancelAll()
-        if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
-        if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
-        tap = nil
-        source = nil
+        removeTap()
         keyDestinations.removeAll()
         exemptKeys.removeAll()
         navigationKeys.removeAll()
         tapIsAvailable = false
         onAvailabilityChanged?()
+    }
+
+    private func removeTap() {
+        if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
+        if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
+        tap = nil
+        source = nil
     }
 
     public func beginTransfer() -> UInt64 {

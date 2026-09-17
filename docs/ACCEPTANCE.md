@@ -11,6 +11,8 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 - Repeatedly pause/start during navigation. No stale operation should move windows after pause.
 - Arrange and share windows across several numbered spaces, with different orders and widths. Pause, close one shared window, and resume. Preserve the surviving memberships, orders, and widths; omit the closed window from every space.
 - Repeat after an automatic pause caused by failed focus or parking. Resume should use the layout before an interrupted transition. If an app is still busy at resume, verify its windows regain their saved memberships when discovery recovers, including after another pause/resume.
+- Quit an unrelated app during ribbon motion. Stagehand should cancel the stale motion and reconcile without pausing or sending buffered input to the terminated process.
+- Open two same-size windows from one app, close one, and immediately create a replacement at the same frame. The survivor and replacement must keep distinct identities and memberships.
 - Change native macOS Desktop. Stagehand should stay enabled but suspend input and layout work, without pulling windows into the new Desktop. Return and verify automatic resume with order and widths preserved.
 - Repeat Desktop switching during window navigation. No buffered typing should be replayed on the away Desktop.
 
@@ -42,11 +44,13 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 ## Input and gestures
 
 - Turn individual shortcuts off and confirm that they pass through without acting. Record replacements, including a Caps Lock chord, restart Stagehand, and confirm they persist. Reset each row and confirm the original enabled binding returns.
+- Start recording a shortcut, then close Settings or switch to another app. Recording must cancel and the existing global shortcuts must resume. Starting a second recorder must cancel the first.
 - Focus different apps with shortcuts, then immediately type unique text into disposable fields. Verify every character's destination.
 - Repeat with two windows of the same app. Include rapid consecutive switches, held keys, key repeats, and modifiers held across a switch.
 - Navigate away until Cursor is parked, then back repeatedly. No Dock animation, minimized state, or false focus failure should occur. Repeat with an app whose position is clamped by macOS.
 - Repeat with the navigation overlay visible. App menus and input remain with the active real app.
 - Exercise a blocked/slow app or modal dialog. Failed focus must pause/restore and visibly report withheld input.
+- Revoke Accessibility while Stagehand is running, then trigger navigation. It must stop moving windows and report the unavailable protection instead of assuming permission remains valid.
 - Check Setup when Secure Input is active. Do not assume interception remains available.
 - Keep macOS navigation gestures set to four fingers, then enable Stagehand's three-finger gestures. Test every direction, fast/slow swipes, diagonal starts, and staggered finger landing/lifting.
 - macOS four-finger navigation and ordinary two-finger scrolling must remain intact.
@@ -64,6 +68,7 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 - Neither bar nor border shifts or resizes any window.
 - The current application owns the macOS menu bar, except while Stagehand settings or an empty-space placeholder is active.
 - Settings stay usable at the built-in display's current scaling.
+- Change display scaling, Dock position, and menu-bar visibility while Stagehand is running. The ribbon and parking bounds must use the new visible frame without restarting.
 - Stagehand settings joins the ribbon, can be reordered, and regains focus through the same navigation controls.
 - Swipe to a native fullscreen Space. The focus border must not follow or flash over the destination; it returns on the home Desktop.
 - Resize settings to its minimum size and enlarge it. Content should adapt and scroll without clipping controls.

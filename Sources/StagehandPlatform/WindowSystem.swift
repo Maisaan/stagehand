@@ -30,6 +30,7 @@ public final class WindowSystem {
     public var onFocusedWindowChange: ((String) -> Void)?
     public var onApplicationTerminated: ((pid_t) -> Void)?
     public var onNativeDesktopChange: (() -> Void)?
+    public var onScreenParametersChange: (() -> Void)?
     public var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
     public var focusDiagnosticsEnabled = false
     public private(set) var lastFocusReport: WindowFocusReport?
@@ -41,13 +42,24 @@ public final class WindowSystem {
 
     private struct TrackedWindow {
         var element: AXUIElement
-        let windowNumber: CGWindowID?
+        var windowNumber: CGWindowID?
         var record: WindowRecord
         var originalFrame: CGRect?
         var parking = WindowParking()
         var logicalFrame: CGRect? { parking.isParked ? parking.restoreFrame : nil }
         var isAdmitted = true
         var missedScans = 0
+        var observationComplete = false
+    }
+
+    private struct VisibleWindowIdentity: Hashable {
+        let pid: pid_t
+        let windowNumber: CGWindowID
+    }
+
+    private struct ApplicationInventory: Equatable {
+        let applicationPIDs: Set<pid_t>
+        let visibleWindows: Set<VisibleWindowIdentity>
     }
 
     private var windows: [String: TrackedWindow] = [:]
@@ -56,7 +68,9 @@ public final class WindowSystem {
     private var observationRetries: [pid_t: Task<Void, Never>] = [:]
     private let launchDiscovery = ApplicationLaunchDiscovery()
     private var applicationInventoryTask: Task<Void, Never>?
+    private var lastApplicationInventory: ApplicationInventory?
     private var workspaceTokens: [NSObjectProtocol] = []
+    private var applicationTokens: [NSObjectProtocol] = []
     private var parkingValidationIDs = Set<String>()
     private var nextFallbackID: UInt64 = 0
     private var started = false
@@ -147,6 +161,25 @@ public final class WindowSystem {
                 }
             })
         }
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
+            workspaceTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, self.started else { return }
+                    self.onNativeDesktopChange?()
+                    self.onChange?()
+                }
+            })
+        }
+        applicationTokens.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.started else { return }
+                self.onScreenParametersChange?()
+            }
+        })
         let records = scanWindows()
         startApplicationInventory()
         return records
@@ -156,14 +189,18 @@ public final class WindowSystem {
         started = false
         applicationInventoryTask?.cancel()
         applicationInventoryTask = nil
+        lastApplicationInventory = nil
         launchDiscovery.cancelAll()
         restoreAll()
         // A subsequent Start can happen on a different native Desktop. Keep
         // stable identities, but admit only its visible windows again.
         for id in Array(windows.keys) { windows[id]?.isAdmitted = false }
+        for id in Array(windows.keys) { windows[id]?.observationComplete = false }
         let center = NSWorkspace.shared.notificationCenter
         for token in workspaceTokens { center.removeObserver(token) }
         workspaceTokens.removeAll()
+        for token in applicationTokens { NotificationCenter.default.removeObserver(token) }
+        applicationTokens.removeAll()
         parkingValidationIDs.removeAll()
         for retry in observationRetries.values { retry.cancel() }
         observationRetries.removeAll()
@@ -193,7 +230,6 @@ public final class WindowSystem {
         }
         for app in apps {
             let appElement = AXUIElementCreateApplication(app.processIdentifier)
-            AXUIElementSetMessagingTimeout(appElement, 0.1)
             if started { observeApplication(appElement, pid: app.processIdentifier) }
             let windowList = copyAttribute(appElement, kAXWindowsAttribute)
             if focusDiagnosticsEnabled {
@@ -208,7 +244,6 @@ public final class WindowSystem {
                 continue
             }
             let candidates = elements.map { element in
-                AXUIElementSetMessagingTimeout(element, 0.1)
                 return (element: element, windowNumber: windowNumber(element), frame: readFrame(element))
             }
             for candidate in candidates {
@@ -223,7 +258,9 @@ public final class WindowSystem {
                 }?.key
                 let geometryMatches = candidate.frame.map { frame in
                     windows.filter {
-                        $0.value.record.pid == app.processIdentifier && sameBounds($0.value.record.frame, frame)
+                        $0.value.record.pid == app.processIdentifier &&
+                        (candidate.windowNumber == nil || $0.value.windowNumber == nil) &&
+                        sameBounds($0.value.record.frame, frame)
                     }.map(\.key)
                 } ?? []
                 let existingID = identityMatch ?? (geometryMatches.count == 1 ? geometryMatches[0] : nil)
@@ -261,13 +298,15 @@ public final class WindowSystem {
                     // PID and bounds remain available without Screen Recording access.
                     // Reject ambiguous geometry rather than accidentally admitting a
                     // same-sized window belonging to another native macOS Desktop.
-                    let visibleMatch = visibleWindows.contains(where: {
-                        $0.pid == app.processIdentifier && sameBounds($0.frame, currentFrame)
-                    })
+                    let visibleMatch = visibleWindows.contains { visible in
+                        guard visible.pid == app.processIdentifier else { return false }
+                        return candidate.windowNumber.map { $0 == visible.windowNumber }
+                            ?? sameBounds(visible.frame, currentFrame)
+                    }
                     let geometryMatches = candidates.filter({
                         $0.frame.map { sameBounds($0, currentFrame) } == true
                     }).count
-                    guard visibleMatch, geometryMatches == 1 else {
+                    guard visibleMatch, candidate.windowNumber != nil || geometryMatches == 1 else {
                         if focusDiagnosticsEnabled {
                             print("Scan pid=\(app.processIdentifier) rejected=desktopAdmission visibleMatch=\(visibleMatch) sameGeometryCount=\(geometryMatches)")
                         }
@@ -305,20 +344,31 @@ public final class WindowSystem {
                     isResizable: sizeStatus == .success ? resizable.boolValue : existing?.record.isResizable ?? false
                 )
                 if windows[id] != nil {
+                    var replacedElement = false
                     if let currentElement = windows[id]?.element, !CFEqual(currentElement, element) {
                         windows[id]?.element = element
+                        windows[id]?.observationComplete = false
+                        replacedElement = true
+                    }
+                    if windows[id]?.windowNumber == nil {
+                        windows[id]?.windowNumber = candidate.windowNumber
                     }
                     windows[id]?.record = record
                     windows[id]?.isAdmitted = true
                     windows[id]?.missedScans = 0
-                    if let observer = observers[app.processIdentifier] { observeWindow(element, observer: observer) }
+                    if let observer = observers[app.processIdentifier],
+                       replacedElement || windows[id]?.observationComplete == false {
+                        windows[id]?.observationComplete = observeWindow(element, observer: observer)
+                    }
                 } else {
                     windows[id] = TrackedWindow(
                         element: element,
                         windowNumber: candidate.windowNumber,
                         record: record
                     )
-                    if let observer = observers[app.processIdentifier] { observeWindow(element, observer: observer) }
+                    if let observer = observers[app.processIdentifier] {
+                        windows[id]?.observationComplete = observeWindow(element, observer: observer)
+                    }
                 }
                 seen.insert(id)
                 result.append(record)
@@ -496,7 +546,6 @@ public final class WindowSystem {
         } else {
             return nil
         }
-        AXUIElementSetMessagingTimeout(focusedApp, 0.1)
         var focusedPID: pid_t = 0
         if AXUIElementGetPid(focusedApp, &focusedPID) == .success,
            focusedPID == ProcessInfo.processInfo.processIdentifier {
@@ -591,7 +640,6 @@ public final class WindowSystem {
             self.app = app
             self.recordsDiagnostics = recordsDiagnostics
             self.appElement = AXUIElementCreateApplication(tracked.record.pid)
-            AXUIElementSetMessagingTimeout(appElement, 0.1)
         }
 
         var elapsedMilliseconds: Int {
@@ -646,7 +694,6 @@ public final class WindowSystem {
             var matches = false
             if let value = application.value, CFGetTypeID(value) == AXUIElementGetTypeID() {
                 let focusedApp = unsafeDowncast(value, to: AXUIElement.self)
-                AXUIElementSetMessagingTimeout(focusedApp, 0.1)
                 var pid: pid_t = 0
                 if AXUIElementGetPid(focusedApp, &pid) == .success { focusedPID = pid }
                 if focusedPID == ProcessInfo.processInfo.processIdentifier {
@@ -721,8 +768,9 @@ public final class WindowSystem {
         if registerApplicationNotifications(element: element, pid: pid) {
             scheduleObservationRetries(element: element, pid: pid)
         }
-        for tracked in windows.values where tracked.record.pid == pid {
-            observeWindow(tracked.element, observer: observer)
+        for id in Array(windows.keys) where windows[id]?.record.pid == pid {
+            guard let element = windows[id]?.element else { continue }
+            windows[id]?.observationComplete = observeWindow(element, observer: observer)
         }
     }
 
@@ -763,24 +811,52 @@ public final class WindowSystem {
 
     private func startApplicationInventory() {
         applicationInventoryTask?.cancel()
+        let initialVisibleWindows = onScreenWindows()
+        lastApplicationInventory = applicationInventory(
+            applications: NSWorkspace.shared.runningApplications,
+            visibleWindows: initialVisibleWindows
+        )
         applicationInventoryTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(2)) }
                 catch { return }
                 guard let self, self.started, !Task.isCancelled else { return }
-                let visiblePIDs = Set(self.onScreenWindows().map(\.pid))
+                let visibleWindows = self.onScreenWindows()
+                let applications = NSWorkspace.shared.runningApplications
+                let visiblePIDs = Set(visibleWindows.map(\.pid))
+                var scheduled = false
                 for app in self.eligibleApplications(
-                    from: NSWorkspace.shared.runningApplications,
+                    from: applications,
                     accessoryPIDs: visiblePIDs
                 )
                 where self.observers[app.processIdentifier] == nil {
-                    self.scheduleDiscovery(for: app)
+                    scheduled = self.scheduleDiscovery(for: app) || scheduled
                 }
-                // Notifications are hints and are missing for some apps and lifecycle
-                // transitions. A low-frequency reconciliation keeps inventory honest.
-                self.onChange?()
+                let inventory = self.applicationInventory(
+                    applications: applications,
+                    visibleWindows: visibleWindows
+                )
+                let changed = inventory != self.lastApplicationInventory
+                self.lastApplicationInventory = inventory
+                if scheduled || changed { self.onChange?() }
             }
         }
+    }
+
+    private func applicationInventory(
+        applications: [NSRunningApplication],
+        visibleWindows: [(pid: pid_t, windowNumber: CGWindowID, frame: CGRect)]
+    ) -> ApplicationInventory {
+        let visiblePIDs = Set(visibleWindows.map(\.pid))
+        return ApplicationInventory(
+            applicationPIDs: Set(eligibleApplications(
+                from: applications,
+                accessoryPIDs: visiblePIDs
+            ).map(\.processIdentifier)),
+            visibleWindows: Set(visibleWindows.map {
+                VisibleWindowIdentity(pid: $0.pid, windowNumber: $0.windowNumber)
+            })
+        )
     }
 
     @discardableResult
@@ -819,15 +895,21 @@ public final class WindowSystem {
         if let observer = observers.removeValue(forKey: pid) {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         }
+        for id in Array(windows.keys) where windows[id]?.record.pid == pid {
+            windows[id]?.observationComplete = false
+        }
     }
 
-    private func observeWindow(_ element: AXUIElement, observer: AXObserver) {
+    private func observeWindow(_ element: AXUIElement, observer: AXObserver) -> Bool {
         let context = Unmanaged.passUnretained(self).toOpaque()
+        var complete = true
         for name in [kAXUIElementDestroyedNotification, kAXMovedNotification, kAXResizedNotification,
                      kAXTitleChangedNotification, kAXWindowMiniaturizedNotification,
                      kAXWindowDeminiaturizedNotification] {
-            AXObserverAddNotification(observer, element, name as CFString, context)
+            let status = AXObserverAddNotification(observer, element, name as CFString, context)
+            if status != .success, status != .notificationAlreadyRegistered { complete = false }
         }
+        return complete
     }
 
     private func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {

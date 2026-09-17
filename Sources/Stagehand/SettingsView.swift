@@ -480,8 +480,11 @@ private struct ShortcutRecorder: NSViewRepresentable {
 }
 
 private final class ShortcutRecorderButton: NSButton {
+    private static weak var activeRecorder: ShortcutRecorderButton?
+
     private var bindingLabel = ""
     private var monitor: Any?
+    private var cancellationObservers: [NSObjectProtocol] = []
     private var onRecord: ((UInt32, UInt32, String) -> Void)?
     private var onRecordingChange: ((Bool) -> Void)?
     private(set) var isRecording = false
@@ -518,10 +521,28 @@ private final class ShortcutRecorderButton: NSButton {
             stopRecording()
             return
         }
+        Self.activeRecorder?.stopRecording()
+        Self.activeRecorder = self
         isRecording = true
         title = "Type shortcut"
         onRecordingChange?(true)
         window?.makeFirstResponder(self)
+        if let window {
+            cancellationObservers.append(NotificationCenter.default.addObserver(
+                forName: NSWindow.didResignKeyNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.stopRecording() }
+            })
+        }
+        cancellationObservers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: NSApp,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stopRecording() }
+        })
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.isRecording else { return event }
             self.record(event)
@@ -532,8 +553,11 @@ private final class ShortcutRecorderButton: NSButton {
     func stopRecording() {
         guard isRecording else { return }
         if let monitor { NSEvent.removeMonitor(monitor) }
+        for observer in cancellationObservers { NotificationCenter.default.removeObserver(observer) }
+        cancellationObservers.removeAll()
         monitor = nil
         isRecording = false
+        if Self.activeRecorder === self { Self.activeRecorder = nil }
         title = bindingLabel
         onRecordingChange?(false)
     }

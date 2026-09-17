@@ -125,7 +125,7 @@ Run the automated suite:
 swift test
 ```
 
-The tests cover workspace state, layout, gestures, shortcuts, synthetic input buffering and replay, Desktop identity, focus contracts, diagnostic logging, and settings behavior. They do not move your windows, read the trackpad, or type into apps. They cannot prove real app focus or Accessibility behavior.
+The tests cover workspace state and layout, gesture and shortcut decisions, synthetic input buffering and replay, Desktop identity, focus confirmation, parking, restoration, and final ribbon commits. They do not move your windows, read the trackpad, or type into apps. They cannot prove real app focus, Accessibility behavior, or native view appearance.
 
 Render the native settings views without starting window management:
 

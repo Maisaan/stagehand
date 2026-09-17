@@ -120,6 +120,7 @@ final class NavigationOverlays {
     }
 
     func setBorderColor(_ color: NSColor) {
+        guard !borderColor.isEqual(color) || !hudModel.appBarColor.isEqual(color) else { return }
         borderColor = color
         (border?.contentView as? BorderView)?.strokeColor = color
         hudModel.appBarColor = color

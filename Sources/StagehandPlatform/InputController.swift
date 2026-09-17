@@ -54,13 +54,13 @@ public final class InputController {
 
     public func setShortcutBindings(_ bindings: [ShortcutBinding]) {
         shortcutBindings = bindings
-        if isRunning { registerHotKeys() }
+        if eventHandler != nil { registerHotKeys() }
     }
 
     public func setShortcutCaptureActive(_ active: Bool) {
         guard shortcutCaptureActive != active else { return }
         shortcutCaptureActive = active
-        if isRunning { registerHotKeys() }
+        if eventHandler != nil { registerHotKeys() }
     }
 
     private func registerHotKeys() {

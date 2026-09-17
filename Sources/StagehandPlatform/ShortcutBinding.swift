@@ -126,6 +126,7 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
             guard let value = savedByID[defaultBinding.id],
                   value.key <= UInt32(UInt16.max),
                   value.modifiers & ~supportedModifiers == 0,
+                  value.modifiers & supportedModifiers != 0,
                   !value.keyLabel.isEmpty,
                   value.keyLabel.count <= 12 else { return defaultBinding }
             var binding = defaultBinding

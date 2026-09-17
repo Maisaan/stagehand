@@ -348,6 +348,9 @@ final class StagehandModel: ObservableObject {
         windowSystem.onNativeDesktopChange = { [weak self] in
             self?.nativeDesktopChanged()
         }
+        windowSystem.onScreenParametersChange = { [weak self] in
+            self?.screenParametersChanged()
+        }
         windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
         focusGate.onNavigationAction = { [weak self] action in self?.navigate(action) }
         focusGate.setShortcutBindings(shortcutBindings)
@@ -403,6 +406,7 @@ final class StagehandModel: ObservableObject {
 
     func refreshPermissions() {
         accessibilityGranted = windowSystem.isAccessibilityTrusted
+        if isRunning, !isSuspended { focusGate.start() }
         updateInputStatus()
     }
 
@@ -638,13 +642,6 @@ final class StagehandModel: ObservableObject {
         guard let color = color.usingColorSpace(.sRGB) else { return nil }
         return NSColor(srgbRed: color.redComponent, green: color.greenComponent,
                        blue: color.blueComponent, alpha: alpha)
-    }
-
-    private static func saveColor(_ color: NSColor, forKey key: String) {
-        UserDefaults.standard.set(
-            [color.redComponent, color.greenComponent, color.blueComponent],
-            forKey: key
-        )
     }
 
     private static func saveColors(_ colors: [NSColor], forKey key: String) {
@@ -931,8 +928,16 @@ final class StagehandModel: ObservableObject {
     private func applicationTerminated(pid: Int32) {
         guard isRunning, !isSuspended else { return }
         refreshTask?.cancel()
+        let focusedWindowID = state.focusedWindowID
         let removedIDs = removeTerminatedApplication(pid: pid, windows: &windows, state: &state)
         guard !removedIDs.isEmpty else { return }
+        if ribbonMotion.isRunning {
+            presentationFrames = ribbonMotion.frames.filter { !removedIDs.contains($0.key) }
+            ribbonMotion.cancel()
+        }
+        if focusedWindowID.map(removedIDs.contains) == true {
+            focusGate.cancelAll()
+        }
         if var rollback = transitionRollback {
             rollback.reconcile(windowIDs: windows.map(\.id))
             transitionRollback = rollback
@@ -2027,5 +2032,13 @@ final class StagehandModel: ObservableObject {
                 }
             }
         }
+    }
+
+    private func screenParametersChanged() {
+        guard isRunning, !isSuspended else { return }
+        diagnostics.record("screen_parameters_changed")
+        ribbonMotion.cancel()
+        resetFocusBorderCache()
+        enqueue(.preferences)
     }
 }

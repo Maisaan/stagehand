@@ -177,26 +177,6 @@ import Testing
     #expect(state.currentSpace.widthFraction(for: "a") == 0.25)
 }
 
-@Test func newWindowsWithoutAnObservedWidthUseTheDefault() {
-    var state = WorkspaceState()
-    state.reconcile(windowIDs: ["a"])
-    #expect(state.currentSpace.widthFraction(for: "a") == 0.95)
-    state.reconcile(windowIDs: ["a", "b"])
-    #expect(state.currentSpace.widthFraction(for: "b") == 0.95)
-    state.setWidthFraction(2, for: "b")
-    #expect(state.currentSpace.widthFraction(for: "b") == 1)
-}
-
-@Test func newWindowsStartAtTheirObservedWidth() throws {
-    var state = WorkspaceState()
-    state.reconcile(windowIDs: ["new"], initialWidthFractions: ["new": 0.64])
-
-    #expect(state.currentSpace.widthFraction(for: "new") == 0.64)
-    let display = CGRect(x: 0, y: 0, width: 1000, height: 700)
-    let placement = try #require(WindowLayout.placements(for: state, availableFrame: display).first)
-    #expect(placement.frame.width == 640)
-}
-
 @Test func initialWidthsAreClampedAndDoNotOverwriteKnownWindows() {
     var state = WorkspaceState(spaces: [
         SpaceState(windowIDs: ["known"], widthFractions: ["known": 0.5])

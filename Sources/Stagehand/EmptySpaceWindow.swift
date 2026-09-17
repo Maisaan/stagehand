@@ -25,7 +25,7 @@ final class EmptySpaceWindow {
             Text("Use your space shortcuts or swipe vertically.\nFrom another space, use the Share window shortcut for this space.")
                 .font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }.frame(maxWidth: .infinity, maxHeight: .infinity))
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         let deadline = ContinuousClock.now.advanced(by: .milliseconds(180))
         repeat {
