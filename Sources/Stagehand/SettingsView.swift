@@ -229,7 +229,16 @@ struct SettingsView: View {
 
             SettingsSection("Gestures") {
                 SettingsCard {
-                    SettingsRow("Gesture navigation") {
+                    SettingsRow {
+                        HStack(spacing: 6) {
+                            Text("Gesture navigation")
+                            PhosphorIcon(.info)
+                                .frame(width: 13, height: 13)
+                                .foregroundStyle(.secondary)
+                                .accessibilityHidden(true)
+                        }
+                        .help("Three-finger swipes move between windows and spaces. Set macOS trackpad gestures to four fingers to avoid conflicts.")
+                    } trailing: {
                         Toggle("Gesture navigation", isOn: $model.gesturesEnabled)
                             .labelsHidden()
                             .toggleStyle(.switch)
