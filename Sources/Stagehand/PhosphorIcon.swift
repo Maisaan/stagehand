@@ -11,7 +11,7 @@ enum PhosphorIconName: String {
     case caretRight = "caret-right-fill"
     case check = "check-fill"
     case checkCircle = "check-circle-fill"
-    case dotsThreeCircle = "dots-three-circle-fill"
+    case dotsThreeCircle = "dots-three-circle"
     case gear = "gear-fill"
     case gearSix = "gear-six-fill"
     case handPalm = "hand-palm-fill"
@@ -48,6 +48,7 @@ struct PhosphorIcon: View {
             assertionFailure("Missing Phosphor icon: \(filename)")
             return NSImage(size: NSSize(width: 1, height: 1))
         }
+        image.size = NSSize(width: 16, height: 16)
         image.isTemplate = true
         return image
     }

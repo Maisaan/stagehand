@@ -110,6 +110,7 @@ struct SettingsView: View {
                 }
                 .padding(16)
                 .frame(maxWidth: 620, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
@@ -472,6 +473,7 @@ struct SettingsView: View {
                 }
             } label: {
                 PhosphorIcon(.dotsThreeCircle)
+                    .foregroundStyle(.white)
                     .frame(width: 16, height: 16)
                     .frame(width: 28, height: 28)
                     .contentShape(Rectangle())

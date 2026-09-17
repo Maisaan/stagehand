@@ -498,26 +498,43 @@ final class BorderView: NSView {
     }
 
     var strokeColor = defaultColor {
-        didSet { if oldValue != strokeColor { needsDisplay = true } }
+        didSet {
+            guard oldValue != strokeColor else { return }
+            layer?.borderColor = strokeColor.cgColor
+        }
     }
 
     var cornerRadius: CGFloat? {
-        didSet { if oldValue != cornerRadius { needsDisplay = true } }
+        didSet {
+            guard oldValue != cornerRadius else { return }
+            updateLayerStyle()
+        }
     }
 
-    static func outline(in bounds: CGRect, cornerRadius: CGFloat? = nil) -> NSBezierPath {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        updateLayerStyle()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        wantsLayer = true
+        updateLayerStyle()
+    }
+
+    override func layout() {
+        super.layout()
+        updateLayerStyle()
+    }
+
+    private func updateLayerStyle() {
         let nativeRadius = cornerRadius.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
-            ?? fallbackCornerRadius
-        let rect = bounds.insetBy(dx: 1, dy: 1)
-        let radius = min(max(0, nativeRadius - 1), max(0, min(rect.width, rect.height) / 2))
-        let path = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
-        path.lineWidth = 2
-        return path
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        strokeColor.setStroke()
-        Self.outline(in: bounds, cornerRadius: cornerRadius).stroke()
+            ?? Self.fallbackCornerRadius
+        layer?.borderColor = strokeColor.cgColor
+        layer?.borderWidth = 2
+        layer?.cornerCurve = .continuous
+        layer?.cornerRadius = min(nativeRadius, max(0, min(bounds.width, bounds.height) / 2))
     }
 }
 
