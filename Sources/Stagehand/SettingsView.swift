@@ -60,6 +60,7 @@ struct SettingsView: View {
     @State private var selectedSpaceIndex: Int
     @State private var shortcutPage = ShortcutPage.navigation
     @State private var shortcutError: String?
+    @State private var launchAtLoginError: String?
     @State private var expandedShortcutGroup: ShortcutBinding.Group?
 
     init(
@@ -120,6 +121,14 @@ struct SettingsView: View {
             Button("OK") { shortcutError = nil }
         } message: {
             Text(shortcutError ?? "")
+        }
+        .alert("Launch at login unavailable", isPresented: Binding(
+            get: { launchAtLoginError != nil },
+            set: { if !$0 { launchAtLoginError = nil } }
+        )) {
+            Button("OK") { launchAtLoginError = nil }
+        } message: {
+            Text(launchAtLoginError ?? "")
         }
     }
 
@@ -208,6 +217,31 @@ struct SettingsView: View {
                 }
             } footer: {
                 Text("Three-finger swipes move between windows and spaces. Set macOS trackpad gestures to four fingers to avoid conflicts.")
+            }
+
+            SettingsSection("Startup") {
+                SettingsCard {
+                    SettingsRow("Launch at login") {
+                        Toggle("Launch at login", isOn: Binding(
+                            get: { model.launchAtLoginEnabled },
+                            set: { enabled in
+                                do {
+                                    try model.setLaunchAtLoginEnabled(enabled)
+                                } catch {
+                                    launchAtLoginError = "Stagehand couldn't update this setting. \(error.localizedDescription)"
+                                }
+                            }
+                        ))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                    }
+                }
+            } footer: {
+                if model.launchAtLoginRequiresApproval {
+                    Text("Allow Stagehand in System Settings > General > Login Items.")
+                } else {
+                    Text("Open Stagehand automatically when you log in.")
+                }
             }
 
             if model.warning != nil || !model.inputIssues.isEmpty {

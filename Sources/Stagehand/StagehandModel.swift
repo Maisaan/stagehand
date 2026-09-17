@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import ServiceManagement
 import StagehandCore
 import StagehandPlatform
 
@@ -149,6 +150,8 @@ final class StagehandModel: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var isSuspended = false
     @Published private(set) var accessibilityGranted = false
+    @Published private(set) var launchAtLoginEnabled = false
+    @Published private(set) var launchAtLoginRequiresApproval = false
     @Published private(set) var inputIssues: [String] = []
     @Published private(set) var warning: String? {
         didSet {
@@ -352,6 +355,7 @@ final class StagehandModel: ObservableObject {
             self?.screenParametersChanged()
         }
         windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
+        refreshLaunchAtLogin()
         focusGate.onNavigationAction = { [weak self] action in self?.navigate(action) }
         focusGate.setShortcutBindings(shortcutBindings)
         focusGate.onBeforeKeyboardEvent = { [weak self] in
@@ -408,6 +412,43 @@ final class StagehandModel: ObservableObject {
         accessibilityGranted = windowSystem.isAccessibilityTrusted
         if isRunning, !isSuspended { focusGate.start() }
         updateInputStatus()
+    }
+
+    func refreshLaunchAtLogin() {
+        switch SMAppService.mainApp.status {
+        case .enabled:
+            launchAtLoginEnabled = true
+            launchAtLoginRequiresApproval = false
+        case .requiresApproval:
+            launchAtLoginEnabled = false
+            launchAtLoginRequiresApproval = true
+        case .notRegistered, .notFound:
+            launchAtLoginEnabled = false
+            launchAtLoginRequiresApproval = false
+        @unknown default:
+            launchAtLoginEnabled = false
+            launchAtLoginRequiresApproval = false
+        }
+    }
+
+    func setLaunchAtLoginEnabled(_ enabled: Bool) throws {
+        let service = SMAppService.mainApp
+        defer { refreshLaunchAtLogin() }
+
+        if enabled {
+            switch service.status {
+            case .enabled:
+                return
+            case .requiresApproval:
+                SMAppService.openSystemSettingsLoginItems()
+            case .notRegistered, .notFound:
+                try service.register()
+            @unknown default:
+                try service.register()
+            }
+        } else if service.status != .notRegistered {
+            try service.unregister()
+        }
     }
 
     func requestAccessibility() {

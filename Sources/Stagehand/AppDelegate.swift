@@ -105,7 +105,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         activationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.model?.refreshPermissions() }
+            Task { @MainActor [weak self] in
+                self?.model?.refreshPermissions()
+                self?.model?.refreshLaunchAtLogin()
+            }
         }
         if !UserDefaults.standard.bool(forKey: Self.onboardingCompleteKey) {
             openOnboarding()
@@ -134,6 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             settingsWindow = window
         }
         model.refreshPermissions()
+        model.refreshLaunchAtLogin()
         NSApp.activate()
         settingsWindow?.makeKeyAndOrderFront(nil)
         if let settingsWindow { model.registerSettingsWindow(settingsWindow) }

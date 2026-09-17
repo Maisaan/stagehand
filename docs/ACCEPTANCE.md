@@ -74,4 +74,6 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 - Stagehand settings joins the ribbon, can be reordered, and regains focus through the same navigation controls.
 - Swipe to a native fullscreen Space. The focus border must not follow or flash over the destination; it returns on the home Desktop.
 - Resize settings to its minimum size and enlarge it. Content should adapt and scroll without clipping controls.
+- Turn Launch at login on, quit Stagehand, then log out and back in. Stagehand should start automatically. Turn it off and repeat; Stagehand should stay closed.
+- Disable Stagehand in System Settings > General > Login Items, return to Stagehand, and confirm the toggle is off with approval guidance below it.
 - Only occupied spaces and the current space appear in settings and the menu. Numbered shortcuts can still reach unused spaces.
