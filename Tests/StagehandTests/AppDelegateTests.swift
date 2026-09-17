@@ -13,19 +13,20 @@ import Testing
     let window = SettingsWindow.make(model: StagehandModel())
     defer { window.close() }
 
-    let expectedCenters: [(NSWindow.ButtonType, CGFloat)] = [
-        (.closeButton, 26),
-        (.miniaturizeButton, 49),
-        (.zoomButton, 72)
+    let expectedControls: [(NSWindow.ButtonType, centerX: CGFloat, isEnabled: Bool)] = [
+        (.closeButton, 26, true),
+        (.miniaturizeButton, 49, false),
+        (.zoomButton, 72, false)
     ]
 
     func checkControlPositions() throws {
-        for (buttonType, expectedX) in expectedCenters {
+        for (buttonType, expectedX, isEnabled) in expectedControls {
             let button = try #require(window.standardWindowButton(buttonType))
             let frame = button.convert(button.bounds, to: nil)
             let center = CGPoint(x: frame.midX, y: frame.midY)
             #expect(abs(center.x - expectedX) <= 1)
             #expect(abs(window.frame.height - center.y - 26) <= 1)
+            #expect(button.isEnabled == isEnabled)
         }
     }
 

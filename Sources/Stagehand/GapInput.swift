@@ -1,6 +1,84 @@
 import AppKit
 import SwiftUI
 
+enum TextInputMetrics {
+    static let height: CGFloat = 24
+    static let horizontalPadding: CGFloat = 8
+}
+
+private final class InsetTextFieldCell: NSTextFieldCell {
+    private func textFrame(forBounds bounds: NSRect) -> NSRect {
+        let paddedBounds = bounds.insetBy(dx: TextInputMetrics.horizontalPadding, dy: 0)
+        let textHeight = super.cellSize(forBounds: paddedBounds).height
+        return NSRect(
+            x: paddedBounds.minX,
+            y: paddedBounds.midY - textHeight / 2,
+            width: paddedBounds.width,
+            height: textHeight
+        )
+    }
+
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        super.drawInterior(withFrame: textFrame(forBounds: cellFrame), in: controlView)
+    }
+
+    override func edit(
+        withFrame rect: NSRect,
+        in controlView: NSView,
+        editor textObj: NSText,
+        delegate: Any?,
+        event: NSEvent?
+    ) {
+        super.edit(
+            withFrame: textFrame(forBounds: rect),
+            in: controlView,
+            editor: textObj,
+            delegate: delegate,
+            event: event
+        )
+    }
+
+    override func select(
+        withFrame rect: NSRect,
+        in controlView: NSView,
+        editor textObj: NSText,
+        delegate: Any?,
+        start selStart: Int,
+        length selLength: Int
+    ) {
+        super.select(
+            withFrame: textFrame(forBounds: rect),
+            in: controlView,
+            editor: textObj,
+            delegate: delegate,
+            start: selStart,
+            length: selLength
+        )
+    }
+}
+
+class InsetTextField: NSTextField {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        cell = InsetTextFieldCell(textCell: "")
+        isEditable = true
+        isSelectable = true
+        isBezeled = false
+        drawsBackground = false
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.08).cgColor
+        layer?.cornerRadius = 7
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.1).cgColor
+    }
+
+    required init?(coder: NSCoder) { return nil }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: super.intrinsicContentSize.width, height: TextInputMetrics.height)
+    }
+}
+
 struct GapInput: NSViewRepresentable {
     static let bounds: ClosedRange<Double> = -200...40
 
@@ -28,7 +106,7 @@ struct GapInput: NSViewRepresentable {
     }
 }
 
-final class GapTextField: NSTextField, NSTextFieldDelegate {
+final class GapTextField: InsetTextField, NSTextFieldDelegate {
     var onCommit: (Double) -> Void
     private var committedValue: Double
     private let modifierFlags: () -> NSEvent.ModifierFlags
@@ -42,15 +120,6 @@ final class GapTextField: NSTextField, NSTextFieldDelegate {
         self.onCommit = onCommit
         super.init(frame: .zero)
         delegate = self
-        isEditable = true
-        isSelectable = true
-        isBezeled = false
-        drawsBackground = true
-        backgroundColor = NSColor.labelColor.withAlphaComponent(0.08)
-        wantsLayer = true
-        layer?.cornerRadius = 7
-        layer?.borderWidth = 1
-        layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.1).cgColor
         font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         alignment = .right
         setAccessibilityLabel("Gap between windows in points")

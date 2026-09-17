@@ -354,7 +354,7 @@ struct SettingsView: View {
                             Text("Window gap")
                             Spacer()
                             GapInput(value: $gapInput) { model.gap = $0 }
-                                .frame(width: 76, height: 30)
+                                .frame(width: 76, height: TextInputMetrics.height)
                             Text("pt").foregroundStyle(.secondary)
                         }
                         Slider(value: Binding(get: { gapInput }, set: { gapInput = $0.rounded() }), in: GapInput.bounds) { editing in
@@ -395,7 +395,7 @@ struct SettingsView: View {
                                 model.setFocusBorderColor(color, forSpace: selectedSpaceIndex)
                             }
                             .id(selectedSpaceIndex)
-                            .frame(width: 104, height: 30)
+                            .frame(width: 104, height: TextInputMetrics.height)
                             ForegroundColorPicker(
                                 "Space \(selectedSpaceIndex + 1) border color",
                                 selection: Binding(
@@ -1085,7 +1085,7 @@ struct HexColorInput: NSViewRepresentable {
     }
 }
 
-final class HexColorTextField: NSTextField, NSTextFieldDelegate {
+final class HexColorTextField: InsetTextField, NSTextFieldDelegate {
     var onCommit: (NSColor) -> Void
     private var committedColor: NSColor
     private var outsideClickMonitor: Any?
@@ -1095,15 +1095,6 @@ final class HexColorTextField: NSTextField, NSTextFieldDelegate {
         self.onCommit = onCommit
         super.init(frame: .zero)
         delegate = self
-        isEditable = true
-        isSelectable = true
-        isBezeled = false
-        drawsBackground = true
-        backgroundColor = NSColor.labelColor.withAlphaComponent(0.08)
-        wantsLayer = true
-        layer?.cornerRadius = 7
-        layer?.borderWidth = 1
-        layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.1).cgColor
         font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         placeholderString = "#RRGGBB"
         setAccessibilityLabel("Space color as a hexadecimal value")

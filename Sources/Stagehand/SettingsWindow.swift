@@ -27,6 +27,8 @@ enum SettingsWindow {
         // join another app's native full-screen Space.
         window.collectionBehavior = [.auxiliary, .fullScreenNone]
         window.contentView = NSHostingView(rootView: SettingsView(model: model, showOnboarding: showOnboarding))
+        window.standardWindowButton(.miniaturizeButton)?.isEnabled = false
+        window.standardWindowButton(.zoomButton)?.isEnabled = false
         window.alignWindowControls()
         window.contentMinSize = NSSize(width: 700, height: 620)
         window.center()
