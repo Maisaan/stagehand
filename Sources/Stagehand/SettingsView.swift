@@ -348,8 +348,6 @@ struct SettingsView: View {
                     }
                     .padding(14)
                 }
-            } footer: {
-                Text("Negative values overlap windows. Use the arrow keys to adjust by 1 pt, or hold Shift to adjust by 10 pt.")
             }
 
             SettingsSection("Spaces") {
