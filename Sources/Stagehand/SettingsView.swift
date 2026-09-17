@@ -754,6 +754,7 @@ private struct SettingsRow<Content: View, Trailing: View>: View {
             trailing
         }
         .padding(.horizontal, 11)
+        .padding(.vertical, 8)
         .frame(minHeight: 42)
     }
 }
