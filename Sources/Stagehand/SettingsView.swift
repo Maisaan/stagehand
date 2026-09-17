@@ -297,8 +297,6 @@ struct SettingsView: View {
                     }
                     .frame(height: 40)
                 }
-            } footer: {
-                Text("The log records window operations and failures. It never includes window titles or keystrokes.")
             }
         }
     }
