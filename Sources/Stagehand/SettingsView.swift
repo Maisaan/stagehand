@@ -109,7 +109,7 @@ struct SettingsView: View {
             Divider()
             statusBar
         }
-        .frame(minWidth: 680, maxWidth: .infinity, minHeight: 560, maxHeight: .infinity)
+        .frame(minWidth: 680, maxWidth: .infinity, minHeight: 610, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
         .alert("Shortcut unavailable", isPresented: Binding(
             get: { shortcutError != nil },

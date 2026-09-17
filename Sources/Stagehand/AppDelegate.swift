@@ -188,7 +188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
                 let sizes = [
                     (suffix: "", size: NSSize(width: 680, height: 610)),
-                    (suffix: "-compact", size: NSSize(width: 680, height: 560)),
+                    (suffix: "-compact", size: NSSize(width: 680, height: 610)),
                     (suffix: "-expanded", size: NSSize(width: 900, height: 760))
                 ]
                 for section in ["Windows", "Shortcuts", "System"] {

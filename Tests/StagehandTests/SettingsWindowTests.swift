@@ -10,7 +10,7 @@ import Testing
     defer { window.close() }
 
     #expect(window.styleMask.contains(.resizable))
-    #expect(window.contentMinSize == NSSize(width: 680, height: 560))
+    #expect(window.contentMinSize == NSSize(width: 680, height: 610))
     #expect(window.collectionBehavior.contains(.auxiliary))
     #expect(window.collectionBehavior.contains(.fullScreenNone))
     #expect(!window.collectionBehavior.contains(.canJoinAllApplications))
@@ -22,7 +22,7 @@ import Testing
     let content = NSHostingView(rootView: SettingsView(model: model).background(SettingsSizeProbe(view: measured)))
     window.contentView = content
 
-    for size in [NSSize(width: 680, height: 560), NSSize(width: 900, height: 760)] {
+    for size in [NSSize(width: 680, height: 610), NSSize(width: 900, height: 760)] {
         window.setContentSize(size)
         content.layoutSubtreeIfNeeded()
         #expect(content.bounds.size == size)
@@ -33,7 +33,7 @@ import Testing
 @Test @MainActor func hexColorEditorKeepsEnoughWidthForTheWholeValue() async throws {
     _ = NSApplication.shared
     let content = NSHostingView(rootView: SettingsView(model: StagehandModel()))
-    content.frame = CGRect(x: 0, y: 0, width: 680, height: 560)
+    content.frame = CGRect(x: 0, y: 0, width: 680, height: 610)
     content.layoutSubtreeIfNeeded()
     try await Task.sleep(for: .milliseconds(30))
     content.layoutSubtreeIfNeeded()
