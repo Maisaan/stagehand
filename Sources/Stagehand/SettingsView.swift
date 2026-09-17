@@ -4,16 +4,48 @@ import SwiftUI
 import StagehandCore
 import StagehandPlatform
 
+enum SettingsPage: String, CaseIterable, Identifiable {
+    case windows = "Windows"
+    case shortcuts = "Shortcuts"
+    case system = "System"
+
+    var id: Self { self }
+
+    var icon: String {
+        switch self {
+        case .windows: "rectangle.3.group"
+        case .shortcuts: "keyboard"
+        case .system: "gearshape"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .windows: "Arrange spaces, window sizing, and appearance."
+        case .shortcuts: "Choose how you move through windows and spaces."
+        case .system: "Manage permissions, diagnostics, and app behavior."
+        }
+    }
+
+    init(tab: String) {
+        switch tab {
+        case "Controls", "Shortcuts": self = .shortcuts
+        case "Setup", "System": self = .system
+        default: self = .windows
+        }
+    }
+}
+
 struct SettingsView: View {
     @ObservedObject var model: StagehandModel
-    @State private var tab = "Workspace"
+    @State private var page: SettingsPage
     @State private var gapInput: Double
     @State private var selectedSpaceIndex: Int
     @State private var shortcutError: String?
 
     init(model: StagehandModel, initialTab: String = "Workspace") {
         self.model = model
-        _tab = State(initialValue: initialTab)
+        _page = State(initialValue: SettingsPage(tab: initialTab))
         _gapInput = State(initialValue: GapInput.clamped(model.gap))
         _selectedSpaceIndex = State(initialValue: model.state.activeSpaceIndex)
         _shortcutError = State(initialValue: nil)
@@ -21,59 +53,63 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Settings section", selection: $tab) {
-                Text("Workspace").tag("Workspace")
-                Text("Controls").tag("Controls")
-                Text("Setup").tag("Setup")
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 330)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
+            HStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Settings")
+                        .font(.title2.weight(.semibold))
+                        .padding(.horizontal, 16)
+                        .padding(.top, 18)
+                        .padding(.bottom, 10)
 
-            Divider()
-            Form {
-                if let warning = model.warning {
-                    Section {
-                        HStack(alignment: .top, spacing: 10) {
-                            Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
-                            Text(warning).fixedSize(horizontal: false, vertical: true)
+                    List(SettingsPage.allCases, selection: $page) { item in
+                        HStack(spacing: 9) {
+                            Label(item.rawValue, systemImage: item.icon)
                             Spacer(minLength: 0)
-                            Button { model.dismissWarning() } label: { Image(systemName: "xmark") }
-                                .buttonStyle(.plain).accessibilityLabel("Dismiss warning")
+                            if item == .system, model.warning != nil || !model.inputIssues.isEmpty {
+                                Image(systemName: "exclamationmark.circle.fill")
+                                    .foregroundStyle(.orange)
+                                    .accessibilityLabel("Needs attention")
+                            }
+                        }
+                        .tag(item)
+                    }
+                    .listStyle(.sidebar)
+                }
+                .frame(width: 180)
+                .background(.ultraThinMaterial)
+
+                Divider()
+
+                VStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(page.rawValue)
+                            .font(.title2.weight(.semibold))
+                        Text(page.subtitle)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 16)
+
+                    Divider()
+
+                    Form {
+                        switch page {
+                        case .windows: windows
+                        case .shortcuts: shortcuts
+                        case .system: system
                         }
                     }
-                }
-                switch tab {
-                case "Controls": controls
-                case "Setup": setup
-                default: workspace
+                    .formStyle(.grouped)
                 }
             }
-            .formStyle(.grouped)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
             Divider()
-            HStack(spacing: 12) {
-                Circle().fill(model.isSuspended ? Color.orange : model.isRunning ? .green : .secondary)
-                    .frame(width: 6, height: 6)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(model.isSuspended ? "Waiting for its Desktop" : model.isRunning ? "Running" : "Paused")
-                        .font(.callout.weight(.medium))
-                    Text(model.isSuspended ? "Return to the Desktop where you started Stagehand to resume." : model.isRunning ? "Pausing restores your original window positions." : "Stagehand isn't moving your windows.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button(model.isRunning ? "Pause Stagehand" : "Start Stagehand") {
-                    if model.isRunning { model.pause() }
-                    else if model.accessibilityGranted { model.start() }
-                    else { tab = "Setup"; model.requestAccessibility() }
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
-            }
-            .padding(.horizontal, 20).padding(.vertical, 12)
+            statusBar
         }
-        .frame(minWidth: 520, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
+        .frame(minWidth: 680, maxWidth: .infinity, minHeight: 560, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
         .alert("Shortcut unavailable", isPresented: Binding(
             get: { shortcutError != nil },
@@ -85,7 +121,32 @@ struct SettingsView: View {
         }
     }
 
-    private var workspace: some View {
+    private var statusBar: some View {
+        HStack(spacing: 12) {
+            Circle().fill(model.isSuspended ? Color.orange : model.isRunning ? .green : .secondary)
+                .frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.isSuspended ? "Waiting for its Desktop" : model.isRunning ? "Running" : "Paused")
+                    .font(.callout.weight(.medium))
+                Text(model.isSuspended ? "Return to the Desktop where you started Stagehand to resume." : model.isRunning ? "Pause to restore your original window positions." : "Stagehand isn't moving your windows.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Button(model.isRunning ? "Pause Stagehand" : "Start Stagehand") {
+                if model.isRunning { model.pause() }
+                else if model.accessibilityGranted { model.start() }
+                else { page = .system; model.requestAccessibility() }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+    }
+
+    private var windows: some View {
         Group {
             Section {
                 VStack(alignment: .leading, spacing: 8) {
@@ -253,7 +314,7 @@ struct SettingsView: View {
         }
     }
 
-    private var controls: some View {
+    private var shortcuts: some View {
         Group {
             Section {
                 Toggle("Enable gesture navigation", isOn: $model.gesturesEnabled)
@@ -267,33 +328,29 @@ struct SettingsView: View {
                     Text("Keep macOS navigation gestures set to four fingers so they don't overlap with Stagehand. Three-finger dragging may still conflict.")
                 }
             }
-            shortcutSection("Window navigation", groups: [.windowNavigation, .windowOrder, .windowSize])
-            shortcutSection("Space navigation", groups: [.spaceNavigation])
-            shortcutSection("Switch to space", groups: [.spaceSwitching])
-            shortcutSection("Share window", groups: [.spaceSharing])
-            shortcutSection("Move window", groups: [.spaceMoving])
-            shortcutSection(
-                "Stagehand",
-                groups: [.stagehand],
-                footer: "Click a binding, then press its replacement. Caps Lock can be used with another key. " +
-                    "The reset button restores the original binding and turns it on."
-            )
+            Section {
+                shortcutGroup("Windows", groups: [.windowNavigation, .windowOrder, .windowSize])
+                shortcutGroup("Spaces", groups: [.spaceNavigation, .spaceSwitching])
+                shortcutGroup("Move and share", groups: [.spaceSharing, .spaceMoving])
+                shortcutGroup("Stagehand", groups: [.stagehand])
+            } header: {
+                Text("Keyboard shortcuts")
+            } footer: {
+                Text("Click a binding, then press its replacement. Caps Lock can be combined with another key. Reset restores the original binding and turns it on.")
+            }
         }
     }
 
-    private func shortcutSection(
+    @ViewBuilder private func shortcutGroup(
         _ title: String,
-        groups: [ShortcutBinding.Group],
-        footer: String? = nil
+        groups: [ShortcutBinding.Group]
     ) -> some View {
-        Section {
-            ForEach(model.shortcutBindings.filter { groups.contains($0.group) }) { binding in
-                shortcutRow(binding)
-            }
-        } header: {
-            Text(title)
-        } footer: {
-            if let footer { Text(footer) }
+        Text(title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.top, 4)
+        ForEach(model.shortcutBindings.filter { groups.contains($0.group) }) { binding in
+            shortcutRow(binding)
         }
     }
 
@@ -330,7 +387,7 @@ struct SettingsView: View {
         }
     }
 
-    private var setup: some View {
+    private var system: some View {
         Group {
             Section {
                 HStack {
@@ -345,8 +402,19 @@ struct SettingsView: View {
             } footer: {
                 Text("Accessibility lets Stagehand move windows, block conflicting scroll events during gestures, and protect typing during window switches.")
             }
-            if !model.inputIssues.isEmpty {
+            if model.warning != nil || !model.inputIssues.isEmpty {
                 Section("Needs attention") {
+                    if let warning = model.warning {
+                        HStack(alignment: .top, spacing: 10) {
+                            Label(warning, systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 0)
+                            Button { model.dismissWarning() } label: { Image(systemName: "xmark") }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Dismiss warning")
+                        }
+                    }
                     ForEach(Array(model.inputIssues.enumerated()), id: \.offset) { _, issue in
                         Label(issue, systemImage: "exclamationmark.circle")
                             .foregroundStyle(.orange)
@@ -367,15 +435,20 @@ struct SettingsView: View {
             } footer: {
                 Text("Records starts, pauses, window operations, focus checks, and failures. Logs exclude window titles and keyboard input.")
             }
-            Section("Typing protection") {
-                Text("When you switch windows, Stagehand holds new keystrokes in memory until it confirms the destination. It never logs or saves them. If focus can't be confirmed, Stagehand discards those keystrokes and shows a warning.")
+            Section("About Stagehand") {
+                DisclosureGroup("Typing protection") {
+                    Text("When you switch windows, Stagehand holds new keystrokes in memory until it confirms the destination. It never logs or saves them. If focus can't be confirmed, Stagehand discards those keystrokes and records a warning here.")
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 6)
+                }
+                DisclosureGroup("Current limits") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Stagehand works with standard windows on one built-in display and one macOS Desktop. It ignores native full-screen windows. Layout settings persist, but space membership resets when Stagehand quits. Pause or quit to restore windows to their original positions.")
+                        Text("Gestures use a private macOS trackpad API. If that API is unavailable, keyboard shortcuts still work. Secure Input may prevent Stagehand from protecting keystrokes during a window switch.")
+                    }
                     .foregroundStyle(.secondary)
-            }
-            Section("Limits") {
-                Text("Stagehand works with standard windows on one built-in display and one macOS Desktop. It ignores native full-screen windows. Layout settings persist, but space membership resets when Stagehand quits. Pause or quit to restore windows to their original positions.")
-                    .foregroundStyle(.secondary)
-                Text("Gestures use a private macOS trackpad API. If that API is unavailable, keyboard shortcuts still work. Secure Input may prevent Stagehand from protecting keystrokes during a window switch.")
-                    .foregroundStyle(.secondary)
+                    .padding(.top, 6)
+                }
             }
         }
     }

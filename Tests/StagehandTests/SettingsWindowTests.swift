@@ -10,7 +10,7 @@ import Testing
     defer { window.close() }
 
     #expect(window.styleMask.contains(.resizable))
-    #expect(window.contentMinSize == NSSize(width: 520, height: 480))
+    #expect(window.contentMinSize == NSSize(width: 680, height: 560))
     #expect(window.collectionBehavior.contains(.auxiliary))
     #expect(window.collectionBehavior.contains(.fullScreenNone))
     #expect(!window.collectionBehavior.contains(.canJoinAllApplications))
@@ -22,7 +22,7 @@ import Testing
     let content = NSHostingView(rootView: SettingsView(model: model).background(SettingsSizeProbe(view: measured)))
     window.contentView = content
 
-    for size in [NSSize(width: 520, height: 480), NSSize(width: 900, height: 760)] {
+    for size in [NSSize(width: 680, height: 560), NSSize(width: 900, height: 760)] {
         window.setContentSize(size)
         content.layoutSubtreeIfNeeded()
         #expect(content.bounds.size == size)
@@ -33,13 +33,19 @@ import Testing
 @Test @MainActor func hexColorEditorKeepsEnoughWidthForTheWholeValue() async throws {
     _ = NSApplication.shared
     let content = NSHostingView(rootView: SettingsView(model: StagehandModel()))
-    content.frame = CGRect(x: 0, y: 0, width: 520, height: 480)
+    content.frame = CGRect(x: 0, y: 0, width: 680, height: 560)
     content.layoutSubtreeIfNeeded()
     try await Task.sleep(for: .milliseconds(30))
     content.layoutSubtreeIfNeeded()
 
     let field = try #require(editableTextFields(in: content).first { $0.stringValue.hasPrefix("#") })
     #expect(field.frame.width >= 100)
+}
+
+@Test func legacySettingsTabNamesMapToTheNewSidebarPages() {
+    #expect(SettingsPage(tab: "Workspace") == .windows)
+    #expect(SettingsPage(tab: "Controls") == .shortcuts)
+    #expect(SettingsPage(tab: "Setup") == .system)
 }
 
 @MainActor private func editableTextFields(in view: NSView) -> [NSTextField] {
