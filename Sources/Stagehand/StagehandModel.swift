@@ -1387,7 +1387,6 @@ final class StagehandModel: ObservableObject {
                         actualFrame: actualFrame,
                         details: ["pass": String(pass + 1)]
                     )
-                    warning = "This app controls its window size. Stagehand will use the size it allows."
                 }
                 lastAppliedFrames[placement.windowID] = actualFrame
             }

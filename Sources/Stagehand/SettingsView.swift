@@ -196,8 +196,8 @@ struct SettingsView: View {
                 let actual = model.actualWidthPercent(for: window)
                 Text("\(actual ?? requested)%")
                     .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-                    .help(actual.map { "This app limits the window to \($0)% width. Stagehand requested \(requested)%." }
-                          ?? "Requested width: \(requested)%.")
+                    .help(actual.map { "Current width: \($0)%. Stagehand remembers the size this app accepts." }
+                          ?? "Remembered width: \(requested)%.")
             }
             Menu {
                 Button("Focus") { model.focusWindow(window.id, inSpace: spaceIndex) }
