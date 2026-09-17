@@ -402,8 +402,6 @@ struct SettingsView: View {
                         }
                     }
                 }
-            } footer: {
-                Text("This color marks the active window and app bar in this space.")
             }
         }
         .onChange(of: model.state.displayedSpaceIndices) { _, indices in
