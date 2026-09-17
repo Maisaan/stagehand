@@ -1,6 +1,6 @@
 # Stagehand
 
-> Disclaimer: this is vibecoded slop. Treat it as an experimental local prototype, not a dependable window manager.
+> Stagehand is built almost entirely by AI. The code gets plenty of scrutiny, but this is still experimental software.
 
 ## Why I built Stagehand
 
