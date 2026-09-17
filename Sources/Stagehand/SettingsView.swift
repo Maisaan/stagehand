@@ -61,6 +61,7 @@ struct SettingsView: View {
     @State private var shortcutError: String?
     @State private var launchAtLoginError: String?
     @State private var expandedShortcutGroup: ShortcutBinding.Group?
+    @State private var showingGestureHelp = false
 
     init(
         model: StagehandModel,
@@ -255,12 +256,24 @@ struct SettingsView: View {
                     SettingsRow {
                         HStack(spacing: 6) {
                             Text("Gesture navigation")
-                            PhosphorIcon(.info)
-                                .frame(width: 13, height: 13)
-                                .foregroundStyle(.secondary)
-                                .accessibilityHidden(true)
+                            Button {
+                                showingGestureHelp = true
+                            } label: {
+                                PhosphorIcon(.info)
+                                    .frame(width: 13, height: 13)
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 20, height: 20)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Gesture navigation help")
+                            .help("Gesture navigation help")
+                            .popover(isPresented: $showingGestureHelp, arrowEdge: .bottom) {
+                                Text("Three-finger swipes move between windows and spaces. Set macOS trackpad gestures to four fingers to avoid conflicts.")
+                                    .frame(width: 280, alignment: .leading)
+                                    .padding(12)
+                            }
                         }
-                        .help("Three-finger swipes move between windows and spaces. Set macOS trackpad gestures to four fingers to avoid conflicts.")
                     } trailing: {
                         Toggle("Gesture navigation", isOn: $model.gesturesEnabled)
                             .labelsHidden()
