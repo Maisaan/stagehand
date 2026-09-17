@@ -387,7 +387,7 @@ private struct AccessibilityOnboardingPage: View {
                         .foregroundStyle(.green)
                 } else {
                     Button("Allow") { model.requestAccessibility() }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.bordered)
                         .controlSize(.regular)
                 }
             }
