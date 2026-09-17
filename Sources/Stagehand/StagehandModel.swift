@@ -220,7 +220,10 @@ final class StagehandModel: ObservableObject {
     private var lastFocusTokenExpired = false
     private var pointerInteraction: PointerInteraction?
     private var borderWindowID: String?
+    private var borderWindowNumber: CGWindowID?
     private var borderCornerRadius: CGFloat?
+    private var borderCornerRadiusResolved = false
+    private var borderRadiusFrameSize: CGSize?
     private var isLayingOutWindows = false
     private var preferencesNeedLayout = false
     private var layoutFailureReason: String?
@@ -338,9 +341,9 @@ final class StagehandModel: ObservableObject {
                 self.nativeDesktopChanged()
                 return
             }
-            // Geometry follows native notifications immediately. Do not scan windows,
-            // query corner metadata, or wait for layout reconciliation during a resize.
-            self.updateFocusBorder(windowID: id, frame: frame)
+            // Geometry follows native notifications immediately. Corner metadata is
+            // refreshed by the coalesced reconciliation after the resize settles.
+            self.updateFocusBorder(windowID: id, frame: frame, refreshShape: false)
         }
         windowSystem.onNativeDesktopChange = { [weak self] in
             self?.nativeDesktopChanged()
@@ -476,8 +479,7 @@ final class StagehandModel: ObservableObject {
         focusGate.cancelAll()
         focusGate.stop()
         input.stop()
-        borderWindowID = nil
-        borderCornerRadius = nil
+        resetFocusBorderCache()
         overlays.hide()
         emptySpace.hide()
         windowSystem.stop()
@@ -1013,7 +1015,7 @@ final class StagehandModel: ObservableObject {
                 pointerInteraction?.needsLayout = true
             }
             if let focused = focusedWindow {
-                updateFocusBorder(windowID: focused.id, frame: focused.frame)
+                updateFocusBorder(windowID: focused.id, frame: focused.frame, refreshShape: false)
             }
             scheduleRefresh()
             return
@@ -1937,21 +1939,38 @@ final class StagehandModel: ObservableObject {
         request == .navigation || (state.focusedWindowID != nil && windowSystem.focusedWindowID() == state.focusedWindowID)
     }
 
-    func updateFocusBorder(windowID: String, frame: CGRect) {
+    func updateFocusBorder(windowID: String, frame: CGRect, refreshShape: Bool = true) {
+        overlays.setBorderColor(focusBorderColor)
         let changed = borderWindowID != windowID
-        if changed {
+        let windowNumber = windowSystem.windowNumber(for: windowID)
+        let identityChanged = changed || borderWindowNumber != windowNumber
+        let sizeChanged = borderRadiusFrameSize != frame.size
+        if identityChanged || (refreshShape && (!borderCornerRadiusResolved || sizeChanged)) {
             borderWindowID = windowID
-            borderCornerRadius = windows.first(where: { $0.id == windowID }).flatMap {
-                WindowCornerRadius.cornerRadius(processID: $0.pid, frame: frame)
+            borderWindowNumber = windowNumber
+            borderRadiusFrameSize = frame.size
+            if let radius = windowNumber.flatMap({ WindowCornerRadius.cornerRadius(windowNumber: $0) }) {
+                borderCornerRadius = radius
+                borderCornerRadiusResolved = true
+            } else {
+                if identityChanged { borderCornerRadius = nil }
+                borderCornerRadiusResolved = false
             }
         }
         overlays.updateBorder(frame: frame, visible: true, cornerRadius: borderCornerRadius, focusChanged: changed)
     }
 
     private func hideFocusBorder() {
-        borderWindowID = nil
-        borderCornerRadius = nil
+        resetFocusBorderCache()
         overlays.updateBorder(frame: .zero, visible: false)
+    }
+
+    private func resetFocusBorderCache() {
+        borderWindowID = nil
+        borderWindowNumber = nil
+        borderCornerRadius = nil
+        borderCornerRadiusResolved = false
+        borderRadiusFrameSize = nil
     }
 
     private func nativeDesktopChanged() {
@@ -1992,8 +2011,7 @@ final class StagehandModel: ObservableObject {
                 focusGate.cancelAll()
                 focusGate.stop()
                 input.stop()
-                borderWindowID = nil
-                borderCornerRadius = nil
+                resetFocusBorderCache()
                 overlays.hide()
                 emptySpace.hide()
                 updateInputStatus()

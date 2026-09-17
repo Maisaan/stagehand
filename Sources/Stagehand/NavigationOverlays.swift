@@ -492,6 +492,9 @@ final class OverlayPanel: NSPanel {
 
 final class BorderView: NSView {
     static let defaultColor = NSColor(srgbRed: 0.44, green: 0.85, blue: 0.71, alpha: 0.95)
+    static var fallbackCornerRadius: CGFloat {
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26 ? 16 : 9
+    }
 
     var strokeColor = defaultColor {
         didSet { if oldValue != strokeColor { needsDisplay = true } }
@@ -502,11 +505,11 @@ final class BorderView: NSView {
     }
 
     static func outline(in bounds: CGRect, cornerRadius: CGFloat? = nil) -> NSBezierPath {
-        // Use the target window's native radius. Older systems or ambiguous window matches
-        // retain the small fallback; the OS version alone does not determine window shape.
-        let nativeRadius = cornerRadius.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil } ?? 9
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1),
-                                xRadius: max(0, nativeRadius - 1), yRadius: max(0, nativeRadius - 1))
+        let nativeRadius = cornerRadius.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+            ?? fallbackCornerRadius
+        let rect = bounds.insetBy(dx: 1, dy: 1)
+        let radius = min(max(0, nativeRadius - 1), max(0, min(rect.width, rect.height) / 2))
+        let path = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
         path.lineWidth = 2
         return path
     }

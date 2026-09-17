@@ -1,44 +1,25 @@
 import AppKit
 import Darwin
 
-/// Reads the focused window's native corner metadata. Call when its identity changes,
-/// then reuse the result for ordinary frame updates; this performs a window-list query.
+/// Reads a window's native corner metadata using its exact WindowServer identity.
 @MainActor
 public enum WindowCornerRadius {
-    public static func cornerRadius(processID: Int32, frame: CGRect) -> CGFloat? {
-        guard validFrame(frame), processID > 0,
-              let metadata = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
-              let number = matchingWindowNumber(processID: processID, frame: frame, metadata: metadata) else {
-            return nil
-        }
-        return nativeRadius(number)
+    public static func cornerRadius(windowNumber: CGWindowID) -> CGFloat? {
+        guard windowNumber != kCGNullWindowID else { return nil }
+        return nativeRadius(windowNumber)
     }
 
-    static func matchingWindowNumber(processID: Int32, frame: CGRect, metadata: [[String: Any]]) -> CGWindowID? {
-        guard validFrame(frame), processID > 0 else { return nil }
-        let matches = metadata.compactMap { window -> CGWindowID? in
-            guard (window[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
-                  (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == processID,
-                  let rawBounds = window[kCGWindowBounds as String] as? [String: Any],
-                  let bounds = CGRect(dictionaryRepresentation: rawBounds as CFDictionary),
-                  validFrame(bounds),
-                  abs(bounds.minX - frame.minX) <= 1,
-                  abs(bounds.minY - frame.minY) <= 1,
-                  abs(bounds.width - frame.width) <= 1,
-                  abs(bounds.height - frame.height) <= 1,
-                  let rawNumber = window[kCGWindowNumber as String] as? NSNumber,
-                  let number = CGWindowID(exactly: rawNumber.int64Value), number != kCGNullWindowID else {
-                return nil
-            }
-            return number
-        }
-        // Matching only a PID is insufficient when one app has multiple windows. Refuse
-        // ambiguous overlapping frames instead of borrowing a neighboring window's radius.
-        return matches.count == 1 ? matches[0] : nil
-    }
-
-    private static func validFrame(_ frame: CGRect) -> Bool {
-        frame.origin.x.isFinite && frame.origin.y.isFinite && frame.width.isFinite && frame.height.isFinite && frame.width > 0 && frame.height > 0
+    static func validatedRadius(_ values: [NSNumber]) -> CGFloat? {
+        guard let first = values.first else { return nil }
+        let radius = CGFloat(first.doubleValue)
+        guard radius.isFinite, radius >= 0 else { return nil }
+        // SkyLight currently returns four values. Their per-corner order is private,
+        // so only consume a uniform shape instead of assigning asymmetric corners incorrectly.
+        guard values.dropFirst().allSatisfy({ value in
+            let candidate = CGFloat(value.doubleValue)
+            return candidate.isFinite && candidate >= 0 && abs(candidate - radius) <= 0.25
+        }) else { return nil }
+        return radius
     }
 
     // ABI and ownership reference:
@@ -69,10 +50,9 @@ public enum WindowCornerRadius {
                 guard let iterator = windows(result)?.takeRetainedValue() else { return nil }
                 return withExtendedLifetime(iterator) {
                     guard advance(iterator), let radii = corners(iterator)?.takeRetainedValue(),
-                          let values = radii as? [NSNumber], let value = values.first else { return nil }
-                    let radius = CGFloat(value.doubleValue)
+                          let values = radii as? [NSNumber] else { return nil }
                     // Zero is a valid square window, not a missing-value sentinel.
-                    return radius.isFinite && radius >= 0 ? radius : nil
+                    return validatedRadius(values)
                 }
             }
         }

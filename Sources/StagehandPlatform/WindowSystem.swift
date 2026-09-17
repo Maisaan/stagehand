@@ -359,6 +359,12 @@ public final class WindowSystem {
         return tracked.logicalFrame ?? readFrame(tracked.element)
     }
 
+    /// Returns the WindowServer identity captured from Accessibility discovery.
+    public func windowNumber(for windowID: String) -> CGWindowID? {
+        if nativeWindows.contains(windowID: windowID) { return nativeWindows.windowNumber(for: windowID) }
+        return windows[windowID]?.windowNumber
+    }
+
     /// Reads the window's current physical frame, including its parking position.
     public func observedFrame(windowID: String) -> CGRect? {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.frame(windowID: windowID) }

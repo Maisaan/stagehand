@@ -26,6 +26,15 @@ struct NativeWindowTests {
         return window
     }
 
+    @Test func registeredNativeWindowsExposeTheirExactWindowNumber() {
+        let system = WindowSystem()
+        let window = makeWindow()
+        defer { window.close() }
+        let id = system.registerOwnWindow(window: window)
+
+        #expect(system.windowNumber(for: id) == CGWindowID(window.windowNumber))
+    }
+
     @Test func onlyExplicitlyRegisteredWindowsJoinManagement() {
         let registry = NativeWindowRegistry()
         let settings = makeWindow()

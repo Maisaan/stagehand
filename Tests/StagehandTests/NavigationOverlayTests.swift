@@ -44,14 +44,24 @@ import Testing
 
 @MainActor @Test func navigationBorderRejectsInvalidRadiiAndPreservesSquareCorners() {
     let bounds = CGRect(x: 0, y: 0, width: 100, height: 100)
+    let fallback = BorderView.outline(in: bounds)
     let invalidRadii: [CGFloat?] = [nil, .nan, .infinity, -1]
     for invalid in invalidRadii {
         let outline = BorderView.outline(in: bounds, cornerRadius: invalid)
-        #expect(outline.contains(CGPoint(x: 5, y: 5)))
         #expect(outline.bounds == CGRect(x: 1, y: 1, width: 98, height: 98))
+        for point in [CGPoint(x: 5, y: 5), CGPoint(x: 15, y: 15), CGPoint(x: 50, y: 50)] {
+            #expect(outline.contains(point) == fallback.contains(point))
+        }
     }
     let square = BorderView.outline(in: bounds, cornerRadius: 0)
     #expect(square.contains(CGPoint(x: 2, y: 2)))
+}
+
+@MainActor @Test func navigationBorderClampsTheRadiusForTinyWindows() {
+    let bounds = CGRect(x: 0, y: 0, width: 18, height: 10)
+    let outline = BorderView.outline(in: bounds, cornerRadius: 1_000)
+    #expect(outline.bounds == CGRect(x: 1, y: 1, width: 16, height: 8))
+    #expect(outline.contains(CGPoint(x: bounds.midX, y: bounds.midY)))
 }
 
 @MainActor @Test func navigationBorderStaysInsideWindowAtDisplayEdges() throws {
