@@ -786,7 +786,7 @@ final class StagehandModel: ObservableObject {
             return "Accessibility permission is missing for this build. No windows were changed."
         }
         let previousApp = NSWorkspace.shared.frontmostApplication
-        let settings = includeSettings ? SettingsWindow.make(model: self) : nil
+        let settings = includeSettings ? SettingsWindow.make(model: self, showOnboarding: {}) : nil
         if let settings {
             settings.makeKeyAndOrderFront(nil)
             NSApp.activate()

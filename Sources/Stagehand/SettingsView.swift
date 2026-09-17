@@ -5,46 +5,70 @@ import StagehandCore
 import StagehandPlatform
 
 enum SettingsPage: String, CaseIterable, Identifiable {
+    case general = "General"
     case windows = "Windows"
     case shortcuts = "Shortcuts"
-    case system = "System"
+    case about = "About"
 
     var id: Self { self }
 
     var icon: String {
         switch self {
+        case .general: "gearshape.fill"
         case .windows: "rectangle.3.group"
         case .shortcuts: "keyboard"
-        case .system: "gearshape"
+        case .about: "info.circle.fill"
         }
     }
 
-    var subtitle: String {
+    var color: Color {
         switch self {
-        case .windows: "Arrange spaces, window sizing, and appearance."
-        case .shortcuts: "Choose how you move through windows and spaces."
-        case .system: "Manage permissions, diagnostics, and app behavior."
+        case .general: .gray
+        case .windows: .blue
+        case .shortcuts: .indigo
+        case .about: .gray
         }
     }
 
     init(tab: String) {
         switch tab {
         case "Controls", "Shortcuts": self = .shortcuts
-        case "Setup", "System": self = .system
+        case "Setup", "System", "General": self = .general
+        case "About": self = .about
         default: self = .windows
         }
     }
 }
 
+private enum ShortcutPage: String, CaseIterable, Identifiable {
+    case navigation = "Navigation"
+    case arrange = "Layout"
+    case spaces = "Spaces"
+    case stagehand = "Stagehand"
+
+    var id: Self { self }
+}
+
 struct SettingsView: View {
     @ObservedObject var model: StagehandModel
+    let showOnboarding: () -> Void
+    let expandAboutDetails: Bool
     @State private var page: SettingsPage
     @State private var gapInput: Double
     @State private var selectedSpaceIndex: Int
+    @State private var shortcutPage = ShortcutPage.navigation
     @State private var shortcutError: String?
+    @State private var expandedShortcutGroup: ShortcutBinding.Group?
 
-    init(model: StagehandModel, initialTab: String = "Workspace") {
+    init(
+        model: StagehandModel,
+        initialTab: String = "General",
+        showOnboarding: @escaping () -> Void = {},
+        expandAboutDetails: Bool = false
+    ) {
         self.model = model
+        self.showOnboarding = showOnboarding
+        self.expandAboutDetails = expandAboutDetails
         _page = State(initialValue: SettingsPage(tab: initialTab))
         _gapInput = State(initialValue: GapInput.clamped(model.gap))
         _selectedSpaceIndex = State(initialValue: model.state.activeSpaceIndex)
@@ -52,65 +76,41 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("Settings")
-                        .font(.title2.weight(.semibold))
-                        .padding(.horizontal, 16)
-                        .padding(.top, 18)
-                        .padding(.bottom, 10)
-
-                    List(SettingsPage.allCases, selection: $page) { item in
-                        HStack(spacing: 9) {
-                            Label(item.rawValue, systemImage: item.icon)
-                            Spacer(minLength: 0)
-                            if item == .system, model.warning != nil || !model.inputIssues.isEmpty {
-                                Image(systemName: "exclamationmark.circle.fill")
-                                    .foregroundStyle(.orange)
-                                    .accessibilityLabel("Needs attention")
-                            }
-                        }
-                        .tag(item)
-                    }
-                    .listStyle(.sidebar)
+        HStack(spacing: 0) {
+            List(selection: $page) {
+                sidebarRow(.general)
+                Section("Settings") {
+                    sidebarRow(.windows)
+                    sidebarRow(.shortcuts)
                 }
-                .frame(width: 180)
-                .background(.ultraThinMaterial)
-
-                Divider()
-
-                VStack(spacing: 0) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(page.rawValue)
-                            .font(.title2.weight(.semibold))
-                        Text(page.subtitle)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 16)
-
-                    Divider()
-
-                    Form {
-                        switch page {
-                        case .windows: windows
-                        case .shortcuts: shortcuts
-                        case .system: system
-                        }
-                    }
-                    .formStyle(.grouped)
+                Section("Stagehand") {
+                    sidebarRow(.about)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .frame(width: 220)
+            .background(Color.clear)
 
             Divider()
-            statusBar
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 20) {
+                    SettingsPageHeader(page: page)
+                    switch page {
+                    case .general: general
+                    case .windows: windows
+                    case .shortcuts: shortcuts
+                    case .about: about
+                    }
+                }
+                .padding(16)
+                .frame(maxWidth: 620, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .frame(minWidth: 680, maxWidth: .infinity, minHeight: 610, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
+        .frame(minWidth: 700, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
         .alert("Shortcut unavailable", isPresented: Binding(
             get: { shortcutError != nil },
             set: { if !$0 { shortcutError = nil } }
@@ -121,117 +121,229 @@ struct SettingsView: View {
         }
     }
 
-    private var statusBar: some View {
-        HStack(spacing: 12) {
-            Circle().fill(model.isSuspended ? Color.orange : model.isRunning ? .green : .secondary)
-                .frame(width: 7, height: 7)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.isSuspended ? "Waiting for its Desktop" : model.isRunning ? "Running" : "Paused")
-                    .font(.callout.weight(.medium))
-                Text(model.isSuspended ? "Return to the Desktop where you started Stagehand to resume." : model.isRunning ? "Pause to restore your original window positions." : "Stagehand isn't moving your windows.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+    private func sidebarRow(_ item: SettingsPage) -> some View {
+        HStack(spacing: 10) {
+            SettingsSidebarIcon(symbol: item.icon, color: item.color)
+            Text(item.rawValue)
+            Spacer(minLength: 0)
+            if item == .general, model.warning != nil || !model.inputIssues.isEmpty {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel("Needs attention")
             }
-            Spacer()
-            Button(model.isRunning ? "Pause Stagehand" : "Start Stagehand") {
-                if model.isRunning { model.pause() }
-                else if model.accessibilityGranted { model.start() }
-                else { page = .system; model.requestAccessibility() }
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.regular)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        .tag(item)
+    }
+
+    private var general: some View {
+        Group {
+            SettingsSection("Status") {
+                SettingsCard {
+                    SettingsRow {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Stagehand")
+                            StatusLabel(
+                                title: model.isSuspended ? "Waiting for managed desktop" : model.isRunning ? "Running" : "Paused",
+                                color: model.isSuspended ? .orange : model.isRunning ? .green : .secondary
+                            )
+                        }
+                    } trailing: {
+                        Toggle("Stagehand", isOn: Binding(
+                            get: { model.isRunning },
+                            set: { enabled in
+                                if enabled {
+                                    if model.accessibilityGranted { model.start() }
+                                    else { model.requestAccessibility() }
+                                } else {
+                                    model.pause()
+                                }
+                            }
+                        ))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                    }
+
+                    Divider()
+
+                    SettingsRow {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Accessibility")
+                            StatusLabel(
+                                title: model.accessibilityGranted ? "Granted" : "Required",
+                                color: model.accessibilityGranted ? .green : .orange
+                            )
+                        }
+                    } trailing: {
+                        Button(model.accessibilityGranted ? "Open System Settings…" : "Allow…") {
+                            if model.accessibilityGranted {
+                                openSettingsPane("com.apple.preference.security?Privacy_Accessibility")
+                            } else {
+                                model.requestAccessibility()
+                            }
+                        }
+                    }
+                }
+            }
+
+            SettingsSection("Gestures") {
+                SettingsCard {
+                    SettingsRow("Gesture navigation") {
+                        Toggle("Gesture navigation", isOn: $model.gesturesEnabled)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                    }
+                    Divider()
+                    SettingsRow("Trackpad settings") {
+                        Button("Open…") { openSettingsPane("com.apple.Trackpad-Settings.extension") }
+                    }
+                }
+            } footer: {
+                Text("Three-finger swipes move between windows and spaces. Set macOS trackpad gestures to four fingers to avoid conflicts.")
+            }
+
+            if model.warning != nil || !model.inputIssues.isEmpty {
+                SettingsSection("Needs attention") {
+                    SettingsCard {
+                        if let warning = model.warning {
+                            warningRow(warning, dismissible: true)
+                        }
+                        ForEach(Array(model.inputIssues.enumerated()), id: \.offset) { index, issue in
+                            if model.warning != nil || index > 0 { Divider() }
+                            warningRow(issue, dismissible: false)
+                        }
+                    }
+                }
+            }
+
+            SettingsSection("Diagnostics") {
+                SettingsCard {
+                    SettingsRow("Diagnostic logging") {
+                        Toggle("Diagnostic logging", isOn: $model.diagnosticLoggingEnabled)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                    }
+                    Divider()
+                    HStack(spacing: 0) {
+                        SettingsActionButton("Show in Finder") { model.revealDiagnosticLog() }
+                            .disabled(!model.diagnosticLoggingEnabled)
+                        Divider()
+                        SettingsActionButton("Clear Log") { model.clearDiagnosticLog() }
+                    }
+                    .frame(height: 40)
+                }
+            } footer: {
+                Text("The log records window operations and failures. It never includes window titles or keystrokes.")
+            }
+        }
+    }
+
+    private func warningRow(_ message: String, dismissible: Bool) -> some View {
+        SettingsRow {
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        } trailing: {
+            if dismissible {
+                Button { model.dismissWarning() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Dismiss warning")
+            }
+        }
     }
 
     private var windows: some View {
         Group {
-            Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 10) {
-                        Text("Window gap")
-                        Spacer()
-                        GapInput(value: $gapInput) { model.gap = $0 }
-                            .frame(width: 76, height: 24)
-                        Text("pt").foregroundStyle(.secondary)
-                    }
-                    Slider(value: Binding(get: { gapInput }, set: { gapInput = $0.rounded() }), in: GapInput.bounds) { editing in
-                        if !editing, gapInput != model.gap { model.gap = gapInput }
-                    }
-                    .accessibilityLabel("Gap between windows")
-                    HStack {
-                        Text("−200 pt overlap")
-                        Spacer()
-                        Text("40 pt gap")
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-            } footer: {
-                Text("Negative values overlap windows. The active window stays on top. Use ↑/↓ to adjust by 1 pt or Shift-↑/↓ by 10 pt. Press Return or click elsewhere to apply.")
-            }
-            Section {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 100, maximum: 140), spacing: 8)], alignment: .leading, spacing: 8) {
-                    ForEach(model.state.displayedSpaceIndices, id: \.self) { index in
-                        Button { selectedSpaceIndex = index } label: {
-                            HStack(spacing: 8) {
-                                Text("Space \(index + 1)")
-                                Text("\(model.state.spaces[index].windowIDs.count)")
-                                    .foregroundStyle(.secondary)
-                            }
-                            .frame(maxWidth: .infinity)
+            SettingsSection("Layout") {
+                SettingsCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 10) {
+                            Text("Window gap")
+                            Spacer()
+                            GapInput(value: $gapInput) { model.gap = $0 }
+                                .frame(width: 76, height: 24)
+                            Text("pt").foregroundStyle(.secondary)
                         }
-                        .buttonStyle(.bordered)
-                        .tint(index == selectedSpaceIndex ? Color.accentColor : nil)
-                        .disabled(!model.isRunning || model.isSuspended)
-                        .accessibilityLabel("Space \(index + 1), \(model.state.spaces[index].windowIDs.count) \(model.state.spaces[index].windowIDs.count == 1 ? "window" : "windows")")
-                        .accessibilityAddTraits(index == selectedSpaceIndex ? .isSelected : [])
-                    }
-                }
-                HStack(spacing: 12) {
-                    Text("Space \(selectedSpaceIndex + 1) border color")
-                    Spacer(minLength: 20)
-                    HexColorInput(
-                        color: model.focusBorderColor(forSpace: selectedSpaceIndex)
-                    ) { color in
-                        model.setFocusBorderColor(color, forSpace: selectedSpaceIndex)
-                    }
-                    .id(selectedSpaceIndex)
-                    .frame(width: 112)
-                    .accessibilityLabel("Hex color for Space \(selectedSpaceIndex + 1)")
-                    ColorPicker(
-                        "Space \(selectedSpaceIndex + 1) border color",
-                        selection: Binding(
-                            get: { Color(nsColor: model.focusBorderColor(forSpace: selectedSpaceIndex)) },
-                            set: { model.setFocusBorderColor(NSColor($0), forSpace: selectedSpaceIndex) }
-                        ),
-                        supportsOpacity: false
-                    )
-                    .labelsHidden()
-                }
-                if model.state.spaces[selectedSpaceIndex].windowIDs.isEmpty {
-                    Text(model.isRunning ? "No windows in this space. Move or add one from another space." : "No windows yet.")
+                        Slider(value: Binding(get: { gapInput }, set: { gapInput = $0.rounded() }), in: GapInput.bounds) { editing in
+                            if !editing, gapInput != model.gap { model.gap = gapInput }
+                        }
+                        .accessibilityLabel("Gap between windows")
+                        HStack {
+                            Text("−200 pt overlap")
+                            Spacer()
+                            Text("40 pt gap")
+                        }
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 45, alignment: .center)
-                } else {
-                    ForEach(model.state.spaces[selectedSpaceIndex].windowIDs, id: \.self) { id in
-                        if let window = model.windows.first(where: { $0.id == id }) {
-                            windowRow(window, inSpace: selectedSpaceIndex)
+                    }
+                    .padding(14)
+                }
+            } footer: {
+                Text("Negative values overlap windows. Use the arrow keys to adjust by 1 pt, or hold Shift to adjust by 10 pt.")
+            }
+
+            SettingsSection("Spaces") {
+                SettingsCard {
+                    SettingsRow("Space") {
+                        Picker("Space", selection: $selectedSpaceIndex) {
+                            ForEach(model.state.displayedSpaceIndices, id: \.self) { index in
+                                let count = model.state.spaces[index].windowIDs.count
+                                Text("Space \(index + 1) · \(count) \(count == 1 ? "window" : "windows")")
+                                    .tag(index)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                    }
+
+                    Divider()
+
+                    SettingsRow("Space color") {
+                        HStack(spacing: 8) {
+                            HexColorInput(color: model.focusBorderColor(forSpace: selectedSpaceIndex)) { color in
+                                model.setFocusBorderColor(color, forSpace: selectedSpaceIndex)
+                            }
+                            .id(selectedSpaceIndex)
+                            .frame(width: 104)
+                            ColorPicker(
+                                "Space \(selectedSpaceIndex + 1) border color",
+                                selection: Binding(
+                                    get: { Color(nsColor: model.focusBorderColor(forSpace: selectedSpaceIndex)) },
+                                    set: { model.setFocusBorderColor(NSColor($0), forSpace: selectedSpaceIndex) }
+                                ),
+                                supportsOpacity: false
+                            )
+                            .labelsHidden()
+                        }
+                    }
+
+                    Divider()
+
+                    if model.state.spaces[selectedSpaceIndex].windowIDs.isEmpty {
+                        Text(model.isRunning ? "No windows in this space." : "Start Stagehand to see windows in this space.")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 54)
+                    } else {
+                        ForEach(Array(model.state.spaces[selectedSpaceIndex].windowIDs.enumerated()), id: \.element) { index, id in
+                            if index > 0 { Divider() }
+                            if let window = model.windows.first(where: { $0.id == id }) {
+                                windowRow(window, inSpace: selectedSpaceIndex)
+                                    .padding(.horizontal, 14)
+                                    .frame(minHeight: 48)
+                            }
                         }
                     }
                 }
-            } header: {
-                Text("Spaces")
             } footer: {
-                Text("Each space color is used for its active-window border and the app bar. Pick a color or paste a six-digit hex value such as #FF6B35.")
+                Text("This color marks the active window and app bar in this space.")
             }
         }
         .onChange(of: model.state.displayedSpaceIndices) { _, indices in
             if !indices.contains(selectedSpaceIndex) {
                 selectedSpaceIndex = model.state.activeSpaceIndex
             }
+        }
+        .onChange(of: model.gap) { _, value in
+            gapInput = GapInput.clamped(value)
         }
     }
 
@@ -315,43 +427,78 @@ struct SettingsView: View {
     }
 
     private var shortcuts: some View {
-        Group {
-            Section {
-                Toggle("Enable gesture navigation", isOn: $model.gesturesEnabled)
-                    .toggleStyle(.switch)
-                Button("Trackpad Settings…") { openSettingsPane("com.apple.Trackpad-Settings.extension") }
-            } header: {
-                Text("Trackpad")
-            } footer: {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Use a three-finger swipe. Swipe left or right to switch windows, and up or down to switch spaces. Each swipe moves one step.")
-                    Text("Keep macOS navigation gestures set to four fingers so they don't overlap with Stagehand. Three-finger dragging may still conflict.")
+        SettingsSection("Keyboard shortcuts") {
+            SettingsCard {
+                SettingsRow("Category") {
+                    Picker("Category", selection: $shortcutPage) {
+                        ForEach(ShortcutPage.allCases) { page in
+                            Text(page.rawValue).tag(page)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 150)
+                }
+
+                Divider()
+
+                switch shortcutPage {
+                case .navigation:
+                    shortcutRows(groups: [.windowNavigation, .spaceNavigation])
+                case .arrange:
+                    shortcutRows(groups: [.windowOrder, .windowSize])
+                case .spaces:
+                    spaceShortcutGroup("Switch spaces", group: .spaceSwitching)
+                    Divider()
+                    spaceShortcutGroup("Share current window", group: .spaceSharing)
+                    Divider()
+                    spaceShortcutGroup("Move current window", group: .spaceMoving)
+                case .stagehand:
+                    shortcutRows(groups: [.stagehand])
                 }
             }
-            Section {
-                shortcutGroup("Windows", groups: [.windowNavigation, .windowOrder, .windowSize])
-                shortcutGroup("Spaces", groups: [.spaceNavigation, .spaceSwitching])
-                shortcutGroup("Move and share", groups: [.spaceSharing, .spaceMoving])
-                shortcutGroup("Stagehand", groups: [.stagehand])
-            } header: {
-                Text("Keyboard shortcuts")
-            } footer: {
-                Text("Click a binding, then press its replacement. Caps Lock can be combined with another key. Reset restores the original binding and turns it on.")
+        } footer: {
+            Text("Click a shortcut, then press the new key combination. The reset button appears after you change a default.")
+        }
+    }
+
+    private func shortcutRows(groups: Set<ShortcutBinding.Group>) -> some View {
+        let bindings = model.shortcutBindings.filter { groups.contains($0.group) }
+        return Group {
+            ForEach(Array(bindings.enumerated()), id: \.element.id) { index, binding in
+                if index > 0 { Divider() }
+                shortcutRow(binding)
+                    .padding(.horizontal, 12)
+                    .frame(minHeight: 42)
             }
         }
     }
 
-    @ViewBuilder private func shortcutGroup(
-        _ title: String,
-        groups: [ShortcutBinding.Group]
-    ) -> some View {
-        Text(title)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .padding(.top, 4)
-        ForEach(model.shortcutBindings.filter { groups.contains($0.group) }) { binding in
-            shortcutRow(binding)
-        }
+    private func spaceShortcutGroup(_ title: String, group: ShortcutBinding.Group) -> some View {
+        let bindings = model.shortcutBindings.filter { $0.group == group }
+        return DisclosureGroup(isExpanded: Binding(
+                get: { expandedShortcutGroup == group },
+                set: { expandedShortcutGroup = $0 ? group : nil }
+            )) {
+                VStack(spacing: 0) {
+                    Divider()
+                    ForEach(Array(bindings.enumerated()), id: \.element.id) { index, binding in
+                        if index > 0 { Divider() }
+                        shortcutRow(binding)
+                            .padding(.horizontal, 12)
+                            .frame(minHeight: 42)
+                    }
+                }
+            } label: {
+                HStack {
+                    Text(title)
+                    Spacer()
+                    Text("\(bindings.count) shortcuts")
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .frame(minHeight: 42)
+            }
     }
 
     private func shortcutRow(_ binding: ShortcutBinding) -> some View {
@@ -377,85 +524,271 @@ struct SettingsView: View {
                 onRecordingChange: model.setShortcutRecording
             )
             .frame(width: 104, height: 24)
-            Button { model.resetShortcut(id: binding.id) } label: {
-                Image(systemName: "arrow.counterclockwise")
+            if !binding.isDefault {
+                Button { model.resetShortcut(id: binding.id) } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                }
+                .buttonStyle(.borderless)
+                .help("Reset \(binding.title) to \(ShortcutBinding.defaultBinding(id: binding.id)?.label ?? "its default")")
+                .accessibilityLabel("Reset \(binding.title) to default")
             }
-            .buttonStyle(.borderless)
-            .disabled(binding.isDefault)
-            .help("Reset \(binding.title) to \(ShortcutBinding.defaultBinding(id: binding.id)?.label ?? "its default")")
-            .accessibilityLabel("Reset \(binding.title) to default")
         }
     }
 
-    private var system: some View {
+    private var about: some View {
         Group {
-            Section {
-                HStack {
-                    Label("Accessibility", systemImage: model.accessibilityGranted ? "checkmark.circle.fill" : "lock")
-                        .foregroundStyle(model.accessibilityGranted ? Color.green : .secondary)
-                        .accessibilityValue(model.accessibilityGranted ? "Allowed" : "Required")
+            SettingsCard {
+                HStack(spacing: 14) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .frame(width: 58, height: 58)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Stagehand")
+                            .font(.title3.weight(.semibold))
+                        Text("A trackpad-first window manager")
+                            .foregroundStyle(.secondary)
+                        Text("Version \(appVersion)")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
                     Spacer()
-                    Button(model.accessibilityGranted ? "Open Settings…" : "Allow…") { model.requestAccessibility() }
                 }
-            } header: {
-                Text("Permissions")
-            } footer: {
-                Text("Accessibility lets Stagehand move windows, block conflicting scroll events during gestures, and protect typing during window switches.")
+                .padding(16)
             }
-            if model.warning != nil || !model.inputIssues.isEmpty {
-                Section("Needs attention") {
-                    if let warning = model.warning {
-                        HStack(alignment: .top, spacing: 10) {
-                            Label(warning, systemImage: "exclamationmark.triangle")
-                                .foregroundStyle(.orange)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Spacer(minLength: 0)
-                            Button { model.dismissWarning() } label: { Image(systemName: "xmark") }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("Dismiss warning")
+
+            SettingsSection("How Stagehand works") {
+                SettingsCard {
+                    SettingsDisclosureRow("Typing protection", initiallyExpanded: expandAboutDetails) {
+                        Text("While switching windows, Stagehand briefly buffers keystrokes until the new window has focus. It never writes them to disk or includes them in logs.")
+                    }
+
+                    Divider()
+
+                    SettingsDisclosureRow("Current limits", initiallyExpanded: expandAboutDetails) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Stagehand manages standard windows on the built-in display and one macOS desktop. It ignores full-screen windows.")
+                            Text("Pause or quit Stagehand to restore each window to the position and size captured at startup.")
                         }
                     }
-                    ForEach(Array(model.inputIssues.enumerated()), id: \.offset) { _, issue in
-                        Label(issue, systemImage: "exclamationmark.circle")
-                            .foregroundStyle(.orange)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
                 }
             }
-            Section {
-                HStack {
-                    Toggle("Diagnostic logging", isOn: $model.diagnosticLoggingEnabled)
-                        .toggleStyle(.switch)
-                    Button("Clear Logs", role: .destructive) { model.clearDiagnosticLog() }
-                }
-                Button("Show Log in Finder") { model.revealDiagnosticLog() }
-                    .disabled(!model.diagnosticLoggingEnabled)
-            } header: {
-                Text("Diagnostics")
-            } footer: {
-                Text("Records starts, pauses, window operations, focus checks, and failures. Logs exclude window titles and keyboard input.")
-            }
-            Section("About Stagehand") {
-                DisclosureGroup("Typing protection") {
-                    Text("When you switch windows, Stagehand holds new keystrokes in memory until it confirms the destination. It never logs or saves them. If focus can't be confirmed, Stagehand discards those keystrokes and records a warning here.")
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 6)
-                }
-                DisclosureGroup("Current limits") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Stagehand works with standard windows on one built-in display and one macOS Desktop. It ignores native full-screen windows. Layout settings persist, but space membership resets when Stagehand quits. Pause or quit to restore windows to their original positions.")
-                        Text("Gestures use a private macOS trackpad API. If that API is unavailable, keyboard shortcuts still work. Secure Input may prevent Stagehand from protecting keystrokes during a window switch.")
+
+            SettingsSection("Onboarding") {
+                SettingsCard {
+                    SettingsRow("Run onboarding again") {
+                        Button("Open…", action: showOnboarding)
                     }
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 6)
                 }
             }
         }
+    }
+
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
     }
 
     private func openSettingsPane(_ pane: String) {
         guard let url = URL(string: "x-apple.systempreferences:\(pane)") else { return }
         NSWorkspace.shared.open(url)
+    }
+}
+
+private struct SettingsPageHeader: View {
+    let page: SettingsPage
+
+    var body: some View {
+        HStack(spacing: 8) {
+            SettingsSidebarIcon(symbol: page.icon, color: page.color)
+            Text(page.rawValue)
+                .font(.title2.weight(.semibold))
+        }
+    }
+}
+
+private struct SettingsSection<Content: View, Footer: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+    @ViewBuilder let footer: Footer
+
+    init(
+        _ title: String,
+        @ViewBuilder content: () -> Content,
+        @ViewBuilder footer: () -> Footer
+    ) {
+        self.title = title
+        self.content = content()
+        self.footer = footer()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.leading, 8)
+            content
+            footer
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+        }
+    }
+}
+
+private extension SettingsSection where Footer == EmptyView {
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.init(title, content: content) { EmptyView() }
+    }
+}
+
+private struct SettingsCard<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            content
+        }
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+        }
+    }
+}
+
+private struct SettingsRow<Content: View, Trailing: View>: View {
+    @ViewBuilder let content: Content
+    @ViewBuilder let trailing: Trailing
+
+    init(@ViewBuilder content: () -> Content, @ViewBuilder trailing: () -> Trailing) {
+        self.content = content()
+        self.trailing = trailing()
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            content
+            Spacer(minLength: 12)
+            trailing
+        }
+        .padding(.horizontal, 11)
+        .frame(minHeight: 42)
+    }
+}
+
+private extension SettingsRow where Content == Text {
+    init(_ title: String, @ViewBuilder trailing: () -> Trailing) {
+        self.init { Text(title) } trailing: { trailing() }
+    }
+}
+
+private struct SettingsActionButton: View {
+    let title: String
+    let action: () -> Void
+
+    init(_ title: String, action: @escaping () -> Void) {
+        self.title = title
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.body.weight(.medium))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct SettingsDisclosureRow<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isExpanded: Bool
+
+    init(
+        _ title: String,
+        initiallyExpanded: Bool = false,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.content = content()
+        _isExpanded = State(initialValue: initiallyExpanded)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(reduceMotion
+                    ? .linear(duration: 0.1)
+                    : .timingCurve(0.23, 1, 0.32, 1, duration: 0.18)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .accessibilityHidden(true)
+                    Text(title)
+                        .font(.body.weight(.medium))
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+                .frame(minHeight: 44)
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                content
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 20)
+                    .padding(.trailing, 4)
+                    .padding(.bottom, 14)
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(.horizontal, 12)
+    }
+}
+
+private struct StatusLabel: View {
+    let title: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+            Text(title)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+}
+
+private struct SettingsSidebarIcon: View {
+    let symbol: String
+    let color: Color
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 22, height: 22)
+            .background(color.gradient, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .accessibilityHidden(true)
     }
 }
 
@@ -524,7 +857,7 @@ private final class ShortcutRecorderButton: NSButton {
         Self.activeRecorder?.stopRecording()
         Self.activeRecorder = self
         isRecording = true
-        title = "Type shortcut"
+        title = "Press shortcut"
         onRecordingChange?(true)
         window?.makeFirstResponder(self)
         if let window {

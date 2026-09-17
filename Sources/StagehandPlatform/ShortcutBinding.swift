@@ -74,7 +74,7 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
             .init(id: "growHeight", title: "Grow window height", group: .windowSize,
                   key: UInt32(kVK_ANSI_Equal), modifiers: base | command | shift, keyLabel: "+",
                   isEnabled: true, action: .growHeight),
-            .init(id: "togglePause", title: "Pause or restore windows", group: .stagehand,
+            .init(id: "togglePause", title: "Start or pause Stagehand", group: .stagehand,
                   key: UInt32(kVK_Escape), modifiers: base, keyLabel: "esc", isEnabled: true,
                   action: .togglePause),
             .init(id: "showSettings", title: "Open settings", group: .stagehand,

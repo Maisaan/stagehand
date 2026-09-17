@@ -3,12 +3,12 @@ import SwiftUI
 import StagehandCore
 
 enum StatusItemClick: Equatable {
-    case openWindow
+    case showControls
     case showMenu
 }
 
 func statusItemClick(for eventType: NSEvent.EventType?) -> StatusItemClick {
-    eventType == .rightMouseUp ? .showMenu : .openWindow
+    eventType == .rightMouseUp ? .showMenu : .showControls
 }
 
 struct StatusMenuState {
@@ -19,10 +19,14 @@ struct StatusMenuState {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
+    private static let onboardingCompleteKey = "onboardingComplete"
     private var statusItem: NSStatusItem?
     private var statusMenu: NSMenu?
+    private var quickPopover: NSPopover?
+    private var quickPopoverCloseCompletion: (() -> Void)?
     private var settingsWindow: NSWindow?
+    private var onboardingWindow: NSWindow?
     private var model: StagehandModel?
     private var activationObserver: NSObjectProtocol?
 
@@ -96,7 +100,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.model?.refreshPermissions() }
         }
-        openSettings()
+        if !UserDefaults.standard.bool(forKey: Self.onboardingCompleteKey) {
+            openOnboarding()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -114,7 +120,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func openSettings() {
         guard let model else { return }
         if settingsWindow == nil {
-            let window = SettingsWindow.make(model: model)
+            let window = SettingsWindow.make(model: model) { [weak self] in
+                self?.openOnboarding()
+            }
             window.delegate = self
             settingsWindow = window
         }
@@ -124,18 +132,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let settingsWindow { model.registerSettingsWindow(settingsWindow) }
     }
 
-    @objc func closeSettingsWindow() {
-        settingsWindow?.performClose(nil)
+    @objc func openOnboarding() {
+        guard let model else { return }
+        if onboardingWindow == nil {
+            onboardingWindow = OnboardingWindow.make(model: model) { [weak self] in
+                self?.completeOnboarding()
+            }
+        }
+        model.refreshPermissions()
+        NSApp.activate()
+        onboardingWindow?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
         switch statusItemClick(for: NSApp.currentEvent?.type) {
-        case .openWindow:
-            openSettings()
+        case .showControls:
+            toggleQuickControls(relativeTo: sender)
         case .showMenu:
             guard let menu = statusMenu else { return }
             menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY), in: sender)
         }
+    }
+
+    private func toggleQuickControls(relativeTo button: NSStatusBarButton) {
+        if quickPopover?.isShown == true {
+            quickPopover?.performClose(nil)
+            return
+        }
+        guard let model else { return }
+        let popover = quickPopover ?? {
+            let popover = NSPopover()
+            popover.behavior = .transient
+            popover.animates = true
+            popover.delegate = self
+            popover.contentSize = NSSize(width: 340, height: 372)
+            popover.contentViewController = NSHostingController(rootView: QuickControlsView(
+                model: model,
+                openSettings: { [weak self] in
+                    self?.closeQuickControls { [weak self] in self?.openSettings() }
+                },
+                requestAccessibility: { [weak self] in
+                    self?.closeQuickControls { [weak self] in self?.model?.requestAccessibility() }
+                }
+            ))
+            quickPopover = popover
+            return popover
+        }()
+        model.refreshPermissions()
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
+    private func closeQuickControls(completion: @escaping () -> Void) {
+        guard let popover = quickPopover, popover.isShown else {
+            completion()
+            return
+        }
+        quickPopoverCloseCompletion = completion
+        popover.performClose(nil)
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        let completion = quickPopoverCloseCompletion
+        quickPopoverCloseCompletion = nil
+        completion?()
+    }
+
+    private func completeOnboarding() {
+        UserDefaults.standard.set(true, forKey: Self.onboardingCompleteKey)
+        onboardingWindow?.orderOut(nil)
+        onboardingWindow = nil
+        if model?.accessibilityGranted == true { model?.start() }
     }
 
     @objc func toggleRunning() {
@@ -158,12 +224,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let settings = appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         appMenu.addItem(.separator())
-        let close = appMenu.addItem(
-            withTitle: "Close Stagehand Window",
-            action: #selector(closeSettingsWindow),
+        let quit = appMenu.addItem(
+            withTitle: "Quit Stagehand",
+            action: #selector(quit),
             keyEquivalent: "q"
         )
-        close.target = self
+        quit.target = self
         let editMenu = NSMenu(title: "Edit")
         let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
         editItem.submenu = editMenu
@@ -177,7 +243,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Render the real native settings views without starting window management or input monitoring.
     private func renderPreviews(directory: String, model: StagehandModel) {
         let originalApp = NSWorkspace.shared.frontmostApplication
-        let window = SettingsWindow.make(model: model)
+        // Keep the preview window conventional. Full-size transparent title bars rely on
+        // WindowServer compositing, which `cacheDisplay` cannot capture reliably.
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 620),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
         window.title = "Stagehand Preview"
         settingsWindow = window
         window.center()
@@ -186,30 +259,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             do {
                 let output = URL(fileURLWithPath: directory, isDirectory: true)
                 try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+
+                @MainActor func capture(_ view: NSView, filename: String) throws {
+                    let destination = output.appendingPathComponent(filename)
+                    guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+                        throw CocoaError(.fileWriteUnknown)
+                    }
+                    view.cacheDisplay(in: view.bounds, to: bitmap)
+                    guard let data = bitmap.representation(using: .png, properties: [:]) else {
+                        throw CocoaError(.fileWriteUnknown)
+                    }
+                    try data.write(to: destination)
+                    print("Rendered \(destination.path)")
+                }
+
+                @MainActor func render<Content: View>(
+                    _ rootView: Content,
+                    size: NSSize,
+                    filename: String
+                ) async throws {
+                    let view = NSHostingView(rootView: rootView)
+                    window.contentView = view
+                    window.setContentSize(size)
+                    view.layoutSubtreeIfNeeded()
+                    window.displayIfNeeded()
+                    try await Task.sleep(for: .milliseconds(250))
+                    try capture(view, filename: filename)
+                }
+
                 let sizes = [
-                    (suffix: "", size: NSSize(width: 680, height: 610)),
+                    (suffix: "", size: NSSize(width: 700, height: 620)),
                     (suffix: "-expanded", size: NSSize(width: 900, height: 760))
                 ]
-                for section in ["Windows", "Shortcuts", "System"] {
+                for section in ["General", "Windows", "Shortcuts", "About"] {
                     for variant in sizes {
-                        let view = NSHostingView(rootView: SettingsView(model: model, initialTab: section))
-                        window.contentView = view
-                        window.setContentSize(variant.size)
-                        view.layoutSubtreeIfNeeded()
-                        window.displayIfNeeded()
-                        try await Task.sleep(for: .milliseconds(250))
-                        let destination = output.appendingPathComponent("\(section.lowercased())\(variant.suffix).png")
-                        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
-                            throw CocoaError(.fileWriteUnknown)
-                        }
-                        view.cacheDisplay(in: view.bounds, to: bitmap)
-                        guard let data = bitmap.representation(using: .png, properties: [:]) else {
-                            throw CocoaError(.fileWriteUnknown)
-                        }
-                        try data.write(to: destination)
-                        print("Rendered \(destination.path)")
+                        try await render(
+                            SettingsView(model: model, initialTab: section),
+                            size: variant.size,
+                            filename: "\(section.lowercased())\(variant.suffix).png"
+                        )
                     }
                 }
+
+                try await render(
+                    OnboardingView(model: model, onComplete: {}),
+                    size: NSSize(width: 520, height: 600),
+                    filename: "onboarding.png"
+                )
+                try await render(
+                    OnboardingView(model: model, onComplete: {}, initialStep: .overview),
+                    size: NSSize(width: 520, height: 600),
+                    filename: "onboarding-overview.png"
+                )
+                try await render(
+                    SettingsView(model: model, initialTab: "About", expandAboutDetails: true),
+                    size: NSSize(width: 700, height: 620),
+                    filename: "about-details-expanded.png"
+                )
+                try await render(
+                    QuickControlsView(
+                        model: model,
+                        openSettings: {},
+                        requestAccessibility: {}
+                    ),
+                    size: NSSize(width: 340, height: 372),
+                    filename: "quick-controls.png"
+                )
+
+                let onboardingWindow = OnboardingWindow.make(model: model, onComplete: {})
+                onboardingWindow.orderFrontRegardless()
+                onboardingWindow.displayIfNeeded()
+                try await Task.sleep(for: .milliseconds(250))
+                if let frameView = onboardingWindow.contentView?.superview {
+                    try capture(frameView, filename: "onboarding-window.png")
+                }
+                onboardingWindow.orderOut(nil)
                 print("Preview rendering passed. Window management was not started.")
             } catch {
                 print("Preview rendering failed: \(error)")
@@ -224,7 +348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        let open = NSMenuItem(title: "Open Stagehand", action: #selector(openSettings), keyEquivalent: "")
+        let open = NSMenuItem(title: "Open Settings…", action: #selector(openSettings), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
 
@@ -267,7 +391,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func updateMenu() {
         guard let model else { return }
         statusItem?.button?.toolTip = model.isSuspended
-            ? "Stagehand: waiting for its Desktop"
+            ? "Stagehand: waiting for managed desktop"
             : model.isRunning ? "Stagehand: running" : "Stagehand: paused"
         statusMenu = makeStatusMenu(state: StatusMenuState(
             isRunning: model.isRunning,
