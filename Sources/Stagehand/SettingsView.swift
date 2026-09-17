@@ -505,33 +505,31 @@ struct SettingsView: View {
 
     private var shortcuts: some View {
         SettingsSection("Keyboard shortcuts") {
-            SettingsCard {
-                SettingsRow("Category") {
-                    Picker("Category", selection: $shortcutPage) {
-                        ForEach(ShortcutPage.allCases) { page in
-                            Text(page.rawValue).tag(page)
-                        }
+            VStack(spacing: 12) {
+                Picker("Shortcut category", selection: $shortcutPage) {
+                    ForEach(ShortcutPage.allCases) { page in
+                        Text(page.rawValue).tag(page)
                     }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: 150)
                 }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .accessibilityLabel("Shortcut category")
 
-                Divider()
-
-                switch shortcutPage {
-                case .navigation:
-                    shortcutRows(groups: [.windowNavigation, .spaceNavigation])
-                case .arrange:
-                    shortcutRows(groups: [.windowOrder, .windowSize])
-                case .spaces:
-                    spaceShortcutGroup("Switch spaces", group: .spaceSwitching)
-                    Divider()
-                    spaceShortcutGroup("Share current window", group: .spaceSharing)
-                    Divider()
-                    spaceShortcutGroup("Move current window", group: .spaceMoving)
-                case .stagehand:
-                    shortcutRows(groups: [.stagehand])
+                SettingsCard {
+                    switch shortcutPage {
+                    case .navigation:
+                        shortcutRows(groups: [.windowNavigation, .spaceNavigation])
+                    case .arrange:
+                        shortcutRows(groups: [.windowOrder, .windowSize])
+                    case .spaces:
+                        spaceShortcutGroup("Switch spaces", group: .spaceSwitching)
+                        Divider()
+                        spaceShortcutGroup("Share current window", group: .spaceSharing)
+                        Divider()
+                        spaceShortcutGroup("Move current window", group: .spaceMoving)
+                    case .stagehand:
+                        shortcutRows(groups: [.stagehand])
+                    }
                 }
             }
         }
