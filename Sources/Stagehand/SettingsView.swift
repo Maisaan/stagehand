@@ -534,8 +534,6 @@ struct SettingsView: View {
                     shortcutRows(groups: [.stagehand])
                 }
             }
-        } footer: {
-            Text("Click a shortcut, then press the new key combination. The reset button appears after you change a default.")
         }
     }
 
