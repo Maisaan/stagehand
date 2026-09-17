@@ -242,8 +242,6 @@ struct SettingsView: View {
                             .controlSize(.regular)
                     }
                 }
-            } footer: {
-                Text("Three-finger swipes move between windows and spaces. Set macOS trackpad gestures to four fingers to avoid conflicts.")
             }
 
             SettingsSection("Startup") {
