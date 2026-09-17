@@ -68,6 +68,7 @@ public final class FocusInputGate {
     private let maximumEvents = 128
     private let transferTimeoutMilliseconds = 2_000
     private let postEvent: (CGEvent, Int32) -> Void
+    private var shortcutBindings = ShortcutBinding.defaults
 
     public init() {
         postEvent = { event, pid in event.postToPid(pid) }
@@ -101,6 +102,10 @@ public final class FocusInputGate {
         CGEvent.tapEnable(tap: tap, enable: true)
         tapIsAvailable = true
         onAvailabilityChanged?()
+    }
+
+    public func setShortcutBindings(_ bindings: [ShortcutBinding]) {
+        shortcutBindings = bindings
     }
 
     public func stop() {
@@ -190,7 +195,7 @@ public final class FocusInputGate {
         onBeforeKeyboardEvent?()
         let key = event.getIntegerValueField(.keyboardEventKeycode)
         if type == .keyUp, navigationKeys.remove(key) != nil { return true }
-        if type == .keyDown, let action = ShortcutBinding.action(for: event) {
+        if type == .keyDown, let action = ShortcutBinding.action(for: event, in: shortcutBindings) {
             if action != .showSettings, action != .togglePause, let onNavigationAction {
                 navigationKeys.insert(key)
                 // The caller only enqueues work. It must not run AX calls on the event tap.

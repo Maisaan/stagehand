@@ -162,6 +162,7 @@ final class StagehandModel: ObservableObject {
     }
     @Published private(set) var focusBorderColor: NSColor
     @Published private(set) var appBarColor: NSColor
+    @Published private(set) var shortcutBindings: [ShortcutBinding]
     private let ribbonAnimationConfiguration = RibbonAnimationConfiguration.default
     @Published var diagnosticLoggingEnabled: Bool {
         didSet {
@@ -181,7 +182,7 @@ final class StagehandModel: ObservableObject {
     var onStateChange: (() -> Void)?
     private let windowSystem = WindowSystem()
     private let desktopScope = DesktopScope()
-    private let input = InputController()
+    private let input: InputController
     private let focusGate = FocusInputGate()
     private let overlays: NavigationOverlays
     private let diagnostics: DiagnosticLogger
@@ -212,6 +213,7 @@ final class StagehandModel: ObservableObject {
     private var isLayingOutWindows = false
     private var preferencesNeedLayout = false
     private var layoutFailureReason: String?
+    private var isRecordingShortcut = false
     private static let focusBorderColorPreferenceKey = "focusBorderColor"
     private static let appBarColorPreferenceKey = "appBarColor"
 
@@ -276,6 +278,9 @@ final class StagehandModel: ObservableObject {
     init(overlays: NavigationOverlays = NavigationOverlays(), diagnostics: DiagnosticLogger? = nil) {
         self.overlays = overlays
         let defaults = UserDefaults.standard
+        let shortcutBindings = ShortcutBinding.load(from: defaults)
+        self.shortcutBindings = shortcutBindings
+        input = InputController(shortcutBindings: shortcutBindings)
         diagnosticLoggingEnabled = defaults.bool(forKey: DiagnosticLogger.preferenceKey)
         self.diagnostics = diagnostics ?? DiagnosticLogger(
             enabled: defaults.bool(forKey: DiagnosticLogger.preferenceKey)
@@ -334,6 +339,7 @@ final class StagehandModel: ObservableObject {
         }
         windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
         focusGate.onNavigationAction = { [weak self] action in self?.navigate(action) }
+        focusGate.setShortcutBindings(shortcutBindings)
         focusGate.onBeforeKeyboardEvent = { [weak self] in
             guard let self, self.isRunning, !self.isSuspended else { return }
             while let completion = self.input.takePendingGestureCompletion() {
@@ -559,6 +565,69 @@ final class StagehandModel: ObservableObject {
         appBarColor = normalized
         Self.saveColor(normalized, forKey: Self.appBarColorPreferenceKey)
         overlays.setAppBarColor(normalized)
+    }
+
+    func setShortcutEnabled(id: String, enabled: Bool) -> String? {
+        guard let index = shortcutBindings.firstIndex(where: { $0.id == id }),
+              shortcutBindings[index].isEnabled != enabled else { return nil }
+        if enabled, let conflict = shortcutConflict(
+            key: shortcutBindings[index].key,
+            modifiers: shortcutBindings[index].modifiers,
+            excluding: id
+        ) {
+            return "That shortcut is already assigned to \(conflict.title)."
+        }
+        shortcutBindings[index].isEnabled = enabled
+        saveShortcutBindings()
+        return nil
+    }
+
+    func setShortcut(id: String, key: UInt32, modifiers: UInt32, keyLabel: String) -> String? {
+        guard let index = shortcutBindings.firstIndex(where: { $0.id == id }) else { return nil }
+        guard modifiers & ShortcutBinding.supportedModifiers != 0 else {
+            return "Add Control, Option, Shift, Command, or Caps Lock to the shortcut."
+        }
+        if shortcutBindings[index].isEnabled,
+           let conflict = shortcutConflict(key: key, modifiers: modifiers, excluding: id) {
+            return "That shortcut is already assigned to \(conflict.title)."
+        }
+        shortcutBindings[index].key = key
+        shortcutBindings[index].modifiers = modifiers
+        shortcutBindings[index].keyLabel = keyLabel
+        saveShortcutBindings()
+        return nil
+    }
+
+    func resetShortcut(id: String) {
+        guard let defaultBinding = ShortcutBinding.defaultBinding(id: id),
+              let index = shortcutBindings.firstIndex(where: { $0.id == id }) else { return }
+        for conflictIndex in shortcutBindings.indices where
+            shortcutBindings[conflictIndex].id != id &&
+            shortcutBindings[conflictIndex].isEnabled &&
+            shortcutBindings[conflictIndex].key == defaultBinding.key &&
+            shortcutBindings[conflictIndex].modifiers == defaultBinding.modifiers {
+            shortcutBindings[conflictIndex].isEnabled = false
+        }
+        shortcutBindings[index] = defaultBinding
+        saveShortcutBindings()
+    }
+
+    func setShortcutRecording(_ recording: Bool) {
+        isRecordingShortcut = recording
+        input.setShortcutCaptureActive(recording)
+        focusGate.setShortcutBindings(recording ? [] : shortcutBindings)
+    }
+
+    private func shortcutConflict(key: UInt32, modifiers: UInt32, excluding id: String) -> ShortcutBinding? {
+        shortcutBindings.first {
+            $0.id != id && $0.isEnabled && $0.key == key && $0.modifiers == modifiers
+        }
+    }
+
+    private func saveShortcutBindings() {
+        ShortcutBinding.save(shortcutBindings)
+        input.setShortcutBindings(shortcutBindings)
+        focusGate.setShortcutBindings(isRecordingShortcut ? [] : shortcutBindings)
     }
 
     private static func normalizedColor(_ color: NSColor, alpha: CGFloat = 1) -> NSColor? {

@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import SwiftUI
 import StagehandCore
 import StagehandPlatform
@@ -8,12 +9,14 @@ struct SettingsView: View {
     @State private var tab = "Workspace"
     @State private var gapInput: Double
     @State private var selectedSpaceIndex: Int
+    @State private var shortcutError: String?
 
     init(model: StagehandModel, initialTab: String = "Workspace") {
         self.model = model
         _tab = State(initialValue: initialTab)
         _gapInput = State(initialValue: GapInput.clamped(model.gap))
         _selectedSpaceIndex = State(initialValue: model.state.activeSpaceIndex)
+        _shortcutError = State(initialValue: nil)
     }
 
     var body: some View {
@@ -72,6 +75,14 @@ struct SettingsView: View {
         }
         .frame(minWidth: 520, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
+        .alert("Shortcut unavailable", isPresented: Binding(
+            get: { shortcutError != nil },
+            set: { if !$0 { shortcutError = nil } }
+        )) {
+            Button("OK") { shortcutError = nil }
+        } message: {
+            Text(shortcutError ?? "")
+        }
     }
 
     private var workspace: some View {
@@ -268,27 +279,66 @@ struct SettingsView: View {
                     Text("Keep macOS navigation gestures set to four fingers so they don't overlap with Stagehand. Three-finger dragging may still conflict.")
                 }
             }
-            Section {
-                shortcut("Previous or next window", keys: "⌃ ⌥ ← / →")
-                shortcut("Previous or next space", keys: "⌃ ⌥ ↑ / ↓")
-                shortcut("Move current window left or right", keys: "⌃ ⌥ ⌘ ← / →")
-                shortcut("Switch to space", keys: "⌃ ⌥ 1 … 9")
-                shortcut("Share window with space", keys: "⌃ ⌥ ⇧ 1 … 9")
-                shortcut("Move window and switch spaces", keys: "⌃ ⌥ ⌘ 1 … 9")
-                shortcut("Shrink or grow window width", keys: "⌥ ⌘ 1 / 2")
-                shortcut("Pause and restore windows", keys: "⌃ ⌥ esc")
-                shortcut("Open settings", keys: "⌃ ⌥ ,")
-            } header: {
-                Text("Keyboard")
-            } footer: {
-                Text("Right-click an app in the app bar to share or remove it. Shortcuts can't be changed yet.")
-            }
+            shortcutSection("Window navigation", groups: [.windowNavigation, .windowOrder, .windowSize])
+            shortcutSection("Space navigation", groups: [.spaceNavigation])
+            shortcutSection("Switch to space", groups: [.spaceSwitching])
+            shortcutSection("Share window", groups: [.spaceSharing])
+            shortcutSection("Move window", groups: [.spaceMoving])
+            shortcutSection(
+                "Stagehand",
+                groups: [.stagehand],
+                footer: "Click a binding, then press its replacement. Caps Lock can be used with another key. " +
+                    "The reset button restores the original binding and turns it on."
+            )
         }
     }
 
-    private func shortcut(_ title: String, keys: String) -> some View {
-        LabeledContent(title) {
-            Text(keys).font(.callout.monospaced()).foregroundStyle(.secondary)
+    private func shortcutSection(
+        _ title: String,
+        groups: [ShortcutBinding.Group],
+        footer: String? = nil
+    ) -> some View {
+        Section {
+            ForEach(model.shortcutBindings.filter { groups.contains($0.group) }) { binding in
+                shortcutRow(binding)
+            }
+        } header: {
+            Text(title)
+        } footer: {
+            if let footer { Text(footer) }
+        }
+    }
+
+    private func shortcutRow(_ binding: ShortcutBinding) -> some View {
+        HStack(spacing: 10) {
+            Toggle(binding.title, isOn: Binding(
+                get: { binding.isEnabled },
+                set: { enabled in
+                    shortcutError = model.setShortcutEnabled(id: binding.id, enabled: enabled)
+                }
+            ))
+            .toggleStyle(.checkbox)
+            Spacer(minLength: 8)
+            ShortcutRecorder(
+                label: binding.label,
+                onRecord: { key, modifiers, keyLabel in
+                    shortcutError = model.setShortcut(
+                        id: binding.id,
+                        key: key,
+                        modifiers: modifiers,
+                        keyLabel: keyLabel
+                    )
+                },
+                onRecordingChange: model.setShortcutRecording
+            )
+            .frame(width: 104, height: 24)
+            Button { model.resetShortcut(id: binding.id) } label: {
+                Image(systemName: "arrow.counterclockwise")
+            }
+            .buttonStyle(.borderless)
+            .disabled(binding.isDefault)
+            .help("Reset \(binding.title) to \(ShortcutBinding.defaultBinding(id: binding.id)?.label ?? "its default")")
+            .accessibilityLabel("Reset \(binding.title) to default")
         }
     }
 
@@ -345,5 +395,132 @@ struct SettingsView: View {
     private func openSettingsPane(_ pane: String) {
         guard let url = URL(string: "x-apple.systempreferences:\(pane)") else { return }
         NSWorkspace.shared.open(url)
+    }
+}
+
+private struct ShortcutRecorder: NSViewRepresentable {
+    let label: String
+    let onRecord: (UInt32, UInt32, String) -> Void
+    let onRecordingChange: (Bool) -> Void
+
+    func makeNSView(context: Context) -> ShortcutRecorderButton {
+        let button = ShortcutRecorderButton()
+        button.update(label: label, onRecord: onRecord, onRecordingChange: onRecordingChange)
+        return button
+    }
+
+    func updateNSView(_ button: ShortcutRecorderButton, context: Context) {
+        button.update(label: label, onRecord: onRecord, onRecordingChange: onRecordingChange)
+    }
+
+    static func dismantleNSView(_ button: ShortcutRecorderButton, coordinator: ()) {
+        button.stopRecording()
+    }
+}
+
+private final class ShortcutRecorderButton: NSButton {
+    private var bindingLabel = ""
+    private var monitor: Any?
+    private var onRecord: ((UInt32, UInt32, String) -> Void)?
+    private var onRecordingChange: ((Bool) -> Void)?
+    private(set) var isRecording = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        bezelStyle = .rounded
+        controlSize = .small
+        font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        target = self
+        action = #selector(toggleRecording)
+        setButtonType(.momentaryPushIn)
+        setAccessibilityLabel("Record shortcut")
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func update(
+        label: String,
+        onRecord: @escaping (UInt32, UInt32, String) -> Void,
+        onRecordingChange: @escaping (Bool) -> Void
+    ) {
+        bindingLabel = label
+        self.onRecord = onRecord
+        self.onRecordingChange = onRecordingChange
+        if !isRecording { title = label }
+        setAccessibilityValue(label)
+    }
+
+    @objc private func toggleRecording() {
+        if isRecording {
+            stopRecording()
+            return
+        }
+        isRecording = true
+        title = "Type shortcut"
+        onRecordingChange?(true)
+        window?.makeFirstResponder(self)
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, self.isRecording else { return event }
+            self.record(event)
+            return nil
+        }
+    }
+
+    func stopRecording() {
+        guard isRecording else { return }
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        isRecording = false
+        title = bindingLabel
+        onRecordingChange?(false)
+    }
+
+    private func record(_ event: NSEvent) {
+        let modifiers = carbonModifiers(event.modifierFlags)
+        if event.keyCode == UInt16(kVK_Escape), modifiers == 0 {
+            stopRecording()
+            return
+        }
+        onRecord?(UInt32(event.keyCode), modifiers, Self.keyLabel(for: event))
+        stopRecording()
+    }
+
+    private func carbonModifiers(_ flags: NSEvent.ModifierFlags) -> UInt32 {
+        var modifiers: UInt32 = 0
+        if flags.contains(.control) { modifiers |= UInt32(controlKey) }
+        if flags.contains(.option) { modifiers |= UInt32(optionKey) }
+        if flags.contains(.shift) { modifiers |= UInt32(shiftKey) }
+        if flags.contains(.command) { modifiers |= UInt32(cmdKey) }
+        if flags.contains(.capsLock) { modifiers |= UInt32(alphaLock) }
+        return modifiers
+    }
+
+    private static func keyLabel(for event: NSEvent) -> String {
+        let functionKeys = [kVK_F1, kVK_F2, kVK_F3, kVK_F4, kVK_F5, kVK_F6, kVK_F7, kVK_F8,
+                            kVK_F9, kVK_F10, kVK_F11, kVK_F12, kVK_F13, kVK_F14, kVK_F15,
+                            kVK_F16, kVK_F17, kVK_F18, kVK_F19, kVK_F20]
+        if let index = functionKeys.firstIndex(of: Int(event.keyCode)) { return "F\(index + 1)" }
+        switch Int(event.keyCode) {
+        case kVK_LeftArrow: return "←"
+        case kVK_RightArrow: return "→"
+        case kVK_UpArrow: return "↑"
+        case kVK_DownArrow: return "↓"
+        case kVK_Escape: return "esc"
+        case kVK_Return: return "↩"
+        case kVK_Tab: return "⇥"
+        case kVK_Space: return "space"
+        case kVK_Delete: return "⌫"
+        case kVK_ForwardDelete: return "⌦"
+        case kVK_Home: return "home"
+        case kVK_End: return "end"
+        case kVK_PageUp: return "page up"
+        case kVK_PageDown: return "page down"
+        default:
+            let characters = event.charactersIgnoringModifiers?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let characters, !characters.isEmpty { return characters.uppercased() }
+            return "key \(event.keyCode)"
+        }
     }
 }

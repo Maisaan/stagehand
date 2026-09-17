@@ -528,6 +528,7 @@ func gestureSelectedFingerCountNavigatesSpacesOnFlickAndStaggeredLift(fingerCoun
     let bindings = ShortcutBinding.defaults
     let keys = bindings.map { "\($0.key):\($0.modifiers)" }
     #expect(Set(keys).count == bindings.count)
+    #expect(bindings.allSatisfy { $0.isDefault })
 }
 
 @Test func controlOptionShiftNumberSharesWithSpace() throws {
@@ -536,6 +537,79 @@ func gestureSelectedFingerCountNavigatesSpacesOnFlickAndStaggeredLift(fingerCoun
             $0.modifiers == UInt32(controlKey | optionKey | shiftKey)
     })
     #expect(binding.action == .shareToSpace(index: 3))
+}
+
+@Test func capsLockCanBeRecordedAsAShortcutModifier() throws {
+    var bindings = ShortcutBinding.defaults
+    let index = try #require(bindings.firstIndex { $0.id == "focusNext" })
+    bindings[index].key = UInt32(kVK_ANSI_K)
+    bindings[index].modifiers = UInt32(alphaLock)
+    bindings[index].keyLabel = "K"
+
+    let event = try #require(CGEvent(
+        keyboardEventSource: nil,
+        virtualKey: CGKeyCode(kVK_ANSI_K),
+        keyDown: true
+    ))
+    event.flags = [.maskAlphaShift]
+    #expect(ShortcutBinding.action(for: event, in: bindings) == .focusNext)
+    event.flags = []
+    #expect(ShortcutBinding.action(for: event, in: bindings) == nil)
+}
+
+@Test func capsLockDoesNotBlockBindingsThatDoNotUseIt() throws {
+    let event = try #require(CGEvent(
+        keyboardEventSource: nil,
+        virtualKey: CGKeyCode(kVK_RightArrow),
+        keyDown: true
+    ))
+    event.flags = [.maskControl, .maskAlternate, .maskAlphaShift]
+    #expect(ShortcutBinding.action(for: event) == .focusNext)
+}
+
+@Test func disabledAndCustomShortcutsPersist() throws {
+    let suiteName = "ShortcutBindingTests.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    var bindings = ShortcutBinding.defaults
+    let index = try #require(bindings.firstIndex { $0.id == "showSettings" })
+    bindings[index].key = UInt32(kVK_ANSI_S)
+    bindings[index].modifiers = UInt32(alphaLock | shiftKey)
+    bindings[index].keyLabel = "S"
+    bindings[index].isEnabled = false
+
+    ShortcutBinding.save(bindings, to: defaults)
+    let loaded = ShortcutBinding.load(from: defaults)
+    let saved = try #require(loaded.first { $0.id == "showSettings" })
+    #expect(saved.key == UInt32(kVK_ANSI_S))
+    #expect(saved.modifiers == UInt32(alphaLock | shiftKey))
+    #expect(saved.keyLabel == "S")
+    #expect(!saved.isEnabled)
+}
+
+@MainActor @Test func focusGateUsesUpdatedAndDisabledShortcuts() throws {
+    let gate = FocusInputGate(postEvent: { _, _ in })
+    var bindings = ShortcutBinding.defaults
+    let index = try #require(bindings.firstIndex { $0.id == "focusNext" })
+    bindings[index].key = UInt32(kVK_ANSI_K)
+    bindings[index].modifiers = UInt32(controlKey)
+    bindings[index].keyLabel = "K"
+    gate.setShortcutBindings(bindings)
+    var actions: [NavigationAction] = []
+    gate.onNavigationAction = { actions.append($0) }
+    let event = try #require(CGEvent(
+        keyboardEventSource: nil,
+        virtualKey: CGKeyCode(kVK_ANSI_K),
+        keyDown: true
+    ))
+    event.flags = [.maskControl]
+    #expect(gate.processKeyboardEvent(type: .keyDown, event: event))
+    #expect(actions == [.focusNext])
+
+    bindings[index].isEnabled = false
+    gate.setShortcutBindings(bindings)
+    #expect(!gate.processKeyboardEvent(type: .keyDown, event: event))
+    #expect(actions == [.focusNext])
 }
 
 @MainActor @Test func gateReplaysEachKeyPairToItsOwnTransferAndDoesNotRecapture() throws {

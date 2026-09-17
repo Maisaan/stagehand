@@ -41,6 +41,7 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 
 ## Input and gestures
 
+- Turn individual shortcuts off and confirm that they pass through without acting. Record replacements, including a Caps Lock chord, restart Stagehand, and confirm they persist. Reset each row and confirm the original enabled binding returns.
 - Focus different apps with shortcuts, then immediately type unique text into disposable fields. Verify every character's destination.
 - Repeat with two windows of the same app. Include rapid consecutive switches, held keys, key repeats, and modifiers held across a switch.
 - Navigate away until Cursor is parked, then back repeatedly. No Dock animation, minimized state, or false focus failure should occur. Repeat with an app whose position is clamped by macOS.

@@ -2,57 +2,6 @@ import AppKit
 import Carbon
 import StagehandCore
 
-struct ShortcutBinding: Sendable {
-    var key: UInt32
-    var modifiers: UInt32
-    var action: NavigationAction
-    var label: String
-
-    static let defaults: [Self] = {
-        let base = UInt32(controlKey | optionKey)
-        let command = UInt32(cmdKey)
-        let shift = UInt32(shiftKey)
-        var bindings: [Self] = [
-            .init(key: UInt32(kVK_LeftArrow), modifiers: base, action: .focusPrevious, label: "⌃⌥←"),
-            .init(key: UInt32(kVK_RightArrow), modifiers: base, action: .focusNext, label: "⌃⌥→"),
-            .init(key: UInt32(kVK_UpArrow), modifiers: base, action: .previousSpace, label: "⌃⌥↑"),
-            .init(key: UInt32(kVK_DownArrow), modifiers: base, action: .nextSpace, label: "⌃⌥↓"),
-            .init(key: UInt32(kVK_LeftArrow), modifiers: base | command, action: .reorderPrevious, label: "⌃⌥⌘←"),
-            .init(key: UInt32(kVK_RightArrow), modifiers: base | command, action: .reorderNext, label: "⌃⌥⌘→"),
-            .init(key: UInt32(kVK_ANSI_1), modifiers: UInt32(optionKey | cmdKey), action: .shrinkWidth, label: "⌥⌘1"),
-            .init(key: UInt32(kVK_ANSI_2), modifiers: UInt32(optionKey | cmdKey), action: .growWidth, label: "⌥⌘2"),
-            .init(key: UInt32(kVK_Escape), modifiers: base, action: .togglePause, label: "⌃⌥Escape"),
-            .init(key: UInt32(kVK_ANSI_Comma), modifiers: base, action: .showSettings, label: "⌃⌥,"),
-        ]
-        let numbers = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5, kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9]
-        for (index, key) in numbers.enumerated() {
-            bindings.append(.init(key: UInt32(key), modifiers: base, action: .goToSpace(index: index), label: "⌃⌥\(index + 1)"))
-            bindings.append(.init(key: UInt32(key), modifiers: base | shift, action: .shareToSpace(index: index), label: "⌃⌥⇧\(index + 1)"))
-            bindings.append(.init(key: UInt32(key), modifiers: base | command, action: .moveToSpace(index: index, follow: true), label: "⌃⌥⌘\(index + 1)"))
-        }
-        return bindings
-    }()
-
-    static let actions = Dictionary(uniqueKeysWithValues: defaults.map {
-        (lookupKey(key: $0.key, modifiers: $0.modifiers), $0.action)
-    })
-
-    private static func lookupKey(key: UInt32, modifiers: UInt32) -> UInt64 {
-        UInt64(key) << 32 | UInt64(modifiers)
-    }
-
-    static func action(for event: CGEvent) -> NavigationAction? {
-        let key = UInt32(truncatingIfNeeded: event.getIntegerValueField(.keyboardEventKeycode))
-        let flags = event.flags.intersection([.maskControl, .maskAlternate, .maskCommand, .maskShift])
-        var modifiers: UInt32 = 0
-        if flags.contains(.maskControl) { modifiers |= UInt32(controlKey) }
-        if flags.contains(.maskAlternate) { modifiers |= UInt32(optionKey) }
-        if flags.contains(.maskCommand) { modifiers |= UInt32(cmdKey) }
-        if flags.contains(.maskShift) { modifiers |= UInt32(shiftKey) }
-        return actions[lookupKey(key: key, modifiers: modifiers)]
-    }
-}
-
 @MainActor
 public final class InputController {
     public var onAction: ((NavigationAction) -> Void)?
@@ -71,14 +20,17 @@ public final class InputController {
     private var hotKeys: [EventHotKeyRef] = []
     private var actions: [UInt32: NavigationAction] = [:]
     private var shortcutIssues: [String] = []
+    private var shortcutBindings: [ShortcutBinding]
+    private var shortcutCaptureActive = false
     private let gestures = GestureMonitor()
 
-    public init() {}
+    public init(shortcutBindings: [ShortcutBinding] = ShortcutBinding.load()) {
+        self.shortcutBindings = shortcutBindings
+    }
 
     public func start() {
         guard !isRunning else { return }
         isRunning = true
-        _ = ShortcutBinding.actions
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let status = InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
             guard let event, let context else { return OSStatus(eventNotHandledErr) }
@@ -97,7 +49,30 @@ public final class InputController {
             updateGestures()
             return
         }
-        for (index, binding) in ShortcutBinding.defaults.enumerated() {
+        registerHotKeys()
+    }
+
+    public func setShortcutBindings(_ bindings: [ShortcutBinding]) {
+        shortcutBindings = bindings
+        if isRunning { registerHotKeys() }
+    }
+
+    public func setShortcutCaptureActive(_ active: Bool) {
+        guard shortcutCaptureActive != active else { return }
+        shortcutCaptureActive = active
+        if isRunning { registerHotKeys() }
+    }
+
+    private func registerHotKeys() {
+        for hotKey in hotKeys { UnregisterEventHotKey(hotKey) }
+        hotKeys.removeAll()
+        actions.removeAll()
+        shortcutIssues.removeAll()
+        guard !shortcutCaptureActive else {
+            updateGestures()
+            return
+        }
+        for (index, binding) in shortcutBindings.filter(\.isEnabled).enumerated() {
             let id = UInt32(index + 1)
             var ref: EventHotKeyRef?
             let result = RegisterEventHotKey(binding.key, binding.modifiers, EventHotKeyID(signature: 0x53544748, id: id), GetApplicationEventTarget(), 0, &ref)

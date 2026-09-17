@@ -91,6 +91,7 @@ The app bar appears beneath the camera housing, or at the top center on displays
 | Open settings | Control + Option + comma |
 
 Navigation stops at each end and does not wrap. Width shortcuts work only when maximization is off.
+These are the defaults. The Controls settings let you turn off, record, or reset each binding, including bindings that use Caps Lock as a modifier.
 
 ### Trackpad gestures
 
