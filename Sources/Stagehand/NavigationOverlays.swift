@@ -122,6 +122,7 @@ final class NavigationOverlays {
     func setBorderColor(_ color: NSColor) {
         borderColor = color
         (border?.contentView as? BorderView)?.strokeColor = color
+        hudModel.appBarColor = color
     }
 
     private func hudPanel() -> OverlayPanel {
@@ -131,10 +132,6 @@ final class NavigationOverlays {
         panel.hasShadow = false
         hud = panel
         return panel
-    }
-
-    func setAppBarColor(_ color: NSColor) {
-        hudModel.appBarColor = color
     }
 
     func updateBorder(frame: CGRect, visible: Bool, cornerRadius: CGFloat? = nil, focusChanged: Bool = false) {
@@ -544,7 +541,7 @@ enum WindowDropIndicatorEdge: Equatable {
 
 @MainActor
 final class NavigationHUDModel: ObservableObject {
-    static let defaultAppBarColor = NSColor.systemMint
+    static let defaultAppBarColor = BorderView.defaultColor
 
     @Published var space = 1
     @Published var windows: [WindowRecord] = []

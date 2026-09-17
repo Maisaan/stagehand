@@ -30,6 +30,23 @@ import Testing
     }
 }
 
+@Test @MainActor func hexColorEditorKeepsEnoughWidthForTheWholeValue() async throws {
+    _ = NSApplication.shared
+    let content = NSHostingView(rootView: SettingsView(model: StagehandModel()))
+    content.frame = CGRect(x: 0, y: 0, width: 520, height: 480)
+    content.layoutSubtreeIfNeeded()
+    try await Task.sleep(for: .milliseconds(30))
+    content.layoutSubtreeIfNeeded()
+
+    let field = try #require(editableTextFields(in: content).first { $0.stringValue.hasPrefix("#") })
+    #expect(field.frame.width >= 100)
+}
+
+@MainActor private func editableTextFields(in view: NSView) -> [NSTextField] {
+    let current = (view as? NSTextField).map { $0.isEditable ? [$0] : [] } ?? []
+    return current + view.subviews.flatMap(editableTextFields)
+}
+
 private struct SettingsSizeProbe: NSViewRepresentable {
     let view: NSView
 

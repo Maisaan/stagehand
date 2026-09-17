@@ -168,9 +168,12 @@ final class StagehandModel: ObservableObject {
             if isRunning && !isSuspended { enqueue(.preferences) }
         }
     }
-    @Published private(set) var focusBorderColor: NSColor
-    @Published private(set) var appBarColor: NSColor
+    @Published private(set) var focusBorderColors: [NSColor]
     @Published private(set) var shortcutBindings: [ShortcutBinding]
+
+    var focusBorderColor: NSColor {
+        focusBorderColor(forSpace: state.activeSpaceIndex)
+    }
     private let ribbonAnimationConfiguration = RibbonAnimationConfiguration.default
     @Published var diagnosticLoggingEnabled: Bool {
         didSet {
@@ -222,8 +225,8 @@ final class StagehandModel: ObservableObject {
     private var preferencesNeedLayout = false
     private var layoutFailureReason: String?
     private var isRecordingShortcut = false
-    private static let focusBorderColorPreferenceKey = "focusBorderColor"
-    private static let appBarColorPreferenceKey = "appBarColor"
+    private static let legacyFocusBorderColorPreferenceKey = "focusBorderColor"
+    private static let focusBorderColorsPreferenceKey = "focusBorderColors"
 
     private struct PointerInteraction {
         let windowID: String
@@ -293,15 +296,17 @@ final class StagehandModel: ObservableObject {
         )
         gesturesEnabled = defaults.object(forKey: "gesturesEnabled") as? Bool ?? false
         gap = GapInput.clamped(defaults.object(forKey: "windowGap") as? Double ?? 8)
-        focusBorderColor = Self.savedColor(
-            forKey: Self.focusBorderColorPreferenceKey,
+        let defaultBorderColor = Self.savedColor(
+            forKey: Self.legacyFocusBorderColorPreferenceKey,
             in: defaults,
             alpha: BorderView.defaultColor.alphaComponent
         ) ?? BorderView.defaultColor
-        appBarColor = Self.savedColor(
-            forKey: Self.appBarColorPreferenceKey,
-            in: defaults
-        ) ?? NavigationHUDModel.defaultAppBarColor
+        focusBorderColors = Self.savedColors(
+            forKey: Self.focusBorderColorsPreferenceKey,
+            count: WorkspaceState.spaceCount,
+            in: defaults,
+            alpha: BorderView.defaultColor.alphaComponent
+        ) ?? Array(repeating: defaultBorderColor, count: WorkspaceState.spaceCount)
         input.onAction = { [weak self] action in self?.navigate(action) }
         input.onGesture = { [weak self] event in self?.handleGesture(event) }
         overlays.onFocusWindow = { [weak self] id in self?.focusWindow(id) }
@@ -319,7 +324,6 @@ final class StagehandModel: ObservableObject {
             return self.desktopScope.refresh() == .home
         }
         overlays.setBorderColor(focusBorderColor)
-        overlays.setAppBarColor(appBarColor)
         input.onStatusChange = { [weak self] in self?.updateInputStatus() }
         windowSystem.onChange = { [weak self] in self?.scheduleRefresh() }
         windowSystem.onApplicationTerminated = { [weak self] pid in
@@ -548,21 +552,21 @@ final class StagehandModel: ObservableObject {
         }
     }
 
-    func setFocusBorderColor(_ color: NSColor) {
+    func focusBorderColor(forSpace index: Int) -> NSColor {
+        guard focusBorderColors.indices.contains(index) else { return BorderView.defaultColor }
+        return focusBorderColors[index]
+    }
+
+    func setFocusBorderColor(_ color: NSColor, forSpace index: Int? = nil) {
+        let index = index ?? state.activeSpaceIndex
+        guard focusBorderColors.indices.contains(index) else { return }
         guard let normalized = Self.normalizedColor(
             color,
             alpha: BorderView.defaultColor.alphaComponent
         ) else { return }
-        focusBorderColor = normalized
-        Self.saveColor(normalized, forKey: Self.focusBorderColorPreferenceKey)
-        overlays.setBorderColor(normalized)
-    }
-
-    func setAppBarColor(_ color: NSColor) {
-        guard let normalized = Self.normalizedColor(color) else { return }
-        appBarColor = normalized
-        Self.saveColor(normalized, forKey: Self.appBarColorPreferenceKey)
-        overlays.setAppBarColor(normalized)
+        focusBorderColors[index] = normalized
+        Self.saveColors(focusBorderColors, forKey: Self.focusBorderColorsPreferenceKey)
+        if index == state.activeSpaceIndex { overlays.setBorderColor(normalized) }
     }
 
     func setShortcutEnabled(id: String, enabled: Bool) -> String? {
@@ -641,6 +645,12 @@ final class StagehandModel: ObservableObject {
         )
     }
 
+    private static func saveColors(_ colors: [NSColor], forKey key: String) {
+        UserDefaults.standard.set(colors.map {
+            [$0.redComponent, $0.greenComponent, $0.blueComponent]
+        }, forKey: key)
+    }
+
     private static func savedColor(forKey key: String, in defaults: UserDefaults,
                                    alpha: CGFloat = 1) -> NSColor? {
         guard let values = defaults.array(forKey: key), values.count == 3 else {
@@ -650,6 +660,22 @@ final class StagehandModel: ObservableObject {
         guard components.count == 3, components.allSatisfy({ (0 ... 1).contains($0) }) else { return nil }
         return NSColor(srgbRed: components[0], green: components[1], blue: components[2],
                        alpha: alpha)
+    }
+
+    private static func savedColors(
+        forKey key: String,
+        count: Int,
+        in defaults: UserDefaults,
+        alpha: CGFloat = 1
+    ) -> [NSColor]? {
+        guard let saved = defaults.array(forKey: key), saved.count == count else { return nil }
+        let colors = saved.compactMap { value -> NSColor? in
+            guard let values = value as? [NSNumber], values.count == 3 else { return nil }
+            let components = values.map(\.doubleValue)
+            guard components.allSatisfy({ (0 ... 1).contains($0) }) else { return nil }
+            return NSColor(srgbRed: components[0], green: components[1], blue: components[2], alpha: alpha)
+        }
+        return colors.count == count ? colors : nil
     }
 
     func removeMembership(windowID: String) {
@@ -1567,6 +1593,7 @@ final class StagehandModel: ObservableObject {
                 hideFocusBorder()
             }
         }
+        overlays.setBorderColor(focusBorderColor)
         if request == .navigation { overlays.showNavigation(state: state, windows: windows) }
         else { overlays.updateNavigation(state: state, windows: windows) }
         return true

@@ -108,28 +108,8 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 }
-            }
-            Section {
-                ColorPicker(
-                    "Active border color",
-                    selection: Binding(
-                        get: { Color(nsColor: model.focusBorderColor) },
-                        set: { model.setFocusBorderColor(NSColor($0)) }
-                    ),
-                    supportsOpacity: false
-                )
-                ColorPicker(
-                    "App bar color",
-                    selection: Binding(
-                        get: { Color(nsColor: model.appBarColor) },
-                        set: { model.setAppBarColor(NSColor($0)) }
-                    ),
-                    supportsOpacity: false
-                )
-            } header: {
-                Text("Appearance")
             } footer: {
-                Text("The border marks the active window when Maximize windows is off. The app bar color marks the active app, space, and drop target.")
+                Text("Negative values overlap windows. The active window stays on top. Use ↑/↓ to adjust by 1 pt or Shift-↑/↓ by 10 pt. Press Return or click elsewhere to apply.")
             }
             Section {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 100, maximum: 140), spacing: 8)], alignment: .leading, spacing: 8) {
@@ -149,6 +129,27 @@ struct SettingsView: View {
                         .accessibilityAddTraits(index == selectedSpaceIndex ? .isSelected : [])
                     }
                 }
+                HStack(spacing: 12) {
+                    Text("Space \(selectedSpaceIndex + 1) border color")
+                    Spacer(minLength: 20)
+                    HexColorInput(
+                        color: model.focusBorderColor(forSpace: selectedSpaceIndex)
+                    ) { color in
+                        model.setFocusBorderColor(color, forSpace: selectedSpaceIndex)
+                    }
+                    .id(selectedSpaceIndex)
+                    .frame(width: 112)
+                    .accessibilityLabel("Hex color for Space \(selectedSpaceIndex + 1)")
+                    ColorPicker(
+                        "Space \(selectedSpaceIndex + 1) border color",
+                        selection: Binding(
+                            get: { Color(nsColor: model.focusBorderColor(forSpace: selectedSpaceIndex)) },
+                            set: { model.setFocusBorderColor(NSColor($0), forSpace: selectedSpaceIndex) }
+                        ),
+                        supportsOpacity: false
+                    )
+                    .labelsHidden()
+                }
                 if model.state.spaces[selectedSpaceIndex].windowIDs.isEmpty {
                     Text(model.isRunning ? "No windows in this space. Move or add one from another space." : "No windows yet.")
                         .foregroundStyle(.secondary)
@@ -163,7 +164,7 @@ struct SettingsView: View {
             } header: {
                 Text("Spaces")
             } footer: {
-                Text("Select a space here to reorder its windows. Switch spaces with ⌃⌥ plus a number. Shared windows can have a different order in each space.")
+                Text("Each space color is used for its active-window border and the app bar. Pick a color or paste a six-digit hex value such as #FF6B35.")
             }
         }
         .onChange(of: model.state.displayedSpaceIndices) { _, indices in
@@ -510,5 +511,64 @@ private final class ShortcutRecorderButton: NSButton {
             if let characters, !characters.isEmpty { return characters.uppercased() }
             return "key \(event.keyCode)"
         }
+    }
+}
+
+enum RGBHexColor {
+    static func parse(_ text: String) -> NSColor? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let digits = trimmed.hasPrefix("#") ? String(trimmed.dropFirst()) : trimmed
+        guard digits.count == 6, let value = UInt32(digits, radix: 16) else { return nil }
+        return NSColor(
+            srgbRed: CGFloat((value >> 16) & 0xFF) / 255,
+            green: CGFloat((value >> 8) & 0xFF) / 255,
+            blue: CGFloat(value & 0xFF) / 255,
+            alpha: 1
+        )
+    }
+
+    static func format(_ color: NSColor) -> String {
+        guard let color = color.usingColorSpace(.sRGB) else { return "#000000" }
+        let red = Int((color.redComponent * 255).rounded())
+        let green = Int((color.greenComponent * 255).rounded())
+        let blue = Int((color.blueComponent * 255).rounded())
+        return String(format: "#%02X%02X%02X", red, green, blue)
+    }
+}
+
+private struct HexColorInput: View {
+    let color: NSColor
+    let onCommit: (NSColor) -> Void
+    @State private var text: String
+    @FocusState private var isFocused: Bool
+
+    init(color: NSColor, onCommit: @escaping (NSColor) -> Void) {
+        self.color = color
+        self.onCommit = onCommit
+        _text = State(initialValue: RGBHexColor.format(color))
+    }
+
+    var body: some View {
+        TextField("#RRGGBB", text: $text)
+            .font(.body.monospaced())
+            .textFieldStyle(.roundedBorder)
+            .labelsHidden()
+            .focused($isFocused)
+            .onSubmit(commit)
+            .onChange(of: isFocused) { _, focused in
+                if !focused { commit() }
+            }
+            .onChange(of: color) { _, color in
+                if !isFocused { text = RGBHexColor.format(color) }
+            }
+    }
+
+    private func commit() {
+        guard let parsed = RGBHexColor.parse(text) else {
+            text = RGBHexColor.format(color)
+            return
+        }
+        text = RGBHexColor.format(parsed)
+        onCommit(parsed)
     }
 }
