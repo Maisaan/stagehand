@@ -382,15 +382,13 @@ struct SettingsView: View {
                             }
                             .id(selectedSpaceIndex)
                             .frame(width: 104)
-                            ColorPicker(
+                            ForegroundColorPicker(
                                 "Space \(selectedSpaceIndex + 1) border color",
                                 selection: Binding(
                                     get: { Color(nsColor: model.focusBorderColor(forSpace: selectedSpaceIndex)) },
                                     set: { model.setFocusBorderColor(NSColor($0), forSpace: selectedSpaceIndex) }
-                                ),
-                                supportsOpacity: false
+                                )
                             )
-                            .labelsHidden()
                         }
                     }
 
@@ -1055,46 +1053,156 @@ enum RGBHexColor {
     }
 }
 
-struct HexColorInput: View {
+struct HexColorInput: NSViewRepresentable {
     let color: NSColor
     let onCommit: (NSColor) -> Void
-    @State private var text: String
-    @FocusState private var isFocused: Bool
+
+    func makeNSView(context: Context) -> HexColorTextField {
+        HexColorTextField(color: color, onCommit: onCommit)
+    }
+
+    func updateNSView(_ field: HexColorTextField, context: Context) {
+        field.onCommit = onCommit
+        field.update(color: color)
+    }
+}
+
+final class HexColorTextField: NSTextField, NSTextFieldDelegate {
+    var onCommit: (NSColor) -> Void
+    private var committedColor: NSColor
+    private var outsideClickMonitor: Any?
 
     init(color: NSColor, onCommit: @escaping (NSColor) -> Void) {
-        self.color = color
+        committedColor = color
         self.onCommit = onCommit
-        _text = State(initialValue: RGBHexColor.format(color))
+        super.init(frame: .zero)
+        delegate = self
+        isEditable = true
+        isSelectable = true
+        isBezeled = false
+        drawsBackground = true
+        backgroundColor = NSColor.labelColor.withAlphaComponent(0.08)
+        wantsLayer = true
+        layer?.cornerRadius = 7
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.1).cgColor
+        font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        placeholderString = "#RRGGBB"
+        setAccessibilityLabel("Space color as a hexadecimal value")
+        display(color)
+    }
+
+    required init?(coder: NSCoder) { return nil }
+
+    isolated deinit {
+        if let outsideClickMonitor { NSEvent.removeMonitor(outsideClickMonitor) }
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { monitorOutsideClicks() }
+        return accepted
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow !== window { stopMonitoringOutsideClicks() }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    func controlTextDidBeginEditing(_ notification: Notification) {
+        monitorOutsideClicks()
+        layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.8).cgColor
+    }
+
+    func controlTextDidEndEditing(_ notification: Notification) {
+        stopMonitoringOutsideClicks()
+        layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.1).cgColor
+        commit(text: stringValue)
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
+        commit(text: textView.string, editor: textView)
+        window?.makeFirstResponder(nil)
+        return true
+    }
+
+    func update(color: NSColor) {
+        let formatted = RGBHexColor.format(color)
+        guard formatted != RGBHexColor.format(committedColor) else { return }
+        committedColor = color
+        if currentEditor() == nil { display(color) }
+    }
+
+    private func monitorOutsideClicks() {
+        guard outsideClickMonitor == nil, let window else { return }
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(editingWindowResignedKey),
+            name: NSWindow.didResignKeyNotification, object: window
+        )
+        outsideClickMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] event in
+            guard let self, let window = self.window, self.currentEditor() != nil else { return event }
+            let isInside = event.window === window
+                && self.bounds.contains(self.convert(event.locationInWindow, from: nil))
+            if !isInside { window.makeFirstResponder(nil) }
+            return event
+        }
+    }
+
+    private func stopMonitoringOutsideClicks() {
+        guard let outsideClickMonitor else { return }
+        NSEvent.removeMonitor(outsideClickMonitor)
+        self.outsideClickMonitor = nil
+        NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: nil)
+    }
+
+    @objc private func editingWindowResignedKey() {
+        guard currentEditor() != nil else { return }
+        window?.makeFirstResponder(nil)
+    }
+
+    private func commit(text: String, editor: NSTextView? = nil) {
+        guard let parsed = RGBHexColor.parse(text) else {
+            display(committedColor, editor: editor)
+            return
+        }
+        let changed = RGBHexColor.format(parsed) != RGBHexColor.format(committedColor)
+        committedColor = parsed
+        display(parsed, editor: editor)
+        if changed { onCommit(parsed) }
+    }
+
+    private func display(_ color: NSColor, editor: NSTextView? = nil) {
+        let text = RGBHexColor.format(color)
+        stringValue = text
+        if let editor {
+            editor.string = text
+            editor.setSelectedRange(NSRange(location: text.utf16.count, length: 0))
+        }
+    }
+}
+
+struct ForegroundColorPicker: View {
+    let title: String
+    @Binding var selection: Color
+
+    init(_ title: String, selection: Binding<Color>) {
+        self.title = title
+        _selection = selection
     }
 
     var body: some View {
-        TextField("#RRGGBB", text: $text)
-            .font(.body.monospaced())
-            .textFieldStyle(.plain)
+        ColorPicker(title, selection: $selection, supportsOpacity: false)
             .labelsHidden()
-            .focused($isFocused)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(isFocused ? Color.accentColor.opacity(0.8) : Color.primary.opacity(0.1), lineWidth: 1)
-            }
-            .onSubmit(commit)
-            .onChange(of: isFocused) { _, focused in
-                if !focused { commit() }
-            }
-            .onChange(of: color) { _, color in
-                if !isFocused { text = RGBHexColor.format(color) }
-            }
-    }
-
-    private func commit() {
-        guard let parsed = RGBHexColor.parse(text) else {
-            text = RGBHexColor.format(color)
-            return
-        }
-        text = RGBHexColor.format(parsed)
-        onCommit(parsed)
+            .simultaneousGesture(TapGesture().onEnded {
+                NSApp.keyWindow?.makeFirstResponder(nil)
+                NSApp.activate()
+                DispatchQueue.main.async {
+                    NSColorPanel.shared.makeKeyAndOrderFront(nil)
+                }
+            })
     }
 }
