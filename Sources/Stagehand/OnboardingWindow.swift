@@ -389,6 +389,7 @@ private struct AccessibilityOnboardingPage: View {
                     Button("Allow") { model.requestAccessibility() }
                         .buttonStyle(.bordered)
                         .controlSize(.regular)
+                        .tint(.white)
                 }
             }
             .padding(14)

@@ -176,8 +176,25 @@ struct SettingsView: View {
 
     private var general: some View {
         Group {
-            SettingsSection("Status") {
+            SettingsSection(nil) {
                 SettingsCard {
+                    SettingsRow("Launch at login") {
+                        Toggle("Launch at login", isOn: Binding(
+                            get: { model.launchAtLoginEnabled },
+                            set: { enabled in
+                                do {
+                                    try model.setLaunchAtLoginEnabled(enabled)
+                                } catch {
+                                    launchAtLoginError = "Stagehand couldn't update this setting. \(error.localizedDescription)"
+                                }
+                            }
+                        ))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                    }
+
+                    Divider()
+
                     SettingsRow {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Stagehand")
@@ -223,7 +240,12 @@ struct SettingsView: View {
                         .buttonStyle(.bordered)
                         .buttonBorderShape(.roundedRectangle(radius: 8))
                         .controlSize(.regular)
+                        .tint(.white)
                     }
+                }
+            } footer: {
+                if model.launchAtLoginRequiresApproval {
+                    Text("Allow Stagehand in System Settings > General > Login Items.")
                 }
             }
 
@@ -249,30 +271,8 @@ struct SettingsView: View {
                             .buttonStyle(.bordered)
                             .buttonBorderShape(.roundedRectangle(radius: 8))
                             .controlSize(.regular)
+                            .tint(.white)
                     }
-                }
-            }
-
-            SettingsSection("Startup") {
-                SettingsCard {
-                    SettingsRow("Launch at login") {
-                        Toggle("Launch at login", isOn: Binding(
-                            get: { model.launchAtLoginEnabled },
-                            set: { enabled in
-                                do {
-                                    try model.setLaunchAtLoginEnabled(enabled)
-                                } catch {
-                                    launchAtLoginError = "Stagehand couldn't update this setting. \(error.localizedDescription)"
-                                }
-                            }
-                        ))
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                    }
-                }
-            } footer: {
-                if model.launchAtLoginRequiresApproval {
-                    Text("Allow Stagehand in System Settings > General > Login Items.")
                 }
             }
 
@@ -340,7 +340,7 @@ struct SettingsView: View {
                             Text("Window gap")
                             Spacer()
                             GapInput(value: $gapInput) { model.gap = $0 }
-                                .frame(width: 76, height: 24)
+                                .frame(width: 76, height: 30)
                             Text("pt").foregroundStyle(.secondary)
                         }
                         Slider(value: Binding(get: { gapInput }, set: { gapInput = $0.rounded() }), in: GapInput.bounds) { editing in
@@ -381,7 +381,7 @@ struct SettingsView: View {
                                 model.setFocusBorderColor(color, forSpace: selectedSpaceIndex)
                             }
                             .id(selectedSpaceIndex)
-                            .frame(width: 104)
+                            .frame(width: 104, height: 30)
                             ForegroundColorPicker(
                                 "Space \(selectedSpaceIndex + 1) border color",
                                 selection: Binding(
@@ -664,6 +664,7 @@ struct SettingsView: View {
                             .buttonStyle(.bordered)
                             .buttonBorderShape(.roundedRectangle(radius: 8))
                             .controlSize(.regular)
+                            .tint(.white)
                     }
                 }
             }
@@ -693,12 +694,12 @@ private struct SettingsPageHeader: View {
 }
 
 private struct SettingsSection<Content: View, Footer: View>: View {
-    let title: String
+    let title: String?
     @ViewBuilder let content: Content
     @ViewBuilder let footer: Footer
 
     init(
-        _ title: String,
+        _ title: String?,
         @ViewBuilder content: () -> Content,
         @ViewBuilder footer: () -> Footer
     ) {
@@ -709,10 +710,12 @@ private struct SettingsSection<Content: View, Footer: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.leading, 8)
+            if let title {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 8)
+            }
             content
             footer
                 .font(.caption)
@@ -723,7 +726,7 @@ private struct SettingsSection<Content: View, Footer: View>: View {
 }
 
 private extension SettingsSection where Footer == EmptyView {
-    init(_ title: String, @ViewBuilder content: () -> Content) {
+    init(_ title: String?, @ViewBuilder content: () -> Content) {
         self.init(title, content: content) { EmptyView() }
     }
 }

@@ -56,7 +56,7 @@ struct QuickControlsView: View {
                         Text("Window gap")
                         Spacer()
                         GapInput(value: $gapInput) { model.gap = $0 }
-                            .frame(width: 66, height: 24)
+                            .frame(width: 66, height: 30)
                         Text("pt")
                             .foregroundStyle(.secondary)
                     }
@@ -78,7 +78,7 @@ struct QuickControlsView: View {
                             model.setFocusBorderColor(color)
                         }
                         .id(model.state.activeSpaceIndex)
-                        .frame(width: 104)
+                        .frame(width: 104, height: 30)
                         ForegroundColorPicker(
                             "Space \(model.state.activeSpaceIndex + 1) color",
                             selection: Binding(
