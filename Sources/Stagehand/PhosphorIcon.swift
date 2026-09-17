@@ -11,13 +11,13 @@ enum PhosphorIconName: String {
     case caretRight = "caret-right-fill"
     case check = "check-fill"
     case checkCircle = "check-circle-fill"
-    case dotsThreeCircle = "dots-three-circle"
+    case dotsSixVertical = "dots-six-vertical"
+    case dotsThreeVertical = "dots-three-vertical-fill"
     case gear = "gear-fill"
     case gearSix = "gear-six-fill"
     case handPalm = "hand-palm-fill"
     case info = "info-fill"
     case keyboard = "keyboard-fill"
-    case list = "list-fill"
     case personArmsSpread = "person-arms-spread-fill"
     case rectangleDashed = "rectangle-dashed-fill"
     case shieldCheck = "shield-check-fill"
@@ -35,6 +35,7 @@ struct PhosphorIcon: View {
 
     var body: some View {
         Image(nsImage: image)
+            .renderingMode(.template)
             .resizable()
             .scaledToFit()
             .accessibilityHidden(true)

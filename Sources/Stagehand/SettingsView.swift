@@ -425,9 +425,9 @@ struct SettingsView: View {
 
     private func windowRow(_ window: WindowRecord, inSpace spaceIndex: Int) -> some View {
         HStack(spacing: 10) {
-            PhosphorIcon(.list)
+            PhosphorIcon(.dotsSixVertical)
                 .frame(width: 14, height: 14)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(nsColor: .secondaryLabelColor))
                 .help("Drag to reorder")
                 .accessibilityHidden(true)
             AppIcon(bundleIdentifier: window.bundleIdentifier, size: 24)
@@ -472,8 +472,8 @@ struct SettingsView: View {
                     }
                 }
             } label: {
-                PhosphorIcon(.dotsThreeCircle)
-                    .foregroundStyle(.white)
+                PhosphorIcon(.dotsThreeVertical)
+                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
                     .frame(width: 16, height: 16)
                     .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
