@@ -264,8 +264,6 @@ struct SettingsView: View {
             } footer: {
                 if model.launchAtLoginRequiresApproval {
                     Text("Allow Stagehand in System Settings > General > Login Items.")
-                } else {
-                    Text("Open Stagehand automatically when you log in.")
                 }
             }
 
