@@ -190,6 +190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             return popover
         }()
         model.refreshPermissions()
+        NSApp.activate()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
 
@@ -206,6 +207,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let completion = quickPopoverCloseCompletion
         quickPopoverCloseCompletion = nil
         completion?()
+    }
+
+    func popoverDidShow(_ notification: Notification) {
+        guard let popover = notification.object as? NSPopover,
+              let window = popover.contentViewController?.view.window else { return }
+        window.makeKey()
+        window.makeFirstResponder(nil)
     }
 
     private func completeOnboarding() {
