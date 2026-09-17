@@ -204,6 +204,13 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     #expect(RibbonAnimationConfiguration.default.edgeResistance == 60)
 }
 
+@MainActor @Test func ribbonFrameDriverLimitsAccessibilityWorkToSixtyUpdatesPerSecond() {
+    #expect(preferredRibbonFrameRate(maximum: 120) == 60)
+    #expect(preferredRibbonFrameRate(maximum: 60) == 60)
+    #expect(preferredRibbonFrameRate(maximum: 30) == 30)
+    #expect(preferredRibbonFrameRate(maximum: 0) == 1)
+}
+
 @MainActor @Test func gestureTuningChangesTrackingCommitAndBoundaryFeedback() throws {
     let viewport = CGRect(x: 0, y: 40, width: 1000, height: 700)
     let state = WorkspaceState(spaces: [SpaceState(windowIDs: ["a", "b"], focusedWindowID: "a")])
@@ -577,54 +584,90 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     var writeAttempts = 0
     var isAvailable = false
 
-    let firstFailure = writeRibbonPositions(
+    writeRibbonPositions(
         frames: ["window": target],
         writtenPositions: &writtenPositions,
         backingScaleFactor: 2,
         setPosition: { _, _ in
             writeAttempts += 1
             return isAvailable
-        },
-        observedFrame: { _ in isAvailable ? target : nil }
+        }
     )
 
-    #expect(firstFailure == nil)
     #expect(writtenPositions.isEmpty)
 
     isAvailable = true
-    let retryFailure = writeRibbonPositions(
+    writeRibbonPositions(
         frames: ["window": target],
         writtenPositions: &writtenPositions,
         backingScaleFactor: 2,
         setPosition: { _, _ in
             writeAttempts += 1
             return isAvailable
-        },
-        observedFrame: { _ in target }
+        }
     )
 
-    #expect(retryFailure == nil)
     #expect(writeAttempts == 2)
     #expect(writtenPositions["window"] == CGPoint(x: 100.5, y: 40.5))
 }
 
-@MainActor @Test func ribbonPositionWritesStillFailWhenAReadableWindowRejectsTheMove() throws {
+@MainActor @Test func animationWritesDoNotFailWhenAReadableWindowRejectsTheMove() {
     let current = CGRect(x: 50, y: 40, width: 900, height: 700)
     let target = CGRect(x: 100, y: 40, width: 900, height: 700)
     var writtenPositions: [String: CGPoint] = [:]
 
-    let failure = try #require(writeRibbonPositions(
+    writeRibbonPositions(
         frames: ["window": target],
         writtenPositions: &writtenPositions,
         backingScaleFactor: 2,
-        setPosition: { _, _ in false },
-        observedFrame: { _ in current }
-    ))
+        setPosition: { _, _ in false }
+    )
 
-    #expect(failure.windowID == "window")
-    #expect(failure.requestedFrame == target)
-    #expect(failure.actualFrame == current)
     #expect(writtenPositions.isEmpty)
+    _ = current
+}
+
+@MainActor @Test func commitAcceptsAnObservedDestinationDespiteSetterFailure() {
+    let target = CGRect(x: 1800, y: 39, width: 723, height: 1130)
+    var actual = CGRect(x: 0, y: 39, width: 723, height: 1130)
+
+    let failures = commitRibbonPositions(
+        frames: ["window": target],
+        backingScaleFactor: 2,
+        setPosition: { _, position in actual.origin = position; return false },
+        observedFrame: { _ in actual }
+    )
+
+    #expect(failures.isEmpty)
+}
+
+@MainActor @Test func commitRejectsAStaleWindowDespiteSetterSuccess() throws {
+    let target = CGRect(x: 1732.272972823002, y: 39, width: 1710, height: 1130)
+    let clamped = CGRect(x: 1760, y: 39, width: 1710, height: 1130)
+
+    let failure = try #require(commitRibbonPositions(
+        frames: ["outgoing": target],
+        backingScaleFactor: 2,
+        setPosition: { _, _ in true },
+        observedFrame: { _ in clamped }
+    ).first)
+
+    #expect(failure.windowID == "outgoing")
+    #expect(failure.actualFrame == clamped)
+}
+
+@MainActor @Test func commitReportsAnUnavailableWindow() throws {
+    let target = CGRect(x: 100, y: 39, width: 900, height: 700)
+
+    let failure = try #require(commitRibbonPositions(
+        frames: ["visible": target],
+        backingScaleFactor: 2,
+        setPosition: { _, _ in false },
+        observedFrame: { _ in nil }
+    ).first)
+
+    #expect(failure.windowID == "visible")
+    #expect(failure.actualFrame == nil)
 }
 
 @MainActor @Test func parkingSkipsUnavailableWindowsAndReportsReadableFailures() {

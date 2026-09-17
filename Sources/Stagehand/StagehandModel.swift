@@ -60,7 +60,7 @@ func preferredParkingSide(for frame: CGRect?, relativeTo bounds: CGRect) -> Wind
 struct RibbonPositionWriteFailure: Equatable {
     let windowID: String
     let requestedFrame: CGRect
-    let actualFrame: CGRect
+    let actualFrame: CGRect?
 }
 
 enum WindowParkingOutcome: Equatable {
@@ -69,28 +69,59 @@ enum WindowParkingOutcome: Equatable {
     case failed
 }
 
+@discardableResult
+func removeTerminatedApplication(
+    pid: Int32,
+    windows: inout [WindowRecord],
+    state: inout WorkspaceState
+) -> Set<String> {
+    let removedIDs = Set(windows.lazy.filter { $0.pid == pid }.map(\.id))
+    guard !removedIDs.isEmpty else { return [] }
+    windows.removeAll { removedIDs.contains($0.id) }
+    state.reconcile(windowIDs: windows.map(\.id))
+    return removedIDs
+}
+
 @MainActor
 func writeRibbonPositions(
     frames: [String: CGRect],
     writtenPositions: inout [String: CGPoint],
     backingScaleFactor: CGFloat,
-    setPosition: (String, CGPoint) -> Bool,
-    observedFrame: (String) -> CGRect?
-) -> RibbonPositionWriteFailure? {
+    setPosition: (String, CGPoint) -> Bool
+) {
     for (windowID, frame) in frames {
         let position = RibbonMotion.pixelAligned(frame.origin, backingScaleFactor: backingScaleFactor)
         if writtenPositions[windowID] == position { continue }
-        guard setPosition(windowID, position) else {
-            guard let actualFrame = observedFrame(windowID) else { continue }
-            return RibbonPositionWriteFailure(
-                windowID: windowID,
-                requestedFrame: frame,
-                actualFrame: actualFrame
-            )
+        if setPosition(windowID, position) {
+            writtenPositions[windowID] = position
+        } else {
+            // AX writes during animation are presentation hints. Leave the value
+            // unwritten so a later display tick can retry, then verify at commit.
+            writtenPositions.removeValue(forKey: windowID)
         }
-        writtenPositions[windowID] = position
     }
-    return nil
+}
+
+@MainActor
+func commitRibbonPositions(
+    frames: [String: CGRect],
+    backingScaleFactor: CGFloat,
+    setPosition: (String, CGPoint) -> Bool,
+    observedFrame: (String) -> CGRect?
+) -> [RibbonPositionWriteFailure] {
+    frames.compactMap { windowID, frame in
+        let position = RibbonMotion.pixelAligned(frame.origin, backingScaleFactor: backingScaleFactor)
+        if let actual = observedFrame(windowID), ribbonPositionMatches(actual.origin, position) { return nil }
+        _ = setPosition(windowID, position)
+        let actual = observedFrame(windowID)
+        guard actual.map({ ribbonPositionMatches($0.origin, position) }) != true else { return nil }
+        return RibbonPositionWriteFailure(windowID: windowID, requestedFrame: frame, actualFrame: actual)
+    }
+}
+
+private func ribbonPositionMatches(_ lhs: CGPoint, _ rhs: CGPoint, tolerance: CGFloat = 1) -> Bool {
+    lhs.x.isFinite && lhs.y.isFinite && rhs.x.isFinite && rhs.y.isFinite &&
+        abs(lhs.x - rhs.x) <= tolerance && abs(lhs.y - rhs.y) <= tolerance
 }
 
 @MainActor
@@ -282,6 +313,9 @@ final class StagehandModel: ObservableObject {
         overlays.setAppBarColor(appBarColor)
         input.onStatusChange = { [weak self] in self?.updateInputStatus() }
         windowSystem.onChange = { [weak self] in self?.scheduleRefresh() }
+        windowSystem.onApplicationTerminated = { [weak self] pid in
+            self?.applicationTerminated(pid: pid)
+        }
         windowSystem.onFocusedWindowChange = { [weak self] id in self?.observedFocusChanged(windowID: id) }
         windowSystem.onFrameChange = { [weak self] id, frame in
             guard let self, self.isRunning, !self.isSuspended,
@@ -797,6 +831,30 @@ final class StagehandModel: ObservableObject {
                 return
             }
         }
+    }
+
+    private func applicationTerminated(pid: Int32) {
+        guard isRunning, !isSuspended else { return }
+        refreshTask?.cancel()
+        let removedIDs = removeTerminatedApplication(pid: pid, windows: &windows, state: &state)
+        guard !removedIDs.isEmpty else { return }
+        if var rollback = transitionRollback {
+            rollback.reconcile(windowIDs: windows.map(\.id))
+            transitionRollback = rollback
+        }
+        preferredHeights = preferredHeights.filter { !removedIDs.contains($0.key) }
+        lastAppliedFrames = lastAppliedFrames.filter { !removedIDs.contains($0.key) }
+        motionWrittenPositions = motionWrittenPositions.filter { !removedIDs.contains($0.key) }
+        presentationFrames = presentationFrames?.filter { !removedIDs.contains($0.key) }
+        gestureBase = gestureBase?.filter { !removedIDs.contains($0.key) }
+        gesturePrepared.subtract(removedIDs)
+        if borderWindowID.map(removedIDs.contains) == true { hideFocusBorder() }
+        diagnostics.record("application_removed", details: [
+            "pid": String(pid),
+            "windowCount": String(removedIDs.count)
+        ])
+        enqueue(.refresh)
+        onStateChange?()
     }
 
     private func observedFocusChanged(windowID: String) {
@@ -1461,28 +1519,12 @@ final class StagehandModel: ObservableObject {
             scheduleRefresh()
             return
         }
-        if let failure = writeRibbonPositions(
+        writeRibbonPositions(
             frames: frames,
             writtenPositions: &motionWrittenPositions,
             backingScaleFactor: motionBackingScaleFactor,
-            setPosition: { windowSystem.setPosition(windowID: $0, position: $1) },
-            observedFrame: { windowSystem.observedFrame(windowID: $0) }
-        ) {
-            ribbonMotion.cancel()
-            recordWindowGeometry(
-                event: "ribbon_position_write_failed",
-                windowID: failure.windowID,
-                requestedFrame: failure.requestedFrame,
-                actualFrame: failure.actualFrame
-            )
-            warning = "Stagehand couldn't move one of your windows. It paused and restored them."
-            stop(
-                reason: "ribbon_position_failed",
-                automatic: true,
-                details: ["windowID": failure.windowID]
-            )
-            return
-        }
+            setPosition: { windowSystem.setPosition(windowID: $0, position: $1) }
+        )
         // The border is a Stagehand overlay, so it can follow the destination at
         // display cadence without activating that app or disturbing ribbon motion.
         if gestureBase == nil,
@@ -1522,6 +1564,7 @@ final class StagehandModel: ObservableObject {
                 "windowCount": String(to.count)
             ])
         }
+        let animationStart = ProcessInfo.processInfo.systemUptime
         let completed = await ribbonMotion.animate(
             from: from,
             to: to,
@@ -1530,8 +1573,43 @@ final class StagehandModel: ObservableObject {
             update: { [weak self] in self?.applyMotionFrames($0) }
         )
         guard completed, isRunning, !isSuspended, desktopScope.refresh() == .home else { return false }
+        var visibleFrames = to.filter { visibleIDs.contains($0.key) }
+        var commitFailures = commitRibbonPositions(
+            frames: visibleFrames,
+            backingScaleFactor: motionBackingScaleFactor,
+            setPosition: { windowSystem.setPosition(windowID: $0, position: $1) },
+            observedFrame: { windowSystem.observedFrame(windowID: $0) }
+        )
+        for delay in [8, 24, 56] where !commitFailures.isEmpty {
+            do { try await Task.sleep(for: .milliseconds(delay)) }
+            catch { return false }
+            guard isRunning, !isSuspended, !Task.isCancelled,
+                  desktopScope.refresh() == .home else { return false }
+            let failedIDs = Set(commitFailures.map(\.windowID))
+            visibleFrames = visibleFrames.filter { failedIDs.contains($0.key) }
+            commitFailures = commitRibbonPositions(
+                frames: visibleFrames,
+                backingScaleFactor: motionBackingScaleFactor,
+                setPosition: { windowSystem.setPosition(windowID: $0, position: $1) },
+                observedFrame: { windowSystem.observedFrame(windowID: $0) }
+            )
+        }
+        if let failure = commitFailures.first {
+            recordWindowGeometry(
+                event: "ribbon_position_commit_failed",
+                windowID: failure.windowID,
+                requestedFrame: failure.requestedFrame,
+                actualFrame: failure.actualFrame,
+                details: ["attempts": "4"]
+            )
+            warning = "Stagehand couldn't place the destination window safely. It paused and restored your windows."
+            layoutFailureReason = "ribbon_position_commit_failed"
+            return false
+        }
         if diagnostics.isEnabled {
+            let elapsedMilliseconds = Int(((ProcessInfo.processInfo.systemUptime - animationStart) * 1_000).rounded())
             diagnostics.record("ribbon_animation_completed", details: [
+                "elapsedMilliseconds": String(elapsedMilliseconds),
                 "focusedWindowID": state.focusedWindowID ?? "none",
                 "observedFocusedWindowID": windowSystem.focusedWindowID() ?? "none",
                 "operation": operation,

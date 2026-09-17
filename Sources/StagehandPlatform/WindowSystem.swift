@@ -1,6 +1,9 @@
 import AppKit
 @preconcurrency import ApplicationServices
 
+@_silgen_name("_AXUIElementGetWindow")
+private func axWindowID(_ element: AXUIElement, _ windowID: UnsafeMutablePointer<CGWindowID>) -> AXError
+
 public struct WindowRecord: Identifiable, Equatable, Sendable {
     public let id: String
     public let appName: String
@@ -25,6 +28,7 @@ public final class WindowSystem {
     public var onChange: (() -> Void)?
     public var onFrameChange: ((String, CGRect) -> Void)?
     public var onFocusedWindowChange: ((String) -> Void)?
+    public var onApplicationTerminated: ((pid_t) -> Void)?
     public var onNativeDesktopChange: (() -> Void)?
     public var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
     public var focusDiagnosticsEnabled = false
@@ -36,12 +40,14 @@ public final class WindowSystem {
     }
 
     private struct TrackedWindow {
-        let element: AXUIElement
+        var element: AXUIElement
+        let windowNumber: CGWindowID?
         var record: WindowRecord
         var originalFrame: CGRect?
         var parking = WindowParking()
-        var parkedFrame: CGRect? { parking.restoreFrame }
+        var logicalFrame: CGRect? { parking.isParked ? parking.restoreFrame : nil }
         var isAdmitted = true
+        var missedScans = 0
     }
 
     private var windows: [String: TrackedWindow] = [:]
@@ -52,7 +58,7 @@ public final class WindowSystem {
     private var applicationInventoryTask: Task<Void, Never>?
     private var workspaceTokens: [NSObjectProtocol] = []
     private var parkingValidationIDs = Set<String>()
-    private var nextID: UInt64 = 0
+    private var nextFallbackID: UInt64 = 0
     private var started = false
     private let systemElement = AXUIElementCreateSystemWide()
     private let nativeWindows = NativeWindowRegistry()
@@ -105,6 +111,14 @@ public final class WindowSystem {
                     }
                     if name == NSWorkspace.didTerminateApplicationNotification {
                         self.removeObserver(pid: pid)
+                        let removedIDs = self.windows.compactMap {
+                            $0.value.record.pid == pid ? $0.key : nil
+                        }
+                        for id in removedIDs {
+                            self.windows.removeValue(forKey: id)
+                            self.parkingValidationIDs.remove(id)
+                        }
+                        if !removedIDs.isEmpty { self.onApplicationTerminated?(pid) }
                     }
                     if name == NSWorkspace.didLaunchApplicationNotification || name == NSWorkspace.didActivateApplicationNotification,
                        let app = NSRunningApplication(processIdentifier: pid) {
@@ -119,7 +133,7 @@ public final class WindowSystem {
             Task { @MainActor [weak self] in
                 guard let self, self.started else { return }
                 self.parkingValidationIDs = Set(self.windows.compactMap {
-                    $0.value.parkedFrame == nil ? nil : $0.key
+                    $0.value.parking.isParked ? $0.key : nil
                 })
                 self.onNativeDesktopChange?()
             }
@@ -161,7 +175,9 @@ public final class WindowSystem {
     }
 
     public func scanWindows() -> [WindowRecord] {
-        guard isAccessibilityTrusted else { return nativeWindows.records }
+        guard isAccessibilityTrusted else {
+            return windows.values.filter(\.isAdmitted).map(\.record) + nativeWindows.records
+        }
         let runningApps = NSWorkspace.shared.runningApplications
         let visibleWindows = onScreenWindows()
         let accessoryPIDs = Set(visibleWindows.map(\.pid)).union(windows.values.map(\.record.pid))
@@ -193,13 +209,24 @@ public final class WindowSystem {
             }
             let candidates = elements.map { element in
                 AXUIElementSetMessagingTimeout(element, 0.1)
-                return (element: element, frame: readFrame(element))
+                return (element: element, windowNumber: windowNumber(element), frame: readFrame(element))
             }
             for candidate in candidates {
                 let element = candidate.element
-                let existingID = windows.first {
-                    $0.value.record.pid == app.processIdentifier && CFEqual($0.value.element, element)
+                let identityMatch = windows.first {
+                    guard $0.value.record.pid == app.processIdentifier else { return false }
+                    if let candidateNumber = candidate.windowNumber,
+                       let trackedNumber = $0.value.windowNumber {
+                        return candidateNumber == trackedNumber
+                    }
+                    return CFEqual($0.value.element, element)
                 }?.key
+                let geometryMatches = candidate.frame.map { frame in
+                    windows.filter {
+                        $0.value.record.pid == app.processIdentifier && sameBounds($0.value.record.frame, frame)
+                    }.map(\.key)
+                } ?? []
+                let existingID = identityMatch ?? (geometryMatches.count == 1 ? geometryMatches[0] : nil)
                 let existing = existingID.flatMap { windows[$0] }
                 // Presence in AXWindows means the window still exists, even if an
                 // individual attribute temporarily times out. Keep restoration data.
@@ -218,13 +245,16 @@ public final class WindowSystem {
                     continue
                 }
                 guard subrole == kAXStandardWindowSubrole,
-                      fullscreen.value as? Bool != true,
                       currentFrame.width > 1, currentFrame.height > 1 else {
-                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=nonstandardOrFullscreenOrInvalidFrame") }
+                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=nonstandardOrInvalidFrame") }
+                    continue
+                }
+                guard fullscreen.value as? Bool != true else {
+                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) unavailable=fullscreen") }
                     continue
                 }
                 guard !minimized else {
-                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=minimized") }
+                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) unavailable=minimized") }
                     continue
                 }
                 if existing?.isAdmitted != true {
@@ -259,9 +289,11 @@ public final class WindowSystem {
                 let id: String
                 if let existingID {
                     id = existingID
+                } else if let windowNumber = candidate.windowNumber {
+                    id = "\(app.processIdentifier):\(windowNumber)"
                 } else {
-                    nextID += 1
-                    id = "\(app.processIdentifier):\(nextID)"
+                    nextFallbackID += 1
+                    id = "\(app.processIdentifier):fallback:\(nextFallbackID)"
                 }
                 let record = WindowRecord(
                     id: id,
@@ -269,21 +301,41 @@ public final class WindowSystem {
                     title: attribute(element, kAXTitleAttribute) as? String ?? existing?.record.title ?? "",
                     bundleIdentifier: app.bundleIdentifier ?? "",
                     pid: app.processIdentifier,
-                    frame: windows[id]?.parkedFrame ?? currentFrame,
+                    frame: windows[id]?.logicalFrame ?? currentFrame,
                     isResizable: sizeStatus == .success ? resizable.boolValue : existing?.record.isResizable ?? false
                 )
                 if windows[id] != nil {
+                    if let currentElement = windows[id]?.element, !CFEqual(currentElement, element) {
+                        windows[id]?.element = element
+                    }
                     windows[id]?.record = record
                     windows[id]?.isAdmitted = true
+                    windows[id]?.missedScans = 0
+                    if let observer = observers[app.processIdentifier] { observeWindow(element, observer: observer) }
                 } else {
-                    windows[id] = TrackedWindow(element: element, record: record)
+                    windows[id] = TrackedWindow(
+                        element: element,
+                        windowNumber: candidate.windowNumber,
+                        record: record
+                    )
                     if let observer = observers[app.processIdentifier] { observeWindow(element, observer: observer) }
                 }
                 seen.insert(id)
                 result.append(record)
             }
         }
-        windows = windows.filter { seen.contains($0.key) }
+        for id in Array(windows.keys) where !seen.contains(id) {
+            guard let pid = windows[id]?.record.pid, livePIDs.contains(pid) else {
+                windows.removeValue(forKey: id)
+                continue
+            }
+            windows[id]?.missedScans += 1
+            if windows[id]?.missedScans ?? 0 >= 2 {
+                windows.removeValue(forKey: id)
+            } else if let tracked = windows[id], tracked.isAdmitted {
+                result.append(tracked.record)
+            }
+        }
         if focusDiagnosticsEnabled { print("Scan admittedExternal=\(result.count) registeredNative=\(nativeWindows.records.count)") }
         return result + nativeWindows.records
     }
@@ -296,7 +348,7 @@ public final class WindowSystem {
             return nativeWindows.setPosition(windowID: windowID, position: position)
         }
         guard let tracked = windows[windowID], tracked.isAdmitted,
-              tracked.parkedFrame == nil else { return false }
+              !tracked.parking.isParked else { return false }
         captureOriginalFrame(windowID: windowID)
         return writePosition(tracked.element, position: position)
     }
@@ -304,7 +356,7 @@ public final class WindowSystem {
     public func frame(windowID: String) -> CGRect? {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.frame(windowID: windowID) }
         guard let tracked = windows[windowID] else { return nil }
-        return tracked.parkedFrame ?? readFrame(tracked.element)
+        return tracked.logicalFrame ?? readFrame(tracked.element)
     }
 
     /// Reads the window's current physical frame, including its parking position.
@@ -316,7 +368,7 @@ public final class WindowSystem {
 
     public func isParked(windowID: String) -> Bool {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.isParked(windowID: windowID) }
-        return windows[windowID]?.parkedFrame != nil
+        return windows[windowID]?.parking.isParked == true
     }
 
     @discardableResult
@@ -327,7 +379,7 @@ public final class WindowSystem {
               frame.width > 0, frame.height > 0,
               let tracked = windows[windowID] else { return false }
         captureOriginalFrame(windowID: windowID)
-        if tracked.parkedFrame != nil {
+        if tracked.parking.restoreFrame != nil {
             guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else { return false }
             var parking = tracked.parking
             let success = parking.restore(to: frame, setFrame: { self.writeFrame(tracked.element, frame: $0, resizeFirst: false) },
@@ -345,7 +397,7 @@ public final class WindowSystem {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.park(windowID: windowID) }
         guard let tracked = windows[windowID] else { return false }
         let needsValidation = parkingValidationIDs.remove(windowID) != nil
-        if tracked.parkedFrame != nil, !needsValidation { return tracked.parking.isParked }
+        if tracked.parking.isParked, !needsValidation { return true }
         guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else { return false }
         guard let currentFrame = readFrame(tracked.element) else { return false }
         captureOriginalFrame(windowID: windowID)
@@ -384,7 +436,7 @@ public final class WindowSystem {
     public func restore(windowID: String) -> Bool {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.restore(windowID: windowID) }
         guard let tracked = windows[windowID] else { return false }
-        guard tracked.parkedFrame != nil else { return true }
+        guard tracked.parking.restoreFrame != nil else { return true }
         // A user-minimized window remains theirs; Stagehand never reverses that action.
         guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else { return false }
         var parking = tracked.parking
@@ -445,7 +497,7 @@ public final class WindowSystem {
             return nativeWindows.focusedWindowID
         }
         guard let focusedWindow = elementAttribute(focusedApp, kAXFocusedWindowAttribute) else { return nil }
-        return windows.first { CFEqual($0.value.element, focusedWindow) }?.key
+        return trackedWindowID(matching: focusedWindow)
     }
 
     private func reportCurrentFocus() {
@@ -487,6 +539,19 @@ public final class WindowSystem {
                                                 outcome: .unavailable, elapsedMilliseconds: 0,
                                                 operations: [.init("resolveTarget", accepted: false)],
                                                 initialObservation: nil, observations: []) }
+            return false
+        }
+        guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else {
+            if focusDiagnosticsEnabled {
+                lastFocusReport = WindowFocusReport(
+                    targetPID: tracked.record.pid,
+                    outcome: .unavailable,
+                    elapsedMilliseconds: 0,
+                    operations: [.init("targetMinimized", accepted: false)],
+                    initialObservation: nil,
+                    observations: []
+                )
+            }
             return false
         }
         guard restore(windowID: windowID) else {
@@ -636,9 +701,9 @@ public final class WindowSystem {
                 if name == kAXFocusedWindowChangedNotification { owner.reportCurrentFocus() }
                 if owner.onFrameChange != nil,
                    name == kAXMovedNotification || name == kAXResizedNotification,
-                   let tracked = owner.windows.first(where: { CFEqual($0.value.element, changedWindow) }),
+                   let id = owner.trackedWindowID(matching: changedWindow),
                    let frame = owner.readFrame(changedWindow) {
-                    owner.onFrameChange?(tracked.key, frame)
+                    owner.onFrameChange?(id, frame)
                 }
                 owner.onChange?()
             }
@@ -697,16 +762,17 @@ public final class WindowSystem {
                 do { try await Task.sleep(for: .seconds(2)) }
                 catch { return }
                 guard let self, self.started, !Task.isCancelled else { return }
-                var scheduled = false
                 let visiblePIDs = Set(self.onScreenWindows().map(\.pid))
                 for app in self.eligibleApplications(
                     from: NSWorkspace.shared.runningApplications,
                     accessoryPIDs: visiblePIDs
                 )
                 where self.observers[app.processIdentifier] == nil {
-                    scheduled = self.scheduleDiscovery(for: app) || scheduled
+                    self.scheduleDiscovery(for: app)
                 }
-                if scheduled { self.onChange?() }
+                // Notifications are hints and are missing for some apps and lifecycle
+                // transitions. A low-frequency reconciliation keeps inventory honest.
+                self.onChange?()
             }
         }
     }
@@ -768,16 +834,35 @@ public final class WindowSystem {
         return (error == .success ? value : nil, error)
     }
 
-    private func onScreenWindows() -> [(pid: pid_t, frame: CGRect)] {
+    private func onScreenWindows() -> [(pid: pid_t, windowNumber: CGWindowID, frame: CGRect)] {
         guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
             as? [[String: Any]] else { return [] }
         return info.compactMap { window in
             guard let pid = window[kCGWindowOwnerPID as String] as? NSNumber,
+                  let windowNumber = window[kCGWindowNumber as String] as? NSNumber,
                   let layer = window[kCGWindowLayer as String] as? NSNumber, layer.intValue == 0,
                   let bounds = window[kCGWindowBounds as String] as? [String: Any],
                   let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return nil }
-            return (pid.int32Value, frame)
+            return (pid.int32Value, windowNumber.uint32Value, frame)
         }
+    }
+
+    private func windowNumber(_ element: AXUIElement) -> CGWindowID? {
+        var identifier = CGWindowID(0)
+        return axWindowID(element, &identifier) == .success && identifier != 0 ? identifier : nil
+    }
+
+    private func trackedWindowID(matching element: AXUIElement) -> String? {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success else { return nil }
+        let identifier = windowNumber(element)
+        return windows.first { _, tracked in
+            guard tracked.record.pid == pid else { return false }
+            if let identifier, let trackedIdentifier = tracked.windowNumber {
+                return identifier == trackedIdentifier
+            }
+            return CFEqual(tracked.element, element)
+        }?.key
     }
 
     private func sameBounds(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
@@ -791,17 +876,35 @@ public final class WindowSystem {
     }
 
     private func readFrame(_ element: AXUIElement) -> CGRect? {
-        guard let positionValue = attribute(element, kAXPositionAttribute),
-              CFGetTypeID(positionValue) == AXValueGetTypeID(),
-              let sizeValue = attribute(element, kAXSizeAttribute),
-              CFGetTypeID(sizeValue) == AXValueGetTypeID() else { return nil }
-        let positionAX = unsafeDowncast(positionValue, to: AXValue.self)
-        let sizeAX = unsafeDowncast(sizeValue, to: AXValue.self)
-        guard AXValueGetType(positionAX) == .cgPoint, AXValueGetType(sizeAX) == .cgSize else { return nil }
+        guard let firstPosition = readPosition(element),
+              let size = readSize(element),
+              let secondPosition = readPosition(element) else { return nil }
+        if Self.samePosition(firstPosition, secondPosition) {
+            return CGRect(origin: secondPosition, size: size)
+        }
+        // Position and size are separate AX attributes. If motion crossed the
+        // first read, pair the newer position with a newer size instead of
+        // publishing a frame that never existed.
+        guard let secondSize = readSize(element) else { return nil }
+        return CGRect(origin: secondPosition, size: secondSize)
+    }
+
+    private func readPosition(_ element: AXUIElement) -> CGPoint? {
+        guard let raw = attribute(element, kAXPositionAttribute),
+              CFGetTypeID(raw) == AXValueGetTypeID() else { return nil }
+        let value = unsafeDowncast(raw, to: AXValue.self)
+        guard AXValueGetType(value) == .cgPoint else { return nil }
         var point = CGPoint.zero
+        return AXValueGetValue(value, .cgPoint, &point) ? point : nil
+    }
+
+    private func readSize(_ element: AXUIElement) -> CGSize? {
+        guard let raw = attribute(element, kAXSizeAttribute),
+              CFGetTypeID(raw) == AXValueGetTypeID() else { return nil }
+        let value = unsafeDowncast(raw, to: AXValue.self)
+        guard AXValueGetType(value) == .cgSize else { return nil }
         var size = CGSize.zero
-        guard AXValueGetValue(positionAX, .cgPoint, &point), AXValueGetValue(sizeAX, .cgSize, &size) else { return nil }
-        return CGRect(origin: point, size: size)
+        return AXValueGetValue(value, .cgSize, &size) ? size : nil
     }
 
     private func writePosition(_ element: AXUIElement, position: CGPoint) -> Bool {
@@ -824,18 +927,24 @@ public final class WindowSystem {
         // from the parking side, using layout's one-point size tolerance.
         if let current = readFrame(), abs(current.width - frame.width) <= 1,
            abs(current.height - frame.height) <= 1 {
-            return current.origin == frame.origin || setPosition(frame.origin)
+            if samePosition(current.origin, frame.origin) { return true }
+            _ = setPosition(frame.origin)
+            guard let actual = readFrame() else { return false }
+            return samePosition(actual.origin, frame.origin) &&
+                abs(actual.width - frame.width) <= 1 && abs(actual.height - frame.height) <= 1
         }
         // Parked windows must leave the side before resizing. Other frame writes
         // retain size, position, size for display-dependent minimum sizes.
-        var resized = resizeFirst && setSize(frame.size)
-        let positioned = setPosition(frame.origin)
-        if !resizeFirst {
-            guard positioned else { return false }
-            resized = setSize(frame.size)
-        } else if resized {
-            _ = setSize(frame.size)
-        }
-        return positioned && (resized || readFrame()?.size == frame.size)
+        if resizeFirst { _ = setSize(frame.size) }
+        _ = setPosition(frame.origin)
+        guard let moved = readFrame(), samePosition(moved.origin, frame.origin) else { return false }
+        _ = setSize(frame.size)
+        guard let actual = readFrame() else { return false }
+        return samePosition(actual.origin, frame.origin) &&
+            abs(actual.width - frame.width) <= 1 && abs(actual.height - frame.height) <= 1
+    }
+
+    private static func samePosition(_ lhs: CGPoint, _ rhs: CGPoint) -> Bool {
+        abs(lhs.x - rhs.x) <= 1 && abs(lhs.y - rhs.y) <= 1
     }
 }

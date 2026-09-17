@@ -38,7 +38,11 @@ final class DiagnosticLogger {
     func record(_ event: String, details: @autoclosure () -> [String: String] = [:]) {
         guard isEnabled else { return }
         let timestamp = now()
-        let entry = Entry(timestamp: timestamp.ISO8601Format(), event: event, details: details())
+        let entry = Entry(
+            timestamp: timestamp.ISO8601Format(.init(includingFractionalSeconds: true)),
+            event: event,
+            details: details()
+        )
         do {
             try pruneExpiredEntries(at: timestamp)
             var data = try encoder.encode(entry)

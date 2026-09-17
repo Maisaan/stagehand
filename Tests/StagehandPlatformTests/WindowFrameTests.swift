@@ -119,6 +119,35 @@ struct WindowFrameTests {
         #expect(!success)
     }
 
+    @Test func aSuccessfulSetterWithoutObservedMovementIsNotSuccess() {
+        let original = CGRect(x: 1000, y: 692, width: 900, height: 700)
+        let destination = CGRect(x: 0, y: 40, width: 900, height: 700)
+        let success = WindowSystem.writeFrame(
+            frame: destination,
+            readFrame: { original },
+            setSize: { _ in true },
+            setPosition: { _ in true }
+        )
+
+        #expect(!success)
+    }
+
+    @Test func observedMovementWinsWhenTheSetterReportsFailure() {
+        var actual = CGRect(x: 1000, y: 692, width: 900, height: 700)
+        let destination = CGRect(x: 0, y: 40, width: 900, height: 700)
+        let success = WindowSystem.writeFrame(
+            frame: destination,
+            readFrame: { actual },
+            setSize: { _ in true },
+            setPosition: { position in
+                actual.origin = position
+                return false
+            }
+        )
+
+        #expect(success)
+    }
+
     @Test func aFailedRestorePositionDoesNotResizeAtTheParkingSide() {
         let original = CGRect(x: 1000, y: 692, width: 600, height: 700)
         let destination = CGRect(x: 0, y: 40, width: 900, height: 700)

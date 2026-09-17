@@ -33,6 +33,50 @@ struct WindowParkingTests {
         #expect(parking.isParked)
     }
 
+    @Test func acceptsAWindowAlreadyClampedAtTheDisplayEdge() {
+        var parking = WindowParking()
+        let clamped = CGRect(x: 1760, y: 39, width: 723, height: 1130)
+        var writes = 0
+
+        let success = parking.park(
+            frame: clamped,
+            bounds: display,
+            displays: [display],
+            preferredSide: .right,
+            setPosition: { _ in
+                writes += 1
+                return false
+            },
+            readFrame: { clamped }
+        )
+
+        #expect(success)
+        #expect(writes == 0)
+        #expect(parking.isParked)
+    }
+
+    @Test func observedParkingWinsWhenTheSetterReportsFailure() {
+        var parking = WindowParking()
+        var actual = original
+
+        let success = parking.park(
+            frame: original,
+            bounds: display,
+            displays: [display],
+            preferredSide: .right,
+            setPosition: { position in
+                actual.origin = CGPoint(x: position.x - 39, y: position.y)
+                return false
+            },
+            readFrame: { actual }
+        )
+
+        #expect(success)
+        #expect(actual.minX == 1760)
+        #expect(parking.isParked)
+        #expect(parking.restoreFrame == original)
+    }
+
     @Test func refusesLargeRemnantsAndRestoresTheOriginalPosition() {
         var parking = WindowParking()
         var positions: [CGPoint] = []
@@ -115,15 +159,53 @@ struct WindowParkingTests {
 
     @Test func failedRollbackRetainsRecoveryGeometryAndDoesNotClaimParkingSucceeded() {
         var parking = WindowParking()
+        var actual = original
         let first = parking.park(frame: original, bounds: display, displays: [display],
-                                 setPosition: { _ in false }, readFrame: { original })
+                                 setPosition: { position in
+            if position != original.origin { actual.origin = CGPoint(x: 1600, y: 900) }
+            return false
+        }, readFrame: { actual })
         #expect(!first)
         #expect(parking.restoreFrame == original)
         #expect(!parking.isParked)
-        let second = parking.park(frame: parkedAtRight, bounds: display, displays: [display],
-                             setPosition: { _ in Issue.record("Must not overwrite pending recovery"); return true },
-                             readFrame: { parkedAtRight })
-        #expect(!second)
+    }
+
+    @Test func pendingRecoveryCanBeParkedAgain() {
+        var parking = WindowParking()
+        var actual = original
+        var allowParking = false
+        let first = parking.park(
+            frame: original,
+            bounds: display,
+            displays: [display],
+            setPosition: { position in
+                if allowParking {
+                    actual.origin = position
+                } else if position != original.origin {
+                    actual.origin = CGPoint(x: 1600, y: 900)
+                }
+                return false
+            },
+            readFrame: { actual }
+        )
+        #expect(!first)
+        #expect(parking.restoreFrame == original)
+        #expect(!parking.isParked)
+
+        allowParking = true
+        let retry = parking.park(
+            frame: actual,
+            bounds: display,
+            displays: [display],
+            setPosition: { position in
+                actual.origin = position
+                return false
+            },
+            readFrame: { actual }
+        )
+
+        #expect(retry)
+        #expect(parking.isParked)
         #expect(parking.restoreFrame == original)
     }
 

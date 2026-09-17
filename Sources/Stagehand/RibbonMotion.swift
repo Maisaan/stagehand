@@ -115,6 +115,10 @@ protocol RibbonFrameDriving: AnyObject {
     func stop()
 }
 
+func preferredRibbonFrameRate(maximum: Int) -> Float {
+    Float(min(60, max(1, maximum)))
+}
+
 @MainActor
 private final class SystemRibbonFrameDriver: NSObject, RibbonFrameDriving {
     private var displayLink: CADisplayLink?
@@ -133,11 +137,15 @@ private final class SystemRibbonFrameDriver: NSObject, RibbonFrameDriving {
         let displayLink = screen.displayLink(target: self, selector: #selector(displayFrame(_:)))
         self.onFrame = onFrame
         self.displayLink = displayLink
-        let maximum = Float(max(1, screen.maximumFramesPerSecond))
+        // AX window moves are synchronous cross-process messages, not cheap layer
+        // updates. On a 120 Hz display, driving several visible ribbon windows at
+        // the panel maximum can exhaust the main-run-loop frame budget. A stable
+        // 60 Hz cadence is smoother than intermittently missing 120 Hz deadlines.
+        let preferred = preferredRibbonFrameRate(maximum: screen.maximumFramesPerSecond)
         displayLink.preferredFrameRateRange = CAFrameRateRange(
-            minimum: maximum,
-            maximum: maximum,
-            preferred: maximum
+            minimum: preferred,
+            maximum: preferred,
+            preferred: preferred
         )
         displayLink.add(to: .main, forMode: .common)
         return true

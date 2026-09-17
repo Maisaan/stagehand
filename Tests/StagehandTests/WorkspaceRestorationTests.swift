@@ -1,8 +1,64 @@
+import CoreGraphics
 import StagehandCore
 import Testing
 @testable import Stagehand
+@testable import StagehandPlatform
 
 struct WorkspaceRestorationTests {
+    @Test func applicationTerminationRemovesItsWindowsBeforeTheNextRefresh() {
+        var state = WorkspaceState(spaces: [
+            SpaceState(windowIDs: ["left", "terminated", "right"], focusedWindowID: "terminated")
+        ])
+        var windows = [
+            WindowRecord(id: "left", appName: "Left", title: "", bundleIdentifier: "left", pid: 1,
+                         frame: CGRect(x: 0, y: 0, width: 100, height: 100), isResizable: true),
+            WindowRecord(id: "terminated", appName: "Gone", title: "", bundleIdentifier: "gone", pid: 2,
+                         frame: CGRect(x: 100, y: 0, width: 100, height: 100), isResizable: true),
+            WindowRecord(id: "right", appName: "Right", title: "", bundleIdentifier: "right", pid: 3,
+                         frame: CGRect(x: 200, y: 0, width: 100, height: 100), isResizable: true)
+        ]
+
+        let removed = removeTerminatedApplication(pid: 2, windows: &windows, state: &state)
+
+        #expect(removed == ["terminated"])
+        #expect(windows.map(\.id) == ["left", "right"])
+        #expect(state.currentSpace.windowIDs == ["left", "right"])
+        #expect(state.focusedWindowID == "right")
+    }
+
+    @Test func minimizedWindowLeavesTheRibbonAndReturnsToItsMembership() {
+        let original = WorkspaceState(spaces: [
+            SpaceState(
+                windowIDs: ["left", "minimized", "right"],
+                focusedWindowID: "minimized",
+                widthFractions: ["minimized": 0.62]
+            ),
+            SpaceState(windowIDs: ["minimized"])
+        ])
+        var state = original
+        var restoration = WorkspaceRestoration()
+
+        restoration.reconcile(
+            state: &state,
+            windowIDs: ["left", "right"],
+            trackedWindowIDs: ["left", "minimized", "right"]
+        )
+
+        #expect(state.spaces.allSatisfy { !$0.windowIDs.contains("minimized") })
+        #expect(state.currentSpace.windowIDs == ["left", "right"])
+        #expect(state.focusedWindowID != "minimized")
+
+        restoration.reconcile(
+            state: &state,
+            windowIDs: ["left", "minimized", "right"],
+            trackedWindowIDs: ["left", "minimized", "right"]
+        )
+
+        #expect(state.spaces[0].windowIDs == original.spaces[0].windowIDs)
+        #expect(state.spaces[0].widthFraction(for: "minimized") == 0.62)
+        #expect(state.spaces[1].windowIDs == ["minimized"])
+    }
+
     @Test func resumingPreservesSpacesOrderSharingAndWidthsAndOmitsClosedWindows() {
         var state = WorkspaceState(spaces: [
             SpaceState(windowIDs: ["left", "closed", "shared"], focusedWindowID: "left",

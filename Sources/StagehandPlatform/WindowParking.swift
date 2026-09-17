@@ -18,8 +18,9 @@ struct WindowParking {
         guard Self.valid(frame), Self.valid(bounds), !displays.isEmpty, displays.allSatisfy(Self.valid) else { return false }
         let isReparking = restoreFrame != nil
         if isReparking {
-            guard isParked, let actual = readFrame(), Self.valid(actual) else { return false }
-            if Self.acceptablyParked(actual, bounds: bounds, displays: displays) {
+            if let actual = readFrame(), Self.valid(actual),
+               Self.acceptablyParked(actual, bounds: bounds, displays: displays) {
+                isParked = true
                 parkedFrame = actual
                 return true
             }
@@ -28,6 +29,11 @@ struct WindowParking {
             restoreFrame = frame
         }
         parkingBounds = bounds
+        if Self.acceptablyParked(frame, bounds: bounds, displays: displays) {
+            isParked = true
+            parkedFrame = frame
+            return true
+        }
         // Preserve Y so an app that presents AX moves asynchronously can only
         // enter or leave along the same horizontal axis as ribbon navigation.
         let right = CGPoint(x: bounds.maxX - 1, y: frame.minY)
@@ -42,11 +48,11 @@ struct WindowParking {
             // Never spill the parked body onto a neighboring display.
             guard displays.filter({ $0 != containingDisplay }).allSatisfy({ !$0.intersects(proposed) }) else { continue }
             attempted = true
-            guard setPosition(destination), let actual = readFrame(), Self.valid(actual),
+            _ = setPosition(destination)
+            guard let actual = readFrame(), Self.valid(actual),
                   abs(actual.width - frame.width) <= 1, abs(actual.height - frame.height) <= 1,
                   displays.filter({ $0 != containingDisplay }).allSatisfy({ !$0.intersects(actual) }) else { continue }
-            let remnant = actual.intersection(bounds)
-            if remnant.isNull || (Self.atSide(actual, bounds: bounds) && remnant.width <= 64) {
+            if Self.acceptablyParked(actual, bounds: bounds, displays: displays) {
                 isParked = true
                 parkedFrame = actual
                 return true
@@ -65,7 +71,8 @@ struct WindowParking {
         if isReparking { return false }
         // A refusal is not permission to minimize. Roll back, keeping the saved
         // frame when even rollback cannot be confirmed so pause/quit can retry.
-        if setPosition(frame.origin), let actual = readFrame(), Self.samePosition(actual, frame) {
+        _ = setPosition(frame.origin)
+        if let actual = readFrame(), Self.samePosition(actual, frame) {
             restoreFrame = nil
             parkingBounds = nil
             parkedFrame = nil
@@ -113,11 +120,12 @@ struct WindowParking {
     private static func acceptablyParked(_ frame: CGRect, bounds: CGRect, displays: [CGRect]) -> Bool {
         guard let containingDisplay = displays.max(by: {
             overlapArea($0, bounds) < overlapArea($1, bounds)
-        }), displays.filter({ $0 != containingDisplay }).allSatisfy({ !$0.intersects(frame) }) else {
+        }), atSide(frame, bounds: bounds),
+              displays.filter({ $0 != containingDisplay }).allSatisfy({ !$0.intersects(frame) }) else {
             return false
         }
         let remnant = frame.intersection(bounds)
-        return remnant.isNull || (atSide(frame, bounds: bounds) && remnant.width <= 64)
+        return remnant.isNull || remnant.width <= 64
     }
 
     private static func overlapArea(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {

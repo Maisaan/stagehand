@@ -30,6 +30,23 @@ import Testing
     #expect(try String(contentsOf: logURL, encoding: .utf8) == enabledContents)
 }
 
+@Test @MainActor func diagnosticLogTimestampsPreserveSubsecondTiming() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("StagehandDiagnosticTimestampTests-\(UUID().uuidString)", isDirectory: true)
+    let logURL = directory.appendingPathComponent("stagehand.log")
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let logger = DiagnosticLogger(
+        logURL: logURL,
+        enabled: true,
+        now: { Date(timeIntervalSince1970: 0.123) }
+    )
+    logger.record("timed_event")
+
+    let contents = try String(contentsOf: logURL, encoding: .utf8)
+    #expect(contents.contains("\"timestamp\":\"1970-01-01T00:00:00.123Z\""))
+}
+
 @Test @MainActor func diagnosticWindowGeometryIncludesIdentityAndAcceptedFrame() throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("StagehandDiagnosticGeometryTests-\(UUID().uuidString)", isDirectory: true)
