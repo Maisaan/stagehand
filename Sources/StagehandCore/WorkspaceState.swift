@@ -12,6 +12,8 @@ public enum NavigationAction: Equatable, Sendable {
     case shareToSpace(index: Int)
     case shrinkWidth
     case growWidth
+    case shrinkHeight
+    case growHeight
     case togglePause
     case showSettings
 }
@@ -259,6 +261,8 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
             let adjustment = action == .growWidth ? 0.05 : -0.05
             let width = (currentSpace.widthFraction(for: windowID) * 100 + adjustment * 100).rounded() / 100
             return setWidthFraction(width, for: windowID)
+        case .shrinkHeight, .growHeight:
+            return false
         case .togglePause:
             isPaused.toggle()
             return true

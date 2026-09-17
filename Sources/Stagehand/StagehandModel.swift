@@ -20,6 +20,14 @@ func framesMatch(observed: CGRect, target: CGRect, tolerance: CGFloat = 1) -> Bo
         && abs(observed.height - target.height) <= tolerance
 }
 
+func adjustedWindowHeight(current: CGFloat, available: CGFloat, growing: Bool) -> CGFloat? {
+    guard current.isFinite, current > 0, available.isFinite, available > 0 else { return nil }
+    let limit = available * (growing ? 1 : 0.25)
+    guard growing ? current < limit : current > limit else { return nil }
+    let adjustment = available * (growing ? 0.05 : -0.05)
+    return growing ? min(current + adjustment, limit) : max(current + adjustment, limit)
+}
+
 enum RibbonTranslationOutcome: Equatable {
     case readyForFocus
     case superseded
@@ -1097,6 +1105,12 @@ final class StagehandModel: ObservableObject {
                 self.gestureAxis = nil
                 self.gesturePrepared.removeAll()
                 switch change {
+                case .action(let action) where action == .shrinkHeight || action == .growHeight:
+                    guard self.adjustFocusedWindowHeight(growing: action == .growHeight) else {
+                        if let token { self.focusGate.cancelTransfer(token: token) }
+                        self.transitionRollback = nil
+                        continue
+                    }
                 case .action(let action):
                     guard self.state.apply(action) else {
                         if let token { self.focusGate.cancelTransfer(token: token) }
@@ -1203,6 +1217,21 @@ final class StagehandModel: ObservableObject {
             self.onStateChange?()
             self.scheduleRefresh()
         }
+    }
+
+    private func adjustFocusedWindowHeight(growing: Bool) -> Bool {
+        guard let windowID = state.focusedWindowID,
+              let availableFrame else { return false }
+        let currentHeight = windowSystem.frame(windowID: windowID)?.height
+            ?? preferredHeights[windowID]
+            ?? availableFrame.height
+        guard let height = adjustedWindowHeight(
+            current: currentHeight,
+            available: availableFrame.height,
+            growing: growing
+        ) else { return false }
+        preferredHeights[windowID] = height
+        return true
     }
 
     private var builtInScreen: NSScreen? {

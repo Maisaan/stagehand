@@ -24,7 +24,8 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
     public let action: NavigationAction
 
     public var label: String {
-        [Self.modifierLabel(modifiers), keyLabel]
+        let displayedModifiers = keyLabel == "+" ? modifiers & ~UInt32(shiftKey) : modifiers
+        return [Self.modifierLabel(displayedModifiers), keyLabel]
             .filter { !$0.isEmpty }
             .joined(separator: " ")
     }
@@ -35,6 +36,8 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
 
     public static let supportedModifiers = UInt32(controlKey | optionKey | shiftKey | cmdKey | alphaLock)
     public static let preferenceKey = "shortcutBindings"
+    private static let preferenceVersionKey = "shortcutBindingsVersion"
+    private static let preferenceVersion = 1
 
     public static let defaults: [Self] = {
         let base = UInt32(controlKey | optionKey)
@@ -60,11 +63,17 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
                   key: UInt32(kVK_RightArrow), modifiers: base | command, keyLabel: "→", isEnabled: true,
                   action: .reorderNext),
             .init(id: "shrinkWidth", title: "Shrink window width", group: .windowSize,
-                  key: UInt32(kVK_ANSI_1), modifiers: UInt32(optionKey | cmdKey), keyLabel: "1",
+                  key: UInt32(kVK_ANSI_Minus), modifiers: base, keyLabel: "-",
                   isEnabled: true, action: .shrinkWidth),
             .init(id: "growWidth", title: "Grow window width", group: .windowSize,
-                  key: UInt32(kVK_ANSI_2), modifiers: UInt32(optionKey | cmdKey), keyLabel: "2",
+                  key: UInt32(kVK_ANSI_Equal), modifiers: base | shift, keyLabel: "+",
                   isEnabled: true, action: .growWidth),
+            .init(id: "shrinkHeight", title: "Shrink window height", group: .windowSize,
+                  key: UInt32(kVK_ANSI_Minus), modifiers: base | command, keyLabel: "-",
+                  isEnabled: true, action: .shrinkHeight),
+            .init(id: "growHeight", title: "Grow window height", group: .windowSize,
+                  key: UInt32(kVK_ANSI_Equal), modifiers: base | command | shift, keyLabel: "+",
+                  isEnabled: true, action: .growHeight),
             .init(id: "togglePause", title: "Pause or restore windows", group: .stagehand,
                   key: UInt32(kVK_Escape), modifiers: base, keyLabel: "esc", isEnabled: true,
                   action: .togglePause),
@@ -111,6 +120,8 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
             return defaults
         }
         let savedByID = Dictionary(saved.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let shouldMigrateLegacyWidthBindings = userDefaults.integer(forKey: preferenceVersionKey) < preferenceVersion
+        var migrated = false
         var bindings = defaults.map { defaultBinding in
             guard let value = savedByID[defaultBinding.id],
                   value.key <= UInt32(UInt16.max),
@@ -118,9 +129,14 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
                   !value.keyLabel.isEmpty,
                   value.keyLabel.count <= 12 else { return defaultBinding }
             var binding = defaultBinding
-            binding.key = value.key
-            binding.modifiers = value.modifiers
-            binding.keyLabel = value.keyLabel
+            if shouldMigrateLegacyWidthBindings,
+               Self.isLegacyWidthDefault(id: value.id, key: value.key, modifiers: value.modifiers) {
+                migrated = true
+            } else {
+                binding.key = value.key
+                binding.modifiers = value.modifiers
+                binding.keyLabel = value.keyLabel
+            }
             binding.isEnabled = value.isEnabled
             return binding
         }
@@ -130,6 +146,7 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
                 bindings[index].isEnabled = false
             }
         }
+        if migrated { save(bindings, to: userDefaults) }
         return bindings
     }
 
@@ -140,6 +157,7 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
         }
         guard let data = try? JSONEncoder().encode(saved) else { return }
         userDefaults.set(data, forKey: preferenceKey)
+        userDefaults.set(preferenceVersion, forKey: preferenceVersionKey)
     }
 
     public static func defaultBinding(id: String) -> Self? {
@@ -183,5 +201,16 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
 
     var chord: UInt64 {
         UInt64(key) << 32 | UInt64(modifiers)
+    }
+
+    private static func isLegacyWidthDefault(id: String, key: UInt32, modifiers: UInt32) -> Bool {
+        switch id {
+        case "shrinkWidth":
+            key == UInt32(kVK_ANSI_1) && modifiers == UInt32(optionKey | cmdKey)
+        case "growWidth":
+            key == UInt32(kVK_ANSI_2) && modifiers == UInt32(optionKey | cmdKey)
+        default:
+            false
+        }
     }
 }

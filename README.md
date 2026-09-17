@@ -86,7 +86,8 @@ The app bar appears beneath the camera housing, or at the top center on displays
 | Go to space 1 through 9 | Control + Option + number |
 | Share window with space | Control + Option + Shift + number |
 | Move window and follow | Control + Option + Command + number |
-| Shrink or grow width | Option + Command + 1 or 2 |
+| Shrink or grow width | Control + Option + - or + |
+| Shrink or grow height | Control + Option + Command + - or + |
 | Pause and restore | Control + Option + Escape |
 | Open settings | Control + Option + comma |
 

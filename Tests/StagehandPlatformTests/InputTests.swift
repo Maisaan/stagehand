@@ -530,6 +530,54 @@ func gestureSelectedFingerCountNavigatesSpacesOnFlickAndStaggeredLift(fingerCoun
     #expect(Set(keys).count == bindings.count)
     #expect(bindings.allSatisfy { $0.isDefault })
     #expect(bindings.first { $0.id == "focusPrevious" }?.label == "⌃ ⌥ ←")
+    #expect(bindings.first { $0.id == "shrinkWidth" }?.label == "⌃ ⌥ -")
+    #expect(bindings.first { $0.id == "growWidth" }?.label == "⌃ ⌥ +")
+    #expect(bindings.first { $0.id == "shrinkHeight" }?.label == "⌃ ⌥ ⌘ -")
+    #expect(bindings.first { $0.id == "growHeight" }?.label == "⌃ ⌥ ⌘ +")
+}
+
+@Test(arguments: [
+    (kVK_ANSI_Minus, CGEventFlags([.maskControl, .maskAlternate]), NavigationAction.shrinkWidth),
+    (kVK_ANSI_Equal, CGEventFlags([.maskControl, .maskAlternate, .maskShift]), .growWidth),
+    (kVK_ANSI_Minus, CGEventFlags([.maskControl, .maskAlternate, .maskCommand]), .shrinkHeight),
+    (kVK_ANSI_Equal, CGEventFlags([.maskControl, .maskAlternate, .maskCommand, .maskShift]), .growHeight),
+])
+func sizeShortcutChordsResolve(key: Int, flags: CGEventFlags, action: NavigationAction) throws {
+    let event = try #require(CGEvent(
+        keyboardEventSource: nil,
+        virtualKey: CGKeyCode(key),
+        keyDown: true
+    ))
+    event.flags = flags
+    #expect(ShortcutBinding.action(for: event) == action)
+}
+
+@Test func legacyWidthDefaultsMigrateWithoutOverwritingCustomBindings() throws {
+    let suiteName = "ShortcutBindingMigrationTests.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    var bindings = ShortcutBinding.defaults
+    let shrinkIndex = try #require(bindings.firstIndex { $0.id == "shrinkWidth" })
+    bindings[shrinkIndex].key = UInt32(kVK_ANSI_1)
+    bindings[shrinkIndex].modifiers = UInt32(optionKey | cmdKey)
+    bindings[shrinkIndex].keyLabel = "1"
+    let growIndex = try #require(bindings.firstIndex { $0.id == "growWidth" })
+    bindings[growIndex].key = UInt32(kVK_ANSI_K)
+    bindings[growIndex].modifiers = UInt32(controlKey)
+    bindings[growIndex].keyLabel = "K"
+
+    let saved = bindings.map {
+        ["id": $0.id, "key": $0.key, "modifiers": $0.modifiers,
+         "keyLabel": $0.keyLabel, "isEnabled": $0.isEnabled] as [String: Any]
+    }
+    defaults.set(try JSONSerialization.data(withJSONObject: saved), forKey: ShortcutBinding.preferenceKey)
+
+    let loaded = ShortcutBinding.load(from: defaults)
+    #expect(loaded.first { $0.id == "shrinkWidth" } == ShortcutBinding.defaultBinding(id: "shrinkWidth"))
+    #expect(loaded.first { $0.id == "growWidth" }?.key == UInt32(kVK_ANSI_K))
+    #expect(loaded.first { $0.id == "growWidth" }?.modifiers == UInt32(controlKey))
+    #expect(loaded.contains { $0.id == "shrinkHeight" })
+    #expect(loaded.contains { $0.id == "growHeight" })
 }
 
 @Test func controlOptionShiftNumberSharesWithSpace() throws {

@@ -517,6 +517,7 @@ private final class ShortcutRecorderButton: NSButton {
         case kVK_End: return "end"
         case kVK_PageUp: return "page up"
         case kVK_PageDown: return "page down"
+        case kVK_ANSI_Equal where event.modifierFlags.contains(.shift): return "+"
         default:
             let characters = event.charactersIgnoringModifiers?.trimmingCharacters(in: .whitespacesAndNewlines)
             if let characters, !characters.isEmpty { return characters.uppercased() }
