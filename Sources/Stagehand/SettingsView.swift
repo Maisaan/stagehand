@@ -549,10 +549,29 @@ struct SettingsView: View {
 
     private func spaceShortcutGroup(_ title: String, group: ShortcutBinding.Group) -> some View {
         let bindings = model.shortcutBindings.filter { $0.group == group }
-        return DisclosureGroup(isExpanded: Binding(
-                get: { expandedShortcutGroup == group },
-                set: { expandedShortcutGroup = $0 ? group : nil }
-            )) {
+        let isExpanded = expandedShortcutGroup == group
+        return VStack(spacing: 0) {
+            Button {
+                expandedShortcutGroup = isExpanded ? nil : group
+            } label: {
+                HStack(spacing: 8) {
+                    PhosphorIcon(.caretRight)
+                        .frame(width: 11, height: 11)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .accessibilityHidden(true)
+                    Text(title)
+                    Spacer()
+                    Text("\(bindings.count) shortcuts")
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .frame(minHeight: 42)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+
+            if isExpanded {
                 VStack(spacing: 0) {
                     Divider()
                     ForEach(Array(bindings.enumerated()), id: \.element.id) { index, binding in
@@ -562,16 +581,8 @@ struct SettingsView: View {
                             .frame(minHeight: 42)
                     }
                 }
-            } label: {
-                HStack {
-                    Text(title)
-                    Spacer()
-                    Text("\(bindings.count) shortcuts")
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 12)
-                .frame(minHeight: 42)
             }
+        }
     }
 
     private func shortcutRow(_ binding: ShortcutBinding) -> some View {
