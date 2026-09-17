@@ -73,9 +73,11 @@ struct QuickControlsView: View {
 
                 QuickRow("Space color") {
                     HStack(spacing: 8) {
-                        Text(RGBHexColor.format(model.focusBorderColor))
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
+                        HexColorInput(color: model.focusBorderColor) { color in
+                            model.setFocusBorderColor(color)
+                        }
+                        .id(model.state.activeSpaceIndex)
+                        .frame(width: 104)
                         ColorPicker(
                             "Space \(model.state.activeSpaceIndex + 1) color",
                             selection: Binding(
@@ -85,6 +87,7 @@ struct QuickControlsView: View {
                             supportsOpacity: false
                         )
                         .labelsHidden()
+                        .simultaneousGesture(TapGesture().onEnded { NSApp.activate() })
                     }
                 }
             }

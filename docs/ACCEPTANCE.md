@@ -65,6 +65,8 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 - Resize the active window continuously. The border follows its actual frame without easing behind it, and its corners match the target window.
 - Adjust the gap with the slider, typed values, Up/Down, and Shift+Up/Down while running. Input focus remains in the number field; no keys reach another app. Invalid values restore the previous value and out-of-range values clamp.
 - Click outside the gap field onto empty settings background. The edit commits, the field loses focus, and the original click still reaches its target.
+- Open the menu bar quick actions. Neither the window-gap field nor the space-color field receives focus until clicked.
+- In menu bar quick actions, change the active space color with both the color picker and a typed hex value. The picker stays in front, the focus border and app bar update, and the value remains after reopening quick actions.
 - Neither bar nor border shifts or resizes any window.
 - The current application owns the macOS menu bar, except while Stagehand settings or an empty-space placeholder is active.
 - Settings stay usable at the built-in display's current scaling.

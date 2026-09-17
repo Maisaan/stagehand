@@ -18,6 +18,13 @@ struct StatusMenuState {
     let spaces: [(index: Int, windowCount: Int)]
 }
 
+private final class QuickControlsHostingController<Content: View>: NSHostingController<Content> {
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        view.window?.makeFirstResponder(nil)
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
     private static let onboardingCompleteKey = "onboardingComplete"
@@ -166,7 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             popover.animates = true
             popover.delegate = self
             popover.contentSize = NSSize(width: 340, height: 372)
-            popover.contentViewController = NSHostingController(rootView: QuickControlsView(
+            popover.contentViewController = QuickControlsHostingController(rootView: QuickControlsView(
                 model: model,
                 openSettings: { [weak self] in
                     self?.closeQuickControls { [weak self] in self?.openSettings() }

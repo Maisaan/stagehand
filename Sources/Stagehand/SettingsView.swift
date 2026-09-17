@@ -975,7 +975,7 @@ enum RGBHexColor {
     }
 }
 
-private struct HexColorInput: View {
+struct HexColorInput: View {
     let color: NSColor
     let onCommit: (NSColor) -> Void
     @State private var text: String
