@@ -568,7 +568,10 @@ final class NavigationHUDModel: ObservableObject {
     private var lastFocusChange: TimeInterval?
 
     var displayedItemCount: Int { showingSpaces ? availableSpaceIndices.count : windows.count }
-    var focusedAppName: String { windows.first { $0.id == focusedID }?.appName ?? "No windows" }
+    var focusedWindowLabel: String {
+        guard let window = windows.first(where: { $0.id == focusedID }) else { return "No windows" }
+        return window.title.isEmpty ? window.appName : "\(window.appName): \(window.title)"
+    }
     var dropDescription: String? {
         guard let dropTargetID,
               let edge = dropIndicatorEdge(for: dropTargetID),
@@ -837,11 +840,11 @@ private struct NavigationHUD: View {
                 }
             }
             if !model.showingSpaces {
-                Text(model.dropDescription ?? model.focusedAppName)
+                Text(model.dropDescription ?? model.focusedWindowLabel)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(model.dropDescription == nil ? Color.white.opacity(0.8) : appBarColor)
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
+                .truncationMode(.tail)
                 .contentTransition(.opacity)
                 .animation(
                     model.reduceMotion || model.dropDescription == nil && !model.animatesFocusIndicator
@@ -849,7 +852,7 @@ private struct NavigationHUD: View {
                         : RibbonAnimationCurve.ease.animation(
                             duration: model.interfaceAnimationConfiguration.feedbackDuration
                         ),
-                    value: model.dropDescription ?? model.focusedAppName
+                    value: model.dropDescription ?? model.focusedWindowLabel
                 )
             }
         }

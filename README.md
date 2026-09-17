@@ -72,7 +72,7 @@ New windows enter after the current window and keep their original width within 
 
 The gap accepts values from `-200` to `40` points. Negative values overlap windows and keep the active window on top.
 
-The app bar appears beneath the camera housing, or at the top center on displays without a notch. Hover there or navigate to reveal it. Click an app to focus it or the space number to change spaces. Choose the active border color and app bar color under Appearance in Workspace settings. The app bar and focus border do not take keyboard focus or reserve screen space.
+The app bar appears beneath the camera housing, or at the top center on displays without a notch. Hover there or navigate to reveal it. It shows the active app name and window title. Click an app to focus it or the space number to change spaces. Choose or paste a hex color for each space; that color is used for its active-window border and the app bar. The app bar and focus border do not take keyboard focus or reserve screen space.
 
 ### Controls
 

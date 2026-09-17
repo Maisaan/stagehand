@@ -69,12 +69,16 @@ struct NavigationInteractionTests {
         #expect(model.focusedID == nil)
     }
 
-    @Test func appBarLabelOmitsTheWindowTitle() {
+    @Test func appBarLabelIncludesTheAppNameAndWindowTitle() {
         let model = NavigationHUDModel()
         model.windows = [WindowRecord(id: "first", appName: "Example", title: "A very long document title",
                                       bundleIdentifier: "com.example", pid: 10, frame: .zero, isResizable: true)]
         model.focusedID = "first"
-        #expect(model.focusedAppName == "Example")
+        #expect(model.focusedWindowLabel == "Example: A very long document title")
+
+        model.windows = [WindowRecord(id: "first", appName: "Example", title: "",
+                                      bundleIdentifier: "com.example", pid: 10, frame: .zero, isResizable: true)]
+        #expect(model.focusedWindowLabel == "Example")
     }
 
     @Test func appBarSkipsFocusIndicatorAnimationDuringRapidNavigation() {
