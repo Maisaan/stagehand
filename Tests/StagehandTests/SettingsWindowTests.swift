@@ -30,32 +30,6 @@ import Testing
     }
 }
 
-@Test @MainActor func maximizeHidesGapEditorWithoutDiscardingItsValue() async throws {
-    _ = NSApplication.shared
-    let defaults = UserDefaults.standard
-    let savedPreference = defaults.object(forKey: "maximizeWindows")
-    defer { defaults.set(savedPreference, forKey: "maximizeWindows") }
-    let model = StagehandModel()
-    let gap = model.gap
-    model.setMaximizeWindows(false)
-    let window = SettingsWindow.make(model: model)
-    defer { window.close() }
-    let content = try #require(window.contentView)
-
-    for maximize in [false, true, false] {
-        model.setMaximizeWindows(maximize)
-        try await Task.sleep(for: .milliseconds(30))
-        content.layoutSubtreeIfNeeded()
-        #expect(containsGapEditor(in: content) == !maximize)
-        #expect(model.gap == gap)
-    }
-}
-
-@MainActor private func containsGapEditor(in view: NSView) -> Bool {
-    if view is GapTextField { return true }
-    return view.subviews.contains { containsGapEditor(in: $0) }
-}
-
 private struct SettingsSizeProbe: NSViewRepresentable {
     let view: NSView
 

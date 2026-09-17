@@ -51,12 +51,27 @@ struct WorkspaceRestorationTests {
         restoration.reconcile(
             state: &state,
             windowIDs: ["left", "minimized", "right"],
-            trackedWindowIDs: ["left", "minimized", "right"]
+            trackedWindowIDs: ["left", "minimized", "right"],
+            initialWidthFractions: ["minimized": 0.8]
         )
 
         #expect(state.spaces[0].windowIDs == original.spaces[0].windowIDs)
         #expect(state.spaces[0].widthFraction(for: "minimized") == 0.62)
         #expect(state.spaces[1].windowIDs == ["minimized"])
+    }
+
+    @Test func newlyDiscoveredWindowUsesItsInitialWidth() {
+        var state = WorkspaceState()
+        var restoration = WorkspaceRestoration()
+
+        restoration.reconcile(
+            state: &state,
+            windowIDs: ["new"],
+            trackedWindowIDs: ["new"],
+            initialWidthFractions: ["new": 0.64]
+        )
+
+        #expect(state.currentSpace.widthFraction(for: "new") == 0.64)
     }
 
     @Test func resumingPreservesSpacesOrderSharingAndWidthsAndOmitsClosedWindows() {

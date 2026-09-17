@@ -233,7 +233,6 @@ final class StagehandModel: ObservableObject {
 
     private enum Change: Equatable {
         case action(NavigationAction)
-        case maximize(Bool)
         case remove(String)
         case share(windowID: String, spaceIndex: Int)
         case focus(String)
@@ -248,7 +247,7 @@ final class StagehandModel: ObservableObject {
 
         var policy: LayoutRequestPolicy {
             switch self {
-            case .maximize, .preferences, .observedFocus, .moveMembership,
+            case .preferences, .observedFocus, .moveMembership,
                  .shareMembership, .removeMembership, .reorderWindow: .preferences
             default: .navigation
             }
@@ -261,7 +260,6 @@ final class StagehandModel: ObservableObject {
         var diagnosticName: String {
             switch self {
             case .action(let action): "action.\(action)"
-            case .maximize: "maximize"
             case .remove: "removeMembership"
             case .share: "shareMembership"
             case .focus: "focusWindow"
@@ -304,8 +302,6 @@ final class StagehandModel: ObservableObject {
             forKey: Self.appBarColorPreferenceKey,
             in: defaults
         ) ?? NavigationHUDModel.defaultAppBarColor
-        state.maximizeWindows = defaults.object(forKey: "maximizeWindows") as? Bool
-            ?? (defaults.string(forKey: "layoutMode") == "monocle")
         input.onAction = { [weak self] action in self?.navigate(action) }
         input.onGesture = { [weak self] event in self?.handleGesture(event) }
         overlays.onFocusWindow = { [weak self] id in self?.focusWindow(id) }
@@ -425,7 +421,8 @@ final class StagehandModel: ObservableObject {
         windows = windowSystem.start()
         preferredHeights = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0.frame.height) })
         workspaceRestoration.reconcile(state: &state, windowIDs: windows.map(\.id),
-                                       trackedWindowIDs: windowSystem.trackedWindowIDs)
+                                       trackedWindowIDs: windowSystem.trackedWindowIDs,
+                                       initialWidthFractions: initialWidthFractions(for: windows))
         if let focused = windowSystem.focusedWindowID() { state.focus(windowID: focused) }
         isRunning = true
         isSuspended = false
@@ -549,13 +546,6 @@ final class StagehandModel: ObservableObject {
             }
             enqueue(.action(action), initialHorizontalVelocity: initialHorizontalVelocity)
         }
-    }
-
-    func setMaximizeWindows(_ enabled: Bool) {
-        UserDefaults.standard.set(enabled, forKey: "maximizeWindows")
-        if enabled { hideFocusBorder() }
-        if isRunning && !isSuspended { enqueue(.maximize(enabled)) }
-        else { state.maximizeWindows = enabled }
     }
 
     func setFocusBorderColor(_ color: NSColor) {
@@ -971,7 +961,8 @@ final class StagehandModel: ObservableObject {
         let oldIDs = Set(windows.map(\.id))
         windows = current
         workspaceRestoration.reconcile(state: &state, windowIDs: current.map(\.id),
-                                       trackedWindowIDs: windowSystem.trackedWindowIDs)
+                                       trackedWindowIDs: windowSystem.trackedWindowIDs,
+                                       initialWidthFractions: initialWidthFractions(for: current))
         let hasNewWindows = current.contains { !oldIDs.contains($0.id) }
         if !hasNewWindows, oldState.activeSpaceIndex == state.activeSpaceIndex,
            let focused = windowSystem.focusedWindowID(),
@@ -1012,7 +1003,7 @@ final class StagehandModel: ObservableObject {
             let moved = abs(focused.frame.minX - previous.minX) > 3 ||
                 abs(focused.frame.minY - previous.minY) > 3
             if (resized || moved) && (interaction != nil || Date().timeIntervalSince(lastTransition) > 0.4) {
-                if resized && !state.maximizeWindows {
+                if resized {
                     state.setWidthFraction(focused.frame.width / frame.width, for: focused.id)
                     preferredHeights[focused.id] = focused.frame.height
                 }
@@ -1047,6 +1038,14 @@ final class StagehandModel: ObservableObject {
             updateFocusBorder(windowID: id, frame: frame)
         }
         onStateChange?()
+    }
+
+    private func initialWidthFractions(for windows: [WindowRecord]) -> [String: Double] {
+        guard let availableFrame, availableFrame.width.isFinite, availableFrame.width > 0 else { return [:] }
+        return Dictionary(uniqueKeysWithValues: windows.compactMap { window in
+            guard window.frame.width.isFinite, window.frame.width > 0 else { return nil }
+            return (window.id, Double(window.frame.width / availableFrame.width))
+        })
     }
 
     private func enqueue(_ change: Change, initialHorizontalVelocity: CGFloat? = nil) {
@@ -1117,18 +1116,6 @@ final class StagehandModel: ObservableObject {
                         self.transitionRollback = nil
                         continue
                     }
-                case .maximize(let enabled):
-                    if enabled && !self.state.maximizeWindows {
-                        // A resize may finish before the debounced refresh observes it.
-                        // Capture live heights before this transition replaces them.
-                        for window in self.windows {
-                            if let height = self.windowSystem.frame(windowID: window.id)?.height,
-                               height.isFinite, height > 0 {
-                                self.preferredHeights[window.id] = height
-                            }
-                        }
-                    }
-                    self.state.maximizeWindows = enabled
                 case .remove(let id): self.state.removeFromCurrentSpace(windowID: id)
                 case .share(let id, let index): self.state.share(windowID: id, toSpace: index)
                 case .focus(let id): self.state.focus(windowID: id)
@@ -1326,7 +1313,7 @@ final class StagehandModel: ObservableObject {
         overlays.updateBorder(frame: .zero, visible: false)
         defer { isLayingOutWindows = false }
         var placements: [WindowPlacement] = []
-        // Capture a new window's preferred height before any maximized size writes.
+        // Capture a new window's preferred height before the first managed size write.
         // Accepted constraints belong to this layout pass, not the saved preference.
         let knownIDs = Set(windows.map(\.id))
         preferredHeights = preferredHeights.filter { knownIDs.contains($0.key) }
@@ -1398,9 +1385,7 @@ final class StagehandModel: ObservableObject {
                     if actual.width.isFinite, actual.width > 0,
                        abs(actual.width - placement.frame.width) > 1 {
                         observedWidths[placement.windowID] = actual.width
-                        if !state.maximizeWindows {
-                            state.setWidthFraction(actual.width / availableFrame.width, for: placement.windowID)
-                        }
+                        state.setWidthFraction(actual.width / availableFrame.width, for: placement.windowID)
                         constrained = true
                         constrainedAxes.append("width")
                     }
@@ -1926,10 +1911,6 @@ final class StagehandModel: ObservableObject {
     }
 
     func updateFocusBorder(windowID: String, frame: CGRect) {
-        guard !state.maximizeWindows else {
-            hideFocusBorder()
-            return
-        }
         let changed = borderWindowID != windowID
         if changed {
             borderWindowID = windowID

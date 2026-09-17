@@ -88,37 +88,25 @@ struct SettingsView: View {
     private var workspace: some View {
         Group {
             Section {
-                Toggle("Maximize windows", isOn: Binding(
-                    get: { model.state.maximizeWindows }, set: { model.setMaximizeWindows($0) }
-                ))
-                .toggleStyle(.switch)
-            } footer: {
-                Text("Each window uses all available width and height. Turn this off to restore its saved size. Some apps set their own size limits.")
-            }
-            if !model.state.maximizeWindows {
-                Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 10) {
-                            Text("Window gap")
-                            Spacer()
-                            GapInput(value: $gapInput) { model.gap = $0 }
-                                .frame(width: 76, height: 24)
-                            Text("pt").foregroundStyle(.secondary)
-                        }
-                        Slider(value: Binding(get: { gapInput }, set: { gapInput = $0.rounded() }), in: GapInput.bounds) { editing in
-                            if !editing, gapInput != model.gap { model.gap = gapInput }
-                        }
-                        .accessibilityLabel("Gap between windows")
-                        HStack {
-                            Text("−200 pt overlap")
-                            Spacer()
-                            Text("40 pt gap")
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 10) {
+                        Text("Window gap")
+                        Spacer()
+                        GapInput(value: $gapInput) { model.gap = $0 }
+                            .frame(width: 76, height: 24)
+                        Text("pt").foregroundStyle(.secondary)
                     }
-                } footer: {
-                    Text("Negative values overlap windows. The active window stays on top. Use ↑/↓ to adjust by 1 pt or Shift-↑/↓ by 10 pt. Press Return or click elsewhere to apply.")
+                    Slider(value: Binding(get: { gapInput }, set: { gapInput = $0.rounded() }), in: GapInput.bounds) { editing in
+                        if !editing, gapInput != model.gap { model.gap = gapInput }
+                    }
+                    .accessibilityLabel("Gap between windows")
+                    HStack {
+                        Text("−200 pt overlap")
+                        Spacer()
+                        Text("40 pt gap")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
             }
             Section {
@@ -203,8 +191,7 @@ struct SettingsView: View {
                 Text("Active").font(.caption).foregroundStyle(.secondary)
             }
             Group {
-                let requested = model.state.maximizeWindows ? 100 :
-                    Int((model.state.spaces[spaceIndex].widthFraction(for: window.id) * 100).rounded())
+                let requested = Int((model.state.spaces[spaceIndex].widthFraction(for: window.id) * 100).rounded())
                 let actual = model.actualWidthPercent(for: window)
                 Text("\(actual ?? requested)%")
                     .font(.callout.monospacedDigit()).foregroundStyle(.secondary)

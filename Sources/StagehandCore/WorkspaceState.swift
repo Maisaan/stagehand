@@ -20,7 +20,7 @@ public enum NavigationAction: Equatable, Sendable {
 
 public struct SpaceState: Codable, Equatable, Sendable {
     public static let minimumWidthFraction = 0.25
-    public static let maximumWidthFraction = 0.95
+    public static let maximumWidthFraction = 1.0
     public static let defaultWidthFraction = 0.95
 
     public fileprivate(set) var windowIDs: [String]
@@ -84,7 +84,6 @@ public struct SpaceState: Codable, Equatable, Sendable {
 public struct WorkspaceState: Codable, Equatable, Sendable {
     public static let spaceCount = 9
 
-    public var maximizeWindows: Bool
     public var isPaused: Bool
     public private(set) var spaces: [SpaceState]
     public private(set) var activeSpaceIndex: Int
@@ -96,12 +95,10 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     }
 
     public init(
-        maximizeWindows: Bool = false,
         isPaused: Bool = false,
         spaces: [SpaceState] = [],
         activeSpaceIndex: Int = 0
     ) {
-        self.maximizeWindows = maximizeWindows
         self.isPaused = isPaused
         self.spaces = Array(spaces.prefix(Self.spaceCount))
         self.spaces.append(contentsOf: repeatElement(SpaceState(), count: Self.spaceCount - self.spaces.count))
@@ -133,7 +130,10 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
 
     /// Reconcile against all live managed windows, including windows in other spaces.
     /// Only globally unknown windows are added to the active space.
-    public mutating func reconcile(windowIDs: [String]) {
+    public mutating func reconcile(
+        windowIDs: [String],
+        initialWidthFractions: [String: Double] = [:]
+    ) {
         let wasOccupied = !currentSpace.windowIDs.isEmpty
         let liveIDs = Set(windowIDs)
         for index in spaces.indices {
@@ -144,7 +144,9 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         var knownIDs = Set(spaces.flatMap(\.windowIDs))
         for windowID in windowIDs where !windowID.isEmpty && knownIDs.insert(windowID).inserted {
             spaces[activeSpaceIndex].insert(
-                windowID: windowID, width: SpaceState.defaultWidthFraction, focus: true
+                windowID: windowID,
+                width: initialWidthFractions[windowID] ?? SpaceState.defaultWidthFraction,
+                focus: true
             )
         }
         if wasOccupied && currentSpace.windowIDs.isEmpty {
@@ -257,7 +259,7 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
             guard let focusedWindowID else { return false }
             return share(windowID: focusedWindowID, toSpace: index)
         case .shrinkWidth, .growWidth:
-            guard !maximizeWindows, let windowID = focusedWindowID else { return false }
+            guard let windowID = focusedWindowID else { return false }
             let adjustment = action == .growWidth ? 0.05 : -0.05
             let width = (currentSpace.widthFraction(for: windowID) * 100 + adjustment * 100).rounded() / 100
             return setWidthFraction(width, for: windowID)
@@ -302,17 +304,12 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case maximizeWindows, maximumWidthFraction, layoutMode, isPaused, spaces, activeSpaceIndex
+        case isPaused, spaces, activeSpaceIndex
     }
 
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        let legacyMode = try values.decodeIfPresent(String.self, forKey: .layoutMode)
-        let legacyMaximumWidth = try values.decodeIfPresent(Double.self, forKey: .maximumWidthFraction)
-        let maximizeWindows = try values.decodeIfPresent(Bool.self, forKey: .maximizeWindows)
-            ?? (legacyMode == "monocle" || (legacyMaximumWidth ?? 0) >= 1)
         self.init(
-            maximizeWindows: maximizeWindows,
             isPaused: try values.decodeIfPresent(Bool.self, forKey: .isPaused) ?? false,
             spaces: try values.decodeIfPresent([SpaceState].self, forKey: .spaces) ?? [],
             activeSpaceIndex: try values.decodeIfPresent(Int.self, forKey: .activeSpaceIndex) ?? 0
@@ -321,7 +318,6 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
 
     public func encode(to encoder: any Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
-        try values.encode(maximizeWindows, forKey: .maximizeWindows)
         try values.encode(isPaused, forKey: .isPaused)
         try values.encode(spaces, forKey: .spaces)
         try values.encode(activeSpaceIndex, forKey: .activeSpaceIndex)

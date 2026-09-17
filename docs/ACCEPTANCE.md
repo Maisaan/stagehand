@@ -21,19 +21,19 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 - Inactive windows use 95% of available height and stay centered. Focus requests 100%. Apps with fixed/minimum/maximum heights stay centered at their actual accepted size.
 - Navigate across both ends; there is no wrap.
 - Reorder a window and verify focus stays with it.
-- Enable Maximize windows: the active window requests the full available width without native fullscreen.
-- Disable it: individual widths and ribbon order return unchanged.
+- Grow a window from the 95% default to 100%, then shrink it and verify its individual width is retained.
 - System Settings: the displayed percentage reflects its constrained width; focusing the last window leaves no unused slot to its right.
 - Apply a negative gap. Windows overlap horizontally with the active one above its neighbors. A full-width active window covers the available area.
 - Drag a title bar, hold it still, then release. Reorder only on release; the window rejoins the ribbon instead of remaining detached.
 - Drag-resize a scrolling window, including immediately after navigation. Its new width should be remembered within the allowed range.
+- Open a new window while Stagehand is running. Its first layout should keep its original width within the allowed range.
 
 ## Spaces and shared windows
 
 - Move a window to an empty space without following. The outgoing space remains active.
 - Move and follow. The moved window receives focus.
 - Add the same window to two spaces; reorder and resize independently. Content is shared.
-- Navigate away from a window that clamps fully offscreen moves, then return to it. Its parking and ribbon motion stay horizontal. Repeat with maximization on and off. An already visible shared window with unchanged geometry stays in place.
+- Navigate away from a window that clamps fully offscreen moves, then return to it. Its parking and ribbon motion stay horizontal. An already visible shared window with unchanged geometry stays in place.
 - Close a shared window. It disappears from both spaces.
 - Remove one shared membership without closing the real window.
 - Switch to an empty space. Typing must not reach a parked app; a blank Stagehand placeholder is expected.

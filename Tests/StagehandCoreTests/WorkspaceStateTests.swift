@@ -157,56 +157,65 @@ import Testing
     #expect(state.spaces[1].windowIDs == ["a"])
 }
 
-@Test func widthCommandsPreserveRememberedWidthsWhileMaximized() {
+@Test func widthCommandsClampAtTheSupportedLimits() {
     var state = WorkspaceState()
     state.reconcile(windowIDs: ["a"])
+    #expect(state.apply(.growWidth) == true)
+    #expect(state.currentSpace.widthFraction(for: "a") == 1)
     #expect(state.apply(.growWidth) == false)
     for _ in 0..<30 { state.apply(.shrinkWidth) }
     #expect(state.currentSpace.widthFraction(for: "a") == 0.25)
     #expect(state.apply(.shrinkWidth) == false)
     state.apply(.growWidth)
     #expect(state.currentSpace.widthFraction(for: "a") == 0.3)
-    state.maximizeWindows = true
-    #expect(state.currentSpace.widthFraction(for: "a") == 0.3)
-    #expect(state.apply(.shrinkWidth) == false)
-    #expect(state.apply(.growWidth) == false)
-    state.maximizeWindows = false
-    #expect(state.currentSpace.widthFraction(for: "a") == 0.3)
     state.setWidthFraction(.infinity, for: "a")
     #expect(state.currentSpace.widthFraction(for: "a") == 0.95)
+    state.setWidthFraction(2, for: "a")
+    #expect(state.currentSpace.widthFraction(for: "a") == 1)
     #expect(state.apply(.growWidth) == false)
     state.setWidthFraction(-10, for: "a")
     #expect(state.currentSpace.widthFraction(for: "a") == 0.25)
 }
 
-@Test func maximizeTogglePreservesEverySpaceOrderFocusAndIndividualWidth() {
-    var state = WorkspaceState(spaces: [
-        SpaceState(windowIDs: ["a", "b"], focusedWindowID: "a", widthFractions: ["a": 0.95, "b": 0.5]),
-        SpaceState(windowIDs: ["b", "a"], focusedWindowID: "b", widthFractions: ["a": 0.8, "b": 0.95])
-    ])
-    let spaces = state.spaces
-    state.maximizeWindows = true
-    #expect(state.spaces == spaces)
-    state.apply(.goToSpace(index: 1))
-    state.maximizeWindows = false
-    #expect(state.spaces == spaces)
-}
-
-@Test func newWindowsRememberTheirIndividualWidthEvenWhenAddedWhileMaximized() {
-    var state = WorkspaceState(maximizeWindows: true)
+@Test func newWindowsWithoutAnObservedWidthUseTheDefault() {
+    var state = WorkspaceState()
     state.reconcile(windowIDs: ["a"])
     #expect(state.currentSpace.widthFraction(for: "a") == 0.95)
-    state.maximizeWindows = false
     state.reconcile(windowIDs: ["a", "b"])
     #expect(state.currentSpace.widthFraction(for: "b") == 0.95)
     state.setWidthFraction(2, for: "b")
-    #expect(state.currentSpace.widthFraction(for: "b") == 0.95)
+    #expect(state.currentSpace.widthFraction(for: "b") == 1)
 }
 
-@Test func persistedLegacyLayoutsMigrateToOneRibbon() throws {
-    let legacy = Data(#"{"layoutMode":"monocle","spaces":[{"windowIDs":["a","b"],"widthFractions":{"a":0.95,"b":0.5}}]}"#.utf8)
+@Test func newWindowsStartAtTheirObservedWidth() throws {
+    var state = WorkspaceState()
+    state.reconcile(windowIDs: ["new"], initialWidthFractions: ["new": 0.64])
+
+    #expect(state.currentSpace.widthFraction(for: "new") == 0.64)
+    let display = CGRect(x: 0, y: 0, width: 1000, height: 700)
+    let placement = try #require(WindowLayout.placements(for: state, availableFrame: display).first)
+    #expect(placement.frame.width == 640)
+}
+
+@Test func initialWidthsAreClampedAndDoNotOverwriteKnownWindows() {
+    var state = WorkspaceState(spaces: [
+        SpaceState(windowIDs: ["known"], widthFractions: ["known": 0.5])
+    ])
+
+    state.reconcile(
+        windowIDs: ["known", "small", "large", "unspecified"],
+        initialWidthFractions: ["known": 0.8, "small": 0.1, "large": 1.2]
+    )
+
+    #expect(state.currentSpace.widthFraction(for: "known") == 0.5)
+    #expect(state.currentSpace.widthFraction(for: "small") == 0.25)
+    #expect(state.currentSpace.widthFraction(for: "large") == 1)
+    #expect(state.currentSpace.widthFraction(for: "unspecified") == 0.95)
+}
+
+@Test func persistedObsoleteLayoutFieldsAreIgnored() throws {
+    let legacy = Data(#"{"maximizeWindows":true,"layoutMode":"monocle","maximumWidthFraction":1,"spaces":[{"windowIDs":["a","b"],"widthFractions":{"a":0.95,"b":0.5}}]}"#.utf8)
     let state = try JSONDecoder().decode(WorkspaceState.self, from: legacy)
-    #expect(state.maximizeWindows)
     #expect(state.currentSpace.widthFraction(for: "a") == 0.95)
     #expect(state.currentSpace.widthFraction(for: "b") == 0.5)
     let saved = try JSONEncoder().encode(state)
@@ -214,13 +223,7 @@ import Testing
     let payload = try #require(JSONSerialization.jsonObject(with: saved) as? [String: Any])
     #expect(payload["layoutMode"] == nil)
     #expect(payload["maximumWidthFraction"] == nil)
-    #expect(payload["maximizeWindows"] as? Bool == true)
-    let scrolling = try JSONDecoder().decode(WorkspaceState.self, from: Data(#"{"layoutMode":"scrolling"}"#.utf8))
-    #expect(!scrolling.maximizeWindows)
-    let interim = try JSONDecoder().decode(WorkspaceState.self, from: Data(#"{"maximumWidthFraction":1}"#.utf8))
-    #expect(interim.maximizeWindows)
-    let explicit = try JSONDecoder().decode(WorkspaceState.self, from: Data(#"{"maximizeWindows":false,"layoutMode":"monocle"}"#.utf8))
-    #expect(!explicit.maximizeWindows)
+    #expect(payload["maximizeWindows"] == nil)
 }
 
 @Test func persistenceRoundTripsAndSanitizesInvalidState() throws {
@@ -237,7 +240,7 @@ import Testing
     #expect(restored.activeSpaceIndex == 8)
     #expect(restored.spaces[0].windowIDs == ["a", "b"])
     #expect(restored.spaces[0].focusedWindowID == "a")
-    #expect(restored.spaces[0].widthFractions == ["a": 0.95, "b": 0.25])
+    #expect(restored.spaces[0].widthFractions == ["a": 1, "b": 0.25])
 }
 
 @Test func displayedSpacesContainOnlyOccupiedSpacesAndTheActiveSpace() {

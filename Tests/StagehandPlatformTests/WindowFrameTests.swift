@@ -8,7 +8,7 @@ struct WindowFrameTests {
     @Test(arguments: [NavigationAction.focusPrevious, .goToSpace(index: 1)], [CGFloat(0), 1])
     func returningToAParkedSharedWindowDoesNotResizeIt(action: NavigationAction, extraWidth: CGFloat) throws {
         let viewport = CGRect(x: 0, y: 40, width: 1000, height: 700)
-        var state = WorkspaceState(maximizeWindows: true, spaces: [
+        var state = WorkspaceState(spaces: [
             SpaceState(windowIDs: ["shared", "other"], focusedWindowID: "shared")
         ])
         #expect(state.apply(.shareToSpace(index: 1)) == true)
@@ -50,7 +50,7 @@ struct WindowFrameTests {
 
     @Test func anUnchangedVisibleSharedWindowNeedsNoFrameWrites() throws {
         let viewport = CGRect(x: 0, y: 40, width: 1000, height: 700)
-        var state = WorkspaceState(maximizeWindows: true, spaces: [SpaceState(windowIDs: ["shared"])])
+        var state = WorkspaceState(spaces: [SpaceState(windowIDs: ["shared"])])
         #expect(state.apply(.shareToSpace(index: 1)) == true)
         let original = try #require(WindowLayout.placements(for: state, availableFrame: viewport).first).frame
         #expect(state.apply(.goToSpace(index: 1)) == true)

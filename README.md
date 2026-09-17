@@ -64,15 +64,13 @@ Stagehand has nine numbered spaces. Each space keeps its own window order, focus
 - Use **Share with** to show the same live window in more than one space. Each space keeps its own order and width.
 - Use **Remove from this space** to remove one membership. You cannot remove the last membership.
 - Drag a title bar and release to reorder a window.
-- Resize a window to save its width while maximization is off.
+- Resize a window to save its width.
 
-New windows enter after the current window. Closing a real window removes it from every space. Empty spaces show a Stagehand placeholder so typing cannot reach a hidden app.
+New windows enter after the current window and keep their original width within Stagehand's 25% to 100% range. Closing a real window removes it from every space. Empty spaces show a Stagehand placeholder so typing cannot reach a hidden app.
 
 ### Window layout
 
-**Maximize windows** requests the full available display area without using native fullscreen. Turn it off to restore saved widths and heights. Apps may enforce their own size limits.
-
-The gap accepts values from `-200` to `40` points. Negative values overlap windows and keep the active window on top. Maximize temporarily removes the gap.
+The gap accepts values from `-200` to `40` points. Negative values overlap windows and keep the active window on top.
 
 The app bar appears beneath the camera housing, or at the top center on displays without a notch. Hover there or navigate to reveal it. Click an app to focus it or the space number to change spaces. Choose the active border color and app bar color under Appearance in Workspace settings. The app bar and focus border do not take keyboard focus or reserve screen space.
 
@@ -91,7 +89,7 @@ The app bar appears beneath the camera housing, or at the top center on displays
 | Pause and restore | Control + Option + Escape |
 | Open settings | Control + Option + comma |
 
-Navigation stops at each end and does not wrap. Width shortcuts work only when maximization is off.
+Navigation stops at each end and does not wrap. Width shortcuts stop at the 25% and 100% limits.
 These are the defaults. The Controls settings let you turn off, record, or reset each binding, including bindings that use Caps Lock as a modifier.
 
 ### Trackpad gestures

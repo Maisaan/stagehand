@@ -22,7 +22,7 @@ public enum WindowLayout {
               availableFrame.origin.x.isFinite, availableFrame.origin.y.isFinite,
               availableFrame.width.isFinite, availableFrame.height.isFinite else { return [] }
         let space = state.currentSpace
-        let gap: CGFloat = state.maximizeWindows ? 0 : (gap.isFinite ? gap : 8)
+        let gap: CGFloat = gap.isFinite ? gap : 8
 
         var cursor: CGFloat = 0
         var focusedStart: CGFloat = 0
@@ -31,7 +31,7 @@ public enum WindowLayout {
         var ribbon: [(windowID: String, frame: CGRect)] = []
         ribbon.reserveCapacity(space.windowIDs.count)
         for windowID in space.windowIDs {
-            let requestedWidth = availableFrame.width * (state.maximizeWindows ? 1 : space.widthFraction(for: windowID))
+            let requestedWidth = availableFrame.width * space.widthFraction(for: windowID)
             let width: CGFloat
             if let observedWidth = observedWidths[windowID], observedWidth.isFinite, observedWidth > 0 {
                 width = observedWidth
@@ -39,9 +39,8 @@ public enum WindowLayout {
                 width = requestedWidth
             }
             // Accepted app constraints take precedence over either requested size.
-            // Keep the user's preferred height separate so maximizing cannot erase it.
             let preferredHeight = preferredHeights[windowID] ?? availableFrame.height
-            let requestedHeight = !state.maximizeWindows && preferredHeight.isFinite && preferredHeight > 0
+            let requestedHeight = preferredHeight.isFinite && preferredHeight > 0
                 ? preferredHeight : availableFrame.height
             let height: CGFloat
             if let observedHeight = observedHeights[windowID], observedHeight.isFinite, observedHeight > 0 {

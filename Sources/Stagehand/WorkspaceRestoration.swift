@@ -24,7 +24,12 @@ struct WorkspaceRestoration {
         return paused
     }
 
-    mutating func reconcile(state: inout WorkspaceState, windowIDs: [String], trackedWindowIDs: Set<String>) {
+    mutating func reconcile(
+        state: inout WorkspaceState,
+        windowIDs: [String],
+        trackedWindowIDs: Set<String>,
+        initialWidthFractions: [String: Double] = [:]
+    ) {
         let liveWindowIDs = Set(windowIDs)
         for pending in pending {
             state.restoreMemberships(windowIDs: pending.windowIDs.intersection(windowIDs), from: pending.state)
@@ -37,7 +42,7 @@ struct WorkspaceRestoration {
         if !newlyUnavailable.isEmpty {
             pending.append(PendingMemberships(state: state, windowIDs: newlyUnavailable))
         }
-        state.reconcile(windowIDs: windowIDs)
+        state.reconcile(windowIDs: windowIDs, initialWidthFractions: initialWidthFractions)
         for index in pending.indices {
             pending[index].windowIDs.formIntersection(trackedWindowIDs)
             pending[index].windowIDs.subtract(liveWindowIDs)
