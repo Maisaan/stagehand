@@ -138,9 +138,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
         model.refreshPermissions()
         model.refreshLaunchAtLogin()
+        NSApp.setActivationPolicy(.regular)
         NSApp.activate()
         settingsWindow?.makeKeyAndOrderFront(nil)
         if let settingsWindow { model.registerSettingsWindow(settingsWindow) }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === settingsWindow else { return }
+        NSApp.setActivationPolicy(.accessory)
     }
 
     @objc func openOnboarding() {

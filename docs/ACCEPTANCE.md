@@ -69,6 +69,7 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 - In menu bar quick actions, change the active space color with both the color picker and a typed hex value. The picker stays in front, the focus border and app bar update, and the value remains after reopening quick actions.
 - Neither bar nor border shifts or resizes any window.
 - The current application owns the macOS menu bar, except while Stagehand settings or an empty-space placeholder is active.
+- Open Settings and confirm Stagehand appears in the Dock. Close Settings and confirm its Dock icon disappears while the menu bar item remains.
 - Settings stay usable at the built-in display's current scaling.
 - Change display scaling, Dock position, and menu-bar visibility while Stagehand is running. The ribbon and parking bounds must use the new visible frame without restarting.
 - Stagehand settings joins the ribbon, can be reordered, and regains focus through the same navigation controls.
