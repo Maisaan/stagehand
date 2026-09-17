@@ -1062,9 +1062,16 @@ struct HexColorInput: View {
     var body: some View {
         TextField("#RRGGBB", text: $text)
             .font(.body.monospaced())
-            .textFieldStyle(.roundedBorder)
+            .textFieldStyle(.plain)
             .labelsHidden()
             .focused($isFocused)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(isFocused ? Color.accentColor.opacity(0.8) : Color.primary.opacity(0.1), lineWidth: 1)
+            }
             .onSubmit(commit)
             .onChange(of: isFocused) { _, focused in
                 if !focused { commit() }

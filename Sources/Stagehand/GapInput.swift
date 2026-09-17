@@ -44,8 +44,13 @@ final class GapTextField: NSTextField, NSTextFieldDelegate {
         delegate = self
         isEditable = true
         isSelectable = true
-        isBezeled = true
-        bezelStyle = .roundedBezel
+        isBezeled = false
+        drawsBackground = true
+        backgroundColor = NSColor.labelColor.withAlphaComponent(0.08)
+        wantsLayer = true
+        layer?.cornerRadius = 7
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.1).cgColor
         font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         alignment = .right
         setAccessibilityLabel("Gap between windows in points")
