@@ -34,6 +34,22 @@ struct QuickControlsView: View {
 
                 Divider()
 
+                QuickRow("Gesture navigation") {
+                    Toggle("Gesture navigation", isOn: $model.gesturesEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+
+                Divider()
+
+                QuickRow("Diagnostic logging") {
+                    Toggle("Diagnostic logging", isOn: $model.diagnosticLoggingEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+
+                Divider()
+
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
                         Text("Window gap")
@@ -52,22 +68,6 @@ struct QuickControlsView: View {
                     .accessibilityLabel("Gap between windows")
                 }
                 .padding(12)
-
-                Divider()
-
-                QuickRow("Gesture navigation") {
-                    Toggle("Gesture navigation", isOn: $model.gesturesEnabled)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                }
-
-                Divider()
-
-                QuickRow("Diagnostic logging") {
-                    Toggle("Diagnostic logging", isOn: $model.diagnosticLoggingEnabled)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                }
 
                 Divider()
 

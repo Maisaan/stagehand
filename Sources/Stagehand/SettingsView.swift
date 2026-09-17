@@ -53,6 +53,8 @@ struct SettingsView: View {
     @ObservedObject var model: StagehandModel
     let showOnboarding: () -> Void
     let expandAboutDetails: Bool
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.controlActiveState) private var controlActiveState
     @State private var page: SettingsPage
     @State private var gapInput: Double
     @State private var selectedSpaceIndex: Int
@@ -109,7 +111,7 @@ struct SettingsView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(settingsBackgroundColor)
         .frame(minWidth: 700, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
         .alert("Shortcut unavailable", isPresented: Binding(
             get: { shortcutError != nil },
@@ -119,6 +121,13 @@ struct SettingsView: View {
         } message: {
             Text(shortcutError ?? "")
         }
+    }
+
+    private var settingsBackgroundColor: Color {
+        guard colorScheme == .dark else { return Color(nsColor: .windowBackgroundColor) }
+        return controlActiveState == .key
+            ? Color(white: 42.0 / 255)
+            : Color(white: 38.0 / 255)
     }
 
     private func sidebarRow(_ item: SettingsPage) -> some View {
