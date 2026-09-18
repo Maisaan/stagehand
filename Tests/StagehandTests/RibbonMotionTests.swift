@@ -25,6 +25,29 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     }
 }
 
+@Test func externalFocusChangesDoNotAnimateTheRibbon() {
+    let previous = WorkspaceState(spaces: [
+        SpaceState(windowIDs: ["a", "b"], focusedWindowID: "a")
+    ])
+    var destination = previous
+    destination.focus(windowID: "b")
+
+    #expect(shouldSlideRibbon(
+        from: previous,
+        to: destination,
+        source: .observedFocus,
+        hadPreview: false,
+        reduceMotion: false
+    ) == false)
+    #expect(shouldSlideRibbon(
+        from: previous,
+        to: destination,
+        source: .managed,
+        hadPreview: false,
+        reduceMotion: false
+    ) == true)
+}
+
 @MainActor @Test func gesturePreviewAndCommitUseTheAdjacentWindow() throws {
     let viewport = CGRect(x: 0, y: 40, width: 1_000, height: 700)
     let state = WorkspaceState(spaces: [

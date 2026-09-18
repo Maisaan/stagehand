@@ -26,6 +26,26 @@ struct WorkspaceRestorationTests {
         #expect(state.focusedWindowID == "right")
     }
 
+    @Test func destroyedWindowLeavesTheRibbonBeforeTheNextScan() {
+        var state = WorkspaceState(spaces: [
+            SpaceState(windowIDs: ["left", "closed", "right"], focusedWindowID: "closed")
+        ])
+        var windows = [
+            WindowRecord(id: "left", appName: "Left", title: "", bundleIdentifier: "left", pid: 1,
+                         frame: CGRect(x: 0, y: 0, width: 100, height: 100), isResizable: true),
+            WindowRecord(id: "closed", appName: "Closed", title: "", bundleIdentifier: "closed", pid: 2,
+                         frame: CGRect(x: 100, y: 0, width: 100, height: 100), isResizable: true),
+            WindowRecord(id: "right", appName: "Right", title: "", bundleIdentifier: "right", pid: 2,
+                         frame: CGRect(x: 200, y: 0, width: 100, height: 100), isResizable: true)
+        ]
+
+        #expect(removeDestroyedWindow(windowID: "closed", windows: &windows, state: &state))
+        #expect(windows.map(\.id) == ["left", "right"])
+        #expect(state.currentSpace.windowIDs == ["left", "right"])
+        #expect(state.focusedWindowID == "right")
+        #expect(!removeDestroyedWindow(windowID: "closed", windows: &windows, state: &state))
+    }
+
     @Test func minimizedWindowLeavesTheRibbonAndReturnsToItsMembership() {
         let original = WorkspaceState(spaces: [
             SpaceState(

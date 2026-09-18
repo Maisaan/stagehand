@@ -6,9 +6,15 @@ import StagehandPlatform
 
 private let traceGestures = ProcessInfo.processInfo.arguments.contains("--trace-gestures")
 
+enum RibbonTransitionSource: Equatable {
+    case managed
+    case observedFocus
+}
+
 func shouldSlideRibbon(from previousState: WorkspaceState, to state: WorkspaceState,
-                       hadPreview: Bool, reduceMotion: Bool) -> Bool {
-    guard !reduceMotion,
+                       source: RibbonTransitionSource, hadPreview: Bool, reduceMotion: Bool) -> Bool {
+    guard source != .observedFocus,
+          !reduceMotion,
           previousState.activeSpaceIndex == state.activeSpaceIndex,
           previousState.focusedWindowID != state.focusedWindowID || hadPreview else { return false }
     return state.focusedWindowID != nil
@@ -89,6 +95,18 @@ func removeTerminatedApplication(
     windows.removeAll { removedIDs.contains($0.id) }
     state.reconcile(windowIDs: windows.map(\.id))
     return removedIDs
+}
+
+@discardableResult
+func removeDestroyedWindow(
+    windowID: String,
+    windows: inout [WindowRecord],
+    state: inout WorkspaceState
+) -> Bool {
+    guard windows.contains(where: { $0.id == windowID }) else { return false }
+    windows.removeAll { $0.id == windowID }
+    state.reconcile(windowIDs: windows.map(\.id))
+    return true
 }
 
 @MainActor
@@ -266,6 +284,11 @@ final class StagehandModel: ObservableObject {
             self == .action(.focusNext) || self == .action(.focusPrevious)
         }
 
+        var ribbonTransitionSource: RibbonTransitionSource {
+            if case .observedFocus = self { return .observedFocus }
+            return .managed
+        }
+
         var diagnosticName: String {
             switch self {
             case .action(let action): "action.\(action)"
@@ -334,6 +357,9 @@ final class StagehandModel: ObservableObject {
         windowSystem.onChange = { [weak self] in self?.scheduleRefresh() }
         windowSystem.onApplicationTerminated = { [weak self] pid in
             self?.applicationTerminated(pid: pid)
+        }
+        windowSystem.onWindowDestroyed = { [weak self] id in
+            self?.windowDestroyed(windowID: id)
         }
         windowSystem.onFocusedWindowChange = { [weak self] id in self?.observedFocusChanged(windowID: id) }
         windowSystem.onFrameChange = { [weak self] id, frame in
@@ -972,6 +998,28 @@ final class StagehandModel: ObservableObject {
         let focusedWindowID = state.focusedWindowID
         let removedIDs = removeTerminatedApplication(pid: pid, windows: &windows, state: &state)
         guard !removedIDs.isEmpty else { return }
+        finishRemovingWindows(removedIDs, focusedWindowID: focusedWindowID)
+        diagnostics.record("application_removed", details: [
+            "pid": String(pid),
+            "windowCount": String(removedIDs.count)
+        ])
+        enqueue(.refresh)
+        onStateChange?()
+    }
+
+    private func windowDestroyed(windowID: String) {
+        guard isRunning, !isSuspended else { return }
+        refreshTask?.cancel()
+        let focusedWindowID = state.focusedWindowID
+        guard removeDestroyedWindow(windowID: windowID, windows: &windows, state: &state) else { return }
+        let removedIDs = Set([windowID])
+        finishRemovingWindows(removedIDs, focusedWindowID: focusedWindowID)
+        diagnostics.record("window_removed", details: ["windowID": windowID])
+        enqueue(.refresh)
+        onStateChange?()
+    }
+
+    private func finishRemovingWindows(_ removedIDs: Set<String>, focusedWindowID: String?) {
         if ribbonMotion.isRunning {
             presentationFrames = ribbonMotion.frames.filter { !removedIDs.contains($0.key) }
             ribbonMotion.cancel()
@@ -990,12 +1038,6 @@ final class StagehandModel: ObservableObject {
         gestureBase = gestureBase?.filter { !removedIDs.contains($0.key) }
         gesturePrepared.subtract(removedIDs)
         if borderWindowID.map(removedIDs.contains) == true { hideFocusBorder() }
-        diagnostics.record("application_removed", details: [
-            "pid": String(pid),
-            "windowCount": String(removedIDs.count)
-        ])
-        enqueue(.refresh)
-        onStateChange?()
     }
 
     private func observedFocusChanged(windowID: String) {
@@ -1229,6 +1271,7 @@ final class StagehandModel: ObservableObject {
                 let canSlide = shouldSlideRibbon(
                     from: previousState,
                     to: self.state,
+                    source: change.ribbonTransitionSource,
                     hadPreview: hadPreview,
                     reduceMotion: reduceMotion
                 )

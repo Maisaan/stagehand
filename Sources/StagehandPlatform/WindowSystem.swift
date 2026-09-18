@@ -29,6 +29,7 @@ public final class WindowSystem {
     public var onFrameChange: ((String, CGRect) -> Void)?
     public var onFocusedWindowChange: ((String) -> Void)?
     public var onApplicationTerminated: ((pid_t) -> Void)?
+    public var onWindowDestroyed: ((String) -> Void)?
     public var onNativeDesktopChange: (() -> Void)?
     public var onScreenParametersChange: (() -> Void)?
     public var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
@@ -755,6 +756,7 @@ public final class WindowSystem {
                    let id = owner.trackedWindowID(matching: changedWindow) {
                     owner.windows.removeValue(forKey: id)
                     owner.parkingValidationIDs.remove(id)
+                    owner.onWindowDestroyed?(id)
                 }
                 if name == kAXFocusedWindowChangedNotification { owner.reportCurrentFocus() }
                 if owner.onFrameChange != nil,
