@@ -58,3 +58,47 @@ import Testing
 
     #expect(!window.isMovableByWindowBackground)
 }
+
+@MainActor
+@Test func openingSettingsBringsTheAppToTheFrontEveryTime() async throws {
+    let previouslyActiveApplication = NSWorkspace.shared.frontmostApplication
+    let finder = try #require(NSRunningApplication.runningApplications(
+        withBundleIdentifier: "com.apple.finder"
+    ).first)
+    let delegate = AppDelegate(model: StagehandModel())
+    var settingsWindow: NSWindow?
+    defer {
+        settingsWindow?.close()
+        if let previouslyActiveApplication,
+           previouslyActiveApplication.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            previouslyActiveApplication.activate()
+        }
+    }
+
+    finder.activate()
+    try await waitUntil { NSWorkspace.shared.frontmostApplication?.processIdentifier == finder.processIdentifier }
+
+    delegate.openSettings()
+    try await waitUntil { NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier }
+    let openedWindow = try #require(NSApp.windows.first { $0.title == "Stagehand" && $0.isVisible })
+    settingsWindow = openedWindow
+
+    finder.activate()
+    try await waitUntil { NSWorkspace.shared.frontmostApplication?.processIdentifier == finder.processIdentifier }
+
+    delegate.openSettings()
+    try await waitUntil { NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier }
+    #expect(settingsWindow?.isVisible == true)
+}
+
+@MainActor
+private func waitUntil(
+    timeout: Duration = .seconds(1),
+    condition: () -> Bool
+) async throws {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while !condition() && ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    try #require(condition())
+}

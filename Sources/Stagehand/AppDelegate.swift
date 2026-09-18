@@ -37,6 +37,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var model: StagehandModel?
     private var activationObserver: NSObjectProtocol?
 
+    override init() {
+        super.init()
+    }
+
+    init(model: StagehandModel) {
+        self.model = model
+        super.init()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         let arguments = ProcessInfo.processInfo.arguments
         // Diagnostics need the same completed AppKit launch as normal operation.
@@ -139,7 +148,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         model.refreshPermissions()
         model.refreshLaunchAtLogin()
         NSApp.setActivationPolicy(.regular)
-        NSApp.activate()
+        if let frontmostApplication = NSWorkspace.shared.frontmostApplication,
+           frontmostApplication.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            let didActivate = NSRunningApplication.current.activate(
+                from: frontmostApplication,
+                options: []
+            )
+            if !didActivate { NSApp.activate() }
+        } else {
+            NSApp.activate()
+        }
         settingsWindow?.makeKeyAndOrderFront(nil)
         if let settingsWindow { model.registerSettingsWindow(settingsWindow) }
     }
