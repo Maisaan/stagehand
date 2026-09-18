@@ -330,7 +330,7 @@ struct SettingsView: View {
         } trailing: {
             if dismissible {
                 Button { model.dismissWarning() } label: {
-                    PhosphorIcon(.x)
+                    PhosphorIcon(.xCircle)
                         .frame(width: 12, height: 12)
                 }
                     .buttonStyle(.plain)

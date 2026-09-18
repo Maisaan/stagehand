@@ -24,6 +24,7 @@ enum PhosphorIconName: String {
     case warning = "warning-fill"
     case warningCircle = "warning-circle-fill"
     case x = "x-fill"
+    case xCircle = "x-circle-fill"
 }
 
 struct PhosphorIcon: View {
