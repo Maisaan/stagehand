@@ -50,3 +50,11 @@ import Testing
     let windowNumber = try #require(CGWindowID(exactly: window.windowNumber))
     #expect(WindowCornerRadius.cornerRadius(windowNumber: windowNumber) == SettingsWindow.cornerRadius)
 }
+
+@MainActor
+@Test func settingsWindowContentDoesNotMoveTheWindow() {
+    let window = SettingsWindow.make(model: StagehandModel())
+    defer { window.close() }
+
+    #expect(!window.isMovableByWindowBackground)
+}

@@ -21,7 +21,7 @@ enum SettingsWindow {
         window.toolbarStyle = .unified
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.isMovableByWindowBackground = true
+        window.isMovableByWindowBackground = false
         window.isReleasedWhenClosed = false
         // Settings belongs to Stage Manager as a utility window, but must never
         // join another app's native full-screen Space.

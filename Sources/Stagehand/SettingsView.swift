@@ -486,7 +486,7 @@ struct SettingsView: View {
                 }
             } label: {
                 PhosphorIcon(.dotsThreeVertical)
-                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                    .foregroundStyle(.white)
                     .frame(width: 16, height: 16)
                     .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
