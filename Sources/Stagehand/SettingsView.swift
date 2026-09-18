@@ -239,7 +239,10 @@ struct SettingsView: View {
                                 model.requestAccessibility()
                             }
                         }
-                        .buttonStyle(.link)
+                        .buttonStyle(.bordered)
+                        .buttonBorderShape(.roundedRectangle(radius: 8))
+                        .controlSize(.regular)
+                        .tint(.white)
                     }
                 }
             } footer: {
@@ -279,7 +282,10 @@ struct SettingsView: View {
                     Divider()
                     SettingsRow("Trackpad settings") {
                         Button("Open…") { openSettingsPane("com.apple.Trackpad-Settings.extension") }
-                            .buttonStyle(.link)
+                            .buttonStyle(.bordered)
+                            .buttonBorderShape(.roundedRectangle(radius: 8))
+                            .controlSize(.regular)
+                            .tint(.white)
                     }
                 }
             }
@@ -670,7 +676,10 @@ struct SettingsView: View {
                 SettingsCard {
                     SettingsRow("Run onboarding again") {
                         Button("Open…", action: showOnboarding)
-                            .buttonStyle(.link)
+                            .buttonStyle(.bordered)
+                            .buttonBorderShape(.roundedRectangle(radius: 8))
+                            .controlSize(.regular)
+                            .tint(.white)
                     }
                 }
             }
