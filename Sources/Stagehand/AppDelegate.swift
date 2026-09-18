@@ -198,14 +198,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let popover = quickPopover ?? {
             let popover = NSPopover()
             popover.behavior = .transient
-            popover.animates = true
+            popover.animates = false
             popover.delegate = self
-            popover.contentSize = NSSize(width: 340, height: 372)
+            popover.contentSize = NSSize(width: 340, height: 400)
             popover.contentViewController = QuickControlsHostingController(rootView: QuickControlsView(
                 model: model,
                 openSettings: { [weak self] in
                     self?.closeQuickControls { [weak self] in self?.openSettings() }
                 },
+                quit: { [weak self] in self?.quit() },
                 requestAccessibility: { [weak self] in
                     self?.closeQuickControls { [weak self] in self?.model?.requestAccessibility() }
                 }
@@ -363,9 +364,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                     QuickControlsView(
                         model: model,
                         openSettings: {},
+                        quit: {},
                         requestAccessibility: {}
                     ),
-                    size: NSSize(width: 340, height: 372),
+                    size: NSSize(width: 340, height: 400),
                     filename: "quick-controls.png"
                 )
 

@@ -4,6 +4,7 @@ import SwiftUI
 struct QuickControlsView: View {
     @ObservedObject var model: StagehandModel
     let openSettings: () -> Void
+    let quit: () -> Void
     let requestAccessibility: () -> Void
     @Environment(\.controlActiveState) private var controlActiveState
     @State private var gapInput: Double
@@ -11,10 +12,12 @@ struct QuickControlsView: View {
     init(
         model: StagehandModel,
         openSettings: @escaping () -> Void,
+        quit: @escaping () -> Void,
         requestAccessibility: @escaping () -> Void
     ) {
         self.model = model
         self.openSettings = openSettings
+        self.quit = quit
         self.requestAccessibility = requestAccessibility
         _gapInput = State(initialValue: GapInput.clamped(model.gap))
     }
@@ -90,27 +93,32 @@ struct QuickControlsView: View {
                 }
             }
 
-            Button {
-                openSettings()
-            } label: {
-                HStack(spacing: 7) {
-                    PhosphorIcon(.gear)
-                        .frame(width: 15, height: 15)
-                    Text("Open Settings…")
-                }
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 9)
-                    .background(Color.white.opacity(0.05))
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            VStack(spacing: 8) {
+                Button {
+                    openSettings()
+                } label: {
+                    HStack(spacing: 7) {
+                        PhosphorIcon(.gear)
+                            .frame(width: 15, height: 15)
+                        Text("Open Settings…")
                     }
-                    .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .background(Color.white.opacity(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                        }
+                        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
+                Button("Quit Stagehand", action: quit)
+                    .buttonStyle(.link)
             }
-            .buttonStyle(.plain)
         }
         .padding(14)
         .frame(width: 340)
