@@ -1,5 +1,9 @@
 import ApplicationServices
 
+func isWindowDestroyedNotification(_ notification: String) -> Bool {
+    notification == kAXUIElementDestroyedNotification
+}
+
 /// Tracks subscriptions individually so a busy launching app can be retried without
 /// replacing its observer or repeatedly registering subscriptions that succeeded.
 struct ApplicationObservation {

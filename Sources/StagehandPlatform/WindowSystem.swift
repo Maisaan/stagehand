@@ -751,6 +751,11 @@ public final class WindowSystem {
                     _ = AXUIElementGetPid(changedWindow, &pid)
                     print("Discovery t=\(ProcessInfo.processInfo.systemUptime) AX=\(name) pid=\(pid)")
                 }
+                if isWindowDestroyedNotification(name),
+                   let id = owner.trackedWindowID(matching: changedWindow) {
+                    owner.windows.removeValue(forKey: id)
+                    owner.parkingValidationIDs.remove(id)
+                }
                 if name == kAXFocusedWindowChangedNotification { owner.reportCurrentFocus() }
                 if owner.onFrameChange != nil,
                    name == kAXMovedNotification || name == kAXResizedNotification,

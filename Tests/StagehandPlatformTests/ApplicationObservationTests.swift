@@ -2,6 +2,11 @@ import ApplicationServices
 import Testing
 @testable import StagehandPlatform
 
+@Test func onlyDestroyedWindowsAreRemovedBeforeRefreshingTheRibbon() {
+    #expect(isWindowDestroyedNotification(kAXUIElementDestroyedNotification))
+    #expect(!isWindowDestroyedNotification(kAXMovedNotification))
+}
+
 @Test func launchingAppSubscriptionsRecoverAfterTransientFailure() {
     var observation = ApplicationObservation()
     var received: [String] = []
