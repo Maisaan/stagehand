@@ -18,20 +18,19 @@ struct StatusMenuState {
     let spaces: [(index: Int, windowCount: Int)]
 }
 
-private final class QuickControlsHostingController<Content: View>: NSHostingController<Content> {
-    override func viewDidAppear() {
-        super.viewDidAppear()
-        view.window?.makeFirstResponder(nil)
-    }
+private final class QuickControlsHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private static let onboardingCompleteKey = "onboardingComplete"
     private var statusItem: NSStatusItem?
     private var statusMenu: NSMenu?
-    private var quickPopover: NSPopover?
-    private var quickPopoverCloseCompletion: (() -> Void)?
+    private var quickControlsPanel: QuickControlsPanel?
+    private var quickControlsCloseCompletion: (() -> Void)?
+    private var quickControlsOutsideClickMonitor: Any?
+    private var quickControlsLocalClickMonitor: Any?
     private var settingsWindow: NSWindow?
     private var onboardingWindow: NSWindow?
     private var model: StagehandModel?
@@ -127,6 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     func applicationWillTerminate(_ notification: Notification) {
         model?.shutDown()
         if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
+        removeQuickControlsOutsideClickMonitor()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -184,24 +184,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         case .showControls:
             toggleQuickControls(relativeTo: sender)
         case .showMenu:
+            closeQuickControls()
             guard let menu = statusMenu else { return }
             menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY), in: sender)
         }
     }
 
     private func toggleQuickControls(relativeTo button: NSStatusBarButton) {
-        if quickPopover?.isShown == true {
-            quickPopover?.performClose(nil)
+        if quickControlsPanel?.isVisible == true {
+            quickControlsPanel?.dismiss()
             return
         }
         guard let model else { return }
-        let popover = quickPopover ?? {
-            let popover = NSPopover()
-            popover.behavior = .transient
-            popover.animates = false
-            popover.delegate = self
-            popover.contentSize = NSSize(width: 340, height: 400)
-            popover.contentViewController = QuickControlsHostingController(rootView: QuickControlsView(
+        let panel = quickControlsPanel ?? {
+            let hostingView = QuickControlsHostingView(rootView: QuickControlsView(
                 model: model,
                 openSettings: { [weak self] in
                     self?.closeQuickControls { [weak self] in self?.openSettings() }
@@ -211,34 +207,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                     self?.closeQuickControls { [weak self] in self?.model?.requestAccessibility() }
                 }
             ))
-            quickPopover = popover
-            return popover
+            let panel = QuickControlsPanel(contentView: hostingView)
+            panel.onDismiss = { [weak self] in self?.quickControlsDidDismiss() }
+            quickControlsPanel = panel
+            return panel
         }()
         model.refreshPermissions()
-        NSApp.activate()
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        panel.present(relativeTo: button)
+        installQuickControlsOutsideClickMonitor()
     }
 
-    private func closeQuickControls(completion: @escaping () -> Void) {
-        guard let popover = quickPopover, popover.isShown else {
-            completion()
+    private func closeQuickControls(completion: (() -> Void)? = nil) {
+        guard let panel = quickControlsPanel, panel.isVisible else {
+            completion?()
             return
         }
-        quickPopoverCloseCompletion = completion
-        popover.performClose(nil)
+        quickControlsCloseCompletion = completion
+        panel.dismiss()
     }
 
-    func popoverDidClose(_ notification: Notification) {
-        let completion = quickPopoverCloseCompletion
-        quickPopoverCloseCompletion = nil
+    private func quickControlsDidDismiss() {
+        removeQuickControlsOutsideClickMonitor()
+        let completion = quickControlsCloseCompletion
+        quickControlsCloseCompletion = nil
         completion?()
     }
 
-    func popoverDidShow(_ notification: Notification) {
-        guard let popover = notification.object as? NSPopover,
-              let window = popover.contentViewController?.view.window else { return }
-        window.makeKey()
-        window.makeFirstResponder(nil)
+    private func installQuickControlsOutsideClickMonitor() {
+        if quickControlsOutsideClickMonitor == nil {
+            quickControlsOutsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
+                matching: [.leftMouseDown, .rightMouseDown]
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.closeQuickControls() }
+            }
+        }
+        if quickControlsLocalClickMonitor == nil {
+            quickControlsLocalClickMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.leftMouseDown, .rightMouseDown]
+            ) { [weak self] event in
+                guard let self,
+                      event.window !== self.quickControlsPanel,
+                      event.window !== self.statusItem?.button?.window,
+                      !(event.window is NSColorPanel) else { return event }
+                self.closeQuickControls()
+                return event
+            }
+        }
+    }
+
+    private func removeQuickControlsOutsideClickMonitor() {
+        if let quickControlsOutsideClickMonitor {
+            NSEvent.removeMonitor(quickControlsOutsideClickMonitor)
+        }
+        if let quickControlsLocalClickMonitor {
+            NSEvent.removeMonitor(quickControlsLocalClickMonitor)
+        }
+        self.quickControlsOutsideClickMonitor = nil
+        self.quickControlsLocalClickMonitor = nil
     }
 
     private func completeOnboarding() {

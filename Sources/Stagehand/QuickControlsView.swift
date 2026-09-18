@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 
 struct QuickControlsView: View {
+    private static let cornerRadius: CGFloat = 20
+
     @ObservedObject var model: StagehandModel
     let openSettings: () -> Void
     let quit: () -> Void
@@ -124,11 +126,18 @@ struct QuickControlsView: View {
         .frame(width: 340)
         .background {
             ZStack {
-                Rectangle().fill(.thickMaterial)
+                RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                    .fill(.thickMaterial)
                 if controlActiveState == .inactive {
-                    Color.black.opacity(0.64)
+                    RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                        .fill(Color.black.opacity(0.64))
                 }
             }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                .stroke(Color.white.opacity(0.14), lineWidth: 1)
         }
         .tint(.blue)
         .onChange(of: model.gap) { _, value in

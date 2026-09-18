@@ -9,6 +9,22 @@ import Testing
 }
 
 @MainActor
+@Test func quickControlsPanelTakesFocusWhenPresentedWithoutPopoverChrome() {
+    let panel = QuickControlsPanel(contentView: NSView(frame: NSRect(x: 0, y: 0, width: 340, height: 400)))
+    defer { panel.close() }
+
+    #expect(!panel.styleMask.contains(.titled))
+    #expect(panel.styleMask.contains(.nonactivatingPanel))
+    #expect(panel.canBecomeKey)
+    #expect(panel.level == .popUpMenu)
+
+    panel.present(at: CGPoint(x: 100, y: 100))
+
+    #expect(panel.isVisible)
+    #expect(panel.isKeyWindow)
+}
+
+@MainActor
 @Test func settingsWindowControlsUseLargeWindowInset() throws {
     let window = SettingsWindow.make(model: StagehandModel())
     defer { window.close() }
