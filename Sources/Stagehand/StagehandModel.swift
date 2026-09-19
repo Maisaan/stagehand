@@ -35,6 +35,16 @@ func adjustedWindowHeight(current: CGFloat, available: CGFloat, growing: Bool) -
     return growing ? min(current + adjustment, limit) : max(current + adjustment, limit)
 }
 
+func shouldFollowObservedFocus(
+    hasNewWindows: Bool,
+    observedWindowID: String,
+    previouslyKnownWindowIDs: Set<String>
+) -> Bool {
+    // Fullscreen and minimized windows can disappear for one scan. Treat their
+    // return differently from a window Stagehand has never managed before.
+    !hasNewWindows || previouslyKnownWindowIDs.contains(observedWindowID)
+}
+
 enum RibbonTranslationOutcome: Equatable {
     case readyForFocus
     case superseded
@@ -1074,15 +1084,21 @@ final class StagehandModel: ObservableObject {
         }
         let current = windowSystem.scanWindows()
         let oldState = state
+        let previouslyKnownWindowIDs = Set(state.spaces.flatMap(\.windowIDs))
         let oldIDs = Set(windows.map(\.id))
         windows = current
         workspaceRestoration.reconcile(state: &state, windowIDs: current.map(\.id),
                                        trackedWindowIDs: windowSystem.trackedWindowIDs,
                                        initialWidthFractions: initialWidthFractions(for: current))
         let hasNewWindows = current.contains { !oldIDs.contains($0.id) }
-        if !hasNewWindows, oldState.activeSpaceIndex == state.activeSpaceIndex,
+        if oldState.activeSpaceIndex == state.activeSpaceIndex,
            let focused = windowSystem.focusedWindowID(),
-           current.contains(where: { $0.id == focused }) {
+           current.contains(where: { $0.id == focused }),
+           shouldFollowObservedFocus(
+               hasNewWindows: hasNewWindows,
+               observedWindowID: focused,
+               previouslyKnownWindowIDs: previouslyKnownWindowIDs
+           ) {
             // External app activation follows an existing membership; shared windows stay in this space.
             if !state.currentSpace.windowIDs.contains(focused),
                let space = state.spaces.firstIndex(where: { $0.windowIDs.contains(focused) }) {
