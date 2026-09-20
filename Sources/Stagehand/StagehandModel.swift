@@ -49,6 +49,16 @@ func shouldFollowObservedFocus(
     !hasNewWindows || previouslyKnownWindowIDs.contains(observedWindowID)
 }
 
+@MainActor
+func prepareObservedFocus(
+    state: WorkspaceState,
+    notificationWindowID: String,
+    focusedWindowID: String?
+) -> WorkspaceState? {
+    guard notificationWindowID == focusedWindowID else { return nil }
+    return LayoutRequestPolicy.preferences.prepare(state: state, focusedWindowID: focusedWindowID)
+}
+
 enum RibbonTranslationOutcome: Equatable {
     case readyForFocus
     case superseded
@@ -1347,13 +1357,29 @@ final class StagehandModel: ObservableObject {
                 batchMotionStart = nil
                 batchInitialHorizontalVelocity = nil
                 if change.policy == .preferences {
-                    self.preferencesNeedLayout = true
-                    guard let prepared = change.policy.prepare(
-                        state: self.state, focusedWindowID: self.windowSystem.focusedWindowID()
-                    ) else {
+                    let focusedWindowID = self.windowSystem.focusedWindowID()
+                    let prepared: WorkspaceState?
+                    if case .observedFocus(let notificationWindowID) = change {
+                        prepared = prepareObservedFocus(
+                            state: self.state,
+                            notificationWindowID: notificationWindowID,
+                            focusedWindowID: focusedWindowID
+                        )
+                    } else {
+                        self.preferencesNeedLayout = true
+                        prepared = change.policy.prepare(state: self.state, focusedWindowID: focusedWindowID)
+                    }
+                    guard let prepared else {
+                        if case .observedFocus = change {
+                            self.diagnostics.record("change_skipped", details: [
+                                "operation": change.diagnosticName,
+                                "reason": "focus_changed_before_layout"
+                            ])
+                        }
                         self.transitionRollback = nil
                         continue
                     }
+                    self.preferencesNeedLayout = true
                     self.state = prepared
                 }
                 let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion

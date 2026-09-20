@@ -22,7 +22,8 @@ enum LayoutRequestPolicy: Equatable {
     }
 
     func confirmFocus(windowID: String, currentFocus: () -> String?, activate: () async -> Bool) async -> Bool {
-        if self == .navigation { return await activate() }
+        guard self == .navigation else { return currentFocus() == windowID }
+        if await activate() { return true }
         return currentFocus() == windowID
     }
 }
