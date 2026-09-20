@@ -48,6 +48,29 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     ) == true)
 }
 
+@Test func removingAWindowAnimatesTheRemainingRibbonWithoutChangingFocus() {
+    let previous = WorkspaceState(spaces: [
+        SpaceState(windowIDs: ["a", "b", "c"], focusedWindowID: "b")
+    ])
+    var destination = previous
+    destination.reconcile(windowIDs: ["a", "b"])
+
+    #expect(shouldSlideRibbon(
+        from: previous,
+        to: destination,
+        source: .windowRemoval,
+        hadPreview: false,
+        reduceMotion: false
+    ))
+    #expect(!shouldSlideRibbon(
+        from: previous,
+        to: destination,
+        source: .windowRemoval,
+        hadPreview: false,
+        reduceMotion: true
+    ))
+}
+
 @MainActor @Test func gesturePreviewAndCommitUseTheAdjacentWindow() throws {
     let viewport = CGRect(x: 0, y: 40, width: 1_000, height: 700)
     let state = WorkspaceState(spaces: [
@@ -220,4 +243,58 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     #expect(outcome == .failed)
     #expect(!translated)
     #expect(!committed)
+}
+
+@MainActor @Test func removalFocusRunsDuringTranslationAndRevealsBorderAfterward() async {
+    var events: [String] = []
+    var finishTranslation: CheckedContinuation<Void, Never>?
+    let outcome = await runConcurrentRemovalNavigation(
+        translate: {
+            events.append("translateStarted")
+            await withCheckedContinuation { finishTranslation = $0 }
+            events.append("translateFinished")
+            return .readyForFocus
+        },
+        cancelTranslation: {},
+        focus: {
+            events.append("focus")
+            return true
+        },
+        focusConfirmed: {
+            events.append("confirmed")
+            finishTranslation?.resume()
+        },
+        commitInput: { events.append("commit") },
+        revealBorder: { events.append("border") }
+    )
+
+    #expect(outcome == .completed)
+    #expect(events == ["translateStarted", "focus", "confirmed", "translateFinished", "commit", "border"])
+}
+
+@MainActor @Test func failedRemovalFocusCancelsTranslationWithoutRevealingBorder() async {
+    var events: [String] = []
+    var finishTranslation: CheckedContinuation<Void, Never>?
+    let outcome = await runConcurrentRemovalNavigation(
+        translate: {
+            events.append("translateStarted")
+            await withCheckedContinuation { finishTranslation = $0 }
+            events.append("translateCancelled")
+            return .failed
+        },
+        cancelTranslation: {
+            events.append("cancel")
+            finishTranslation?.resume()
+        },
+        focus: {
+            events.append("focus")
+            return false
+        },
+        focusConfirmed: { events.append("confirmed") },
+        commitInput: { events.append("commit") },
+        revealBorder: { events.append("border") }
+    )
+
+    #expect(outcome == .failed)
+    #expect(events == ["translateStarted", "focus", "cancel", "translateCancelled"])
 }

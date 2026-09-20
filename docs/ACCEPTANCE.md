@@ -63,6 +63,7 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 - Navigate repeatedly while the bar is entering, visible, and exiting. It stays present during successive changes, moves its active indicator, and dismisses only after the latest change. An old dismissal must never hide a refreshed bar.
 - Enable Reduce Motion. The bar uses a fade without drop/scale movement; indicator changes do not travel between icons.
 - Resize the active window continuously. The border follows its actual frame without easing behind it, and its corners match the target window.
+- Place a Google Meet picture-in-picture window across the active window's edge. The focus border stays above the active window and behind the picture-in-picture window.
 - Adjust the gap with the slider, typed values, Up/Down, and Shift+Up/Down while running. Input focus remains in the number field; no keys reach another app. Invalid values restore the previous value and out-of-range values clamp.
 - Click outside the gap field onto empty settings background. The edit commits, the field loses focus, and the original click still reaches its target.
 - Open the menu bar quick actions. The borderless panel appears immediately without an arrow to the menu bar icon. Neither the window-gap field nor the space-color field receives focus until clicked.

@@ -9,6 +9,7 @@ private let traceGestures = ProcessInfo.processInfo.arguments.contains("--trace-
 enum RibbonTransitionSource: Equatable {
     case managed
     case observedFocus
+    case windowRemoval
 }
 
 func shouldSlideRibbon(from previousState: WorkspaceState, to state: WorkspaceState,
@@ -16,8 +17,11 @@ func shouldSlideRibbon(from previousState: WorkspaceState, to state: WorkspaceSt
     guard source != .observedFocus,
           !reduceMotion,
           previousState.activeSpaceIndex == state.activeSpaceIndex,
-          previousState.focusedWindowID != state.focusedWindowID || hadPreview else { return false }
-    return state.focusedWindowID != nil
+          state.focusedWindowID != nil else { return false }
+    if source == .windowRemoval {
+        return previousState.currentSpace.windowIDs != state.currentSpace.windowIDs
+    }
+    return previousState.focusedWindowID != state.focusedWindowID || hadPreview
 }
 
 func framesMatch(observed: CGRect, target: CGRect, tolerance: CGFloat = 1) -> Bool {
@@ -74,6 +78,35 @@ func runFocusFirstNavigation(
     case .readyForFocus: break
     }
     commitInput()
+    return .completed
+}
+
+@MainActor
+func runConcurrentRemovalNavigation(
+    translate: @escaping () async -> RibbonTranslationOutcome,
+    cancelTranslation: () -> Void,
+    focus: () async -> Bool,
+    focusConfirmed: () -> Void,
+    commitInput: () -> Void,
+    revealBorder: () -> Void
+) async -> NavigationTransitionOutcome {
+    let translation = Task { @MainActor in await translate() }
+    await Task.yield()
+    let focused = await focus()
+    guard focused else {
+        cancelTranslation()
+        _ = await translation.value
+        return .failed
+    }
+    focusConfirmed()
+    let translationOutcome = await translation.value
+    switch translationOutcome {
+    case .superseded: return .superseded
+    case .failed: return .failed
+    case .readyForFocus: break
+    }
+    commitInput()
+    revealBorder()
     return .completed
 }
 
@@ -279,6 +312,7 @@ final class StagehandModel: ObservableObject {
         case reorderWindow(windowID: String, toIndex: Int, spaceIndex: Int)
         case focusInSpace(windowID: String, spaceIndex: Int)
         case observedFocus(String)
+        case windowRemoval
         case refresh
         case preferences
 
@@ -296,6 +330,7 @@ final class StagehandModel: ObservableObject {
 
         var ribbonTransitionSource: RibbonTransitionSource {
             if case .observedFocus = self { return .observedFocus }
+            if case .windowRemoval = self { return .windowRemoval }
             return .managed
         }
 
@@ -311,16 +346,21 @@ final class StagehandModel: ObservableObject {
             case .reorderWindow: "reorderWindow"
             case .focusInSpace: "focusWindowFromSettings"
             case .observedFocus: "observedFocus"
+            case .windowRemoval: "windowRemoval"
             case .refresh: "refresh"
             case .preferences: "preferences"
             }
         }
+
+        var focusesAlongsideRibbon: Bool { self == .windowRemoval }
     }
 
     private struct PendingChange {
         let change: Change
         let token: UInt64?
         let initialHorizontalVelocity: CGFloat?
+        let previousState: WorkspaceState?
+        let motionStart: [String: CGRect]?
     }
 
     init(overlays: NavigationOverlays = NavigationOverlays(), diagnostics: DiagnosticLogger? = nil) {
@@ -370,6 +410,9 @@ final class StagehandModel: ObservableObject {
         }
         windowSystem.onWindowDestroyed = { [weak self] id in
             self?.windowDestroyed(windowID: id)
+        }
+        windowSystem.onWindowMiniaturized = { [weak self] id in
+            self?.windowMiniaturized(windowID: id)
         }
         windowSystem.onFocusedWindowChange = { [weak self] id in self?.observedFocusChanged(windowID: id) }
         windowSystem.onFrameChange = { [weak self] id, frame in
@@ -986,13 +1029,18 @@ final class StagehandModel: ObservableObject {
         inputIssues = issues.filter { seen.insert($0).inserted }
     }
 
-    private func scheduleRefresh() {
+    private func scheduleRefresh(immediately: Bool = false) {
         guard isRunning, !isSuspended else { return }
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
+            var firstAttempt = true
             while !Task.isCancelled {
-                do { try await Task.sleep(for: .milliseconds(100)) }
+                do {
+                    if immediately && firstAttempt { await Task.yield() }
+                    else { try await Task.sleep(for: .milliseconds(100)) }
+                }
                 catch { return }
+                firstAttempt = false
                 guard !Task.isCancelled, let self, self.isRunning, !self.isSuspended else { return }
                 guard self.worker == nil, !self.ribbonMotion.isRunning,
                       self.gestureBase == nil, !self.isLayingOutWindows else { continue }
@@ -1005,6 +1053,8 @@ final class StagehandModel: ObservableObject {
     private func applicationTerminated(pid: Int32) {
         guard isRunning, !isSuspended else { return }
         refreshTask?.cancel()
+        let previousState = state
+        let motionStart = navigationFrames()
         let focusedWindowID = state.focusedWindowID
         let removedIDs = removeTerminatedApplication(pid: pid, windows: &windows, state: &state)
         guard !removedIDs.isEmpty else { return }
@@ -1013,20 +1063,28 @@ final class StagehandModel: ObservableObject {
             "pid": String(pid),
             "windowCount": String(removedIDs.count)
         ])
-        enqueue(.refresh)
+        enqueue(.windowRemoval, transitionFrom: previousState, motionStart: motionStart)
         onStateChange?()
     }
 
     private func windowDestroyed(windowID: String) {
         guard isRunning, !isSuspended else { return }
         refreshTask?.cancel()
+        let previousState = state
+        let motionStart = navigationFrames()
         let focusedWindowID = state.focusedWindowID
         guard removeDestroyedWindow(windowID: windowID, windows: &windows, state: &state) else { return }
         let removedIDs = Set([windowID])
         finishRemovingWindows(removedIDs, focusedWindowID: focusedWindowID)
         diagnostics.record("window_removed", details: ["windowID": windowID])
-        enqueue(.refresh)
+        enqueue(.windowRemoval, transitionFrom: previousState, motionStart: motionStart)
         onStateChange?()
+    }
+
+    private func windowMiniaturized(windowID: String) {
+        guard isRunning, !isSuspended else { return }
+        if borderWindowID == windowID { hideFocusBorder() }
+        scheduleRefresh(immediately: true)
     }
 
     private func finishRemovingWindows(_ removedIDs: Set<String>, focusedWindowID: String?) {
@@ -1082,6 +1140,7 @@ final class StagehandModel: ObservableObject {
             nativeDesktopChanged()
             return
         }
+        let motionStart = navigationFrames()
         let current = windowSystem.scanWindows()
         let oldState = state
         let previouslyKnownWindowIDs = Set(state.spaces.flatMap(\.windowIDs))
@@ -1162,7 +1221,13 @@ final class StagehandModel: ObservableObject {
             }
         }
         if oldState != state || needsLayout {
-            enqueue(preferencesNeedLayout ? .preferences : .refresh)
+            let removedFromCurrentSpace = Set(oldState.currentSpace.windowIDs)
+                .subtracting(current.map(\.id))
+            if !removedFromCurrentSpace.isEmpty {
+                enqueue(.windowRemoval, transitionFrom: oldState, motionStart: motionStart)
+            } else {
+                enqueue(preferencesNeedLayout ? .preferences : .refresh)
+            }
         } else if preferencesNeedLayout,
                   LayoutRequestPolicy.preferences.prepare(state: state, focusedWindowID: windowSystem.focusedWindowID()) != nil {
             enqueue(.preferences)
@@ -1180,7 +1245,12 @@ final class StagehandModel: ObservableObject {
         })
     }
 
-    private func enqueue(_ change: Change, initialHorizontalVelocity: CGFloat? = nil) {
+    private func enqueue(
+        _ change: Change,
+        initialHorizontalVelocity: CGFloat? = nil,
+        transitionFrom previousState: WorkspaceState? = nil,
+        motionStart: [String: CGRect]? = nil
+    ) {
         if traceGestures, gestureAxis != nil {
             NSLog("[DEBUG-gesture] layout requested during drag: %@", String(describing: change))
         }
@@ -1197,7 +1267,9 @@ final class StagehandModel: ObservableObject {
         pending.append(PendingChange(
             change: change,
             token: token,
-            initialHorizontalVelocity: initialHorizontalVelocity
+            initialHorizontalVelocity: initialHorizontalVelocity,
+            previousState: previousState,
+            motionStart: motionStart
         ))
         diagnostics.record("change_queued", details: [
             "operation": change.diagnosticName,
@@ -1223,10 +1295,11 @@ final class StagehandModel: ObservableObject {
                     "pendingChanges": String(self.pending.count),
                     "transferToken": token.map(String.init) ?? "none"
                 ])
-                let previousState = self.transitionRollback ?? self.state
-                self.transitionRollback = previousState
+                let rollbackState = self.transitionRollback ?? self.state
+                let previousState = pendingChange.previousState ?? rollbackState
+                self.transitionRollback = rollbackState
                 let hadPreview = self.presentationFrames != nil
-                let motionStart = batchMotionStart ?? self.navigationFrames()
+                let motionStart = pendingChange.motionStart ?? batchMotionStart ?? self.navigationFrames()
                 let initialHorizontalVelocity = batchInitialHorizontalVelocity
                     ?? pendingChange.initialHorizontalVelocity
                 self.ribbonMotion.cancel()
@@ -1261,7 +1334,7 @@ final class StagehandModel: ObservableObject {
                     self.state.reorderWindow(windowID: id, to: index, inSpace: spaceIndex)
                 case .focusInSpace(let id, let spaceIndex):
                     self.state.focus(windowID: id, inSpace: spaceIndex)
-                case .refresh, .preferences, .observedFocus: break
+                case .windowRemoval, .refresh, .preferences, .observedFocus: break
                 }
                 if change.isWindowNavigation, self.pending.first?.change.isWindowNavigation == true,
                    let token, self.focusGate.cancelTransferIfEmpty(token: token) {
@@ -1318,10 +1391,11 @@ final class StagehandModel: ObservableObject {
                                                        operation: change.diagnosticName,
                                                        slideFrom: canSlide ? motionStart : nil,
                                                        initialHorizontalVelocity: canSlide
-                                                        ? initialHorizontalVelocity : nil)
+                                                        ? initialHorizontalVelocity : nil,
+                                                       focusAlongsideSlide: change.focusesAlongsideRibbon)
                 guard generation == self.workerGeneration, !Task.isCancelled else { return }
                 if !succeeded {
-                    self.state = previousState
+                    self.state = rollbackState
                     self.stop(
                         reason: self.layoutFailureReason ?? "layout_stopped_unexpectedly",
                         automatic: true,
@@ -1430,7 +1504,8 @@ final class StagehandModel: ObservableObject {
 
     private func applyLayout(token: UInt64?, request: LayoutRequestPolicy, operation: String,
                              slideFrom: [String: CGRect]? = nil,
-                             initialHorizontalVelocity: CGFloat? = nil) async -> Bool {
+                             initialHorizontalVelocity: CGFloat? = nil,
+                             focusAlongsideSlide: Bool = false) async -> Bool {
         let layoutStart = ContinuousClock.now
         guard desktopScope.refresh() == .home else {
             nativeDesktopChanged()
@@ -1620,62 +1695,82 @@ final class StagehandModel: ObservableObject {
                 windowSystem.frame(windowID: placement.windowID).map { (placement.windowID, $0) }
             })
             let targets = Dictionary(uniqueKeysWithValues: sliding.map { ($0.windowID, $0.frame) })
-            let outcome = await runFocusFirstNavigation(
-                translate: {
-                    let completed = await self.settleRibbon(
-                        from: starts,
-                        to: targets,
-                        visibleIDs: visibleIDs,
-                        operation: operation,
-                        initialHorizontalVelocity: initialHorizontalVelocity
-                    )
-                    if completed { return .readyForFocus }
-                    guard self.isRunning, !self.isSuspended, !Task.isCancelled else { return .failed }
-                    guard !self.pending.isEmpty else { return .readyForFocus }
-                    guard let token else { return .superseded }
-                    return self.focusGate.cancelTransferIfEmpty(token: token)
-                        ? .superseded : .readyForFocus
-                },
-                focus: {
-                    guard let focusedID = self.state.focusedWindowID,
-                          let record = self.windows.first(where: { $0.id == focusedID }),
-                          await self.focusManagedWindow(
-                            record,
-                            token: token,
-                            request: request,
-                            operation: operation
-                          ) else { return false }
-                    destinationPID = record.pid
-                    if let target = placements.first(where: { $0.windowID == focusedID })?.frame,
-                       let actual = self.windowSystem.frame(windowID: focusedID),
-                       !framesMatch(observed: actual, target: target) {
-                        _ = self.windowSystem.setFrame(windowID: focusedID, frame: target)
-                        self.lastAppliedFrames[focusedID] = self.windowSystem.frame(windowID: focusedID)
-                    }
-                    if let frame = self.windowSystem.frame(windowID: focusedID) {
-                        self.updateFocusBorder(windowID: focusedID, frame: frame)
-                    }
-                    return true
-                },
-                focusConfirmed: {
-                    if request == .navigation {
-                        self.overlays.showNavigation(state: self.state, windows: self.windows)
-                    }
-                },
-                commitInput: {
-                    if let token, let destinationPID {
-                        self.focusGate.commitTransfer(token: token, processIdentifier: destinationPID)
-                    }
-                },
-                revealBorder: {
-                    if let focused = self.state.focusedWindowID,
-                       let frame = self.windowSystem.frame(windowID: focused) {
-                        self.updateFocusBorder(windowID: focused, frame: frame)
-                    } else {
-                        self.hideFocusBorder()
-                    }
+            let translate = {
+                let completed = await self.settleRibbon(
+                    from: starts,
+                    to: targets,
+                    visibleIDs: visibleIDs,
+                    operation: operation,
+                    initialHorizontalVelocity: initialHorizontalVelocity
+                )
+                if completed { return RibbonTranslationOutcome.readyForFocus }
+                guard self.isRunning, !self.isSuspended, !Task.isCancelled else {
+                    return RibbonTranslationOutcome.failed
                 }
-            )
+                guard !self.pending.isEmpty else { return RibbonTranslationOutcome.readyForFocus }
+                guard let token else { return RibbonTranslationOutcome.superseded }
+                return self.focusGate.cancelTransferIfEmpty(token: token)
+                    ? RibbonTranslationOutcome.superseded : RibbonTranslationOutcome.readyForFocus
+            }
+            let focus = {
+                guard let focusedID = self.state.focusedWindowID,
+                      let record = self.windows.first(where: { $0.id == focusedID }),
+                      await self.focusManagedWindow(
+                        record,
+                        token: token,
+                        request: request,
+                        operation: operation
+                      ) else { return false }
+                destinationPID = record.pid
+                if !focusAlongsideSlide,
+                   let target = placements.first(where: { $0.windowID == focusedID })?.frame,
+                   let actual = self.windowSystem.frame(windowID: focusedID),
+                   !framesMatch(observed: actual, target: target) {
+                    _ = self.windowSystem.setFrame(windowID: focusedID, frame: target)
+                    self.lastAppliedFrames[focusedID] = self.windowSystem.frame(windowID: focusedID)
+                }
+                if !focusAlongsideSlide,
+                   let frame = self.windowSystem.frame(windowID: focusedID) {
+                    self.updateFocusBorder(windowID: focusedID, frame: frame, reorderAboveTarget: true)
+                }
+                return true
+            }
+            let focusConfirmed = {
+                if request == .navigation {
+                    self.overlays.showNavigation(state: self.state, windows: self.windows)
+                }
+            }
+            let commitInput = {
+                if let token, let destinationPID {
+                    self.focusGate.commitTransfer(token: token, processIdentifier: destinationPID)
+                }
+            }
+            let revealBorder = {
+                if let focused = self.state.focusedWindowID,
+                   let frame = self.windowSystem.frame(windowID: focused) {
+                    self.updateFocusBorder(windowID: focused, frame: frame)
+                } else {
+                    self.hideFocusBorder()
+                }
+            }
+            let outcome = if focusAlongsideSlide {
+                await runConcurrentRemovalNavigation(
+                    translate: translate,
+                    cancelTranslation: { self.ribbonMotion.cancel() },
+                    focus: focus,
+                    focusConfirmed: focusConfirmed,
+                    commitInput: commitInput,
+                    revealBorder: revealBorder
+                )
+            } else {
+                await runFocusFirstNavigation(
+                    translate: translate,
+                    focus: focus,
+                    focusConfirmed: focusConfirmed,
+                    commitInput: commitInput,
+                    revealBorder: revealBorder
+                )
+            }
             switch outcome {
             case .superseded: return true
             case .failed: return false
@@ -1694,7 +1789,7 @@ final class StagehandModel: ObservableObject {
                 guard isRunning, !isSuspended, !Task.isCancelled else { return false }
             }
             if let focused = state.focusedWindowID, let frame = windowSystem.frame(windowID: focused) {
-                updateFocusBorder(windowID: focused, frame: frame)
+                updateFocusBorder(windowID: focused, frame: frame, reorderAboveTarget: true)
             } else {
                 hideFocusBorder()
             }
@@ -2043,7 +2138,12 @@ final class StagehandModel: ObservableObject {
         request == .navigation || (state.focusedWindowID != nil && windowSystem.focusedWindowID() == state.focusedWindowID)
     }
 
-    func updateFocusBorder(windowID: String, frame: CGRect, refreshShape: Bool = true) {
+    func updateFocusBorder(
+        windowID: String,
+        frame: CGRect,
+        refreshShape: Bool = true,
+        reorderAboveTarget: Bool = false
+    ) {
         overlays.setBorderColor(focusBorderColor)
         let changed = borderWindowID != windowID
         let windowNumber = windowSystem.windowNumber(for: windowID)
@@ -2061,7 +2161,14 @@ final class StagehandModel: ObservableObject {
                 borderCornerRadiusResolved = false
             }
         }
-        overlays.updateBorder(frame: frame, visible: true, cornerRadius: borderCornerRadius, focusChanged: changed)
+        overlays.updateBorder(
+            frame: frame,
+            visible: true,
+            relativeTo: windowNumber,
+            cornerRadius: borderCornerRadius,
+            focusChanged: changed,
+            reorderAboveTarget: reorderAboveTarget || identityChanged
+        )
     }
 
     private func hideFocusBorder() {

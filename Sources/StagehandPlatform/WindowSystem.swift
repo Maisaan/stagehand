@@ -30,6 +30,7 @@ public final class WindowSystem {
     public var onFocusedWindowChange: ((String) -> Void)?
     public var onApplicationTerminated: ((pid_t) -> Void)?
     public var onWindowDestroyed: ((String) -> Void)?
+    public var onWindowMiniaturized: ((String) -> Void)?
     public var onNativeDesktopChange: (() -> Void)?
     public var onScreenParametersChange: (() -> Void)?
     public var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
@@ -91,6 +92,14 @@ public final class WindowSystem {
         nativeWindows.onFocusedWindowChange = { [weak self] id in
             guard let self, self.started else { return }
             self.onFocusedWindowChange?(id)
+        }
+        nativeWindows.onWindowDestroyed = { [weak self] id in
+            guard let self, self.started else { return }
+            self.onWindowDestroyed?(id)
+        }
+        nativeWindows.onWindowMiniaturized = { [weak self] id in
+            guard let self, self.started else { return }
+            self.onWindowMiniaturized?(id)
         }
     }
 
@@ -757,6 +766,11 @@ public final class WindowSystem {
                     owner.windows.removeValue(forKey: id)
                     owner.parkingValidationIDs.remove(id)
                     owner.onWindowDestroyed?(id)
+                }
+                if name == kAXWindowMiniaturizedNotification,
+                   let id = owner.trackedWindowID(matching: changedWindow) {
+                    owner.onWindowMiniaturized?(id)
+                    return
                 }
                 if name == kAXFocusedWindowChangedNotification { owner.reportCurrentFocus() }
                 if owner.onFrameChange != nil,

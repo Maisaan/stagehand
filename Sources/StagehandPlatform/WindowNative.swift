@@ -15,6 +15,8 @@ final class NativeWindowRegistry: NSObject {
     var onChange: (() -> Void)?
     var onFrameChange: ((String, CGRect) -> Void)?
     var onFocusedWindowChange: ((String) -> Void)?
+    var onWindowDestroyed: ((String) -> Void)?
+    var onWindowMiniaturized: ((String) -> Void)?
 
     private final class Registration {
         weak var window: NSWindow?
@@ -194,6 +196,10 @@ final class NativeWindowRegistry: NSObject {
             entry.closed = true
             entry.parked = false
             entry.originalFrame = nil
+            onWindowDestroyed?(entry.id)
+        } else if notification.name == NSWindow.didMiniaturizeNotification {
+            onWindowMiniaturized?(entry.id)
+            return
         } else if notification.name == NSWindow.didMoveNotification || notification.name == NSWindow.didResizeNotification {
             onFrameChange?(entry.id, accessibilityFrame(window.frame))
         } else if notification.name == NSWindow.didBecomeKeyNotification,

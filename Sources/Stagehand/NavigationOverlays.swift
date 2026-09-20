@@ -109,7 +109,9 @@ final class NavigationOverlays {
 
     private func borderPanel() -> OverlayPanel {
         if let border { return border }
-        let panel = OverlayPanel(level: .floating)
+        // Stay in the managed window's level so floating windows such as picture-in-picture
+        // remain above the border. updateBorder orders the panel directly above its target.
+        let panel = OverlayPanel(level: .normal)
         let borderView = BorderView()
         borderView.strokeColor = borderColor
         panel.contentView = borderView
@@ -135,7 +137,14 @@ final class NavigationOverlays {
         return panel
     }
 
-    func updateBorder(frame: CGRect, visible: Bool, cornerRadius: CGFloat? = nil, focusChanged: Bool = false) {
+    func updateBorder(
+        frame: CGRect,
+        visible: Bool,
+        relativeTo windowNumber: CGWindowID? = nil,
+        cornerRadius: CGFloat? = nil,
+        focusChanged: Bool = false,
+        reorderAboveTarget: Bool = false
+    ) {
         guard visible, let primary = NSScreen.screens.first else {
             border?.orderOut(nil)
             return
@@ -149,7 +158,13 @@ final class NavigationOverlays {
         // Frame/path changes remain synchronous, including throughout a native live resize.
         // Draw inward so the complete stroke remains visible at display edges.
         border.setFrame(converted, display: radiusChanged || border.frame.size != converted.size)
-        if !border.isVisible { border.orderFrontRegardless() }
+        if !border.isVisible || focusChanged || reorderAboveTarget {
+            if let windowNumber {
+                border.order(.above, relativeTo: Int(windowNumber))
+            } else {
+                border.orderFrontRegardless()
+            }
+        }
         if focusChanged, let layer = border.contentView?.layer {
             let configuration = hudModel.interfaceAnimationConfiguration
             let reveal = CABasicAnimation(keyPath: "opacity")
