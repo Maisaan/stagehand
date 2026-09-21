@@ -1,7 +1,18 @@
 import ApplicationServices
 
-func isWindowDestroyedNotification(_ notification: String) -> Bool {
-    notification == kAXUIElementDestroyedNotification
+enum WindowAvailabilityChange: Equatable {
+    case destroyed
+    case minimized
+    case restored
+}
+
+func windowAvailabilityChange(for notification: String) -> WindowAvailabilityChange? {
+    switch notification {
+    case kAXUIElementDestroyedNotification: .destroyed
+    case kAXWindowMiniaturizedNotification: .minimized
+    case kAXWindowDeminiaturizedNotification: .restored
+    default: nil
+    }
 }
 
 /// Tracks subscriptions individually so a busy launching app can be retried without

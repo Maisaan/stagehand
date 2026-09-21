@@ -31,6 +31,7 @@ public final class WindowSystem {
     public var onApplicationTerminated: ((pid_t) -> Void)?
     public var onWindowDestroyed: ((String) -> Void)?
     public var onWindowMiniaturized: ((String) -> Void)?
+    public var onWindowDeminiaturized: ((String) -> Void)?
     public var onNativeDesktopChange: (() -> Void)?
     public var onScreenParametersChange: (() -> Void)?
     public var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
@@ -100,6 +101,10 @@ public final class WindowSystem {
         nativeWindows.onWindowMiniaturized = { [weak self] id in
             guard let self, self.started else { return }
             self.onWindowMiniaturized?(id)
+        }
+        nativeWindows.onWindowDeminiaturized = { [weak self] id in
+            guard let self, self.started else { return }
+            self.onWindowDeminiaturized?(id)
         }
     }
 
@@ -398,6 +403,10 @@ public final class WindowSystem {
         }
         if focusDiagnosticsEnabled { print("Scan admittedExternal=\(result.count) registeredNative=\(nativeWindows.records.count)") }
         return result + nativeWindows.records
+    }
+
+    public func record(windowID: String) -> WindowRecord? {
+        nativeWindows.record(windowID: windowID) ?? windows[windowID]?.record
     }
 
     /// Moves a restored window without resizing it or requesting keyboard focus.
@@ -761,16 +770,20 @@ public final class WindowSystem {
                     _ = AXUIElementGetPid(changedWindow, &pid)
                     print("Discovery t=\(ProcessInfo.processInfo.systemUptime) AX=\(name) pid=\(pid)")
                 }
-                if isWindowDestroyedNotification(name),
+                if let availabilityChange = windowAvailabilityChange(for: name),
                    let id = owner.trackedWindowID(matching: changedWindow) {
-                    owner.windows.removeValue(forKey: id)
-                    owner.parkingValidationIDs.remove(id)
-                    owner.onWindowDestroyed?(id)
-                }
-                if name == kAXWindowMiniaturizedNotification,
-                   let id = owner.trackedWindowID(matching: changedWindow) {
-                    owner.onWindowMiniaturized?(id)
-                    return
+                    switch availabilityChange {
+                    case .destroyed:
+                        owner.windows.removeValue(forKey: id)
+                        owner.parkingValidationIDs.remove(id)
+                        owner.onWindowDestroyed?(id)
+                    case .minimized:
+                        owner.onWindowMiniaturized?(id)
+                        return
+                    case .restored:
+                        owner.onWindowDeminiaturized?(id)
+                        return
+                    }
                 }
                 if name == kAXFocusedWindowChangedNotification { owner.reportCurrentFocus() }
                 if owner.onFrameChange != nil,

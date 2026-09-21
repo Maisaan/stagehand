@@ -2,16 +2,18 @@ import StagehandCore
 import Testing
 @testable import Stagehand
 
-@Test func temporarilyUnavailableKnownWindowRetainsObservedFocus() {
+@Test func newlyDiscoveredOrReturningWindowFollowsVerifiedSystemFocus() {
     #expect(shouldFollowObservedFocus(
-        hasNewWindows: true,
         observedWindowID: "returning-window",
-        previouslyKnownWindowIDs: ["returning-window", "neighbor"]
+        discoveredWindowIDs: ["returning-window", "neighbor"]
+    ))
+    #expect(shouldFollowObservedFocus(
+        observedWindowID: "never-managed-window",
+        discoveredWindowIDs: ["returning-window", "never-managed-window"]
     ))
     #expect(!shouldFollowObservedFocus(
-        hasNewWindows: true,
-        observedWindowID: "never-managed-window",
-        previouslyKnownWindowIDs: ["returning-window", "neighbor"]
+        observedWindowID: "background-window",
+        discoveredWindowIDs: ["returning-window", "never-managed-window"]
     ))
 }
 

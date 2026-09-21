@@ -58,26 +58,78 @@ struct WorkspaceRestorationTests {
         var state = original
         var restoration = WorkspaceRestoration()
 
-        restoration.reconcile(
+        var windows = [
+            WindowRecord(id: "left", appName: "Left", title: "", bundleIdentifier: "left", pid: 1,
+                         frame: CGRect(x: 0, y: 0, width: 100, height: 100), isResizable: true),
+            WindowRecord(id: "minimized", appName: "Minimized", title: "", bundleIdentifier: "minimized", pid: 2,
+                         frame: CGRect(x: 100, y: 0, width: 100, height: 100), isResizable: true),
+            WindowRecord(id: "right", appName: "Right", title: "", bundleIdentifier: "right", pid: 3,
+                         frame: CGRect(x: 200, y: 0, width: 100, height: 100), isResizable: true)
+        ]
+        let minimized = windows[1]
+
+        #expect(removeUnavailableWindow(
+            windowID: minimized.id,
+            windows: &windows,
             state: &state,
-            windowIDs: ["left", "right"],
+            restoration: &restoration,
             trackedWindowIDs: ["left", "minimized", "right"]
-        )
+        ))
 
         #expect(state.spaces.allSatisfy { !$0.windowIDs.contains("minimized") })
         #expect(state.currentSpace.windowIDs == ["left", "right"])
         #expect(state.focusedWindowID != "minimized")
 
-        restoration.reconcile(
+        #expect(restoreAvailableWindow(
+            minimized,
+            windows: &windows,
             state: &state,
-            windowIDs: ["left", "minimized", "right"],
+            restoration: &restoration,
             trackedWindowIDs: ["left", "minimized", "right"],
             initialWidthFractions: ["minimized": 0.8]
-        )
+        ))
 
         #expect(state.spaces[0].windowIDs == original.spaces[0].windowIDs)
         #expect(state.spaces[0].widthFraction(for: "minimized") == 0.62)
         #expect(state.spaces[1].windowIDs == ["minimized"])
+    }
+
+    @Test func focusHistoryReturnsToTheMostRecentlyFocusedSurvivingWindow() {
+        var state = WorkspaceState(spaces: [
+            SpaceState(windowIDs: ["closing", "spatial-fallback", "previous"], focusedWindowID: "closing")
+        ])
+        var history = WindowFocusHistory()
+        history.record(windowID: "previous")
+        history.record(windowID: "closing")
+
+        state.reconcile(windowIDs: ["spatial-fallback", "previous"])
+        history.remove(windowIDs: ["closing"])
+        focusMostRecentWindowAfterLoss(
+            previousFocusedWindowID: "closing",
+            history: history,
+            state: &state
+        )
+
+        #expect(state.focusedWindowID == "previous")
+    }
+
+    @Test func focusHistorySkipsMissingWindowsAndAllowsTheLayoutFallback() {
+        var state = WorkspaceState(spaces: [
+            SpaceState(windowIDs: ["closing", "fallback"], focusedWindowID: "closing")
+        ])
+        var history = WindowFocusHistory()
+        history.record(windowID: "missing")
+        history.record(windowID: "closing")
+
+        state.reconcile(windowIDs: ["fallback"])
+        history.remove(windowIDs: ["closing"])
+        focusMostRecentWindowAfterLoss(
+            previousFocusedWindowID: "closing",
+            history: history,
+            state: &state
+        )
+
+        #expect(state.focusedWindowID == "fallback")
     }
 
     @Test func newlyDiscoveredWindowUsesItsInitialWidth() {

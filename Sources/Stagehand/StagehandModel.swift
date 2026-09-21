@@ -39,14 +39,36 @@ func adjustedWindowHeight(current: CGFloat, available: CGFloat, growing: Bool) -
     return growing ? min(current + adjustment, limit) : max(current + adjustment, limit)
 }
 
-func shouldFollowObservedFocus(
-    hasNewWindows: Bool,
-    observedWindowID: String,
-    previouslyKnownWindowIDs: Set<String>
-) -> Bool {
-    // Fullscreen and minimized windows can disappear for one scan. Treat their
-    // return differently from a window Stagehand has never managed before.
-    !hasNewWindows || previouslyKnownWindowIDs.contains(observedWindowID)
+func shouldFollowObservedFocus(observedWindowID: String, discoveredWindowIDs: Set<String>) -> Bool {
+    discoveredWindowIDs.contains(observedWindowID)
+}
+
+struct WindowFocusHistory {
+    private var windowIDs: [String] = []
+
+    mutating func record(windowID: String) {
+        windowIDs.removeAll { $0 == windowID }
+        windowIDs.append(windowID)
+    }
+
+    mutating func remove(windowIDs removedWindowIDs: Set<String>) {
+        windowIDs.removeAll { removedWindowIDs.contains($0) }
+    }
+
+    func mostRecentWindowID(among availableWindowIDs: Set<String>) -> String? {
+        windowIDs.last { availableWindowIDs.contains($0) }
+    }
+}
+
+func focusMostRecentWindowAfterLoss(
+    previousFocusedWindowID: String?,
+    history: WindowFocusHistory,
+    state: inout WorkspaceState
+) {
+    guard let previousFocusedWindowID,
+          !state.currentSpace.windowIDs.contains(previousFocusedWindowID),
+          let windowID = history.mostRecentWindowID(among: Set(state.currentSpace.windowIDs)) else { return }
+    state.focus(windowID: windowID)
 }
 
 @MainActor
@@ -159,6 +181,44 @@ func removeDestroyedWindow(
     guard windows.contains(where: { $0.id == windowID }) else { return false }
     windows.removeAll { $0.id == windowID }
     state.reconcile(windowIDs: windows.map(\.id))
+    return true
+}
+
+@discardableResult
+func removeUnavailableWindow(
+    windowID: String,
+    windows: inout [WindowRecord],
+    state: inout WorkspaceState,
+    restoration: inout WorkspaceRestoration,
+    trackedWindowIDs: Set<String>
+) -> Bool {
+    guard windows.contains(where: { $0.id == windowID }) else { return false }
+    windows.removeAll { $0.id == windowID }
+    restoration.reconcile(
+        state: &state,
+        windowIDs: windows.map(\.id),
+        trackedWindowIDs: trackedWindowIDs
+    )
+    return true
+}
+
+@discardableResult
+func restoreAvailableWindow(
+    _ window: WindowRecord,
+    windows: inout [WindowRecord],
+    state: inout WorkspaceState,
+    restoration: inout WorkspaceRestoration,
+    trackedWindowIDs: Set<String>,
+    initialWidthFractions: [String: Double] = [:]
+) -> Bool {
+    guard !windows.contains(where: { $0.id == window.id }) else { return false }
+    windows.append(window)
+    restoration.reconcile(
+        state: &state,
+        windowIDs: windows.map(\.id),
+        trackedWindowIDs: trackedWindowIDs,
+        initialWidthFractions: initialWidthFractions
+    )
     return true
 }
 
@@ -290,6 +350,7 @@ final class StagehandModel: ObservableObject {
     private var desktopCheckTask: Task<Void, Never>?
     private var transitionRollback: WorkspaceState?
     private var workspaceRestoration = WorkspaceRestoration()
+    private var focusHistory = WindowFocusHistory()
     private var lastLayoutMilliseconds = 0
     private var lastFocusTokenExpired = false
     private var pointerInteraction: PointerInteraction?
@@ -423,6 +484,9 @@ final class StagehandModel: ObservableObject {
         }
         windowSystem.onWindowMiniaturized = { [weak self] id in
             self?.windowMiniaturized(windowID: id)
+        }
+        windowSystem.onWindowDeminiaturized = { [weak self] id in
+            self?.windowDeminiaturized(windowID: id)
         }
         windowSystem.onFocusedWindowChange = { [weak self] id in self?.observedFocusChanged(windowID: id) }
         windowSystem.onFrameChange = { [weak self] id, frame in
@@ -564,7 +628,10 @@ final class StagehandModel: ObservableObject {
         workspaceRestoration.reconcile(state: &state, windowIDs: windows.map(\.id),
                                        trackedWindowIDs: windowSystem.trackedWindowIDs,
                                        initialWidthFractions: initialWidthFractions(for: windows))
-        if let focused = windowSystem.focusedWindowID() { state.focus(windowID: focused) }
+        if let focused = windowSystem.focusedWindowID() {
+            state.focus(windowID: focused)
+            focusHistory.record(windowID: focused)
+        }
         isRunning = true
         isSuspended = false
         state.isPaused = false
@@ -1068,6 +1135,12 @@ final class StagehandModel: ObservableObject {
         let focusedWindowID = state.focusedWindowID
         let removedIDs = removeTerminatedApplication(pid: pid, windows: &windows, state: &state)
         guard !removedIDs.isEmpty else { return }
+        focusHistory.remove(windowIDs: removedIDs)
+        focusMostRecentWindowAfterLoss(
+            previousFocusedWindowID: focusedWindowID,
+            history: focusHistory,
+            state: &state
+        )
         finishRemovingWindows(removedIDs, focusedWindowID: focusedWindowID)
         diagnostics.record("application_removed", details: [
             "pid": String(pid),
@@ -1085,6 +1158,12 @@ final class StagehandModel: ObservableObject {
         let focusedWindowID = state.focusedWindowID
         guard removeDestroyedWindow(windowID: windowID, windows: &windows, state: &state) else { return }
         let removedIDs = Set([windowID])
+        focusHistory.remove(windowIDs: removedIDs)
+        focusMostRecentWindowAfterLoss(
+            previousFocusedWindowID: focusedWindowID,
+            history: focusHistory,
+            state: &state
+        )
         finishRemovingWindows(removedIDs, focusedWindowID: focusedWindowID)
         diagnostics.record("window_removed", details: ["windowID": windowID])
         enqueue(.windowRemoval, transitionFrom: previousState, motionStart: motionStart)
@@ -1093,8 +1172,48 @@ final class StagehandModel: ObservableObject {
 
     private func windowMiniaturized(windowID: String) {
         guard isRunning, !isSuspended else { return }
-        if borderWindowID == windowID { hideFocusBorder() }
-        scheduleRefresh(immediately: true)
+        refreshTask?.cancel()
+        let previousState = state
+        let motionStart = navigationFrames()
+        let focusedWindowID = state.focusedWindowID
+        guard removeUnavailableWindow(
+            windowID: windowID,
+            windows: &windows,
+            state: &state,
+            restoration: &workspaceRestoration,
+            trackedWindowIDs: windowSystem.trackedWindowIDs
+        ) else { return }
+        focusMostRecentWindowAfterLoss(
+            previousFocusedWindowID: focusedWindowID,
+            history: focusHistory,
+            state: &state
+        )
+        finishRemovingWindows([windowID], focusedWindowID: focusedWindowID)
+        diagnostics.record("window_unavailable", details: ["windowID": windowID, "reason": "minimized"])
+        enqueue(.windowRemoval, transitionFrom: previousState, motionStart: motionStart)
+        onStateChange?()
+    }
+
+    private func windowDeminiaturized(windowID: String) {
+        guard isRunning, !isSuspended,
+              let window = windowSystem.record(windowID: windowID) else { return }
+        refreshTask?.cancel()
+        guard restoreAvailableWindow(
+            window,
+            windows: &windows,
+            state: &state,
+            restoration: &workspaceRestoration,
+            trackedWindowIDs: windowSystem.trackedWindowIDs,
+            initialWidthFractions: initialWidthFractions(for: [window])
+        ) else { return }
+        if state.currentSpace.windowIDs.contains(windowID) {
+            state.focus(windowID: windowID)
+        } else if let spaceIndex = state.spaces.firstIndex(where: { $0.windowIDs.contains(windowID) }) {
+            state.focus(windowID: windowID, inSpace: spaceIndex)
+        }
+        diagnostics.record("window_available", details: ["windowID": windowID, "reason": "restored"])
+        enqueue(.refresh)
+        onStateChange?()
     }
 
     private func finishRemovingWindows(_ removedIDs: Set<String>, focusedWindowID: String?) {
@@ -1153,20 +1272,15 @@ final class StagehandModel: ObservableObject {
         let motionStart = navigationFrames()
         let current = windowSystem.scanWindows()
         let oldState = state
-        let previouslyKnownWindowIDs = Set(state.spaces.flatMap(\.windowIDs))
-        let oldIDs = Set(windows.map(\.id))
         windows = current
         workspaceRestoration.reconcile(state: &state, windowIDs: current.map(\.id),
                                        trackedWindowIDs: windowSystem.trackedWindowIDs,
                                        initialWidthFractions: initialWidthFractions(for: current))
-        let hasNewWindows = current.contains { !oldIDs.contains($0.id) }
         if oldState.activeSpaceIndex == state.activeSpaceIndex,
            let focused = windowSystem.focusedWindowID(),
-           current.contains(where: { $0.id == focused }),
            shouldFollowObservedFocus(
-               hasNewWindows: hasNewWindows,
                observedWindowID: focused,
-               previouslyKnownWindowIDs: previouslyKnownWindowIDs
+               discoveredWindowIDs: Set(current.map(\.id))
            ) {
             // External app activation follows an existing membership; shared windows stay in this space.
             if !state.currentSpace.windowIDs.contains(focused),
@@ -1428,6 +1542,9 @@ final class StagehandModel: ObservableObject {
                         details: ["operation": change.diagnosticName]
                     )
                     return
+                }
+                if let focusedWindowID = self.state.focusedWindowID {
+                    self.focusHistory.record(windowID: focusedWindowID)
                 }
                 self.diagnostics.record("change_completed", details: ["operation": change.diagnosticName])
                 self.transitionRollback = nil

@@ -17,6 +17,7 @@ final class NativeWindowRegistry: NSObject {
     var onFocusedWindowChange: ((String) -> Void)?
     var onWindowDestroyed: ((String) -> Void)?
     var onWindowMiniaturized: ((String) -> Void)?
+    var onWindowDeminiaturized: ((String) -> Void)?
 
     private final class Registration {
         weak var window: NSWindow?
@@ -38,7 +39,7 @@ final class NativeWindowRegistry: NSObject {
         super.init()
         for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification,
                      NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
-                     NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification,
+                     NSWindow.willMiniaturizeNotification, NSWindow.didDeminiaturizeNotification,
                      NSWindow.willCloseNotification] {
             NotificationCenter.default.addObserver(self, selector: #selector(windowChanged(_:)), name: name, object: nil)
         }
@@ -74,6 +75,15 @@ final class NativeWindowRegistry: NSObject {
                                 frame: accessibilityFrame(window.frame),
                                 isResizable: window.styleMask.contains(.resizable))
         }.sorted { $0.id < $1.id }
+    }
+
+    func record(windowID: String) -> WindowRecord? {
+        guard let entry = windows[windowID], let window = entry.window, !entry.closed else { return nil }
+        return WindowRecord(id: entry.id, appName: "Stagehand", title: window.title,
+                            bundleIdentifier: Bundle.main.bundleIdentifier ?? "app.stagehand.Stagehand",
+                            pid: ProcessInfo.processInfo.processIdentifier,
+                            frame: accessibilityFrame(window.frame),
+                            isResizable: window.styleMask.contains(.resizable))
     }
 
     var focusedWindowID: String? {
@@ -197,8 +207,11 @@ final class NativeWindowRegistry: NSObject {
             entry.parked = false
             entry.originalFrame = nil
             onWindowDestroyed?(entry.id)
-        } else if notification.name == NSWindow.didMiniaturizeNotification {
+        } else if notification.name == NSWindow.willMiniaturizeNotification {
             onWindowMiniaturized?(entry.id)
+            return
+        } else if notification.name == NSWindow.didDeminiaturizeNotification {
+            onWindowDeminiaturized?(entry.id)
             return
         } else if notification.name == NSWindow.didMoveNotification || notification.name == NSWindow.didResizeNotification {
             onFrameChange?(entry.id, accessibilityFrame(window.frame))

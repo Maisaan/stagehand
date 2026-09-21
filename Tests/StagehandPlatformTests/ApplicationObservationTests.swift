@@ -2,9 +2,11 @@ import ApplicationServices
 import Testing
 @testable import StagehandPlatform
 
-@Test func onlyDestroyedWindowsAreRemovedBeforeRefreshingTheRibbon() {
-    #expect(isWindowDestroyedNotification(kAXUIElementDestroyedNotification))
-    #expect(!isWindowDestroyedNotification(kAXMovedNotification))
+@Test func windowAvailabilityNotificationsHaveImmediateRoutes() {
+    #expect(windowAvailabilityChange(for: kAXUIElementDestroyedNotification) == .destroyed)
+    #expect(windowAvailabilityChange(for: kAXWindowMiniaturizedNotification) == .minimized)
+    #expect(windowAvailabilityChange(for: kAXWindowDeminiaturizedNotification) == .restored)
+    #expect(windowAvailabilityChange(for: kAXMovedNotification) == nil)
 }
 
 @Test func launchingAppSubscriptionsRecoverAfterTransientFailure() {
