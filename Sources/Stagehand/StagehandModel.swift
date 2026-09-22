@@ -1238,8 +1238,21 @@ final class StagehandModel: ObservableObject {
     }
 
     private func observedFocusChanged(windowID: String) {
-        guard isRunning, !isSuspended, worker == nil, gestureBase == nil, windowID != state.focusedWindowID,
+        guard isRunning, !isSuspended, worker == nil, gestureBase == nil,
               windows.contains(where: { $0.id == windowID }), desktopScope.refresh() == .home else { return }
+        if windowID == state.focusedWindowID {
+            // Activating the already-selected app can raise its window above the
+            // still-visible border without changing logical focus.
+            if let frame = windowSystem.frame(windowID: windowID) {
+                updateFocusBorder(
+                    windowID: windowID,
+                    frame: frame,
+                    refreshShape: false,
+                    reorderAboveTarget: true
+                )
+            }
+            return
+        }
         observedFocusTask?.cancel()
         if ribbonMotion.isRunning { presentationFrames = ribbonMotion.frames }
         ribbonMotion.cancel()
