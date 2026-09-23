@@ -110,7 +110,7 @@ final class NavigationOverlays {
     private func borderPanel() -> OverlayPanel {
         if let border { return border }
         // Stay in the managed window's level so floating windows such as picture-in-picture
-        // remain above the border. updateBorder orders the panel directly above its target.
+        // remain above the border.
         let panel = OverlayPanel(level: .normal)
         let borderView = BorderView()
         borderView.strokeColor = borderColor
@@ -140,7 +140,6 @@ final class NavigationOverlays {
     func updateBorder(
         frame: CGRect,
         visible: Bool,
-        relativeTo windowNumber: CGWindowID? = nil,
         cornerRadius: CGFloat? = nil,
         focusChanged: Bool = false,
         reorderAboveTarget: Bool = false
@@ -159,11 +158,9 @@ final class NavigationOverlays {
         // Draw inward so the complete stroke remains visible at display edges.
         border.setFrame(converted, display: radiusChanged || border.frame.size != converted.size)
         if !border.isVisible || focusChanged || reorderAboveTarget {
-            if let windowNumber {
-                border.order(.above, relativeTo: Int(windowNumber))
-            } else {
-                border.orderFrontRegardless()
-            }
+            // Relative ordering does not reliably raise a panel above another app's
+            // window. Front ordering is confined to the normal window level.
+            border.orderFrontRegardless()
         }
         if focusChanged, let layer = border.contentView?.layer {
             let configuration = hudModel.interfaceAnimationConfiguration

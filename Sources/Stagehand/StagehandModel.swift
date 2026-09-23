@@ -1369,7 +1369,8 @@ final class StagehandModel: ObservableObject {
                   LayoutRequestPolicy.preferences.prepare(state: state, focusedWindowID: windowSystem.focusedWindowID()) != nil {
             enqueue(.preferences)
         } else if let id = state.focusedWindowID, let frame = windowSystem.frame(windowID: id) {
-            updateFocusBorder(windowID: id, frame: frame)
+            updateFocusBorder(windowID: id, frame: frame,
+                              reorderAboveTarget: windowSystem.focusedWindowID() == id)
         }
         onStateChange?()
     }
@@ -2320,7 +2321,6 @@ final class StagehandModel: ObservableObject {
         overlays.updateBorder(
             frame: frame,
             visible: true,
-            relativeTo: windowNumber,
             cornerRadius: borderCornerRadius,
             focusChanged: changed,
             reorderAboveTarget: reorderAboveTarget || identityChanged
