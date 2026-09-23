@@ -68,6 +68,7 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 - Click outside the gap field onto empty settings background. The edit commits, the field loses focus, and the original click still reaches its target.
 - Open the menu bar quick actions. The borderless panel appears immediately without an arrow to the menu bar icon. Neither the window-gap field nor the space-color field receives focus until clicked.
 - In menu bar quick actions, change the active space color with both the color picker and a typed hex value. The picker stays in front, the focus border and app bar update, and the value remains after reopening quick actions.
+- With only one active or occupied space, open Settings and assign different colors to empty spaces. Close and reopen Settings and confirm the values remain. Move a window into each configured space and switch to it; the saved color appears on the focus border and app bar.
 - Neither bar nor border shifts or resizes any window.
 - The current application owns the macOS menu bar, except while Stagehand settings or an empty-space placeholder is active.
 - Open Settings and confirm Stagehand appears in the Dock. Close Settings and confirm its Dock icon disappears while the menu bar item remains.
@@ -78,4 +79,4 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 - Resize settings to its minimum size and enlarge it. Content should adapt and scroll without clipping controls.
 - Turn Launch at login on, quit Stagehand, then log out and back in. Stagehand should start automatically. Turn it off and repeat; Stagehand should stay closed.
 - Disable Stagehand in System Settings > General > Login Items, return to Stagehand, and confirm the toggle is off with approval guidance below it.
-- Only occupied spaces and the current space appear in settings and the menu. Numbered shortcuts can still reach unused spaces.
+- All nine spaces appear in Settings so their colors can be configured. Only occupied spaces and the current space appear in the menu. Numbered shortcuts can still reach unused spaces.

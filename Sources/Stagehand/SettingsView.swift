@@ -377,7 +377,7 @@ struct SettingsView: View {
                 SettingsCard {
                     SettingsRow("Space") {
                         Picker("Space", selection: $selectedSpaceIndex) {
-                            ForEach(model.state.displayedSpaceIndices, id: \.self) { index in
+                            ForEach(model.state.spaces.indices, id: \.self) { index in
                                 let count = model.state.spaces[index].windowIDs.count
                                 Text("Space \(index + 1) · \(count) \(count == 1 ? "window" : "windows")")
                                     .tag(index)
@@ -423,11 +423,6 @@ struct SettingsView: View {
                         }
                     }
                 }
-            }
-        }
-        .onChange(of: model.state.displayedSpaceIndices) { _, indices in
-            if !indices.contains(selectedSpaceIndex) {
-                selectedSpaceIndex = model.state.activeSpaceIndex
             }
         }
         .onChange(of: model.gap) { _, value in
