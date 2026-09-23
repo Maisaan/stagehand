@@ -1248,7 +1248,7 @@ final class StagehandModel: ObservableObject {
                     windowID: windowID,
                     frame: frame,
                     refreshShape: false,
-                    reorderAboveTarget: true
+                    raiseBorder: true
                 )
             }
             return
@@ -1289,8 +1289,9 @@ final class StagehandModel: ObservableObject {
         workspaceRestoration.reconcile(state: &state, windowIDs: current.map(\.id),
                                        trackedWindowIDs: windowSystem.trackedWindowIDs,
                                        initialWidthFractions: initialWidthFractions(for: current))
+        let observedFocusedWindowID = windowSystem.focusedWindowID()
         if oldState.activeSpaceIndex == state.activeSpaceIndex,
-           let focused = windowSystem.focusedWindowID(),
+           let focused = observedFocusedWindowID,
            shouldFollowObservedFocus(
                observedWindowID: focused,
                discoveredWindowIDs: Set(current.map(\.id))
@@ -1366,11 +1367,11 @@ final class StagehandModel: ObservableObject {
                 enqueue(preferencesNeedLayout ? .preferences : .refresh)
             }
         } else if preferencesNeedLayout,
-                  LayoutRequestPolicy.preferences.prepare(state: state, focusedWindowID: windowSystem.focusedWindowID()) != nil {
+                  LayoutRequestPolicy.preferences.prepare(state: state, focusedWindowID: observedFocusedWindowID) != nil {
             enqueue(.preferences)
         } else if let id = state.focusedWindowID, let frame = windowSystem.frame(windowID: id) {
             updateFocusBorder(windowID: id, frame: frame,
-                              reorderAboveTarget: windowSystem.focusedWindowID() == id)
+                              raiseBorder: observedFocusedWindowID == id)
         }
         onStateChange?()
     }
@@ -1888,7 +1889,7 @@ final class StagehandModel: ObservableObject {
                 }
                 if !focusAlongsideSlide,
                    let frame = self.windowSystem.frame(windowID: focusedID) {
-                    self.updateFocusBorder(windowID: focusedID, frame: frame, reorderAboveTarget: true)
+                    self.updateFocusBorder(windowID: focusedID, frame: frame, raiseBorder: true)
                 }
                 return true
             }
@@ -1946,7 +1947,7 @@ final class StagehandModel: ObservableObject {
                 guard isRunning, !isSuspended, !Task.isCancelled else { return false }
             }
             if let focused = state.focusedWindowID, let frame = windowSystem.frame(windowID: focused) {
-                updateFocusBorder(windowID: focused, frame: frame, reorderAboveTarget: true)
+                updateFocusBorder(windowID: focused, frame: frame, raiseBorder: true)
             } else {
                 hideFocusBorder()
             }
@@ -2299,7 +2300,7 @@ final class StagehandModel: ObservableObject {
         windowID: String,
         frame: CGRect,
         refreshShape: Bool = true,
-        reorderAboveTarget: Bool = false
+        raiseBorder: Bool = false
     ) {
         overlays.setBorderColor(focusBorderColor)
         let changed = borderWindowID != windowID
@@ -2323,7 +2324,7 @@ final class StagehandModel: ObservableObject {
             visible: true,
             cornerRadius: borderCornerRadius,
             focusChanged: changed,
-            reorderAboveTarget: reorderAboveTarget || identityChanged
+            raiseBorder: raiseBorder || identityChanged
         )
     }
 

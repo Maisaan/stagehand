@@ -142,7 +142,7 @@ final class NavigationOverlays {
         visible: Bool,
         cornerRadius: CGFloat? = nil,
         focusChanged: Bool = false,
-        reorderAboveTarget: Bool = false
+        raiseBorder: Bool = false
     ) {
         guard visible, let primary = NSScreen.screens.first else {
             border?.orderOut(nil)
@@ -157,7 +157,7 @@ final class NavigationOverlays {
         // Frame/path changes remain synchronous, including throughout a native live resize.
         // Draw inward so the complete stroke remains visible at display edges.
         border.setFrame(converted, display: radiusChanged || border.frame.size != converted.size)
-        if !border.isVisible || focusChanged || reorderAboveTarget {
+        if !border.isVisible || focusChanged || raiseBorder {
             // Relative ordering does not reliably raise a panel above another app's
             // window. Front ordering is confined to the normal window level.
             border.orderFrontRegardless()
