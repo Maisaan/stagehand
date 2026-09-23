@@ -785,7 +785,7 @@ public final class WindowSystem {
             )
         }
 
-        func wait() async throws { try await Task.sleep(for: .milliseconds(8)) }
+        func wait(milliseconds: Int) async throws { try await Task.sleep(for: .milliseconds(milliseconds)) }
     }
 
     private func observeApplication(_ element: AXUIElement, pid: pid_t) {

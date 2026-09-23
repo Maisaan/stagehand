@@ -212,7 +212,7 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
 @MainActor @Test func verifiedFocusDoesNotExpireInputWhileRibbonMotionIsDelayed() async throws {
     var posted: [Int32] = []
     var expired = false
-    let gate = FocusInputGate(postEvent: { _, pid in posted.append(pid) })
+    let gate = FocusInputGate(transferTimeoutMilliseconds: 80, postEvent: { _, pid in posted.append(pid) })
     gate.onTransferExpired = { _ in expired = true }
     let token = gate.beginTransfer()
     let key = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
@@ -221,7 +221,7 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     let outcome = await runFocusFirstNavigation(
         translate: {
             #expect(posted == [42])
-            try? await Task.sleep(for: .milliseconds(2_100))
+            try? await Task.sleep(for: .milliseconds(120))
             return .readyForFocus
         },
         focus: { true },

@@ -66,15 +66,19 @@ public final class FocusInputGate {
     private var source: CFRunLoopSource?
     private let eventMarker: Int64 = 0x53544748414E44
     private let maximumEvents = 128
-    private let transferTimeoutMilliseconds = 2_000
+    // Focus may need a longer confirmation window when AX is slow. Keep input
+    // buffered beyond that window, then discard it if the transfer still stalls.
+    private let transferTimeoutMilliseconds: Int
     private let postEvent: (CGEvent, Int32) -> Void
     private var shortcutBindings = ShortcutBinding.defaults
 
     public init() {
+        transferTimeoutMilliseconds = 4_000
         postEvent = { event, pid in event.postToPid(pid) }
     }
 
-    init(postEvent: @escaping (CGEvent, Int32) -> Void) {
+    init(transferTimeoutMilliseconds: Int = 4_000, postEvent: @escaping (CGEvent, Int32) -> Void) {
+        self.transferTimeoutMilliseconds = transferTimeoutMilliseconds
         self.postEvent = postEvent
     }
 

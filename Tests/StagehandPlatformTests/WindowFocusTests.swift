@@ -38,8 +38,8 @@ private final class FocusDriverFixture: WindowFocusDriving {
         return readings[min(readingIndex, readings.count - 1)]
     }
 
-    func wait() async throws {
-        elapsedMilliseconds += 8
+    func wait(milliseconds: Int) async throws {
+        elapsedMilliseconds += milliseconds
     }
 }
 
@@ -117,11 +117,12 @@ private func missingGlobalReading(
 }
 
 @Test @MainActor func focusRequiresTheExactWindowEvenWhenTheAppIsActive() async {
-    let report = await WindowFocusAttempt.run(
-        driver: FocusDriverFixture(readings: [focusReading(active: true, matches: false)])
-    )
+    let driver = FocusDriverFixture(readings: [focusReading(active: true, matches: false)])
+    let report = await WindowFocusAttempt.run(driver: driver)
     #expect(report.outcome == .timedOut)
     #expect(report.observations.allSatisfy { !$0.targetWindowMatches })
+    #expect(report.elapsedMilliseconds <= 1_600)
+    #expect(driver.requests.count <= 15)
 }
 
 @Test @MainActor func focusConfirmsOnlyAfterObservedAppAndWindowMatch() async {
@@ -155,7 +156,7 @@ private func missingGlobalReading(
     let report = await WindowFocusAttempt.run(driver: driver)
     #expect(report.outcome == .focused)
     #expect(report.observations.last?.targetWindowMatches == true)
-    #expect(driver.requests == [0])
+    #expect(driver.requests.count <= 2)
 }
 
 @Test @MainActor func focusRetriesAfterSlowAccessibilityFailureDuringAppSwitch() async {
@@ -174,6 +175,44 @@ private func missingGlobalReading(
     #expect(report.outcome == .focused)
     #expect(report.observations.last?.directTargetWindowMatches == true)
     #expect(report.observations.dropLast().allSatisfy { !$0.confirmsFocus(targetPID: driver.targetPID) })
+}
+
+@Test @MainActor func focusWaitsForRecoveryAfterConsecutiveSlowAccessibilityFailures() async {
+    let unavailable = missingGlobalReading(
+        directMatches: false,
+        directStatus: AXError.cannotComplete.rawValue,
+        globalStatus: AXError.cannotComplete.rawValue
+    )
+    let driver = FocusDriverFixture(readings: [
+        missingGlobalReading(frontmostPID: 456, active: false),
+        unavailable,
+        unavailable,
+        unavailable,
+        missingGlobalReading(),
+    ])
+    driver.observationMilliseconds = [0, 500, 500, 0, 0]
+
+    let report = await WindowFocusAttempt.run(driver: driver)
+
+    #expect(report.outcome == .focused)
+    #expect(report.observations.last?.directTargetWindowMatches == true)
+}
+
+@Test @MainActor func focusWaitsForExactWindowAfterApplicationActivates() async {
+    let driver = FocusDriverFixture(readings: [
+        focusReading(active: false, matches: false),
+        focusReading(active: false, matches: false),
+        focusReading(active: true, matches: false),
+        focusReading(active: true, matches: false),
+        focusReading(active: true, matches: false),
+        focusReading(active: true, matches: true),
+    ])
+    driver.observationMilliseconds = [0, 400, 0, 100, 0, 0]
+
+    let report = await WindowFocusAttempt.run(driver: driver)
+
+    #expect(report.outcome == .focused)
+    #expect(report.observations.last?.targetWindowMatches == true)
 }
 
 @Test @MainActor func directFallbackAcceptsExactFocusAfterGlobalTimeout() async {

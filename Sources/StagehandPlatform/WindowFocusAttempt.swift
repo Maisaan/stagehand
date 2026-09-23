@@ -95,7 +95,7 @@ protocol WindowFocusDriving {
     func prepare() -> [WindowFocusReport.Operation]
     func requestFocus(attempt: Int) -> [WindowFocusReport.Operation]
     func observe() -> WindowFocusReport.Observation
-    func wait() async throws
+    func wait(milliseconds: Int) async throws
 }
 
 @MainActor
@@ -115,56 +115,58 @@ enum WindowFocusAttempt {
         let preparationOperations = driver.prepare()
         var operations = recordDiagnostics ? preparationOperations : []
         var observations: [WindowFocusReport.Observation] = []
-        // Keep the original 180 ms retry budget, measured after preparation.
-        let deadline = driver.elapsedMilliseconds + 180
+        // Most switches finish in the first 180 ms. Allow slow activation some
+        // time without repeatedly sending AX setters, then extend only while
+        // the target is active or AX itself is temporarily unavailable.
+        let fastDeadline = driver.elapsedMilliseconds + 180
+        let activationDeadline = driver.elapsedMilliseconds + 600
+        let recoveryDeadline = driver.elapsedMilliseconds + 1_500
         var attempt = 0
         var outcome = WindowFocusReport.Outcome.timedOut
-        repeat {
+        var targetBecameActive = false
+        var accessibilityUnavailable = false
+        var finalObservationDue = false
+        var lastRequestAt: Int?
+        while true {
             if Task.isCancelled {
                 outcome = .cancelled
                 break
             }
-            let requestedOperations = driver.requestFocus(attempt: attempt)
-            if recordDiagnostics { operations.append(contentsOf: requestedOperations) }
+            let elapsed = driver.elapsedMilliseconds
+            let shouldRequest = lastRequestAt.map {
+                (elapsed < fastDeadline && !targetBecameActive) || elapsed - $0 >= 120
+            } ?? true
+            if !finalObservationDue && shouldRequest {
+                let requestedOperations = driver.requestFocus(attempt: attempt)
+                if recordDiagnostics { operations.append(contentsOf: requestedOperations) }
+                lastRequestAt = elapsed
+                attempt += 1
+            }
             let observation = driver.observe()
             if recordDiagnostics { observations.append(observation) }
             if observation.confirmsFocus(targetPID: driver.targetPID) {
                 outcome = .focused
                 break
             }
-            attempt += 1
-            do { try await driver.wait() } catch {
+            if observation.targetApplicationActive, observation.frontmostPID == driver.targetPID {
+                targetBecameActive = true
+            }
+            if WindowFocusReport.Observation.isUnavailable(observation.focusedApplicationStatus) ||
+                observation.focusedWindowStatus.map(WindowFocusReport.Observation.isUnavailable) == true ||
+                WindowFocusReport.Observation.isUnavailable(observation.directFocusedWindowStatus) {
+                accessibilityUnavailable = true
+            }
+            let currentDeadline = targetBecameActive || accessibilityUnavailable
+                ? recoveryDeadline : activationDeadline
+            if driver.elapsedMilliseconds >= currentDeadline {
+                if finalObservationDue { break }
+                finalObservationDue = true
+            } else {
+                finalObservationDue = false
+            }
+            do { try await driver.wait(milliseconds: driver.elapsedMilliseconds < fastDeadline ? 8 : 40) } catch {
                 outcome = .cancelled
                 break
-            }
-        } while driver.elapsedMilliseconds < deadline
-        // A slow AX read can consume the retry budget while activation completes.
-        // Take one read-only snapshot at the deadline before reporting failure.
-        if outcome == .timedOut {
-            let observation = driver.observe()
-            if recordDiagnostics { observations.append(observation) }
-            if observation.confirmsFocus(targetPID: driver.targetPID) {
-                outcome = .focused
-            } else if observation.targetApplicationActive,
-                      observation.frontmostPID == driver.targetPID,
-                      (WindowFocusReport.Observation.isUnavailable(observation.focusedApplicationStatus) ||
-                       observation.focusedWindowStatus.map(WindowFocusReport.Observation.isUnavailable) == true),
-                      WindowFocusReport.Observation.isUnavailable(observation.directFocusedWindowStatus) {
-                // An AX read can consume the whole retry budget while the target app
-                // becomes active. Give its focus tree one more tick, then require the
-                // same exact-window confirmation as every other attempt.
-                do {
-                    try await driver.wait()
-                    if Task.isCancelled {
-                        outcome = .cancelled
-                    } else {
-                        let retry = driver.observe()
-                        if recordDiagnostics { observations.append(retry) }
-                        if retry.confirmsFocus(targetPID: driver.targetPID) { outcome = .focused }
-                    }
-                } catch {
-                    outcome = .cancelled
-                }
             }
         }
         return WindowFocusReport(targetPID: driver.targetPID, outcome: outcome,
