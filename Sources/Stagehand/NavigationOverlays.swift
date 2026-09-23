@@ -79,6 +79,7 @@ final class NavigationOverlays {
     var onShareWindow: ((String, Int) -> Void)?
     var onRemoveWindow: ((String) -> Void)?
     var onReorderWindow: ((String, Int) -> Void)?
+    var onWindowClicked: (() -> Void)?
     var canRevealNavigation: (() -> Bool)?
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
@@ -149,6 +150,7 @@ final class NavigationOverlays {
             return
         }
         let border = borderPanel()
+        installMouseMonitors()
         let borderView = border.contentView as? BorderView
         let radiusChanged = borderView?.cornerRadius != cornerRadius
         borderView?.cornerRadius = cornerRadius
@@ -210,14 +212,28 @@ final class NavigationOverlays {
 
     private func installMouseMonitors() {
         guard globalMouseMonitor == nil, localMouseMonitor == nil else { return }
-        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] _ in
-            MainActor.assumeIsolated { self?.pointerMoved(to: NSEvent.mouseLocation) }
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.mouseMoved, .leftMouseDragged, .leftMouseUp, .rightMouseUp]
+        ) { [weak self] event in
+            MainActor.assumeIsolated { self?.handleMouseEvent(event) }
         }
-        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] event in
-            self?.pointerMoved(to: NSEvent.mouseLocation)
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.mouseMoved, .leftMouseDragged, .leftMouseUp, .rightMouseUp]
+        ) { [weak self] event in
+            self?.handleMouseEvent(event)
             return event
         }
         updateHoverFrame()
+    }
+
+    private func handleMouseEvent(_ event: NSEvent) {
+        let point = NSEvent.mouseLocation
+        if (event.type == .leftMouseUp || event.type == .rightMouseUp),
+           border?.isVisible == true, border?.frame.contains(point) == true {
+            onWindowClicked?()
+        } else if event.type == .mouseMoved || event.type == .leftMouseDragged {
+            pointerMoved(to: point)
+        }
     }
 
     private func updateHoverFrame() {
