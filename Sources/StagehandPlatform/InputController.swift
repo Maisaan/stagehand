@@ -126,12 +126,13 @@ public final class InputController {
             gestures.onGesture = { [weak self] event in
                 guard let self else { return }
                 if let onGesture = self.onGesture { onGesture(event) }
-                else if case .ended(_, _, let action?) = event { self.onAction?(action) }
+                else if case .ended(_, _, let action?, _) = event { self.onAction?(action) }
             }
             if let issue = gestures.start(
                 fingerCount: Self.navigationGestureFingerCount,
                 unmodifiedEnabled: gesturesEnabled,
-                shortcutEnabled: shortcutSwipesEnabled
+                shortcutEnabled: shortcutSwipesEnabled,
+                shortcutBindings: shortcutBindings
             ) { issues.append(issue) }
         }
         onStatusChange?()

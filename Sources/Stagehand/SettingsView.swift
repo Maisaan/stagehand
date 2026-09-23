@@ -280,11 +280,11 @@ struct SettingsView: View {
                             .toggleStyle(.switch)
                     }
                     Divider()
-                    SettingsRow("Control + Option swipes") {
-                        Toggle("Control + Option swipes", isOn: $model.shortcutSwipesEnabled)
+                    SettingsRow("Arrow shortcut swipes") {
+                        Toggle("Arrow shortcut swipes", isOn: $model.shortcutSwipesEnabled)
                             .labelsHidden()
                             .toggleStyle(.switch)
-                            .help("Hold Control and Option while swiping with three fingers. Left and right switch windows; up and down switch spaces.")
+                            .help("A three-finger swipe replaces the arrow key in an enabled shortcut. Control + Option + swipe left focuses the previous window; add Command to move the current window left.")
                     }
                     Divider()
                     SettingsRow("Trackpad settings") {

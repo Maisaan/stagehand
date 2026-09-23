@@ -523,7 +523,8 @@ final class StagehandModel: ObservableObject {
                     axis: completion.axis,
                     displacement: completion.displacement,
                     velocity: completion.velocity,
-                    recognizerAction: completion.recognizerAction
+                    recognizerAction: completion.recognizerAction,
+                    mode: completion.mode
                 )
             }
         }
@@ -2128,10 +2129,11 @@ final class StagehandModel: ObservableObject {
         }
         guard isRunning, !isSuspended else { return }
         switch event {
-        case .began(let axis, let displacement):
+        case .began(let axis, let displacement, let mode):
             guard desktopScope.refresh() == .home else { return }
             gestureAxis = axis
-            if worker == nil, axis == .horizontal, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            if mode == .plain, worker == nil, axis == .horizontal,
+               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
                 let frames = navigationFrames()
                 ribbonMotion.cancel()
                 gestureBase = frames
@@ -2154,10 +2156,10 @@ final class StagehandModel: ObservableObject {
             }
         case .changed(let displacement, _):
             previewGesture(displacement: displacement)
-        case .ended(let displacement, let velocity, let action):
+        case .ended(let displacement, let velocity, let action, let mode):
             guard let gestureAxis else { return }
             finishGesture(axis: gestureAxis, displacement: displacement,
-                          velocity: velocity, recognizerAction: action)
+                          velocity: velocity, recognizerAction: action, mode: mode)
         case .cancelled:
             gestureAxis = nil
             restoreGesturePreview()
@@ -2165,9 +2167,9 @@ final class StagehandModel: ObservableObject {
     }
 
     private func finishGesture(axis: GestureAxis, displacement: Double, velocity: Double,
-                               recognizerAction: NavigationAction?) {
+                               recognizerAction: NavigationAction?, mode: GestureMode) {
         let resolvedAction: NavigationAction?
-        if axis == .horizontal, let gestureBase, let availableFrame {
+        if mode == .plain, axis == .horizontal, let gestureBase, let availableFrame {
             resolvedAction = RibbonMotion.horizontalCompletionAction(
                 state: state,
                 from: gestureBase,
@@ -2190,6 +2192,10 @@ final class StagehandModel: ObservableObject {
             ])
         }
         gestureAxis = nil
+        if mode == .shortcut {
+            if let resolvedAction { navigate(resolvedAction) }
+            return
+        }
         let initialHorizontalVelocity = axis == .horizontal && velocity.isFinite
             ? availableFrame.map {
                 CGFloat(velocity * Double($0.width) * ribbonAnimationConfiguration.tracking)

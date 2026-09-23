@@ -10,15 +10,56 @@ private func contacts(count: Int = 3, dx: Double = 0, dy: Double = 0) -> [Gestur
     }
 }
 
-@Test func shortcutSwipeRequiresControlAndOptionUnlessPlainGesturesAreEnabled() {
-    let chord: CGEventFlags = [.maskControl, .maskAlternate]
-    #expect(acceptsGestureModifiers(chord, unmodifiedEnabled: false, shortcutEnabled: true))
-    #expect(!acceptsGestureModifiers([], unmodifiedEnabled: false, shortcutEnabled: true))
-    #expect(!acceptsGestureModifiers([.maskControl], unmodifiedEnabled: false, shortcutEnabled: true))
-    #expect(!acceptsGestureModifiers(chord.union(.maskShift), unmodifiedEnabled: false, shortcutEnabled: true))
-    #expect(acceptsGestureModifiers([], unmodifiedEnabled: true, shortcutEnabled: false))
-    #expect(acceptsGestureModifiers(chord, unmodifiedEnabled: true, shortcutEnabled: true))
-    #expect(!acceptsGestureModifiers(chord, unmodifiedEnabled: false, shortcutEnabled: false))
+@Test func shortcutSwipeStartsOnlyForAnEnabledArrowChord() {
+    let baseFlags: CGEventFlags = [.maskControl, .maskAlternate]
+    let commandFlags = baseFlags.union(.maskCommand)
+    let bindings = ShortcutBinding.defaults
+    #expect(shortcutGestureModifiers(for: baseFlags, bindings: bindings) == UInt32(controlKey | optionKey))
+    #expect(shortcutGestureModifiers(for: commandFlags, bindings: bindings) == UInt32(controlKey | optionKey | cmdKey))
+    #expect(shortcutGestureModifiers(for: [], bindings: bindings) == nil)
+    #expect(shortcutGestureModifiers(for: [.maskControl], bindings: bindings) == nil)
+    #expect(shortcutGestureModifiers(for: baseFlags.union(.maskShift), bindings: bindings) == nil)
+}
+
+@Test func commandControlOptionSwipeLeftUsesTheLeftArrowAction() throws {
+    let modifiers = UInt32(cmdKey | controlKey | optionKey)
+    #expect(gestureShortcutAction(
+        axis: .horizontal,
+        displacement: -0.1,
+        modifiers: modifiers,
+        bindings: ShortcutBinding.defaults
+    ) == .reorderPrevious)
+    #expect(gestureShortcutAction(
+        axis: .horizontal,
+        displacement: 0.1,
+        modifiers: modifiers,
+        bindings: ShortcutBinding.defaults
+    ) == .reorderNext)
+    #expect(gestureShortcutAction(
+        axis: .vertical,
+        displacement: 0.1,
+        modifiers: modifiers,
+        bindings: ShortcutBinding.defaults
+    ) == nil)
+    let base = UInt32(controlKey | optionKey)
+    #expect(gestureShortcutAction(
+        axis: .horizontal, displacement: -0.1, modifiers: base, bindings: ShortcutBinding.defaults
+    ) == .focusPrevious)
+    #expect(gestureShortcutAction(
+        axis: .vertical, displacement: 0.1, modifiers: base, bindings: ShortcutBinding.defaults
+    ) == .previousSpace)
+    var bindings = ShortcutBinding.defaults
+    let previousIndex = try #require(bindings.firstIndex { $0.id == "reorderPrevious" })
+    bindings[previousIndex].isEnabled = false
+    #expect(gestureShortcutAction(
+        axis: .horizontal, displacement: -0.1, modifiers: modifiers, bindings: bindings
+    ) == nil)
+    let settingsIndex = try #require(bindings.firstIndex { $0.id == "showSettings" })
+    bindings[settingsIndex].key = UInt32(kVK_UpArrow)
+    bindings[settingsIndex].modifiers = modifiers | UInt32(shiftKey)
+    #expect(gestureShortcutAction(
+        axis: .vertical, displacement: 0.1, modifiers: modifiers | UInt32(shiftKey), bindings: bindings
+    ) == .showSettings)
 }
 
 @Test func configuredGestureRecognizesSlowMovementAndResets() {
@@ -35,7 +76,7 @@ private func contacts(count: Int = 3, dx: Double = 0, dy: Double = 0) -> [Gestur
         }
     }
     #expect(began)
-    guard case .ended(_, _, let action) = recognizer.update(contacts: [], timestamp: 2.1) else {
+    guard case .ended(_, _, let action, _) = recognizer.update(contacts: [], timestamp: 2.1) else {
         Issue.record("Slow gesture did not complete")
         return
     }
@@ -60,7 +101,7 @@ private func contacts(count: Int = 3, dx: Double = 0, dy: Double = 0) -> [Gestur
     _ = recognizer.update(contacts: contacts(dx: -0.1), timestamp: 0.1)
     _ = recognizer.update(contacts: contacts(dx: -0.06), timestamp: 0.2)
     _ = recognizer.update(contacts: contacts(dx: -0.02), timestamp: 0.22)
-    guard case .ended(let displacement, let velocity, let action) = recognizer.update(
+    guard case .ended(let displacement, let velocity, let action, _) = recognizer.update(
         contacts: [], timestamp: 0.23
     ) else {
         Issue.record("Reversed gesture did not complete")
@@ -82,16 +123,26 @@ private func contacts(count: Int = 3, dx: Double = 0, dy: Double = 0) -> [Gestur
 
 @Test func gestureBufferKeepsBoundariesAndOnlyTheLatestDragFrame() {
     var pending = GestureEventBuffer()
-    pending.append(.began(axis: .horizontal, displacement: 0.02))
+    pending.append(.began(axis: .horizontal, displacement: 0.02, mode: .plain))
     for index in 0 ..< 100 {
         pending.append(.changed(displacement: Double(index) / 1_000, velocity: 1))
     }
-    pending.append(.ended(displacement: 0.099, velocity: 1, action: .focusPrevious))
+    pending.append(.ended(displacement: 0.099, velocity: 1, action: .focusPrevious, mode: .plain))
     #expect(pending.drain() == [
-        .began(axis: .horizontal, displacement: 0.02),
+        .began(axis: .horizontal, displacement: 0.02, mode: .plain),
         .changed(displacement: 0.099, velocity: 1),
-        .ended(displacement: 0.099, velocity: 1, action: .focusPrevious),
+        .ended(displacement: 0.099, velocity: 1, action: .focusPrevious, mode: .plain),
     ])
+}
+
+@Test func shortcutSwipeCompletionKeepsReorderActionBeforeKeyboardDelivery() {
+    var pending = GestureEventBuffer()
+    pending.append(.began(axis: .horizontal, displacement: -0.02, mode: .shortcut))
+    pending.append(.ended(displacement: -0.1, velocity: -1, action: .reorderPrevious, mode: .shortcut))
+    let completion = pending.takeCompletion()
+    #expect(completion?.recognizerAction == .reorderPrevious)
+    #expect(completion?.mode == .shortcut)
+    #expect(pending.drain().isEmpty)
 }
 
 @Test(arguments: [

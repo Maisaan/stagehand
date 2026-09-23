@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Darwin
 import os
 import StagehandCore
@@ -28,17 +29,32 @@ private struct RawContact {
 
 private typealias ContactCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, Int32, Double, Int32) -> Int32
 
-func acceptsGestureModifiers(_ flags: CGEventFlags, unmodifiedEnabled: Bool, shortcutEnabled: Bool) -> Bool {
-    if unmodifiedEnabled { return true }
-    guard shortcutEnabled else { return false }
-    let relevant: CGEventFlags = [.maskControl, .maskAlternate, .maskShift, .maskCommand]
-    return flags.intersection(relevant) == [.maskControl, .maskAlternate]
+func shortcutGestureModifiers(for flags: CGEventFlags, bindings: [ShortcutBinding]) -> UInt32? {
+    let modifiers = ShortcutBinding.carbonModifiers(for: flags)
+    let arrowKeys = [kVK_LeftArrow, kVK_RightArrow, kVK_UpArrow, kVK_DownArrow]
+    return arrowKeys.contains {
+        ShortcutBinding.action(forKey: UInt32($0), modifiers: modifiers, in: bindings) != nil
+    } ? modifiers : nil
+}
+
+func gestureShortcutAction(
+    axis: GestureAxis, displacement: Double, modifiers: UInt32, bindings: [ShortcutBinding]
+) -> NavigationAction? {
+    let key: UInt32
+    switch axis {
+    case .horizontal: key = UInt32(displacement < 0 ? kVK_LeftArrow : kVK_RightArrow)
+    case .vertical: key = UInt32(displacement > 0 ? kVK_UpArrow : kVK_DownArrow)
+    }
+    return ShortcutBinding.action(forKey: key, modifiers: modifiers, in: bindings)
 }
 
 private struct GestureCallbackState {
     var enabled = false
     var unmodifiedEnabled = false
     var shortcutEnabled = false
+    var shortcutBindings: [ShortcutBinding] = []
+    var shortcutModifiers: UInt32?
+    var shortcutAxis: GestureAxis?
     var ignoredUntilLift = false
     var recognizer = NavigationGestureRecognizer()
     var suppressScroll = false
@@ -72,20 +88,50 @@ private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
             if snapshot.isEmpty { state.ignoredUntilLift = false }
             return nil
         }
-        let acceptsModifiers = acceptsGestureModifiers(
-            flags, unmodifiedEnabled: state.unmodifiedEnabled, shortcutEnabled: state.shortcutEnabled
-        )
-        if !state.recognizer.hasContactSequence && !acceptsModifiers {
-            if snapshot.count >= state.recognizer.fingerCount { state.ignoredUntilLift = true }
-            return nil
+        let modifiers = ShortcutBinding.carbonModifiers(for: flags)
+        if !state.recognizer.hasContactSequence && snapshot.count >= state.recognizer.fingerCount {
+            state.shortcutModifiers = state.shortcutEnabled
+                ? shortcutGestureModifiers(for: flags, bindings: state.shortcutBindings) : nil
+            if state.shortcutModifiers == nil && !state.unmodifiedEnabled {
+                state.ignoredUntilLift = true
+                return nil
+            }
         }
-        let modifierCancelled = state.recognizer.isDragging && !acceptsModifiers
-        if state.recognizer.hasContactSequence && !acceptsModifiers {
+        let modifiersChanged = state.shortcutModifiers.map { $0 != modifiers } ?? false
+        let modifierCancelled = state.recognizer.isDragging && modifiersChanged
+        if state.recognizer.hasContactSequence && modifiersChanged {
             state.recognizer.cancelUntilLift()
             if modifierCancelled { state.pendingEvents.append(.cancelled) }
         }
         let wasSuppressing = state.suppressScroll
-        let event = state.recognizer.update(contacts: snapshot, timestamp: timestamp)
+        var event = state.recognizer.update(contacts: snapshot, timestamp: timestamp)
+        if let shortcutModifiers = state.shortcutModifiers {
+            switch event {
+            case .began(let axis, let displacement, _):
+                state.shortcutAxis = axis
+                // A shortcut swipe acts on release like its arrow key. The plain gesture's
+                // live ribbon preview follows a different direction and must not run here.
+                event = .began(axis: axis, displacement: displacement, mode: .shortcut)
+            case .ended(let displacement, let velocity, let action, _):
+                let shortcutAction = action.flatMap { _ in
+                    state.shortcutAxis.flatMap {
+                        gestureShortcutAction(axis: $0, displacement: displacement,
+                                              modifiers: shortcutModifiers, bindings: state.shortcutBindings)
+                    }
+                }
+                event = .ended(displacement: displacement, velocity: velocity,
+                               action: shortcutAction, mode: .shortcut)
+            default: break
+            }
+        }
+        if case .ended = event {
+            state.shortcutModifiers = nil
+            state.shortcutAxis = nil
+        }
+        if case .cancelled = event {
+            state.shortcutModifiers = nil
+            state.shortcutAxis = nil
+        }
         if traceGestures, let event {
             switch event {
             case .changed: break
@@ -118,7 +164,8 @@ final class GestureMonitor {
     private var runLoopSource: CFRunLoopSource?
     private var generation: UInt64 = 0
 
-    func start(fingerCount: Int = 4, unmodifiedEnabled: Bool, shortcutEnabled: Bool) -> String? {
+    func start(fingerCount: Int = 4, unmodifiedEnabled: Bool, shortcutEnabled: Bool,
+               shortcutBindings: [ShortcutBinding]) -> String? {
         guard !isRunning else { return nil }
         guard AXIsProcessTrusted() else { return "Allow Stagehand in Accessibility settings to use gestures." }
         guard MemoryLayout<RawContact>.stride == 96,
@@ -156,6 +203,7 @@ final class GestureMonitor {
             state.enabled = true
             state.unmodifiedEnabled = unmodifiedEnabled
             state.shortcutEnabled = shortcutEnabled
+            state.shortcutBindings = shortcutBindings
             state.scheduleDelivery = { [weak self] in
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isRunning, self.generation == activeGeneration else { return }

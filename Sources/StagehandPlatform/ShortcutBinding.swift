@@ -168,6 +168,10 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
     public static func action(for event: CGEvent, in bindings: [Self] = defaults) -> NavigationAction? {
         let key = UInt32(truncatingIfNeeded: event.getIntegerValueField(.keyboardEventKeycode))
         let modifiers = carbonModifiers(for: event.flags)
+        return action(forKey: key, modifiers: modifiers, in: bindings)
+    }
+
+    static func action(forKey key: UInt32, modifiers: UInt32, in bindings: [Self]) -> NavigationAction? {
         if let exact = bindings.first(where: {
             $0.isEnabled && $0.key == key && $0.modifiers == modifiers
         }) {

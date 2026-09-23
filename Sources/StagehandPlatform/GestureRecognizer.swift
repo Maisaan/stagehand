@@ -11,12 +11,16 @@ public enum GestureAxis: Equatable, Sendable {
     case horizontal, vertical
 }
 
+public enum GestureMode: Equatable, Sendable {
+    case plain, shortcut
+}
+
 /// Displacement is in normalized trackpad coordinates, velocity in those units per second.
 /// Only `ended` may commit navigation. A preview must not change keyboard focus.
 public enum GestureNavigationEvent: Equatable, Sendable {
-    case began(axis: GestureAxis, displacement: Double)
+    case began(axis: GestureAxis, displacement: Double, mode: GestureMode)
     case changed(displacement: Double, velocity: Double)
-    case ended(displacement: Double, velocity: Double, action: NavigationAction?)
+    case ended(displacement: Double, velocity: Double, action: NavigationAction?, mode: GestureMode)
     case cancelled
 }
 
@@ -25,6 +29,7 @@ public struct GestureNavigationCompletion: Equatable, Sendable {
     public let displacement: Double
     public let velocity: Double
     public let recognizerAction: NavigationAction?
+    public let mode: GestureMode
 }
 
 /// Preserve lifecycle boundaries while dropping obsolete visual frames if the main thread is busy.
@@ -33,7 +38,7 @@ struct GestureEventBuffer {
     private var activeAxis: GestureAxis?
 
     mutating func append(_ event: GestureNavigationEvent) {
-        if case .began(let axis, _) = event { activeAxis = axis }
+        if case .began(let axis, _, _) = event { activeAxis = axis }
         let buffered = (event, activeAxis)
         if case .changed = event, case .changed = events.last?.event {
             events[events.count - 1] = buffered
@@ -55,14 +60,15 @@ struct GestureEventBuffer {
     /// width-dependent completion before routing the keyboard event.
     mutating func takeCompletion() -> GestureNavigationCompletion? {
         for (index, buffered) in events.enumerated() {
-            guard case .ended(let displacement, let velocity, let action) = buffered.event,
+            guard case .ended(let displacement, let velocity, let action, let mode) = buffered.event,
                   let axis = buffered.axis else { continue }
             events.removeFirst(index + 1)
             return GestureNavigationCompletion(
                 axis: axis,
                 displacement: displacement,
                 velocity: velocity,
-                recognizerAction: action
+                recognizerAction: action,
+                mode: mode
             )
         }
         return nil
@@ -187,7 +193,7 @@ struct NavigationGestureRecognizer: Sendable {
         // Resting before the swipe must not dilute its release velocity.
         samples = [(previousTimestamp, previousDisplacement)]
         record(displacement: displacement, timestamp: timestamp)
-        return .began(axis: lockedAxis, displacement: displacement)
+        return .began(axis: lockedAxis, displacement: displacement, mode: .plain)
     }
 
     private mutating func record(displacement: Double, timestamp: TimeInterval) {
@@ -215,7 +221,7 @@ struct NavigationGestureRecognizer: Sendable {
         if !committed { action = nil }
         else if axis == .horizontal { action = displacement < 0 ? .focusNext : .focusPrevious }
         else { action = displacement > 0 ? .nextSpace : .previousSpace }
-        return .ended(displacement: displacement, velocity: velocity, action: action)
+        return .ended(displacement: displacement, velocity: velocity, action: action, mode: .plain)
     }
 
     private mutating func cancel(reason: String) -> GestureNavigationEvent? {
