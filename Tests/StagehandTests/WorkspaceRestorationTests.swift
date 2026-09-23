@@ -17,8 +17,12 @@ struct WorkspaceRestorationTests {
             WindowRecord(id: "right", appName: "Right", title: "", bundleIdentifier: "right", pid: 3,
                          frame: CGRect(x: 200, y: 0, width: 100, height: 100), isResizable: true)
         ]
+        var restoration = WorkspaceRestoration()
 
-        let removed = removeTerminatedApplication(pid: 2, windows: &windows, state: &state)
+        let removed = removeTerminatedApplication(
+            pid: 2, windows: &windows, state: &state, restoration: &restoration,
+            trackedWindowIDs: Set(windows.map(\.id))
+        )
 
         #expect(removed == ["terminated"])
         #expect(windows.map(\.id) == ["left", "right"])
@@ -38,12 +42,15 @@ struct WorkspaceRestorationTests {
             WindowRecord(id: "right", appName: "Right", title: "", bundleIdentifier: "right", pid: 2,
                          frame: CGRect(x: 200, y: 0, width: 100, height: 100), isResizable: true)
         ]
+        var restoration = WorkspaceRestoration()
 
-        #expect(removeDestroyedWindow(windowID: "closed", windows: &windows, state: &state))
+        #expect(removeDestroyedWindow(windowID: "closed", windows: &windows, state: &state,
+                                      restoration: &restoration, trackedWindowIDs: Set(windows.map(\.id))))
         #expect(windows.map(\.id) == ["left", "right"])
         #expect(state.currentSpace.windowIDs == ["left", "right"])
         #expect(state.focusedWindowID == "right")
-        #expect(!removeDestroyedWindow(windowID: "closed", windows: &windows, state: &state))
+        #expect(!removeDestroyedWindow(windowID: "closed", windows: &windows, state: &state,
+                                       restoration: &restoration, trackedWindowIDs: Set(windows.map(\.id))))
     }
 
     @Test func minimizedWindowLeavesTheRibbonAndReturnsToItsMembership() {
@@ -266,5 +273,91 @@ struct WorkspaceRestorationTests {
 
         #expect(state.spaces[0].windowIDs == ["other", "closed"])
         #expect(state.spaces[1].windowIDs.isEmpty)
+    }
+
+    @Test func closingMiddleSpacePullsLaterWindowsDownWithTheirOrderAndWidths() {
+        var state = WorkspaceState(spaces: [
+            SpaceState(windowIDs: ["first"]),
+            SpaceState(windowIDs: ["closing"]),
+            SpaceState(windowIDs: ["later-a", "later-b"], focusedWindowID: "later-b",
+                       widthFractions: ["later-a": 0.42])
+        ], activeSpaceIndex: 1)
+        var restoration = WorkspaceRestoration()
+        restoration.reconcile(state: &state, windowIDs: ["first", "later-a", "later-b"],
+                              trackedWindowIDs: ["first", "later-a", "later-b"])
+        #expect(state.activeSpaceIndex == 1)
+        #expect(state.spaces[1].windowIDs == ["later-a", "later-b"])
+        #expect(state.spaces[1].focusedWindowID == "later-b")
+        #expect(state.spaces[1].widthFraction(for: "later-a") == 0.42)
+        #expect(state.spaces[2].windowIDs.isEmpty)
+    }
+
+    @Test func temporarilyUnavailableMiddleSpaceWaitsForConfirmedCloseBeforeCompacting() {
+        var state = WorkspaceState(spaces: [
+            SpaceState(windowIDs: ["first"]),
+            SpaceState(windowIDs: ["unavailable"]),
+            SpaceState(windowIDs: ["later"])
+        ])
+        var restoration = WorkspaceRestoration()
+        restoration.reconcile(state: &state, windowIDs: ["first", "later"],
+                              trackedWindowIDs: ["first", "unavailable", "later"])
+        #expect(state.spaces[1].windowIDs.isEmpty)
+        #expect(state.spaces[2].windowIDs == ["later"])
+        restoration.reconcile(state: &state, windowIDs: ["first", "later"],
+                              trackedWindowIDs: ["first", "later"])
+        #expect(state.spaces[1].windowIDs == ["later"])
+        #expect(state.spaces[2].windowIDs.isEmpty)
+    }
+
+    @Test func pendingHigherSpaceFollowsCompactionAndRestoresInItsNewSlot() {
+        var state = WorkspaceState(spaces: [
+            SpaceState(windowIDs: ["first"]),
+            SpaceState(windowIDs: ["closing"]),
+            SpaceState(windowIDs: ["later", "unavailable"], widthFractions: ["unavailable": 0.62])
+        ])
+        var restoration = WorkspaceRestoration()
+        restoration.reconcile(state: &state, windowIDs: ["first", "closing", "later"],
+                              trackedWindowIDs: ["first", "closing", "later", "unavailable"])
+        restoration.reconcile(state: &state, windowIDs: ["first", "later"],
+                              trackedWindowIDs: ["first", "later", "unavailable"])
+        #expect(state.spaces[1].windowIDs == ["later"])
+        restoration.reconcile(state: &state, windowIDs: ["first", "later", "unavailable"],
+                              trackedWindowIDs: ["first", "later", "unavailable"])
+        #expect(state.spaces[1].windowIDs == ["later", "unavailable"])
+        #expect(state.spaces[1].widthFraction(for: "unavailable") == 0.62)
+        #expect(state.spaces[2].windowIDs.isEmpty)
+    }
+
+    @Test func pendingOnlyHigherSpaceFollowsCompaction() {
+        var state = WorkspaceState(spaces: [
+            SpaceState(windowIDs: ["first"]),
+            SpaceState(windowIDs: ["closing"]),
+            SpaceState(windowIDs: ["unavailable"])
+        ])
+        var restoration = WorkspaceRestoration()
+        restoration.reconcile(state: &state, windowIDs: ["first", "closing"],
+                              trackedWindowIDs: ["first", "closing", "unavailable"])
+        restoration.reconcile(state: &state, windowIDs: ["first"],
+                              trackedWindowIDs: ["first", "unavailable"])
+        restoration.reconcile(state: &state, windowIDs: ["first", "unavailable"],
+                              trackedWindowIDs: ["first", "unavailable"])
+        #expect(state.spaces[1].windowIDs == ["unavailable"])
+        #expect(state.spaces[2].windowIDs.isEmpty)
+    }
+
+    @Test func movingLastWindowUpClosesItsSpaceAndPullsHigherWindowsDown() {
+        var state = WorkspaceState(spaces: [
+            SpaceState(windowIDs: ["first"]),
+            SpaceState(windowIDs: ["moving"]),
+            SpaceState(windowIDs: ["later"])
+        ], activeSpaceIndex: 1)
+        var restoration = WorkspaceRestoration()
+        let moved = state.apply(.moveWindowUpSpace)
+        #expect(moved)
+        let compacted = restoration.compactEmptySpace(state: &state, at: 1)
+        #expect(compacted)
+        #expect(state.activeSpaceIndex == 0)
+        #expect(state.focusedWindowID == "moving")
+        #expect(state.spaces[1].windowIDs == ["later"])
     }
 }

@@ -160,12 +160,15 @@ enum WindowParkingOutcome: Equatable {
 func removeTerminatedApplication(
     pid: Int32,
     windows: inout [WindowRecord],
-    state: inout WorkspaceState
+    state: inout WorkspaceState,
+    restoration: inout WorkspaceRestoration,
+    trackedWindowIDs: Set<String>
 ) -> Set<String> {
     let removedIDs = Set(windows.lazy.filter { $0.pid == pid }.map(\.id))
     guard !removedIDs.isEmpty else { return [] }
     windows.removeAll { removedIDs.contains($0.id) }
-    state.reconcile(windowIDs: windows.map(\.id))
+    restoration.reconcile(state: &state, windowIDs: windows.map(\.id),
+                          trackedWindowIDs: trackedWindowIDs.subtracting(removedIDs))
     return removedIDs
 }
 
@@ -173,11 +176,14 @@ func removeTerminatedApplication(
 func removeDestroyedWindow(
     windowID: String,
     windows: inout [WindowRecord],
-    state: inout WorkspaceState
+    state: inout WorkspaceState,
+    restoration: inout WorkspaceRestoration,
+    trackedWindowIDs: Set<String>
 ) -> Bool {
     guard windows.contains(where: { $0.id == windowID }) else { return false }
     windows.removeAll { $0.id == windowID }
-    state.reconcile(windowIDs: windows.map(\.id))
+    restoration.reconcile(state: &state, windowIDs: windows.map(\.id),
+                          trackedWindowIDs: trackedWindowIDs.subtracting([windowID]))
     return true
 }
 
@@ -1142,7 +1148,10 @@ final class StagehandModel: ObservableObject {
         let previousState = state
         let motionStart = navigationFrames()
         let focusedWindowID = state.focusedWindowID
-        let removedIDs = removeTerminatedApplication(pid: pid, windows: &windows, state: &state)
+        let removedIDs = removeTerminatedApplication(
+            pid: pid, windows: &windows, state: &state, restoration: &workspaceRestoration,
+            trackedWindowIDs: windowSystem.trackedWindowIDs
+        )
         guard !removedIDs.isEmpty else { return }
         focusHistory.remove(windowIDs: removedIDs)
         focusMostRecentWindowAfterLoss(
@@ -1165,7 +1174,10 @@ final class StagehandModel: ObservableObject {
         let previousState = state
         let motionStart = navigationFrames()
         let focusedWindowID = state.focusedWindowID
-        guard removeDestroyedWindow(windowID: windowID, windows: &windows, state: &state) else { return }
+        guard removeDestroyedWindow(
+            windowID: windowID, windows: &windows, state: &state,
+            restoration: &workspaceRestoration, trackedWindowIDs: windowSystem.trackedWindowIDs
+        ) else { return }
         let removedIDs = Set([windowID])
         focusHistory.remove(windowIDs: removedIDs)
         focusMostRecentWindowAfterLoss(
@@ -1461,10 +1473,16 @@ final class StagehandModel: ObservableObject {
                         continue
                     }
                 case .action(let action):
+                    let sourceSpaceIndex = self.state.activeSpaceIndex
                     guard self.state.apply(action) else {
                         if let token { self.focusGate.cancelTransfer(token: token) }
                         self.transitionRollback = nil
                         continue
+                    }
+                    if action == .moveWindowUpSpace {
+                        self.workspaceRestoration.compactEmptySpace(
+                            state: &self.state, at: sourceSpaceIndex
+                        )
                     }
                 case .remove(let id): self.state.removeFromCurrentSpace(windowID: id)
                 case .share(let id, let index): self.state.share(windowID: id, toSpace: index)

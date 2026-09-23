@@ -63,6 +63,8 @@ Record the app pairs, pass/fail result, and any relevant log timestamps in the c
 
 - Move a window to an empty space without following. The outgoing space remains active.
 - Move and follow. The moved window receives focus.
+- With two windows from one app in a space, use Command + Control + Option + Up/Down. Only the focused window moves one space and remains focused. Up on space 1 does nothing. Down with only one window in the source space does nothing; repeat after moving from space 1 to 2 and confirm space 1 stays occupied.
+- Close every window in space 2 while space 3 remains occupied. Space 3's windows move to space 2 with their order and widths. Minimize the only window in space 2 instead, then restore it; its original membership and space numbers return. Repeat with a temporarily unavailable window in space 3 while space 2 closes.
 - Add the same window to two spaces; reorder and resize independently. Content is shared.
 - Navigate away from a window that clamps fully offscreen moves, then return to it. Its parking and ribbon motion stay horizontal. An already visible shared window with unchanged geometry stays in place.
 - Close a shared window. It disappears from both spaces.
@@ -82,7 +84,7 @@ Record the app pairs, pass/fail result, and any relevant log timestamps in the c
 - Revoke Accessibility while Stagehand is running, then trigger navigation. It must stop moving windows and report the unavailable protection instead of assuming permission remains valid.
 - Check Setup when Secure Input is active. Do not assume interception remains available.
 - Keep macOS navigation gestures set to four fingers, then enable Stagehand's three-finger gestures. Test every direction, fast/slow swipes, diagonal starts, and staggered finger landing/lifting.
-- Enable Arrow shortcut swipes with Gesture navigation off. Check Control + Option swipes in all four directions, then Command + Control + Option swipes left and right to reorder the current window in the matching direction. Record a custom arrow binding and confirm its swipe triggers the same action; disable it and confirm the swipe no longer triggers it. Check plain swipes, Ctrl-only swipes, pressing modifiers after three fingers land, and releasing a modifier mid-swipe. Repeat with both switches on and confirm the arrow keys still perform the same actions.
+- Enable Arrow shortcut swipes with Gesture navigation off. Check Control + Option swipes in all four directions, then Command + Control + Option swipes left and right to reorder the current window and up and down to move the focused window one space. Record a custom arrow binding and confirm its swipe triggers the same action; disable it and confirm the swipe no longer triggers it. Check plain swipes, Ctrl-only swipes, pressing modifiers after three fingers land, and releasing a modifier mid-swipe. Repeat with both switches on and confirm the arrow keys still perform the same actions.
 - macOS four-finger navigation and ordinary two-finger scrolling must remain intact.
 - Three-finger navigation must not also trigger native Desktop changes, content scrolling, clicks, or dragging.
 - Repeat on battery and after sleep/wake; check idle CPU and gesture availability.

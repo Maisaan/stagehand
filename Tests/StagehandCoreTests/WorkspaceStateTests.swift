@@ -132,6 +132,42 @@ import Testing
     #expect(state.spaces[0].focusedWindowID == "a")
 }
 
+@Test func adjacentMoveFollowsOnlyTheFocusedWindowAndStopsBeforeLeavingAGap() {
+    var state = WorkspaceState(spaces: [
+        SpaceState(windowIDs: ["focused", "other"], focusedWindowID: "focused",
+                   widthFractions: ["focused": 0.55]),
+        SpaceState(),
+        SpaceState(windowIDs: ["later"])
+    ])
+    let upAtFirst = state.apply(.moveWindowUpSpace)
+    #expect(!upAtFirst)
+    let movedDown = state.apply(.moveWindowDownSpace)
+    #expect(movedDown)
+    #expect(state.activeSpaceIndex == 1)
+    #expect(state.focusedWindowID == "focused")
+    #expect(state.currentSpace.widthFraction(for: "focused") == 0.55)
+    #expect(state.spaces[0].windowIDs == ["other"])
+    let snapshot = state
+    let downAlone = state.apply(.moveWindowDownSpace)
+    #expect(!downAlone)
+    #expect(state == snapshot)
+    let movedUp = state.apply(.moveWindowUpSpace)
+    #expect(movedUp)
+    #expect(state.activeSpaceIndex == 0)
+    #expect(state.spaces[0].windowIDs == ["other", "focused"])
+}
+
+@Test func adjacentMoveStopsAtLastSpace() {
+    var state = WorkspaceState(spaces: [
+        SpaceState(), SpaceState(), SpaceState(), SpaceState(), SpaceState(),
+        SpaceState(), SpaceState(), SpaceState(),
+        SpaceState(windowIDs: ["a", "b"], focusedWindowID: "a")
+    ], activeSpaceIndex: 8)
+    let pastLast = state.apply(.moveWindowDownSpace)
+    #expect(!pastLast)
+    #expect(state.currentSpace.windowIDs == ["a", "b"])
+}
+
 @Test func movingToExistingMembershipPreservesDestinationOrderAndWidth() {
     var state = WorkspaceState(spaces: [
         SpaceState(windowIDs: ["a", "b"], focusedWindowID: "a", widthFractions: ["a": 0.5]),

@@ -7,6 +7,8 @@ public enum NavigationAction: Equatable, Sendable {
     case nextSpace
     case reorderPrevious
     case reorderNext
+    case moveWindowUpSpace
+    case moveWindowDownSpace
     case goToSpace(index: Int)
     case moveToSpace(index: Int, follow: Bool)
     case shareToSpace(index: Int)
@@ -156,6 +158,23 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         }
     }
 
+    /// Remove an empty numbered slot so later spaces move down together.
+    @discardableResult
+    public mutating func closeEmptySpace(at index: Int) -> Bool {
+        guard spaces.indices.contains(index), spaces[index].windowIDs.isEmpty,
+              spaces[(index + 1)...].contains(where: { !$0.windowIDs.isEmpty }) else { return false }
+        discardSpace(at: index)
+        return true
+    }
+
+    /// Keep a saved membership snapshot aligned after the corresponding live slot closes.
+    public mutating func discardSpace(at index: Int) {
+        guard spaces.indices.contains(index) else { return }
+        spaces.remove(at: index)
+        spaces.append(SpaceState())
+        if activeSpaceIndex > index { activeSpaceIndex -= 1 }
+    }
+
     @discardableResult
     public mutating func focus(windowID: String) -> Bool {
         focus(windowID: windowID, inSpace: activeSpaceIndex)
@@ -246,6 +265,11 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         case .focusNext: return navigateWindow(by: 1, reorder: false)
         case .reorderPrevious: return navigateWindow(by: -1, reorder: true)
         case .reorderNext: return navigateWindow(by: 1, reorder: true)
+        case .moveWindowUpSpace:
+            return moveFocusedWindow(toSpace: activeSpaceIndex - 1, follow: true)
+        case .moveWindowDownSpace:
+            guard currentSpace.windowIDs.count > 1 else { return false }
+            return moveFocusedWindow(toSpace: activeSpaceIndex + 1, follow: true)
         case .previousSpace:
             guard let index = displayedSpaceIndices.last(where: { $0 < activeSpaceIndex }) else { return false }
             return goToSpace(index: index)

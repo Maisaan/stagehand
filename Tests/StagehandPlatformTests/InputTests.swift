@@ -40,7 +40,13 @@ private func contacts(count: Int = 3, dx: Double = 0, dy: Double = 0) -> [Gestur
         displacement: 0.1,
         modifiers: modifiers,
         bindings: ShortcutBinding.defaults
-    ) == nil)
+    ) == .moveWindowUpSpace)
+    #expect(gestureShortcutAction(
+        axis: .vertical,
+        displacement: -0.1,
+        modifiers: modifiers,
+        bindings: ShortcutBinding.defaults
+    ) == .moveWindowDownSpace)
     let base = UInt32(controlKey | optionKey)
     #expect(gestureShortcutAction(
         axis: .horizontal, displacement: -0.1, modifiers: base, bindings: ShortcutBinding.defaults
@@ -60,6 +66,21 @@ private func contacts(count: Int = 3, dx: Double = 0, dy: Double = 0) -> [Gestur
     #expect(gestureShortcutAction(
         axis: .vertical, displacement: 0.1, modifiers: modifiers | UInt32(shiftKey), bindings: bindings
     ) == .showSettings)
+}
+
+@Test func adjacentSpaceBindingsWorkForKeysAndCanBeDisabledForSwipes() throws {
+    let modifiers = UInt32(cmdKey | controlKey | optionKey)
+    var bindings = ShortcutBinding.defaults
+    #expect(ShortcutBinding.action(forKey: UInt32(kVK_UpArrow), modifiers: modifiers,
+                                   in: bindings) == .moveWindowUpSpace)
+    #expect(ShortcutBinding.action(forKey: UInt32(kVK_DownArrow), modifiers: modifiers,
+                                   in: bindings) == .moveWindowDownSpace)
+    let downIndex = try #require(bindings.firstIndex { $0.id == "moveWindowDownSpace" })
+    bindings[downIndex].isEnabled = false
+    #expect(ShortcutBinding.action(forKey: UInt32(kVK_DownArrow), modifiers: modifiers,
+                                   in: bindings) == nil)
+    #expect(gestureShortcutAction(axis: .vertical, displacement: -0.1,
+                                  modifiers: modifiers, bindings: bindings) == nil)
 }
 
 @Test func configuredGestureRecognizesSlowMovementAndResets() {
