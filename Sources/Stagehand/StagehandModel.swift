@@ -465,12 +465,6 @@ final class StagehandModel: ObservableObject {
             guard let self else { return }
             self.reorderWindow(windowID: id, toIndex: index, spaceIndex: self.state.activeSpaceIndex)
         }
-        overlays.onWindowClicked = { [weak self] in
-            guard let self, self.isRunning, !self.isSuspended,
-                  let id = self.state.focusedWindowID,
-                  self.windowSystem.focusedWindowID() == id else { return }
-            self.observedFocusChanged(windowID: id)
-        }
         overlays.canRevealNavigation = { [weak self] in
             guard let self, self.isRunning, !self.isSuspended else { return false }
             return self.desktopScope.refresh() == .home
