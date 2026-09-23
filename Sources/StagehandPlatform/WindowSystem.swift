@@ -22,6 +22,21 @@ func canManageWindows(
     activationPolicy == .regular || activationPolicy == .accessory && hasVisibleOrTrackedWindow
 }
 
+func uniqueWindowID(
+    matchingFrame frame: CGRect,
+    among candidates: [(id: String, frame: CGRect?)]
+) -> String? {
+    let matches = candidates.compactMap { candidate -> String? in
+        guard let candidateFrame = candidate.frame,
+              abs(candidateFrame.minX - frame.minX) < 1,
+              abs(candidateFrame.minY - frame.minY) < 1,
+              abs(candidateFrame.width - frame.width) < 1,
+              abs(candidateFrame.height - frame.height) < 1 else { return nil }
+        return candidate.id
+    }
+    return matches.count == 1 ? matches[0] : nil
+}
+
 /// Controls external windows through Accessibility and registered Stagehand windows through AppKit.
 @MainActor
 public final class WindowSystem {
@@ -646,6 +661,7 @@ public final class WindowSystem {
         let targetPID: Int32
         private let system: WindowSystem
         private let target: AXUIElement
+        private let targetWindowID: String
         private let app: NSRunningApplication
         private let appElement: AXUIElement
         private let start = ContinuousClock.now
@@ -655,6 +671,7 @@ public final class WindowSystem {
         init(system: WindowSystem, tracked: TrackedWindow, app: NSRunningApplication, recordsDiagnostics: Bool) {
             self.system = system
             self.target = tracked.element
+            self.targetWindowID = tracked.record.id
             self.targetPID = tracked.record.pid
             self.app = app
             self.recordsDiagnostics = recordsDiagnostics
@@ -723,7 +740,9 @@ public final class WindowSystem {
                     let window = system.copyAttribute(focusedApp, kAXFocusedWindowAttribute)
                     windowStatus = window.error.rawValue
                     if let focusedWindow = window.value, CFGetTypeID(focusedWindow) == AXUIElementGetTypeID() {
-                        matches = CFEqual(focusedWindow, target)
+                        matches = system.trackedWindowID(
+                            matching: unsafeDowncast(focusedWindow, to: AXUIElement.self)
+                        ) == targetWindowID
                     }
                 }
             }
@@ -978,13 +997,23 @@ public final class WindowSystem {
         var pid: pid_t = 0
         guard AXUIElementGetPid(element, &pid) == .success else { return nil }
         let identifier = windowNumber(element)
-        return windows.first { _, tracked in
+        if let exactMatch = windows.first(where: { _, tracked in
             guard tracked.record.pid == pid else { return false }
             if let identifier, let trackedIdentifier = tracked.windowNumber {
                 return identifier == trackedIdentifier
             }
             return CFEqual(tracked.element, element)
-        }?.key
+        })?.key {
+            return exactMatch
+        }
+        guard let frame = readFrame(element) else { return nil }
+        return uniqueWindowID(
+            matchingFrame: frame,
+            among: windows.compactMap { id, tracked in
+                guard tracked.record.pid == pid, tracked.isAdmitted else { return nil }
+                return (id: id, frame: readFrame(tracked.element))
+            }
+        )
     }
 
     private func sameBounds(_ lhs: CGRect, _ rhs: CGRect) -> Bool {

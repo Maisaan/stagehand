@@ -71,6 +71,25 @@ private func missingGlobalReading(
     )
 }
 
+@Test func equivalentAccessibilityWindowFallsBackToUniqueGeometry() {
+    let targetFrame = CGRect(x: 323, y: 40, width: 1477, height: 1129)
+
+    #expect(uniqueWindowID(
+        matchingFrame: targetFrame,
+        among: [
+            (id: "other", frame: CGRect(x: 0, y: 0, width: 900, height: 700)),
+            (id: "15615:6278", frame: targetFrame),
+        ]
+    ) == "15615:6278")
+    #expect(uniqueWindowID(
+        matchingFrame: targetFrame,
+        among: [
+            (id: "first", frame: targetFrame),
+            (id: "second", frame: targetFrame),
+        ]
+    ) == nil)
+}
+
 @Test @MainActor func focusRequiresTheExactWindowEvenWhenTheAppIsActive() async {
     let report = await WindowFocusAttempt.run(
         driver: FocusDriverFixture(readings: [focusReading(active: true, matches: false)])
