@@ -280,6 +280,13 @@ struct SettingsView: View {
                             .toggleStyle(.switch)
                     }
                     Divider()
+                    SettingsRow("Control + Option swipes") {
+                        Toggle("Control + Option swipes", isOn: $model.shortcutSwipesEnabled)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .help("Hold Control and Option while swiping with three fingers. Left and right switch windows; up and down switch spaces.")
+                    }
+                    Divider()
                     SettingsRow("Trackpad settings") {
                         Button("Open…") { openSettingsPane("com.apple.Trackpad-Settings.extension") }
                             .buttonStyle(.bordered)

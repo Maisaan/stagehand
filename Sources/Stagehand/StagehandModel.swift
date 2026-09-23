@@ -293,6 +293,13 @@ final class StagehandModel: ObservableObject {
             updateInputStatus()
         }
     }
+    @Published var shortcutSwipesEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(shortcutSwipesEnabled, forKey: "shortcutSwipesEnabled")
+            input.shortcutSwipesEnabled = shortcutSwipesEnabled && !isSuspended
+            updateInputStatus()
+        }
+    }
     @Published var gap: Double {
         didSet {
             UserDefaults.standard.set(gap, forKey: "windowGap")
@@ -442,6 +449,7 @@ final class StagehandModel: ObservableObject {
             enabled: defaults.bool(forKey: DiagnosticLogger.preferenceKey)
         )
         gesturesEnabled = defaults.object(forKey: "gesturesEnabled") as? Bool ?? false
+        shortcutSwipesEnabled = defaults.bool(forKey: "shortcutSwipesEnabled")
         gap = GapInput.clamped(defaults.object(forKey: "windowGap") as? Double ?? 8)
         let defaultBorderColor = Self.savedColor(
             forKey: Self.legacyFocusBorderColorPreferenceKey,
@@ -633,6 +641,7 @@ final class StagehandModel: ObservableObject {
         isSuspended = false
         state.isPaused = false
         input.gesturesEnabled = gesturesEnabled
+        input.shortcutSwipesEnabled = shortcutSwipesEnabled
         focusGate.start()
         input.start()
         updateInputStatus()
@@ -1098,7 +1107,9 @@ final class StagehandModel: ObservableObject {
                           ? "Secure Input is on, so Stagehand can't protect typing while switching windows."
                           : "Typing protection is unavailable. Re-enable Accessibility for Stagehand, then retry.")
         }
-        if gesturesEnabled { issues.append(contentsOf: InputController.nativeGestureConflicts()) }
+        if gesturesEnabled || shortcutSwipesEnabled {
+            issues.append(contentsOf: InputController.nativeGestureConflicts())
+        }
         var seen = Set<String>()
         inputIssues = issues.filter { seen.insert($0).inserted }
     }
@@ -2344,6 +2355,7 @@ final class StagehandModel: ObservableObject {
             isSuspended = false
             diagnostics.record("desktop_resumed", details: workspaceDetails())
             input.gesturesEnabled = gesturesEnabled
+            input.shortcutSwipesEnabled = shortcutSwipesEnabled
             focusGate.start()
             input.start()
             // Reconcile only after returning to the bound Desktop; away windows never enter state.

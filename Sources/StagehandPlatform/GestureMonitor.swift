@@ -28,8 +28,18 @@ private struct RawContact {
 
 private typealias ContactCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, Int32, Double, Int32) -> Int32
 
+func acceptsGestureModifiers(_ flags: CGEventFlags, unmodifiedEnabled: Bool, shortcutEnabled: Bool) -> Bool {
+    if unmodifiedEnabled { return true }
+    guard shortcutEnabled else { return false }
+    let relevant: CGEventFlags = [.maskControl, .maskAlternate, .maskShift, .maskCommand]
+    return flags.intersection(relevant) == [.maskControl, .maskAlternate]
+}
+
 private struct GestureCallbackState {
     var enabled = false
+    var unmodifiedEnabled = false
+    var shortcutEnabled = false
+    var ignoredUntilLift = false
     var recognizer = NavigationGestureRecognizer()
     var suppressScroll = false
     var lastLiftTime: TimeInterval = 0
@@ -55,8 +65,25 @@ private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
         }
     }
     let snapshot = contacts
+    let flags = CGEventSource.flagsState(.combinedSessionState)
     let delivery = gestureCallbackState.withLock { state -> (@Sendable () -> Void)? in
         guard state.enabled else { return nil }
+        if state.ignoredUntilLift {
+            if snapshot.isEmpty { state.ignoredUntilLift = false }
+            return nil
+        }
+        let acceptsModifiers = acceptsGestureModifiers(
+            flags, unmodifiedEnabled: state.unmodifiedEnabled, shortcutEnabled: state.shortcutEnabled
+        )
+        if !state.recognizer.hasContactSequence && !acceptsModifiers {
+            if snapshot.count >= state.recognizer.fingerCount { state.ignoredUntilLift = true }
+            return nil
+        }
+        let modifierCancelled = state.recognizer.isDragging && !acceptsModifiers
+        if state.recognizer.hasContactSequence && !acceptsModifiers {
+            state.recognizer.cancelUntilLift()
+            if modifierCancelled { state.pendingEvents.append(.cancelled) }
+        }
         let wasSuppressing = state.suppressScroll
         let event = state.recognizer.update(contacts: snapshot, timestamp: timestamp)
         if traceGestures, let event {
@@ -69,8 +96,8 @@ private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
         }
         state.suppressScroll = state.recognizer.hasContactSequence
         if wasSuppressing && !state.suppressScroll { state.lastLiftTime = ProcessInfo.processInfo.systemUptime }
-        guard let event else { return nil }
-        state.pendingEvents.append(event)
+        if let event { state.pendingEvents.append(event) }
+        guard event != nil || modifierCancelled else { return nil }
         guard !state.deliveryScheduled else { return nil }
         state.deliveryScheduled = true
         return state.scheduleDelivery
@@ -91,7 +118,7 @@ final class GestureMonitor {
     private var runLoopSource: CFRunLoopSource?
     private var generation: UInt64 = 0
 
-    func start(fingerCount: Int = 4) -> String? {
+    func start(fingerCount: Int = 4, unmodifiedEnabled: Bool, shortcutEnabled: Bool) -> String? {
         guard !isRunning else { return nil }
         guard AXIsProcessTrusted() else { return "Allow Stagehand in Accessibility settings to use gestures." }
         guard MemoryLayout<RawContact>.stride == 96,
@@ -127,6 +154,8 @@ final class GestureMonitor {
             state = GestureCallbackState()
             state.recognizer = NavigationGestureRecognizer(fingerCount: fingerCount)
             state.enabled = true
+            state.unmodifiedEnabled = unmodifiedEnabled
+            state.shortcutEnabled = shortcutEnabled
             state.scheduleDelivery = { [weak self] in
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isRunning, self.generation == activeGeneration else { return }

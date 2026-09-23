@@ -10,6 +10,17 @@ private func contacts(count: Int = 3, dx: Double = 0, dy: Double = 0) -> [Gestur
     }
 }
 
+@Test func shortcutSwipeRequiresControlAndOptionUnlessPlainGesturesAreEnabled() {
+    let chord: CGEventFlags = [.maskControl, .maskAlternate]
+    #expect(acceptsGestureModifiers(chord, unmodifiedEnabled: false, shortcutEnabled: true))
+    #expect(!acceptsGestureModifiers([], unmodifiedEnabled: false, shortcutEnabled: true))
+    #expect(!acceptsGestureModifiers([.maskControl], unmodifiedEnabled: false, shortcutEnabled: true))
+    #expect(!acceptsGestureModifiers(chord.union(.maskShift), unmodifiedEnabled: false, shortcutEnabled: true))
+    #expect(acceptsGestureModifiers([], unmodifiedEnabled: true, shortcutEnabled: false))
+    #expect(acceptsGestureModifiers(chord, unmodifiedEnabled: true, shortcutEnabled: true))
+    #expect(!acceptsGestureModifiers(chord, unmodifiedEnabled: false, shortcutEnabled: false))
+}
+
 @Test func configuredGestureRecognizesSlowMovementAndResets() {
     var recognizer = NavigationGestureRecognizer(fingerCount: 3)
     _ = recognizer.update(contacts: contacts(), timestamp: 0)

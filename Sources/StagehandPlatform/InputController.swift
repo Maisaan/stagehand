@@ -10,6 +10,9 @@ public final class InputController {
     public var gesturesEnabled = false {
         didSet { if isRunning && oldValue != gesturesEnabled { updateGestures() } }
     }
+    public var shortcutSwipesEnabled = false {
+        didSet { if isRunning && oldValue != shortcutSwipesEnabled { updateGestures() } }
+    }
     public private(set) var issues: [String] = []
     public var gesturesAvailable: Bool { gestures.isRunning }
 
@@ -118,14 +121,18 @@ public final class InputController {
     private func updateGestures() {
         gestures.stop()
         issues = shortcutIssues
-        if gesturesEnabled {
+        if gesturesEnabled || shortcutSwipesEnabled {
             issues += Self.nativeGestureConflicts()
             gestures.onGesture = { [weak self] event in
                 guard let self else { return }
                 if let onGesture = self.onGesture { onGesture(event) }
                 else if case .ended(_, _, let action?) = event { self.onAction?(action) }
             }
-            if let issue = gestures.start(fingerCount: Self.navigationGestureFingerCount) { issues.append(issue) }
+            if let issue = gestures.start(
+                fingerCount: Self.navigationGestureFingerCount,
+                unmodifiedEnabled: gesturesEnabled,
+                shortcutEnabled: shortcutSwipesEnabled
+            ) { issues.append(issue) }
         }
         onStatusChange?()
     }

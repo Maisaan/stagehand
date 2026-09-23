@@ -82,6 +82,7 @@ Record the app pairs, pass/fail result, and any relevant log timestamps in the c
 - Revoke Accessibility while Stagehand is running, then trigger navigation. It must stop moving windows and report the unavailable protection instead of assuming permission remains valid.
 - Check Setup when Secure Input is active. Do not assume interception remains available.
 - Keep macOS navigation gestures set to four fingers, then enable Stagehand's three-finger gestures. Test every direction, fast/slow swipes, diagonal starts, and staggered finger landing/lifting.
+- Enable Control + Option swipes with Gesture navigation off. Check all four directions, plain three-finger swipes, Ctrl-only swipes, pressing the modifiers after three fingers land, and releasing a modifier mid-swipe. Repeat with both switches on and confirm Control + Option + arrow keys still navigate.
 - macOS four-finger navigation and ordinary two-finger scrolling must remain intact.
 - Three-finger navigation must not also trigger native Desktop changes, content scrolling, clicks, or dragging.
 - Repeat on battery and after sleep/wake; check idle CPU and gesture availability.

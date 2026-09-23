@@ -65,6 +65,7 @@ Stagehand has nine numbered spaces. Each space keeps its own window order, focus
 - Use **Remove from this space** to remove one membership. You cannot remove the last membership.
 - Drag a title bar and release to reorder a window.
 - Resize a window to save its width.
+- In Settings > General > Gestures, enable Control + Option swipes to navigate with the modifier keys and three fingers. Left and right switch windows; up and down switch spaces. The arrow shortcuts keep working. Gesture navigation can also be enabled separately for swipes without modifiers.
 
 New windows enter after the current window and keep their original width within Stagehand's 25% to 100% range. Closing a real window removes it from every space. Empty spaces show a Stagehand placeholder so typing cannot reach a hidden app.
 
