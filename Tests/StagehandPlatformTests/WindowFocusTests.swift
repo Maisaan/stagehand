@@ -8,8 +8,10 @@ private final class FocusDriverFixture: WindowFocusDriving {
     let targetPID: Int32
     var elapsedMilliseconds = 0
     var observationMilliseconds: [Int] = []
+    var cancelOnObservation = false
     var readings: [WindowFocusReport.Observation]
     private var readingIndex = 0
+    private(set) var preparations = 0
     private(set) var requests: [Int] = []
 
     init(targetPID: Int32 = 123, readings: [WindowFocusReport.Observation]) {
@@ -18,7 +20,8 @@ private final class FocusDriverFixture: WindowFocusDriving {
     }
 
     func prepare() -> [WindowFocusReport.Operation] {
-        [.init("activate", accepted: true)]
+        preparations += 1
+        return [.init("activate", accepted: true)]
     }
 
     func requestFocus(attempt: Int) -> [WindowFocusReport.Operation] {
@@ -27,6 +30,7 @@ private final class FocusDriverFixture: WindowFocusDriving {
     }
 
     func observe() -> WindowFocusReport.Observation {
+        if cancelOnObservation { withUnsafeCurrentTask { $0?.cancel() } }
         if readingIndex < observationMilliseconds.count {
             elapsedMilliseconds += observationMilliseconds[readingIndex]
         }
@@ -37,6 +41,28 @@ private final class FocusDriverFixture: WindowFocusDriving {
     func wait() async throws {
         elapsedMilliseconds += 8
     }
+}
+
+@Test @MainActor func cancelledFocusDoesNotPrepareOrRequestActivation() async {
+    let driver = FocusDriverFixture(readings: [focusReading(active: false, matches: false)])
+    let report = await Task { @MainActor in
+        withUnsafeCurrentTask { $0?.cancel() }
+        return await WindowFocusAttempt.run(driver: driver)
+    }.value
+    #expect(report.outcome == .cancelled)
+    #expect(driver.preparations == 0)
+    #expect(driver.requests.isEmpty)
+}
+
+@Test @MainActor func cancellationDuringInitialObservationDoesNotPrepareActivation() async {
+    let driver = FocusDriverFixture(readings: [focusReading(active: false, matches: false)])
+    driver.cancelOnObservation = true
+    let report = await Task { @MainActor in
+        await WindowFocusAttempt.run(driver: driver)
+    }.value
+    #expect(report.outcome == .cancelled)
+    #expect(driver.preparations == 0)
+    #expect(driver.requests.isEmpty)
 }
 
 private func focusReading(active: Bool, matches: Bool) -> WindowFocusReport.Observation {

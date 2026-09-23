@@ -491,19 +491,19 @@ public final class WindowSystem {
         guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else { return false }
         guard let currentFrame = readFrame(tracked.element) else { return false }
         captureOriginalFrame(windowID: windowID)
-        let displays = NSScreen.screens.map { screen -> CGRect in
-            let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
-            return CGRect(x: screen.frame.minX, y: primaryTop - screen.frame.maxY,
-                          width: screen.frame.width, height: screen.frame.height)
-        }
         let screens = NSScreen.screens
+        guard let primaryTop = screens.first?.frame.maxY else { return false }
+        let displays = screens.map { screen -> CGRect in
+            CGRect(x: screen.frame.minX, y: primaryTop - screen.frame.maxY,
+                   width: screen.frame.width, height: screen.frame.height)
+        }
         guard let screenIndex = displays.indices.max(by: {
             let lhs = displays[$0].intersection(currentFrame)
             let rhs = displays[$1].intersection(currentFrame)
             return (lhs.isNull ? 0 : lhs.width * lhs.height) < (rhs.isNull ? 0 : rhs.width * rhs.height)
         }) else { return false }
         let visible = screens[screenIndex].visibleFrame
-        let bounds = CGRect(x: visible.minX, y: (screens.first?.frame.maxY ?? 0) - visible.maxY,
+        let bounds = CGRect(x: visible.minX, y: primaryTop - visible.maxY,
                             width: visible.width, height: visible.height)
         var parking = tracked.parking
         let success = parking.park(frame: currentFrame, bounds: bounds, displays: displays,
@@ -607,6 +607,7 @@ public final class WindowSystem {
     /// Callers must not report a successful transition before this confirmation.
     public func focus(windowID: String) async -> Bool {
         lastFocusReport = nil
+        guard !Task.isCancelled else { return false }
         if nativeWindows.contains(windowID: windowID) {
             let began = ContinuousClock.now
             let success = await nativeWindows.focus(windowID: windowID)
@@ -643,6 +644,7 @@ public final class WindowSystem {
             }
             return false
         }
+        guard !Task.isCancelled else { return false }
         guard restore(windowID: windowID) else {
             if focusDiagnosticsEnabled { lastFocusReport = WindowFocusReport(targetPID: tracked.record.pid, outcome: .unavailable,
                                                 elapsedMilliseconds: 0,

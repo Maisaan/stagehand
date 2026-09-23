@@ -39,10 +39,6 @@ func adjustedWindowHeight(current: CGFloat, available: CGFloat, growing: Bool) -
     return growing ? min(current + adjustment, limit) : max(current + adjustment, limit)
 }
 
-func shouldFollowObservedFocus(observedWindowID: String, discoveredWindowIDs: Set<String>) -> Bool {
-    discoveredWindowIDs.contains(observedWindowID)
-}
-
 struct WindowFocusHistory {
     private var windowIDs: [String] = []
 
@@ -1292,10 +1288,7 @@ final class StagehandModel: ObservableObject {
         let observedFocusedWindowID = windowSystem.focusedWindowID()
         if oldState.activeSpaceIndex == state.activeSpaceIndex,
            let focused = observedFocusedWindowID,
-           shouldFollowObservedFocus(
-               observedWindowID: focused,
-               discoveredWindowIDs: Set(current.map(\.id))
-           ) {
+           current.contains(where: { $0.id == focused }) {
             // External app activation follows an existing membership; shared windows stay in this space.
             if !state.currentSpace.windowIDs.contains(focused),
                let space = state.spaces.firstIndex(where: { $0.windowIDs.contains(focused) }) {

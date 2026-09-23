@@ -99,7 +99,17 @@ protocol WindowFocusDriving {
 @MainActor
 enum WindowFocusAttempt {
     static func run(driver: some WindowFocusDriving, recordDiagnostics: Bool = true) async -> WindowFocusReport {
+        if Task.isCancelled {
+            return WindowFocusReport(targetPID: driver.targetPID, outcome: .cancelled,
+                                     elapsedMilliseconds: driver.elapsedMilliseconds,
+                                     operations: [], initialObservation: nil, observations: [])
+        }
         let initialObservation = recordDiagnostics ? driver.observe() : nil
+        if Task.isCancelled {
+            return WindowFocusReport(targetPID: driver.targetPID, outcome: .cancelled,
+                                     elapsedMilliseconds: driver.elapsedMilliseconds,
+                                     operations: [], initialObservation: initialObservation, observations: [])
+        }
         let preparationOperations = driver.prepare()
         var operations = recordDiagnostics ? preparationOperations : []
         var observations: [WindowFocusReport.Observation] = []

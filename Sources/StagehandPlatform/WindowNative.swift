@@ -144,18 +144,19 @@ final class NativeWindowRegistry: NSObject {
         guard let entry = windows[windowID], !entry.closed, let window = entry.window else { return false }
         if entry.parked { return true }
         captureOriginalFrame(windowID: windowID)
-        entry.parked = true
         window.orderOut(nil)
-        return !window.isVisible
+        guard !window.isVisible else { return false }
+        entry.parked = true
+        return true
     }
 
     @discardableResult
     func restore(windowID: String) -> Bool {
         guard let entry = windows[windowID], !entry.closed, let window = entry.window else { return false }
         if entry.parked {
-            entry.parked = false
             window.orderFront(nil)
-            return window.isVisible
+            guard window.isVisible else { return false }
+            entry.parked = false
         }
         return true
     }
@@ -172,8 +173,10 @@ final class NativeWindowRegistry: NSObject {
     }
 
     func focus(windowID: String) async -> Bool {
-        guard let entry = windows[windowID], !entry.closed, let window = entry.window,
+        guard !Task.isCancelled,
+              let entry = windows[windowID], !entry.closed, let window = entry.window,
               restore(windowID: windowID) else { return false }
+        guard !Task.isCancelled else { return false }
         // Cooperative activate() can be refused while another app owns focus.
         // Use AppKit's AXFrontmost handler directly, without AX messaging to our own process.
         NSApp.setAccessibilityFrontmost(true)

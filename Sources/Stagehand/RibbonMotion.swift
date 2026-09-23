@@ -5,7 +5,6 @@ import StagehandCore
 struct RibbonAnimationCurve: Equatable {
     /// Strong ease-in-out for objects that remain onscreen and move to a new position.
     static let smoother = Self(x1: 0.65, y1: 0, x2: 0.35, y2: 1)
-    static let easeInOut = Self(x1: 0.42, y1: 0, x2: 0.58, y2: 1)
     /// Fast initial response for elements entering or leaving the interface.
     static let easeOut = Self(x1: 0.16, y1: 1, x2: 0.3, y2: 1)
     /// Gentle curve for color, opacity and pressed-state feedback.
