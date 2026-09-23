@@ -145,6 +145,26 @@ enum WindowFocusAttempt {
             if recordDiagnostics { observations.append(observation) }
             if observation.confirmsFocus(targetPID: driver.targetPID) {
                 outcome = .focused
+            } else if observation.targetApplicationActive,
+                      observation.frontmostPID == driver.targetPID,
+                      (WindowFocusReport.Observation.isUnavailable(observation.focusedApplicationStatus) ||
+                       observation.focusedWindowStatus.map(WindowFocusReport.Observation.isUnavailable) == true),
+                      WindowFocusReport.Observation.isUnavailable(observation.directFocusedWindowStatus) {
+                // An AX read can consume the whole retry budget while the target app
+                // becomes active. Give its focus tree one more tick, then require the
+                // same exact-window confirmation as every other attempt.
+                do {
+                    try await driver.wait()
+                    if Task.isCancelled {
+                        outcome = .cancelled
+                    } else {
+                        let retry = driver.observe()
+                        if recordDiagnostics { observations.append(retry) }
+                        if retry.confirmsFocus(targetPID: driver.targetPID) { outcome = .focused }
+                    }
+                } catch {
+                    outcome = .cancelled
+                }
             }
         }
         return WindowFocusReport(targetPID: driver.targetPID, outcome: outcome,

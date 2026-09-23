@@ -158,6 +158,24 @@ private func missingGlobalReading(
     #expect(driver.requests == [0])
 }
 
+@Test @MainActor func focusRetriesAfterSlowAccessibilityFailureDuringAppSwitch() async {
+    let switching = missingGlobalReading(frontmostPID: 456, active: false)
+    let unavailable = missingGlobalReading(
+        directMatches: false,
+        directStatus: AXError.invalidUIElement.rawValue,
+        globalStatus: AXError.invalidUIElement.rawValue
+    )
+    let recovered = missingGlobalReading()
+    let driver = FocusDriverFixture(readings: [switching, unavailable, unavailable, recovered])
+    driver.observationMilliseconds = [0, 508, 0, 0]
+
+    let report = await WindowFocusAttempt.run(driver: driver)
+
+    #expect(report.outcome == .focused)
+    #expect(report.observations.last?.directTargetWindowMatches == true)
+    #expect(report.observations.dropLast().allSatisfy { !$0.confirmsFocus(targetPID: driver.targetPID) })
+}
+
 @Test @MainActor func directFallbackAcceptsExactFocusAfterGlobalTimeout() async {
     let reading = missingGlobalReading(globalStatus: AXError.cannotComplete.rawValue)
     let report = await WindowFocusAttempt.run(
