@@ -135,6 +135,8 @@ dist/Stagehand.app/Contents/MacOS/Stagehand --render-previews dist/previews
 
 Complete [the live acceptance checklist](docs/ACCEPTANCE.md) before trusting Stagehand with everyday work. It covers restoration, real focus and typing, physical gestures, Desktop changes, parking, sizing, and overlays.
 
+For cleanup of runtime window or input code, follow the pre/post live check in [AGENTS.md](AGENTS.md). The automated suite does not replace that check.
+
 The executable also provides `--diagnose-focus`, `--diagnose-start`, `--diagnose-ribbon`, `--diagnose-permissions`, `--diagnose-parking`, `--diagnose-last-close`, and `--diagnose-discovery`. Run installed-app diagnostics through `open` so macOS uses the app's Accessibility grant. Stop or pause the normal Stagehand instance first.
 
 ## Project structure

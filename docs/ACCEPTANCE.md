@@ -2,6 +2,35 @@
 
 Use disposable documents or text fields for typing checks, not a shell or a production form. These checks require the built app's Accessibility grant and the physical trackpad. They are not marked as passed by the automated suite.
 
+## Short cleanup check for focus and navigation
+
+Run this on the build before and after a cleanup that touches focus, input, gestures, window ordering, parking, overlays, or lifecycle. Use the same apps, display, shortcuts, and signing identity for both runs. Confirm the rebuilt app still has Accessibility permission. Keep Diagnostic logging enabled.
+
+1. Record the UTC start time for each run: `start_utc=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')`.
+2. With two apps and two windows from one of them, make 30 rapid switches in both directions. Reverse direction during a transition. Include the navigation methods affected by the change. Type distinct short strings into disposable fields after several switches and check their destinations.
+3. Click the focused window, switch to another app and back, and check that the focus border follows the real focused window. Pause Stagehand and check that the original window frames return.
+4. Inspect only events since `start_utc` for unexpected pauses, layout failures, and rejected focus:
+
+   ```sh
+   jq -r --arg start "$start_utc" '
+     select(.timestamp >= $start)
+     | select(.event == "automatic_pause" or .event == "layout_failed" or
+              (.event == "navigation_focus_confirmed" and .details.focusConfirmed == "false"))
+     | [.timestamp, .event, (.details.reason // .details.operation // "")] | @tsv
+   ' ~/Library/Logs/Stagehand/stagehand.log
+   ```
+
+   Compare focus times from the same run with the baseline. Investigate any new long delay, even if the app did not pause:
+
+   ```sh
+   jq -r --arg start "$start_utc" '
+     select(.timestamp >= $start and .event == "navigation_focus_confirmed" and .details.focusReport)
+     | [.timestamp, .details.operation, (.details.focusReport | fromjson | .elapsedMilliseconds)] | @tsv
+   ' ~/Library/Logs/Stagehand/stagehand.log
+   ```
+
+Record the app pairs, pass/fail result, and any relevant log timestamps in the commit message or handoff. A blocked app or modal dialog should still cause a safe pause; this check uses ordinary responsive windows.
+
 ## Start and stop
 
 - Launch paused; confirm no windows move before Start.
