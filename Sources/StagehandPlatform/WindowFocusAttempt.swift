@@ -33,14 +33,16 @@ public struct WindowFocusReport: Codable, Equatable, Sendable {
         func confirmsFocus(targetPID: Int32) -> Bool {
             guard targetApplicationActive else { return false }
             if targetWindowMatches { return true }
-            // A busy accessibility server can fail either global lookup while
-            // AppKit and the target app still agree on the exact focused window.
-            // Accept that independent evidence, but never override a successful
-            // global read that identifies a different app or window.
+            // The global AX focus can still point at Stagehand after its Start
+            // menu closes. Trust the target app's exact window only when AppKit
+            // also says that app is active and frontmost.
             let applicationUnavailable = Self.isUnavailable(focusedApplicationStatus)
+            let focusedApplicationIsStagehand = focusedApplicationPID == ProcessInfo.processInfo.processIdentifier &&
+                targetPID != ProcessInfo.processInfo.processIdentifier
             let windowUnavailable = focusedApplicationPID == targetPID &&
                 focusedWindowStatus.map(Self.isUnavailable) == true
-            return (applicationUnavailable || windowUnavailable) && frontmostPID == targetPID &&
+            return (applicationUnavailable || focusedApplicationIsStagehand || windowUnavailable) &&
+                frontmostPID == targetPID &&
                 directFocusedWindowStatus == AXError.success.rawValue && directTargetWindowMatches
         }
 

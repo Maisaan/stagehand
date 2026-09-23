@@ -571,7 +571,17 @@ public final class WindowSystem {
         let result = copyAttribute(systemElement, kAXFocusedApplicationAttribute)
         let focusedApp: AXUIElement
         if let value = result.value, CFGetTypeID(value) == AXUIElementGetTypeID() {
-            focusedApp = unsafeDowncast(value, to: AXUIElement.self)
+            let reportedApp = unsafeDowncast(value, to: AXUIElement.self)
+            var reportedPID: pid_t = 0
+            if AXUIElementGetPid(reportedApp, &reportedPID) == .success,
+               reportedPID == ProcessInfo.processInfo.processIdentifier,
+               let frontmost = NSWorkspace.shared.frontmostApplication,
+               frontmost.isActive,
+               frontmost.processIdentifier != reportedPID {
+                focusedApp = AXUIElementCreateApplication(frontmost.processIdentifier)
+            } else {
+                focusedApp = reportedApp
+            }
         } else if result.error == .noValue,
                   let frontmost = NSWorkspace.shared.frontmostApplication, frontmost.isActive {
             // Match focus()'s narrow fallback. A remembered window in a background
@@ -748,18 +758,20 @@ public final class WindowSystem {
                     }
                 }
             }
-            // Direct target-app reads are a fallback for incomplete global AX
-            // results. Keeping them off the successful path avoids an extra
-            // synchronous accessibility round trip on every navigation.
+            // Read the target directly when global AX has not caught up with
+            // AppKit after Stagehand's Start menu closes.
             let applicationUnavailable = WindowFocusReport.Observation.isUnavailable(application.error.rawValue)
+            let focusedApplicationIsStagehand = focusedPID == ProcessInfo.processInfo.processIdentifier &&
+                targetPID != ProcessInfo.processInfo.processIdentifier
             let focusedWindowUnavailable = focusedPID == targetPID && windowStatus.map {
                 WindowFocusReport.Observation.isUnavailable($0)
             } == true
-            let directWindow = applicationUnavailable || focusedWindowUnavailable
+            let directWindow = applicationUnavailable || focusedApplicationIsStagehand || focusedWindowUnavailable
                 ? system.copyAttribute(appElement, kAXFocusedWindowAttribute)
                 : (value: nil, error: AXError.attributeUnsupported)
             let directMatches = directWindow.value.map {
-                CFGetTypeID($0) == AXUIElementGetTypeID() && CFEqual($0, target)
+                CFGetTypeID($0) == AXUIElementGetTypeID() &&
+                    system.trackedWindowID(matching: unsafeDowncast($0, to: AXUIElement.self)) == targetWindowID
             } ?? false
             return WindowFocusReport.Observation(
                 frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,

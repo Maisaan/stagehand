@@ -166,6 +166,23 @@ private func missingGlobalReading(
     #expect(report.outcome == .focused)
 }
 
+@Test @MainActor func startupAcceptsExactTargetFocusWhileGlobalAXStillReportsStagehand() async {
+    let reading = WindowFocusReport.Observation(
+        frontmostPID: 123,
+        focusedApplicationPID: ProcessInfo.processInfo.processIdentifier,
+        focusedApplicationStatus: AXError.success.rawValue,
+        focusedWindowStatus: nil,
+        directFocusedWindowStatus: AXError.success.rawValue,
+        directTargetWindowMatches: true,
+        targetApplicationActive: true,
+        targetWindowMatches: false
+    )
+    let report = await WindowFocusAttempt.run(
+        driver: FocusDriverFixture(readings: [reading])
+    )
+    #expect(report.outcome == .focused)
+}
+
 @Test @MainActor func directFallbackRejectsIncompleteOrContradictoryEvidence() async {
     let unsafeReadings = [
         missingGlobalReading(frontmostPID: 456),
