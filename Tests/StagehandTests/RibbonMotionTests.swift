@@ -2,6 +2,7 @@ import AppKit
 import StagehandCore
 import Testing
 @testable import Stagehand
+@testable import StagehandPlatform
 
 @MainActor
 private final class TestRibbonFrameDriver: RibbonFrameDriving {
@@ -208,23 +209,30 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     ) == .failed)
 }
 
-@MainActor @Test func focusFirstNavigationCommitsInputOnlyAfterTranslation() async {
-    var events: [String] = []
+@MainActor @Test func verifiedFocusDoesNotExpireInputWhileRibbonMotionIsDelayed() async throws {
+    var posted: [Int32] = []
+    var expired = false
+    let gate = FocusInputGate(postEvent: { _, pid in posted.append(pid) })
+    gate.onTransferExpired = { _ in expired = true }
+    let token = gate.beginTransfer()
+    let key = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
+    #expect(gate.processKeyboardEvent(type: .keyDown, event: key))
+
     let outcome = await runFocusFirstNavigation(
         translate: {
-            events.append("translate")
+            #expect(posted == [42])
+            try? await Task.sleep(for: .milliseconds(2_100))
             return .readyForFocus
         },
-        focus: {
-            events.append("focus")
-            return true
-        },
-        focusConfirmed: { events.append("confirmed") },
-        commitInput: { events.append("commit") },
-        revealBorder: { events.append("border") }
+        focus: { true },
+        focusConfirmed: {},
+        commitInput: { gate.commitTransfer(token: token, processIdentifier: 42) },
+        revealBorder: {}
     )
+
     #expect(outcome == .completed)
-    #expect(events == ["border", "focus", "confirmed", "translate", "commit"])
+    #expect(!expired)
+    #expect(posted == [42])
 }
 
 @MainActor @Test func failedFocusDoesNotTranslateOrCommitInput() async {
@@ -269,7 +277,7 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     )
 
     #expect(outcome == .completed)
-    #expect(events == ["translateStarted", "focus", "confirmed", "translateFinished", "commit", "border"])
+    #expect(events == ["translateStarted", "focus", "commit", "confirmed", "translateFinished", "border"])
 }
 
 @MainActor @Test func failedRemovalFocusCancelsTranslationWithoutRevealingBorder() async {

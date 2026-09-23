@@ -99,13 +99,14 @@ func runFocusFirstNavigation(
 ) async -> NavigationTransitionOutcome {
     revealBorder()
     guard await focus() else { return .failed }
+    // A verified destination can receive input while the ribbon finishes moving.
+    commitInput()
     focusConfirmed()
     switch await translate() {
     case .superseded: return .superseded
     case .failed: return .failed
     case .readyForFocus: break
     }
-    commitInput()
     return .completed
 }
 
@@ -126,6 +127,7 @@ func runConcurrentRemovalNavigation(
         _ = await translation.value
         return .failed
     }
+    commitInput()
     focusConfirmed()
     let translationOutcome = await translation.value
     switch translationOutcome {
@@ -133,7 +135,6 @@ func runConcurrentRemovalNavigation(
     case .failed: return .failed
     case .readyForFocus: break
     }
-    commitInput()
     revealBorder()
     return .completed
 }
