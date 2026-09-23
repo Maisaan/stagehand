@@ -13,6 +13,9 @@ public final class InputController {
     public var shortcutSwipesEnabled = false {
         didSet { if isRunning && oldValue != shortcutSwipesEnabled { updateGestures() } }
     }
+    public var reverseShortcutSwipeDirection = true {
+        didSet { if isRunning && oldValue != reverseShortcutSwipeDirection { updateGestures() } }
+    }
     public private(set) var issues: [String] = []
     public var gesturesAvailable: Bool { gestures.isRunning }
 
@@ -132,7 +135,8 @@ public final class InputController {
                 fingerCount: Self.navigationGestureFingerCount,
                 unmodifiedEnabled: gesturesEnabled,
                 shortcutEnabled: shortcutSwipesEnabled,
-                shortcutBindings: shortcutBindings
+                shortcutBindings: shortcutBindings,
+                reverseShortcutDirection: reverseShortcutSwipeDirection
             ) { issues.append(issue) }
         }
         onStatusChange?()

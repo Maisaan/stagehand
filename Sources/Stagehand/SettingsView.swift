@@ -284,7 +284,15 @@ struct SettingsView: View {
                         Toggle("Arrow shortcut swipes", isOn: $model.shortcutSwipesEnabled)
                             .labelsHidden()
                             .toggleStyle(.switch)
-                            .help("A three-finger swipe replaces the arrow key in an enabled shortcut. Control + Option + swipe left focuses the previous window; add Command to move the current window left.")
+                            .help("A three-finger swipe triggers an enabled arrow shortcut. The direction is set below.")
+                    }
+                    Divider()
+                    SettingsRow("Reverse shortcut swipe direction") {
+                        Toggle("Reverse shortcut swipe direction", isOn: $model.reverseShortcutSwipeDirection)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .disabled(!model.shortcutSwipesEnabled)
+                            .help("When on, swiping left acts like the right arrow, and swiping up acts like the down arrow. Turn off to match the arrow direction.")
                     }
                     Divider()
                     SettingsRow("Trackpad settings") {

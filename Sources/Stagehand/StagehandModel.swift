@@ -306,6 +306,13 @@ final class StagehandModel: ObservableObject {
             updateInputStatus()
         }
     }
+    @Published var reverseShortcutSwipeDirection: Bool {
+        didSet {
+            UserDefaults.standard.set(reverseShortcutSwipeDirection, forKey: "reverseShortcutSwipeDirection")
+            input.reverseShortcutSwipeDirection = reverseShortcutSwipeDirection
+            updateInputStatus()
+        }
+    }
     @Published var gap: Double {
         didSet {
             UserDefaults.standard.set(gap, forKey: "windowGap")
@@ -456,6 +463,7 @@ final class StagehandModel: ObservableObject {
         )
         gesturesEnabled = defaults.object(forKey: "gesturesEnabled") as? Bool ?? false
         shortcutSwipesEnabled = defaults.bool(forKey: "shortcutSwipesEnabled")
+        reverseShortcutSwipeDirection = defaults.object(forKey: "reverseShortcutSwipeDirection") as? Bool ?? true
         gap = GapInput.clamped(defaults.object(forKey: "windowGap") as? Double ?? 8)
         let defaultBorderColor = Self.savedColor(
             forKey: Self.legacyFocusBorderColorPreferenceKey,
@@ -468,6 +476,7 @@ final class StagehandModel: ObservableObject {
             in: defaults,
             alpha: BorderView.defaultColor.alphaComponent
         ) ?? Array(repeating: defaultBorderColor, count: WorkspaceState.spaceCount)
+        input.reverseShortcutSwipeDirection = reverseShortcutSwipeDirection
         input.onAction = { [weak self] action in self?.navigate(action) }
         input.onGesture = { [weak self] event in self?.handleGesture(event) }
         overlays.onFocusWindow = { [weak self] id in self?.focusWindow(id) }

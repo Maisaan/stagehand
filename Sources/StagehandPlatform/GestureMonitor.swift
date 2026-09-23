@@ -38,8 +38,10 @@ func shortcutGestureModifiers(for flags: CGEventFlags, bindings: [ShortcutBindin
 }
 
 func gestureShortcutAction(
-    axis: GestureAxis, displacement: Double, modifiers: UInt32, bindings: [ShortcutBinding]
+    axis: GestureAxis, displacement: Double, modifiers: UInt32, bindings: [ShortcutBinding],
+    reverseDirection: Bool = true
 ) -> NavigationAction? {
+    let displacement = reverseDirection ? -displacement : displacement
     let key: UInt32
     switch axis {
     case .horizontal: key = UInt32(displacement < 0 ? kVK_LeftArrow : kVK_RightArrow)
@@ -52,6 +54,7 @@ private struct GestureCallbackState {
     var enabled = false
     var unmodifiedEnabled = false
     var shortcutEnabled = false
+    var reverseShortcutDirection = true
     var shortcutBindings: [ShortcutBinding] = []
     var shortcutModifiers: UInt32?
     var shortcutAxis: GestureAxis?
@@ -116,7 +119,8 @@ private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
                 let shortcutAction = action.flatMap { _ in
                     state.shortcutAxis.flatMap {
                         gestureShortcutAction(axis: $0, displacement: displacement,
-                                              modifiers: shortcutModifiers, bindings: state.shortcutBindings)
+                                              modifiers: shortcutModifiers, bindings: state.shortcutBindings,
+                                              reverseDirection: state.reverseShortcutDirection)
                     }
                 }
                 event = .ended(displacement: displacement, velocity: velocity,
@@ -165,7 +169,7 @@ final class GestureMonitor {
     private var generation: UInt64 = 0
 
     func start(fingerCount: Int = 4, unmodifiedEnabled: Bool, shortcutEnabled: Bool,
-               shortcutBindings: [ShortcutBinding]) -> String? {
+               shortcutBindings: [ShortcutBinding], reverseShortcutDirection: Bool) -> String? {
         guard !isRunning else { return nil }
         guard AXIsProcessTrusted() else { return "Allow Stagehand in Accessibility settings to use gestures." }
         guard MemoryLayout<RawContact>.stride == 96,
@@ -204,6 +208,7 @@ final class GestureMonitor {
             state.unmodifiedEnabled = unmodifiedEnabled
             state.shortcutEnabled = shortcutEnabled
             state.shortcutBindings = shortcutBindings
+            state.reverseShortcutDirection = reverseShortcutDirection
             state.scheduleDelivery = { [weak self] in
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isRunning, self.generation == activeGeneration else { return }

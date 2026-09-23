@@ -21,51 +21,82 @@ private func contacts(count: Int = 3, dx: Double = 0, dy: Double = 0) -> [Gestur
     #expect(shortcutGestureModifiers(for: baseFlags.union(.maskShift), bindings: bindings) == nil)
 }
 
-@Test func commandControlOptionSwipeLeftUsesTheLeftArrowAction() throws {
+@Test func shortcutSwipesUseTheOppositeArrowForEveryDirection() throws {
     let modifiers = UInt32(cmdKey | controlKey | optionKey)
     #expect(gestureShortcutAction(
         axis: .horizontal,
         displacement: -0.1,
         modifiers: modifiers,
         bindings: ShortcutBinding.defaults
-    ) == .reorderPrevious)
+    ) == .reorderNext)
     #expect(gestureShortcutAction(
         axis: .horizontal,
         displacement: 0.1,
         modifiers: modifiers,
         bindings: ShortcutBinding.defaults
-    ) == .reorderNext)
+    ) == .reorderPrevious)
     #expect(gestureShortcutAction(
         axis: .vertical,
         displacement: 0.1,
         modifiers: modifiers,
         bindings: ShortcutBinding.defaults
-    ) == .moveWindowUpSpace)
+    ) == .moveWindowDownSpace)
     #expect(gestureShortcutAction(
         axis: .vertical,
         displacement: -0.1,
         modifiers: modifiers,
         bindings: ShortcutBinding.defaults
-    ) == .moveWindowDownSpace)
+    ) == .moveWindowUpSpace)
     let base = UInt32(controlKey | optionKey)
     #expect(gestureShortcutAction(
         axis: .horizontal, displacement: -0.1, modifiers: base, bindings: ShortcutBinding.defaults
+    ) == .focusNext)
+    #expect(gestureShortcutAction(
+        axis: .horizontal, displacement: 0.1, modifiers: base, bindings: ShortcutBinding.defaults
     ) == .focusPrevious)
     #expect(gestureShortcutAction(
         axis: .vertical, displacement: 0.1, modifiers: base, bindings: ShortcutBinding.defaults
+    ) == .nextSpace)
+    #expect(gestureShortcutAction(
+        axis: .vertical, displacement: -0.1, modifiers: base, bindings: ShortcutBinding.defaults
     ) == .previousSpace)
     var bindings = ShortcutBinding.defaults
-    let previousIndex = try #require(bindings.firstIndex { $0.id == "reorderPrevious" })
-    bindings[previousIndex].isEnabled = false
+    let nextIndex = try #require(bindings.firstIndex { $0.id == "reorderNext" })
+    bindings[nextIndex].isEnabled = false
     #expect(gestureShortcutAction(
         axis: .horizontal, displacement: -0.1, modifiers: modifiers, bindings: bindings
     ) == nil)
     let settingsIndex = try #require(bindings.firstIndex { $0.id == "showSettings" })
-    bindings[settingsIndex].key = UInt32(kVK_UpArrow)
+    bindings[settingsIndex].key = UInt32(kVK_DownArrow)
     bindings[settingsIndex].modifiers = modifiers | UInt32(shiftKey)
     #expect(gestureShortcutAction(
         axis: .vertical, displacement: 0.1, modifiers: modifiers | UInt32(shiftKey), bindings: bindings
     ) == .showSettings)
+}
+
+@Test func directionToggleRestoresMatchingArrowSwipesWithoutChangingKeyboardBindings() throws {
+    let modifiers = UInt32(cmdKey | controlKey | optionKey)
+    var bindings = ShortcutBinding.defaults
+    #expect(gestureShortcutAction(axis: .horizontal, displacement: -0.1,
+                                  modifiers: modifiers, bindings: bindings,
+                                  reverseDirection: false) == .reorderPrevious)
+    #expect(gestureShortcutAction(axis: .horizontal, displacement: 0.1,
+                                  modifiers: modifiers, bindings: bindings,
+                                  reverseDirection: false) == .reorderNext)
+    #expect(gestureShortcutAction(axis: .vertical, displacement: 0.1,
+                                  modifiers: modifiers, bindings: bindings,
+                                  reverseDirection: false) == .moveWindowUpSpace)
+    #expect(gestureShortcutAction(axis: .vertical, displacement: -0.1,
+                                  modifiers: modifiers, bindings: bindings,
+                                  reverseDirection: false) == .moveWindowDownSpace)
+    #expect(ShortcutBinding.action(forKey: UInt32(kVK_LeftArrow), modifiers: modifiers,
+                                   in: bindings) == .reorderPrevious)
+    let settingsIndex = try #require(bindings.firstIndex { $0.id == "showSettings" })
+    bindings[settingsIndex].key = UInt32(kVK_UpArrow)
+    bindings[settingsIndex].modifiers = modifiers | UInt32(shiftKey)
+    #expect(gestureShortcutAction(axis: .vertical, displacement: 0.1,
+                                  modifiers: modifiers | UInt32(shiftKey), bindings: bindings,
+                                  reverseDirection: false) == .showSettings)
 }
 
 @Test func adjacentSpaceBindingsWorkForKeysAndCanBeDisabledForSwipes() throws {
@@ -79,7 +110,7 @@ private func contacts(count: Int = 3, dx: Double = 0, dy: Double = 0) -> [Gestur
     bindings[downIndex].isEnabled = false
     #expect(ShortcutBinding.action(forKey: UInt32(kVK_DownArrow), modifiers: modifiers,
                                    in: bindings) == nil)
-    #expect(gestureShortcutAction(axis: .vertical, displacement: -0.1,
+    #expect(gestureShortcutAction(axis: .vertical, displacement: 0.1,
                                   modifiers: modifiers, bindings: bindings) == nil)
 }
 
