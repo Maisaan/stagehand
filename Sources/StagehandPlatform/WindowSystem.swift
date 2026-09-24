@@ -1008,19 +1008,25 @@ public final class WindowSystem {
     }
 
     private func trackedWindowID(matching element: AXUIElement) -> String? {
+        // AX reports an attached sheet as the focused window. Its AXWindow is
+        // the owning standard window, which remains the managed focus target.
+        let isSheet = attribute(element, kAXRoleAttribute) as? String == kAXSheetRole
+        guard let window = isSheet ? elementAttribute(element, kAXWindowAttribute) : element else { return nil }
         var pid: pid_t = 0
-        guard AXUIElementGetPid(element, &pid) == .success else { return nil }
-        let identifier = windowNumber(element)
+        guard AXUIElementGetPid(window, &pid) == .success else { return nil }
+        let identifier = windowNumber(window)
         if let exactMatch = windows.first(where: { _, tracked in
             guard tracked.record.pid == pid else { return false }
             if let identifier, let trackedIdentifier = tracked.windowNumber {
                 return identifier == trackedIdentifier
             }
-            return CFEqual(tracked.element, element)
+            return CFEqual(tracked.element, window)
         })?.key {
             return exactMatch
         }
-        guard let frame = readFrame(element) else { return nil }
+        // A sheet may only inherit an exact parent window identity. Matching
+        // its owner by geometry could send buffered input to another window.
+        guard !isSheet, let frame = readFrame(window) else { return nil }
         return uniqueWindowID(
             matchingFrame: frame,
             among: windows.compactMap { id, tracked in
