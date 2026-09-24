@@ -89,7 +89,6 @@ public final class WindowSystem {
     private var lastApplicationInventory: ApplicationInventory?
     private var workspaceTokens: [NSObjectProtocol] = []
     private var applicationTokens: [NSObjectProtocol] = []
-    private var parkingValidationIDs = Set<String>()
     private var nextFallbackID: UInt64 = 0
     private var started = false
     private let systemElement = AXUIElementCreateSystemWide()
@@ -160,7 +159,6 @@ public final class WindowSystem {
                         }
                         for id in removedIDs {
                             self.windows.removeValue(forKey: id)
-                            self.parkingValidationIDs.remove(id)
                         }
                         if !removedIDs.isEmpty { self.onApplicationTerminated?(pid) }
                     }
@@ -176,9 +174,6 @@ public final class WindowSystem {
                                                    object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.started else { return }
-                self.parkingValidationIDs = Set(self.windows.compactMap {
-                    $0.value.parking.isParked ? $0.key : nil
-                })
                 self.onNativeDesktopChange?()
             }
         })
@@ -231,7 +226,6 @@ public final class WindowSystem {
         workspaceTokens.removeAll()
         for token in applicationTokens { NotificationCenter.default.removeObserver(token) }
         applicationTokens.removeAll()
-        parkingValidationIDs.removeAll()
         for retry in observationRetries.values { retry.cancel() }
         observationRetries.removeAll()
         applicationObservations.removeAll()
@@ -486,8 +480,8 @@ public final class WindowSystem {
     public func park(windowID: String, preferredSide: WindowParkingSide? = nil) -> Bool {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.park(windowID: windowID) }
         guard let tracked = windows[windowID] else { return false }
-        let needsValidation = parkingValidationIDs.remove(windowID) != nil
-        if tracked.parking.isParked, !needsValidation { return true }
+        // AX can move a parked window back onscreen after our last frame read.
+        // Check its physical position on every parking request.
         guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else { return false }
         guard let currentFrame = readFrame(tracked.element) else { return false }
         captureOriginalFrame(windowID: windowID)
@@ -808,7 +802,6 @@ public final class WindowSystem {
                     switch availabilityChange {
                     case .destroyed:
                         owner.windows.removeValue(forKey: id)
-                        owner.parkingValidationIDs.remove(id)
                         owner.onWindowDestroyed?(id)
                     case .minimized:
                         owner.onWindowMiniaturized?(id)

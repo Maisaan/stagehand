@@ -1351,6 +1351,20 @@ final class StagehandModel: ObservableObject {
         let interaction = pointerInteraction
         pointerInteraction = nil
         var needsLayout = interaction?.needsLayout ?? false
+        if let availableFrame {
+            let activeWindowIDs = Set(state.currentSpace.windowIDs)
+            if let reappeared = current.first(where: { window in
+                guard !activeWindowIDs.contains(window.id),
+                      let frame = windowSystem.observedFrame(windowID: window.id) else { return false }
+                return frame.intersection(availableFrame).width > 64
+            }) {
+                needsLayout = true
+                diagnostics.record("off_space_window_reappeared", details: [
+                    "windowID": reappeared.id,
+                    "activeSpace": String(state.activeSpaceIndex + 1)
+                ])
+            }
+        }
         if let focused = focusedWindow,
            let previous = lastAppliedFrames[focused.id],
            let frame = availableFrame {
