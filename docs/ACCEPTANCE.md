@@ -57,6 +57,7 @@ Record the app pairs, pass/fail result, and any relevant log timestamps in the c
 - Apply a negative gap. Windows overlap horizontally with the active one above its neighbors. A full-width active window covers the available area.
 - Drag a title bar, hold it still, then release. Reorder only on release; the window rejoins the ribbon instead of remaining detached.
 - Drag-resize a scrolling window, including immediately after navigation. Its new width should be remembered within the allowed range.
+- Drag the top edge of a centered half-height window to the top of the available screen. On release, it should fill the available height in one drag.
 - Open a new window while Stagehand is running. Its first layout should keep its original width within the allowed range.
 
 ## Spaces and shared windows

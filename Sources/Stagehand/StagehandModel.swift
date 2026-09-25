@@ -39,6 +39,15 @@ func adjustedWindowHeight(current: CGFloat, available: CGFloat, growing: Bool) -
     return growing ? min(current + adjustment, limit) : max(current + adjustment, limit)
 }
 
+func preferredHeightAfterResize(previous: CGRect, observed: CGRect, available: CGRect) -> CGFloat {
+    let edgeTolerance: CGFloat = 4
+    let grewFromTop = observed.height > previous.height + 3
+        && observed.minY < previous.minY - 3
+        && abs(observed.maxY - previous.maxY) <= edgeTolerance
+    return grewFromTop && observed.minY <= available.minY + edgeTolerance
+        ? available.height : observed.height
+}
+
 struct WindowFocusHistory {
     private var windowIDs: [String] = []
 
@@ -1375,7 +1384,9 @@ final class StagehandModel: ObservableObject {
             if (resized || moved) && (interaction != nil || Date().timeIntervalSince(lastTransition) > 0.4) {
                 if resized {
                     state.setWidthFraction(focused.frame.width / frame.width, for: focused.id)
-                    preferredHeights[focused.id] = focused.frame.height
+                    preferredHeights[focused.id] = preferredHeightAfterResize(
+                        previous: previous, observed: focused.frame, available: frame
+                    )
                 }
                 if moved && !resized {
                     let placements: [WindowPlacement]
