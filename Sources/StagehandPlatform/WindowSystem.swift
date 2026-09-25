@@ -70,6 +70,11 @@ public final class WindowSystem {
         var observationComplete = false
     }
 
+    private struct OwnedWindow {
+        let element: AXUIElement
+        let parentID: String
+    }
+
     private struct VisibleWindowIdentity: Hashable {
         let pid: pid_t
         let windowNumber: CGWindowID
@@ -81,6 +86,7 @@ public final class WindowSystem {
     }
 
     private var windows: [String: TrackedWindow] = [:]
+    private var ownedWindows: [OwnedWindow] = []
     private var observers: [pid_t: AXObserver] = [:]
     private var applicationObservations: [pid_t: ApplicationObservation] = [:]
     private var observationRetries: [pid_t: Task<Void, Never>] = [:]
@@ -221,6 +227,7 @@ public final class WindowSystem {
         // stable identities, but admit only its visible windows again.
         for id in Array(windows.keys) { windows[id]?.isAdmitted = false }
         for id in Array(windows.keys) { windows[id]?.observationComplete = false }
+        ownedWindows.removeAll()
         let center = NSWorkspace.shared.notificationCenter
         for token in workspaceTokens { center.removeObserver(token) }
         workspaceTokens.removeAll()
@@ -249,6 +256,7 @@ public final class WindowSystem {
         }
         var seen = Set<String>()
         var result: [WindowRecord] = []
+        var ownedWindows: [OwnedWindow] = []
         if focusDiagnosticsEnabled {
             print("Scan t=\(ProcessInfo.processInfo.systemUptime) runningApps=\(runningApps.count) eligibleApps=\(apps.count) cgVisibleWindows=\(visibleWindows.count)")
         }
@@ -265,12 +273,32 @@ public final class WindowSystem {
                     seen.insert(tracked.record.id)
                     if tracked.isAdmitted { result.append(tracked.record) }
                 }
+                ownedWindows.append(contentsOf: self.ownedWindows.filter {
+                    var pid: pid_t = 0
+                    return AXUIElementGetPid($0.element, &pid) == .success && pid == app.processIdentifier
+                })
                 continue
             }
             let candidates = elements.map { element in
                 return (element: element, windowNumber: windowNumber(element), frame: readFrame(element))
             }
-            for candidate in candidates {
+            let appMain = elementAttribute(appElement, kAXMainWindowAttribute)
+            let owners = candidates.map { candidate -> AXUIElement? in
+                let modal = attribute(candidate.element, kAXModalAttribute) as? Bool == true
+                guard let owner = explicitOwner(of: candidate.element) ?? (modal ? appMain : nil),
+                      !sameWindow(candidate.element, owner) else { return nil }
+                return owner
+            }
+            let childIndices = Set(candidates.indices.filter { index in
+                guard let owner = owners[index] else { return false }
+                return candidates.indices.contains { other in
+                    other != index &&
+                    attribute(candidates[other].element, kAXSubroleAttribute) as? String == kAXStandardWindowSubrole &&
+                    sameWindow(candidates[other].element, owner)
+                } || directTrackedWindowID(matching: owner) != nil
+            })
+            for (index, candidate) in candidates.enumerated() {
+                if childIndices.contains(index) { continue }
                 let element = candidate.element
                 let identityMatch = windows.first {
                     guard $0.value.record.pid == app.processIdentifier else { return false }
@@ -397,7 +425,22 @@ public final class WindowSystem {
                 seen.insert(id)
                 result.append(record)
             }
+            for (index, candidate) in candidates.enumerated() {
+                let element = candidate.element
+                guard childIndices.contains(index),
+                      attribute(element, kAXMinimizedAttribute) as? Bool != true,
+                      let owner = owners[index],
+                      let parentID = directTrackedWindowID(matching: owner),
+                      windows[parentID]?.isAdmitted == true else { continue }
+                if let previousID = directTrackedWindowID(matching: element), previousID != parentID {
+                    windows.removeValue(forKey: previousID)
+                }
+                ownedWindows.append(OwnedWindow(
+                    element: element, parentID: parentID
+                ))
+            }
         }
+        self.ownedWindows = ownedWindows
         for id in Array(windows.keys) where !seen.contains(id) {
             guard let pid = windows[id]?.record.pid, livePIDs.contains(pid) else {
                 windows.removeValue(forKey: id)
@@ -428,7 +471,9 @@ public final class WindowSystem {
         guard let tracked = windows[windowID], tracked.isAdmitted,
               !tracked.parking.isParked else { return false }
         captureOriginalFrame(windowID: windowID)
-        return writePosition(tracked.element, position: position)
+        return moveWithOwnedWindows(windowID: windowID) {
+            writePosition(tracked.element, position: position)
+        }
     }
 
     public func frame(windowID: String) -> CGRect? {
@@ -466,12 +511,18 @@ public final class WindowSystem {
         if tracked.parking.restoreFrame != nil {
             guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else { return false }
             var parking = tracked.parking
-            let success = parking.restore(to: frame, setFrame: { self.writeFrame(tracked.element, frame: $0, resizeFirst: false) },
+            let success = parking.restore(to: frame, setFrame: { requested in
+                self.moveWithOwnedWindows(windowID: windowID) {
+                    self.writeFrame(tracked.element, frame: requested, resizeFirst: false)
+                }
+            },
                                           readFrame: { self.readFrame(tracked.element) })
             windows[windowID]?.parking = parking
             return success
         }
-        return writeFrame(tracked.element, frame: frame)
+        return moveWithOwnedWindows(windowID: windowID) {
+            writeFrame(tracked.element, frame: frame)
+        }
     }
 
     /// Parks just this window, preserving other windows belonging to the same app.
@@ -503,7 +554,9 @@ public final class WindowSystem {
         let success = parking.park(frame: currentFrame, bounds: bounds, displays: displays,
                                    preferredSide: preferredSide,
                                    setPosition: { position in
-            let accepted = self.writePosition(tracked.element, position: position)
+            let accepted = self.moveWithOwnedWindows(windowID: windowID) {
+                self.writePosition(tracked.element, position: position)
+            }
             if self.focusDiagnosticsEnabled { print("Parking write pid=\(tracked.record.pid) requested=\(position) accepted=\(accepted)") }
             return accepted
         },
@@ -524,7 +577,11 @@ public final class WindowSystem {
         // A user-minimized window remains theirs; Stagehand never reverses that action.
         guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else { return false }
         var parking = tracked.parking
-        let success = parking.restore(setFrame: { self.writeFrame(tracked.element, frame: $0, resizeFirst: false) },
+        let success = parking.restore(setFrame: { requested in
+            self.moveWithOwnedWindows(windowID: windowID) {
+                self.writeFrame(tracked.element, frame: requested, resizeFirst: false)
+            }
+        },
                                       readFrame: { self.readFrame(tracked.element) })
         windows[windowID]?.parking = parking
         if focusDiagnosticsEnabled {
@@ -553,7 +610,9 @@ public final class WindowSystem {
             // A later recovery attempt must still know where the window started.
             guard restore(windowID: id) else { continue }
             if let originalFrame = tracked.originalFrame {
-                if writeFrame(tracked.element, frame: originalFrame) {
+                if moveWithOwnedWindows(windowID: id, move: {
+                    writeFrame(tracked.element, frame: originalFrame)
+                }) {
                     windows[id]?.originalFrame = nil
                 }
             }
@@ -673,6 +732,7 @@ public final class WindowSystem {
         private let start = ContinuousClock.now
         private let recordsDiagnostics: Bool
         private var canSetFocusedWindow = false
+        private let focusBelongsToOwnedWindow: Bool
 
         init(system: WindowSystem, tracked: TrackedWindow, app: NSRunningApplication, recordsDiagnostics: Bool) {
             self.system = system
@@ -682,6 +742,13 @@ public final class WindowSystem {
             self.app = app
             self.recordsDiagnostics = recordsDiagnostics
             self.appElement = AXUIElementCreateApplication(tracked.record.pid)
+            if let focused = system.elementAttribute(appElement, kAXFocusedWindowAttribute) {
+                let isSheet = system.attribute(focused, kAXRoleAttribute) as? String == kAXSheetRole
+                focusBelongsToOwnedWindow = system.trackedWindowID(matching: focused) == tracked.record.id &&
+                    (isSheet || system.directTrackedWindowID(matching: focused) == nil)
+            } else {
+                focusBelongsToOwnedWindow = false
+            }
         }
 
         var elapsedMilliseconds: Int {
@@ -690,6 +757,12 @@ public final class WindowSystem {
         }
 
         func prepare() -> [WindowFocusReport.Operation] {
+            if focusBelongsToOwnedWindow {
+                var operations: [WindowFocusReport.Operation] = []
+                if app.isHidden { record("unhide", accepted: app.unhide(), into: &operations) }
+                record("activate", accepted: app.activate(options: []), into: &operations)
+                return operations
+            }
             var writable: DarwinBoolean = false
             let status = AXUIElementIsAttributeSettable(appElement, kAXFocusedWindowAttribute as CFString, &writable)
             canSetFocusedWindow = writable.boolValue
@@ -710,6 +783,7 @@ public final class WindowSystem {
         }
 
         func requestFocus(attempt: Int) -> [WindowFocusReport.Operation] {
+            if focusBelongsToOwnedWindow { return [] }
             var operations: [WindowFocusReport.Operation] = []
             if attempt % 4 == 0 {
                 record("raise", status: AXUIElementPerformAction(target, kAXRaiseAction as CFString).rawValue, into: &operations)
@@ -798,7 +872,7 @@ public final class WindowSystem {
                     print("Discovery t=\(ProcessInfo.processInfo.systemUptime) AX=\(name) pid=\(pid)")
                 }
                 if let availabilityChange = windowAvailabilityChange(for: name),
-                   let id = owner.trackedWindowID(matching: changedWindow) {
+                   let id = owner.directTrackedWindowID(matching: changedWindow) {
                     switch availabilityChange {
                     case .destroyed:
                         owner.windows.removeValue(forKey: id)
@@ -814,7 +888,7 @@ public final class WindowSystem {
                 if name == kAXFocusedWindowChangedNotification { owner.reportCurrentFocus() }
                 if owner.onFrameChange != nil,
                    name == kAXMovedNotification || name == kAXResizedNotification,
-                   let id = owner.trackedWindowID(matching: changedWindow),
+                   let id = owner.directTrackedWindowID(matching: changedWindow),
                    let frame = owner.readFrame(changedWindow) {
                     owner.onFrameChange?(id, frame)
                 }
@@ -1000,26 +1074,48 @@ public final class WindowSystem {
         return axWindowID(element, &identifier) == .success && identifier != 0 ? identifier : nil
     }
 
-    private func trackedWindowID(matching element: AXUIElement) -> String? {
-        // AX reports an attached sheet as the focused window. Its AXWindow is
-        // the owning standard window, which remains the managed focus target.
-        let isSheet = attribute(element, kAXRoleAttribute) as? String == kAXSheetRole
-        guard let window = isSheet ? elementAttribute(element, kAXWindowAttribute) : element else { return nil }
+    private func directTrackedWindowID(matching element: AXUIElement) -> String? {
         var pid: pid_t = 0
-        guard AXUIElementGetPid(window, &pid) == .success else { return nil }
-        let identifier = windowNumber(window)
+        guard AXUIElementGetPid(element, &pid) == .success else { return nil }
+        let identifier = windowNumber(element)
         if let exactMatch = windows.first(where: { _, tracked in
             guard tracked.record.pid == pid else { return false }
             if let identifier, let trackedIdentifier = tracked.windowNumber {
                 return identifier == trackedIdentifier
             }
-            return CFEqual(tracked.element, window)
+            return CFEqual(tracked.element, element)
         })?.key {
             return exactMatch
         }
-        // A sheet may only inherit an exact parent window identity. Matching
-        // its owner by geometry could send buffered input to another window.
-        guard !isSheet, let frame = readFrame(window) else { return nil }
+        return nil
+    }
+
+    private func trackedWindowID(matching element: AXUIElement) -> String? {
+        let isSheet = attribute(element, kAXRoleAttribute) as? String == kAXSheetRole
+        if !isSheet, let id = directTrackedWindowID(matching: element) { return id }
+        if let owned = ownedWindows.first(where: { sameWindow($0.element, element) }) {
+            return owned.parentID
+        }
+        // AX reports an attached sheet as the focused window. Its AXWindow is
+        // the owning standard window, which remains the managed focus target.
+        if let owner = explicitOwner(of: element),
+           let parentID = directTrackedWindowID(matching: owner) {
+            return parentID
+        }
+        // A newly opened modal can receive focus before the next window scan.
+        if attribute(element, kAXModalAttribute) as? Bool == true {
+            var pid: pid_t = 0
+            if AXUIElementGetPid(element, &pid) == .success,
+               let main = elementAttribute(AXUIElementCreateApplication(pid), kAXMainWindowAttribute),
+               let parentID = directTrackedWindowID(matching: main) {
+                return parentID
+            }
+        }
+        // Never infer a sheet or dialog owner from coincident geometry.
+        guard !isSheet, attribute(element, kAXModalAttribute) as? Bool != true,
+              let frame = readFrame(element) else { return nil }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success else { return nil }
         return uniqueWindowID(
             matchingFrame: frame,
             among: windows.compactMap { id, tracked in
@@ -1027,6 +1123,26 @@ public final class WindowSystem {
                 return (id: id, frame: readFrame(tracked.element))
             }
         )
+    }
+
+    private func explicitOwner(of element: AXUIElement) -> AXUIElement? {
+        for name in [kAXWindowAttribute, kAXParentAttribute] {
+            guard let owner = elementAttribute(element, name),
+                  !sameWindow(owner, element),
+                  let role = attribute(owner, kAXRoleAttribute) as? String,
+                  role == kAXWindowRole || role == kAXSheetRole else { continue }
+            return role == kAXSheetRole ? elementAttribute(owner, kAXWindowAttribute) : owner
+        }
+        return nil
+    }
+
+    private func sameWindow(_ lhs: AXUIElement, _ rhs: AXUIElement) -> Bool {
+        if CFEqual(lhs, rhs) { return true }
+        guard attribute(lhs, kAXRoleAttribute) as? String == kAXWindowRole,
+              attribute(rhs, kAXRoleAttribute) as? String == kAXWindowRole else { return false }
+        let lhsNumber = windowNumber(lhs)
+        let rhsNumber = windowNumber(rhs)
+        return lhsNumber != nil && lhsNumber == rhsNumber
     }
 
     private func sameBounds(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
@@ -1075,6 +1191,36 @@ public final class WindowSystem {
         var point = position
         guard let value = AXValueCreate(.cgPoint, &point) else { return false }
         return AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value) == .success
+    }
+
+    private func moveWithOwnedWindows(windowID: String, move: () -> Bool) -> Bool {
+        let children = ownedWindows.filter { $0.parentID == windowID }
+        guard !children.isEmpty, let parent = windows[windowID]?.element,
+              let before = readPosition(parent) else { return move() }
+        let childPositions = children.map { readPosition($0.element) }
+        let success = move()
+        guard let after = readPosition(parent) else { return success }
+        for (child, childBefore) in zip(children, childPositions) {
+            guard let childBefore,
+                  let destination = Self.ownedWindowPosition(
+                    ownerBefore: before, ownerAfter: after,
+                    childBefore: childBefore, childAfter: readPosition(child.element)
+                  ) else { continue }
+            _ = writePosition(child.element, position: destination)
+        }
+        return success
+    }
+
+    static func ownedWindowPosition(
+        ownerBefore: CGPoint, ownerAfter: CGPoint,
+        childBefore: CGPoint, childAfter: CGPoint?
+    ) -> CGPoint? {
+        guard let childAfter, !samePosition(ownerBefore, ownerAfter) else { return nil }
+        let destination = CGPoint(
+            x: childBefore.x + ownerAfter.x - ownerBefore.x,
+            y: childBefore.y + ownerAfter.y - ownerBefore.y
+        )
+        return samePosition(childAfter, destination) ? nil : destination
     }
 
     private func writeFrame(_ element: AXUIElement, frame: CGRect, resizeFirst: Bool = true) -> Bool {

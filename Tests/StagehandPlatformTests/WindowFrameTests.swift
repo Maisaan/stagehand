@@ -5,6 +5,25 @@ import StagehandCore
 
 @MainActor
 struct WindowFrameTests {
+    @Test func aDialogFollowsItsOwnerWithoutMovingTwiceWhenAppKitAlreadyMovedIt() {
+        let ownerBefore = CGPoint(x: 100, y: 100)
+        let ownerAfter = CGPoint(x: 500, y: 150)
+        let dialogBefore = CGPoint(x: 180, y: 130)
+
+        #expect(WindowSystem.ownedWindowPosition(
+            ownerBefore: ownerBefore, ownerAfter: ownerAfter,
+            childBefore: dialogBefore, childAfter: dialogBefore
+        ) == CGPoint(x: 580, y: 180))
+        #expect(WindowSystem.ownedWindowPosition(
+            ownerBefore: ownerBefore, ownerAfter: ownerAfter,
+            childBefore: dialogBefore, childAfter: CGPoint(x: 580, y: 180)
+        ) == nil)
+        #expect(WindowSystem.ownedWindowPosition(
+            ownerBefore: ownerBefore, ownerAfter: ownerBefore,
+            childBefore: dialogBefore, childAfter: CGPoint(x: 200, y: 150)
+        ) == nil)
+    }
+
     @Test(arguments: [NavigationAction.focusPrevious, .goToSpace(index: 1)], [CGFloat(0), 1])
     func returningToAParkedSharedWindowDoesNotResizeIt(action: NavigationAction, extraWidth: CGFloat) throws {
         let viewport = CGRect(x: 0, y: 40, width: 1000, height: 700)

@@ -80,6 +80,7 @@ Record the app pairs, pass/fail result, and any relevant log timestamps in the c
 - Repeat with two windows of the same app. Include rapid consecutive switches, held keys, key repeats, and modifiers held across a switch.
 - Navigate away until Cursor is parked, then back repeatedly. No Dock animation, minimized state, or false focus failure should occur. Repeat with an app whose position is clamped by macOS.
 - Repeat with the navigation overlay visible. App menus and input remain with the active real app.
+- Open a confirmation dialog on a managed window. Switch away and back: the dialog stays with its owning window, does not get a ribbon slot, and keeps keyboard focus when that window is active. Repeat with two windows from the same app to check that the dialog follows the one that opened it.
 - Exercise a blocked/slow app or modal dialog. Failed focus must pause/restore and visibly report withheld input.
 - Revoke Accessibility while Stagehand is running, then trigger navigation. It must stop moving windows and report the unavailable protection instead of assuming permission remains valid.
 - Check Setup when Secure Input is active. Do not assume interception remains available.
