@@ -1,11 +1,11 @@
 ---
-name: fix-stagehand-pause
-description: Investigate a Stagehand automatic pause, reproduce its cause, fix it, verify, and commit. Use when invoked as $fix-stagehand-pause or when the user explicitly asks to debug, fix, and commit a pause. A request only to check logs stays read-only.
+name: pausefix
+description: Investigate a Stagehand automatic pause, reproduce its cause, fix it, verify, and commit. Use when invoked as $pausefix or when the user explicitly asks to debug, fix, and commit a pause. Add "launch" to install and open the fixed app. A request only to check logs stays read-only.
 ---
 
 # Fix a Stagehand pause
 
-Work from the Stagehand repository. Follow `AGENTS.md`, [the diagnostic log skill](../debug-with-diagnostic-log/SKILL.md), and the relevant checks in `docs/ACCEPTANCE.md`. Invocation requests a supported fix and commit. It does not authorize replacing the installed app or changing Accessibility permission; leave installation separate unless the user asks for it.
+Work from the Stagehand repository. Follow `AGENTS.md`, [the diagnostic log skill](../debug-with-diagnostic-log/SKILL.md), and the relevant checks in `docs/ACCEPTANCE.md`. `$pausefix` requests a supported fix and commit. `$pausefix launch` also authorizes building, replacing `/Applications/Stagehand.app`, and launching the fixed app. Without `launch`, leave installation separate. Neither form authorizes changing Accessibility permission on the user's behalf.
 
 ## Identify the failure
 
@@ -24,7 +24,13 @@ Work from the Stagehand repository. Follow `AGENTS.md`, [the diagnostic log skil
 
 - Make the smallest change at the responsible seam. Keep behavior changes separate from mechanical cleanup. Add a regression test only when it exercises the failure pattern at a meaningful boundary; see [purposeful testing](../purposeful-testing/SKILL.md).
 - Run the focused test, `swift test`, and `./scripts/build-app.sh`. When the rebuilt app has Accessibility permission, repeat the relevant live check with the same apps and settings. Inspect events since its UTC start for pauses, layout failures, rejected focus, and slower focus confirmation.
-- If the rebuilt bundle lacks Accessibility permission, state that live behavior remains unverified. Build and commit without replacing `/Applications/Stagehand.app`; do not describe the installed app as fixed. Follow the stricter live verification rule in `AGENTS.md` for cleanup or refactoring.
+- If the rebuilt bundle lacks Accessibility permission, state that live behavior remains unverified. Follow the stricter live verification rule in `AGENTS.md` for cleanup or refactoring.
 - Preserve unrelated worktree changes. Stage only files from this fix. The commit message should state the logged failure, supported cause, red and green evidence, commands, and live verification status. If the cause remains unresolved, report the missing evidence instead of making a fix commit.
+
+## When `launch` is requested
+
+- After a supported fix passes tests and builds, quit the running Stagehand through its normal Quit path so `applicationWillTerminate` can restore managed windows. Confirm it exited and the windows returned before replacing the bundle. Do not force-kill it or run two managing instances.
+- Install the newly built `dist/Stagehand.app` at `/Applications/Stagehand.app`, verify the installed signature and executable match the build, then launch that installed app. If replacement fails, preserve or restore the prior installed app and report the error.
+- Check the launched app's Accessibility status. A changed ad-hoc signature may require the user to grant permission again; guide that step and continue live verification after the grant. Do not claim the fix is live until the installed process is running the new build and the affected check passes.
 
 Finish with the cause, change, test result, commit hash, and whether the installed app is running that commit. Mention distinct later pauses separately.
