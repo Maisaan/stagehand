@@ -118,9 +118,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self?.model?.refreshLaunchAtLogin()
             }
         }
+        let interrupted = model.recoverInterruptedSession()
         if !UserDefaults.standard.bool(forKey: Self.onboardingCompleteKey) {
             openOnboarding()
-        } else if model.accessibilityGranted {
+        } else if model.accessibilityGranted && !interrupted {
             model.start()
         }
     }
@@ -272,7 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         UserDefaults.standard.set(true, forKey: Self.onboardingCompleteKey)
         onboardingWindow?.orderOut(nil)
         onboardingWindow = nil
-        if model?.accessibilityGranted == true { model?.start() }
+        if model?.accessibilityGranted == true, model?.recoverInterruptedSession() == false { model?.start() }
     }
 
     @objc func toggleRunning() {

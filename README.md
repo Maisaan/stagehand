@@ -54,6 +54,7 @@ After setup, Stagehand starts running when you open it if Accessibility is grant
 Press Control + Option + Escape to pause and restore the window frames captured at Start. You can resume from settings or the menu bar item.
 
 Manual pauses and automatic pauses after an error preserve your spaces, window order, shared memberships, and per-space widths for resume. Closed windows are omitted. Windows that are temporarily unavailable regain their saved memberships when Stagehand discovers them again.
+After an automatic pause, Stagehand tries to resume once after 100 ms. If that fails, it stays paused until you press Start. After a crash or forced quit, relaunch Stagehand to restore affected windows to their pre-Start frames; it stays paused so you can choose when to start again.
 
 ## Using Stagehand
 
@@ -106,7 +107,7 @@ Keep macOS navigation gestures set to four fingers so they do not overlap with S
 ## Known limitations
 
 - Stagehand briefly buffers typing during a window switch and sends it to the confirmed destination. macOS does not report whether a posted key event reached a specific window, so this is not a proven zero-loss input system. Failed or expired transfers withhold input and show a warning. Secure Input or a disabled event tap can bypass the protection.
-- Pause and Quit restore the window frames captured at Start. A crash or forced termination cannot run that restoration.
+- Pause and Quit restore the window frames captured at Start. Crash recovery restores windows whose Accessibility window ID and original frame were saved before the exit. It cannot safely identify windows after their app relaunches or if macOS does not provide a window ID.
 - Stagehand parks off-ribbon windows just beyond the left or right display edge instead of minimizing them. Apps that clamp window positions may leave part of an edge visible. If Stagehand cannot confirm parking, it restores the windows and pauses.
 - Stagehand manages only the native macOS Desktop where you press Start. It suspends input and layout work on other Desktops. If Desktop identity is temporarily unavailable, Stagehand keeps checking and resumes only after confirming the starting Desktop.
 - Desktop tracking uses a read-only private system API. Gesture support loads Apple's private `MultitouchSupport` framework. Either can break after a macOS update. This build is not intended for App Store distribution.

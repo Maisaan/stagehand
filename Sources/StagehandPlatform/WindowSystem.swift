@@ -99,8 +99,15 @@ public final class WindowSystem {
     private var started = false
     private let systemElement = AXUIElementCreateSystemWide()
     private let nativeWindows = NativeWindowRegistry()
+    private let recoveryJournal = WindowRecoveryJournal()
+    private var interruptedWindowIDs: Set<String> = []
+    private var missingRecoveryWindowIDs: Set<String> = []
+    public var hasPendingRecovery: Bool {
+        interruptedWindowIDs.contains { recoveryJournal.records[$0] != nil }
+    }
 
     public init() {
+        interruptedWindowIDs = Set(recoveryJournal.records.keys)
         AXUIElementSetMessagingTimeout(systemElement, 0.1)
         nativeWindows.onChange = { [weak self] in
             guard let self, self.started else { return }
@@ -137,6 +144,57 @@ public final class WindowSystem {
     public func requestAccessibilityPermission() {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
         _ = AXIsProcessTrustedWithOptions(options as CFDictionary)
+    }
+
+    /// Restore exact windows left at ribbon or parking positions by an interrupted process.
+    /// A failed AX read stays in the journal for the next attempt.
+    public func recoverInterruptedSession() -> Bool {
+        guard isAccessibilityTrusted else { return false }
+        var foundInterruptedWindow = false
+        for id in interruptedWindowIDs {
+            guard let record = recoveryJournal.records[id] else { continue }
+            if let owner = NSRunningApplication(processIdentifier: record.ownerPID),
+               record.isOwnedByProcess(pid: owner.processIdentifier, launchDate: owner.launchDate) {
+                foundInterruptedWindow = true
+                continue
+            }
+            guard let app = NSRunningApplication(processIdentifier: record.pid),
+                  record.matchesProcess(bundleIdentifier: app.bundleIdentifier,
+                                        pid: app.processIdentifier, launchDate: app.launchDate) else {
+                try? recoveryJournal.remove(windowID: record.windowID)
+                continue
+            }
+            let appElement = AXUIElementCreateApplication(record.pid)
+            guard let elements = copyAttribute(appElement, kAXWindowsAttribute).value as? [AXUIElement] else {
+                foundInterruptedWindow = true
+                continue
+            }
+            guard let element = elements.first(where: { windowNumber($0) == record.windowNumber }) else {
+                // Some apps publish their AX window list late after Stagehand launches.
+                // Require a second complete inventory before treating a window as closed.
+                if missingRecoveryWindowIDs.insert(id).inserted {
+                    foundInterruptedWindow = true
+                } else {
+                    try? recoveryJournal.remove(windowID: id)
+                }
+                continue
+            }
+            missingRecoveryWindowIDs.remove(id)
+            foundInterruptedWindow = true
+            guard let minimized = attribute(element, kAXMinimizedAttribute) as? Bool else { continue }
+            let fullscreen = copyAttribute(element, "AXFullScreen")
+            guard fullscreen.error != .cannotComplete else { continue }
+            if minimized || fullscreen.value as? Bool == true {
+                try? recoveryJournal.remove(windowID: record.windowID)
+                continue
+            }
+            if let current = readFrame(element), sameBounds(current, record.frame) ||
+                writeFrame(element, frame: record.frame) {
+                try? recoveryJournal.remove(windowID: record.windowID)
+            }
+        }
+        interruptedWindowIDs = interruptedWindowIDs.filter { recoveryJournal.records[$0] != nil }
+        return foundInterruptedWindow
     }
 
     @discardableResult
@@ -470,7 +528,7 @@ public final class WindowSystem {
         }
         guard let tracked = windows[windowID], tracked.isAdmitted,
               !tracked.parking.isParked else { return false }
-        captureOriginalFrame(windowID: windowID)
+        guard captureOriginalFrame(windowID: windowID) else { return false }
         return moveWithOwnedWindows(windowID: windowID) {
             writePosition(tracked.element, position: position)
         }
@@ -507,7 +565,7 @@ public final class WindowSystem {
               frame.width.isFinite, frame.height.isFinite,
               frame.width > 0, frame.height > 0,
               let tracked = windows[windowID] else { return false }
-        captureOriginalFrame(windowID: windowID)
+        guard captureOriginalFrame(windowID: windowID) else { return false }
         if tracked.parking.restoreFrame != nil {
             guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else { return false }
             var parking = tracked.parking
@@ -535,7 +593,7 @@ public final class WindowSystem {
         // Check its physical position on every parking request.
         guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else { return false }
         guard let currentFrame = readFrame(tracked.element) else { return false }
-        captureOriginalFrame(windowID: windowID)
+        guard captureOriginalFrame(windowID: windowID) else { return false }
         let screens = NSScreen.screens
         guard let primaryTop = screens.first?.frame.maxY else { return false }
         let displays = screens.map { screen -> CGRect in
@@ -590,13 +648,35 @@ public final class WindowSystem {
         return success
     }
 
-    public func captureOriginalFrame(windowID: String) {
+    @discardableResult
+    public func captureOriginalFrame(windowID: String) -> Bool {
         if nativeWindows.contains(windowID: windowID) {
             nativeWindows.captureOriginalFrame(windowID: windowID)
-            return
+            return true
         }
-        guard let tracked = windows[windowID], tracked.originalFrame == nil else { return }
-        windows[windowID]?.originalFrame = readFrame(tracked.element)
+        guard let tracked = windows[windowID] else { return false }
+        guard tracked.originalFrame == nil else { return true }
+        guard let frame = readFrame(tracked.element) else { return false }
+        if let number = tracked.windowNumber,
+           let app = NSRunningApplication(processIdentifier: tracked.record.pid),
+           let launchDate = app.launchDate,
+           let ownerLaunchDate = NSRunningApplication.current.launchDate,
+           !tracked.record.bundleIdentifier.isEmpty {
+            let record = WindowRecoveryRecord(
+                windowID: windowID, bundleIdentifier: tracked.record.bundleIdentifier,
+                pid: tracked.record.pid, launchDate: launchDate,
+                ownerPID: ProcessInfo.processInfo.processIdentifier, ownerLaunchDate: ownerLaunchDate,
+                windowNumber: number, frame: frame
+            )
+            do {
+                try recoveryJournal.save(record)
+            } catch {
+                NSLog("Stagehand window recovery save failed: %@", error.localizedDescription)
+                return false
+            }
+        }
+        windows[windowID]?.originalFrame = frame
+        return true
     }
 
     /// Call on pause/quit, before releasing tracking, to return windows to their original positions.
@@ -614,6 +694,7 @@ public final class WindowSystem {
                     writeFrame(tracked.element, frame: originalFrame)
                 }) {
                     windows[id]?.originalFrame = nil
+                    try? recoveryJournal.remove(windowID: id)
                 }
             }
         }

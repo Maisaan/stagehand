@@ -382,6 +382,9 @@ final class StagehandModel: ObservableObject {
     private var preferredHeights: [String: CGFloat] = [:]
     private var lastTransition = Date.distantPast
     private var workerGeneration = 0
+    private var automaticResumeTask: Task<Void, Never>?
+    private var automaticResumeAttempted = false
+    private var recoveryInProgress = false
     private var desktopCheckTask: Task<Void, Never>?
     private var transitionRollback: WorkspaceState?
     private var workspaceRestoration = WorkspaceRestoration()
@@ -648,7 +651,31 @@ final class StagehandModel: ObservableObject {
         refreshPermissions()
     }
 
-    func start() {
+    @discardableResult
+    func recoverInterruptedSession() -> Bool {
+        guard accessibilityGranted else { return false }
+        let interrupted = windowSystem.recoverInterruptedSession()
+        if interrupted {
+            diagnostics.record("crash_recovery", details: [
+                "pending": String(windowSystem.hasPendingRecovery)
+            ])
+            warning = windowSystem.hasPendingRecovery
+                ? "Stagehand found an earlier window session but couldn't restore every window. Try Start after its apps respond or the other Stagehand instance exits."
+                : "Stagehand restored windows after an interrupted session. Press Start when you're ready."
+        }
+        return interrupted
+    }
+
+    func start() { start(automaticRecovery: false) }
+
+    private func start(automaticRecovery: Bool) {
+        if !automaticRecovery {
+            automaticResumeTask?.cancel()
+            automaticResumeTask = nil
+            automaticResumeAttempted = false
+            recoveryInProgress = false
+            if !isRunning { desktopScope.reset() }
+        }
         refreshPermissions()
         guard accessibilityGranted else {
             diagnostics.record("start_failed", details: ["reason": "accessibility_permission_missing"])
@@ -656,12 +683,19 @@ final class StagehandModel: ObservableObject {
             return
         }
         guard !isRunning else { return }
+        _ = windowSystem.recoverInterruptedSession()
+        guard !windowSystem.hasPendingRecovery else {
+            diagnostics.record("start_failed", details: ["reason": "window_recovery_pending"])
+            warning = "Stagehand couldn't restore every window from its interrupted session. Try Start again when their apps respond."
+            return
+        }
         guard desktopScope.bindToCurrentDesktop() else {
             diagnostics.record("start_failed", details: ["reason": "desktop_unavailable"])
             warning = "Stagehand couldn't identify the current macOS Desktop, so it left your windows unchanged."
             return
         }
         warning = nil
+        overlays.hide()
         windows = windowSystem.start()
         preferredHeights = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0.frame.height) })
         workspaceRestoration.reconcile(state: &state, windowIDs: windows.map(\.id),
@@ -672,6 +706,7 @@ final class StagehandModel: ObservableObject {
             focusHistory.record(windowID: focused)
         }
         isRunning = true
+        recoveryInProgress = automaticRecovery
         isSuspended = false
         state.isPaused = false
         input.gesturesEnabled = gesturesEnabled
@@ -689,6 +724,8 @@ final class StagehandModel: ObservableObject {
     }
 
     private func stop(reason: String, automatic: Bool, details: [String: String] = [:]) {
+        automaticResumeTask?.cancel()
+        automaticResumeTask = nil
         guard isRunning else { return }
         var context = workspaceDetails()
         context["reason"] = reason
@@ -713,7 +750,7 @@ final class StagehandModel: ObservableObject {
         refreshTask?.cancel()
         observedFocusTask?.cancel()
         desktopCheckTask?.cancel()
-        desktopScope.reset()
+        if !automatic { desktopScope.reset() }
         transitionRollback = nil
         pointerInteraction = nil
         preferencesNeedLayout = false
@@ -725,6 +762,28 @@ final class StagehandModel: ObservableObject {
         emptySpace.hide()
         windowSystem.stop()
         lastAppliedFrames.removeAll()
+        recoveryInProgress = false
+        if automatic {
+            if automaticResumeAttempted {
+                warning = (warning ?? "Stagehand paused and restored your windows.") + " Press Start to retry."
+            } else {
+                automaticResumeAttempted = true
+                let generation = workerGeneration
+                automaticResumeTask = Task { @MainActor [weak self] in
+                    do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                    guard let self, !self.isRunning, self.workerGeneration == generation else { return }
+                    self.automaticResumeTask = nil
+                    self.diagnostics.record("automatic_resume_attempt", details: ["reason": reason])
+                    self.start(automaticRecovery: true)
+                    if !self.isRunning {
+                        self.diagnostics.record("automatic_resume_failed")
+                        self.warning = (self.warning ?? "Stagehand couldn't resume automatically.") + " Press Start to retry."
+                    }
+                }
+            }
+        } else {
+            automaticResumeAttempted = false
+        }
         if let warning { overlays.showWarning(warning) }
         onStateChange?()
     }
@@ -1629,6 +1688,11 @@ final class StagehandModel: ObservableObject {
                     self.focusHistory.record(windowID: focusedWindowID)
                 }
                 self.diagnostics.record("change_completed", details: ["operation": change.diagnosticName])
+                if self.recoveryInProgress && change == .refresh {
+                    self.recoveryInProgress = false
+                    self.automaticResumeAttempted = false
+                    self.diagnostics.record("automatic_resume_succeeded")
+                }
                 self.transitionRollback = nil
             }
             guard generation == self.workerGeneration, !Task.isCancelled else { return }
