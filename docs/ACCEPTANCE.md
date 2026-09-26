@@ -33,9 +33,9 @@ Record the app pairs, pass/fail result, and any relevant log timestamps in the c
 
 ## Start and stop
 
-- Launch paused; confirm no windows move before Start.
 - Grant Accessibility to the built Stagehand.app. Leave Input Monitoring disabled.
-- Start with several ordinary windows on one native macOS Desktop.
+- Launch after setup with several ordinary windows on one native macOS Desktop; confirm Stagehand starts and arranges them without pressing Start.
+- Launch without Accessibility granted; confirm Stagehand stays paused and leaves windows unchanged.
 - Pause and Quit independently. Verify every managed window returns to its pre-Start frame. Stagehand must never minimize a window to the Dock.
 - Repeatedly pause/start during navigation. No stale operation should move windows after pause.
 - Arrange and share windows across several numbered spaces, with different orders and widths. Pause, close one shared window, and resume. Preserve the surviving memberships, orders, and widths; omit the closed window from every space.

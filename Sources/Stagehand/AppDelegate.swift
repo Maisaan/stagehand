@@ -120,6 +120,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if !UserDefaults.standard.bool(forKey: Self.onboardingCompleteKey) {
             openOnboarding()
+        } else if model.accessibilityGranted {
+            model.start()
         }
     }
 

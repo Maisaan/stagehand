@@ -44,12 +44,12 @@ The script creates `dist/Stagehand.app` and signs it with an ad-hoc local signat
 
 ## Quick start
 
-Stagehand opens paused and does not move windows until you start it.
+After setup, Stagehand starts running when you open it if Accessibility is granted.
 
 1. Grant Accessibility in the Setup tab.
 2. Restart Stagehand if macOS asks you to.
 3. Quit other window managers so they do not compete for shortcuts or window positions.
-4. Click **Start Stagehand**.
+4. Finish setup with **Start Stagehand**. On later launches, it starts automatically.
 
 Press Control + Option + Escape to pause and restore the window frames captured at Start. You can resume from settings or the menu bar item.
 
