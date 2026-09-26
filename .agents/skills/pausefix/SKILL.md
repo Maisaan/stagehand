@@ -9,9 +9,9 @@ Work from the Stagehand repository. Follow `AGENTS.md`, [the diagnostic log skil
 
 ## Identify the failure
 
-- Inspect `~/Library/Logs/Stagehand/stagehand.log` early. Find the latest relevant `automatic_pause`, its preceding operation and failure event, and any resume or repeat. Record UTC timestamps, reason, window ID, app bundle ID, and what the system actually observed. Distinguish a new cause from earlier pauses.
+- Start at the newest end of `~/Library/Logs/Stagehand/stagehand.log`. Find the latest `automatic_pause`, `layout_failed`, or rejected focus, then read backward only far enough to capture its triggering operation and forward through any resume. Compare recent failures with the same signature; inspect older incidents only when needed to explain this one. Record UTC timestamps, reason, window ID, app bundle ID, and what the system actually observed.
 - Confirm which executable is running and whether it contains the proposed fix. The built bundle in `dist/` is not the installed app in `/Applications/`. Check paths and build identity before treating later logs as verification of a commit.
-- Inspect the relevant Git history and existing tests for the failing path. Identify why earlier focus, parking, availability, or timing rules were added before changing them.
+- Inspect recent Git history and existing tests for the failing path, expanding farther back only when needed. Identify why earlier focus, parking, availability, or timing rules were added before changing them.
 - Extract only relevant JSONL fields. Do not dump window titles, keyboard input, secrets, or full process command lines into tool output or the handoff.
 
 ## Reproduce before changing behavior
