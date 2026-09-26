@@ -199,14 +199,45 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     #expect(rejectedDespiteSetter.map(\.windowID) == ["a"])
 }
 
-@MainActor @Test func unavailableParkingDefersButReadableFailureStops() {
-    #expect(parkWindow(windowID: "a", park: { _ in true }, observedFrame: { _ in nil }) == .parked)
-    #expect(parkWindow(windowID: "a", park: { _ in false }, observedFrame: { _ in nil }) == .deferred)
-    #expect(parkWindow(
+@MainActor @Test func unavailableParkingDefersButReadableFailureStops() async {
+    #expect(await parkWindow(windowID: "a", park: { _ in true }, observedFrame: { _ in nil }) == .parked)
+    #expect(await parkWindow(windowID: "a", park: { _ in false }, observedFrame: { _ in nil }) == .deferred)
+    #expect(await parkWindow(
         windowID: "a",
         park: { _ in false },
         observedFrame: { _ in CGRect(x: 0, y: 0, width: 10, height: 10) }
     ) == .failed)
+}
+
+@MainActor @Test func transientParkingFailureDoesNotPauseNavigation() async {
+    var attempts = 0
+    let outcome = await parkWindow(
+        windowID: "a",
+        park: { _ in
+            attempts += 1
+            return attempts == 2
+        },
+        observedFrame: { _ in CGRect(x: 0, y: 0, width: 10, height: 10) }
+    )
+
+    #expect(outcome == .parked)
+    #expect(attempts == 2)
+}
+
+@MainActor @Test func parkingRetryStopsWhenTheSessionEnds() async {
+    var attempts = 0
+    let outcome = await parkWindow(
+        windowID: "a",
+        park: { _ in
+            attempts += 1
+            return false
+        },
+        observedFrame: { _ in CGRect(x: 0, y: 0, width: 10, height: 10) },
+        canRetry: { attempts == 0 }
+    )
+
+    #expect(outcome == .deferred)
+    #expect(attempts == 1)
 }
 
 @MainActor @Test func verifiedFocusDoesNotExpireInputWhileRibbonMotionIsDelayed() async throws {

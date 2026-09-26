@@ -280,10 +280,19 @@ private func ribbonPositionMatches(_ lhs: CGPoint, _ rhs: CGPoint, tolerance: CG
 func parkWindow(
     windowID: String,
     park: (String) -> Bool,
-    observedFrame: (String) -> CGRect?
-) -> WindowParkingOutcome {
-    if park(windowID) { return .parked }
-    return observedFrame(windowID) == nil ? .deferred : .failed
+    observedFrame: (String) -> CGRect?,
+    canRetry: () -> Bool = { true }
+) async -> WindowParkingOutcome {
+    for delay in [Duration.zero, .milliseconds(8), .milliseconds(24), .milliseconds(56)] {
+        if delay != .zero {
+            do { try await Task.sleep(for: delay) }
+            catch { return .deferred }
+        }
+        guard !Task.isCancelled, canRetry() else { return .deferred }
+        if park(windowID) { return .parked }
+        if observedFrame(windowID) == nil { return .deferred }
+    }
+    return .failed
 }
 
 @MainActor
@@ -1666,6 +1675,23 @@ final class StagehandModel: ObservableObject {
         return false
     }
 
+    private func parkingFailureDetails(window: WindowRecord, preferredSide: WindowParkingSide?) -> [String: String] {
+        var details = [
+            "bundleIdentifier": window.bundleIdentifier,
+            "pid": String(window.pid),
+            "windowID": window.id,
+            "preferredSide": preferredSide == .left ? "left" : preferredSide == .right ? "right" : "none",
+            "parked": String(windowSystem.isParked(windowID: window.id))
+        ]
+        if let frame = windowSystem.observedFrame(windowID: window.id) {
+            details["observedX"] = String(Double(frame.minX))
+            details["observedY"] = String(Double(frame.minY))
+            details["observedWidth"] = String(Double(frame.width))
+            details["observedHeight"] = String(Double(frame.height))
+        }
+        return details
+    }
+
     private func focusManagedWindow(_ record: WindowRecord, token: UInt64?,
                                     request: LayoutRequestPolicy, operation: String) async -> Bool {
         let observedFocusBefore = diagnostics.isEnabled ? windowSystem.focusedWindowID() : nil
@@ -1891,17 +1917,22 @@ final class StagehandModel: ObservableObject {
                 for: placements.first(where: { $0.windowID == window.id })?.frame,
                 relativeTo: availableFrame
             )
-            if parkWindow(
+            let parking = await parkWindow(
                 windowID: window.id,
                 park: { windowSystem.park(windowID: $0, preferredSide: parkingSide) },
-                observedFrame: { windowSystem.observedFrame(windowID: $0) }
-            ) == .failed {
+                observedFrame: { windowSystem.observedFrame(windowID: $0) },
+                canRetry: { self.isRunning && !self.isSuspended && self.desktopScope.refresh() == .home }
+            )
+            guard isRunning, !isSuspended, !Task.isCancelled else { return false }
+            guard desktopScope.refresh() == .home else {
+                nativeDesktopChanged()
+                return false
+            }
+            if parking == .failed {
                 warning = "Stagehand couldn't move \(window.appName) out of this space. It paused and restored your windows."
-                return failLayout("window_parking_failed", details: [
-                    "bundleIdentifier": window.bundleIdentifier,
-                    "pid": String(window.pid),
-                    "windowID": window.id
-                ])
+                return failLayout("window_parking_failed", details: parkingFailureDetails(
+                    window: window, preferredSide: parkingSide
+                ))
             }
         }
         guard preferenceFocusStillMatches(request) else { return true }
@@ -2147,20 +2178,23 @@ final class StagehandModel: ObservableObject {
             let parkingSide = availableFrame.flatMap {
                     preferredParkingSide(for: to[window.id], relativeTo: $0)
             }
-            if parkWindow(
+            let parking = await parkWindow(
                 windowID: window.id,
                 park: { windowSystem.park(windowID: $0, preferredSide: parkingSide) },
-                observedFrame: { windowSystem.observedFrame(windowID: $0) }
-            ) == .failed {
+                observedFrame: { windowSystem.observedFrame(windowID: $0) },
+                canRetry: { self.isRunning && !self.isSuspended && self.desktopScope.refresh() == .home }
+            )
+            guard isRunning, !isSuspended, !Task.isCancelled else { return false }
+            guard desktopScope.refresh() == .home else {
+                nativeDesktopChanged()
+                return false
+            }
+            if parking == .failed {
                 warning = "Stagehand couldn't move \(window.appName) out of this space. It paused and restored your windows."
                 stop(
                     reason: "ribbon_parking_failed",
                     automatic: true,
-                    details: [
-                        "bundleIdentifier": window.bundleIdentifier,
-                        "pid": String(window.pid),
-                        "windowID": window.id
-                    ]
+                    details: parkingFailureDetails(window: window, preferredSide: parkingSide)
                 )
                 return false
             }
