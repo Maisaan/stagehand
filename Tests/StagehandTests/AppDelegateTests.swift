@@ -118,3 +118,13 @@ private func waitUntil(
     }
     try #require(condition())
 }
+
+/// Space colors accept pasted text. A sign must not pass as a hex digit.
+@Test func hexColorParsingRejectsSignsAndWrongLengths() {
+    #expect(RGBHexColor.parse("#1E90FF") != nil)
+    #expect(RGBHexColor.parse(" 1e90ff ") != nil)
+    #expect(RGBHexColor.parse("#+FFFFF") == nil)
+    #expect(RGBHexColor.parse("#-FFFFF") == nil)
+    #expect(RGBHexColor.parse("#FFF") == nil)
+    #expect(RGBHexColor.parse("#GGGGGG") == nil)
+}

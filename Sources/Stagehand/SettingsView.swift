@@ -75,7 +75,6 @@ struct SettingsView: View {
         _page = State(initialValue: SettingsPage(tab: initialTab))
         _gapInput = State(initialValue: GapInput.clamped(model.gap))
         _selectedSpaceIndex = State(initialValue: model.state.activeSpaceIndex)
-        _shortcutError = State(initialValue: nil)
     }
 
     var body: some View {
@@ -131,6 +130,11 @@ struct SettingsView: View {
         }
         .ignoresSafeArea(.container, edges: .top)
         .tint(.blue)
+        // Settings stays alive while hidden and other controls can change the gap.
+        // Sync at the root so the Windows page never shows, then re-commits, a stale value.
+        .onChange(of: model.gap) { _, value in
+            gapInput = GapInput.clamped(value)
+        }
         .alert("Shortcut unavailable", isPresented: Binding(
             get: { shortcutError != nil },
             set: { if !$0 { shortcutError = nil } }
@@ -440,9 +444,6 @@ struct SettingsView: View {
                 }
             }
         }
-        .onChange(of: model.gap) { _, value in
-            gapInput = GapInput.clamped(value)
-        }
     }
 
 
@@ -619,6 +620,7 @@ struct SettingsView: View {
             .toggleStyle(.checkbox)
             Spacer(minLength: 8)
             ShortcutRecorder(
+                title: binding.title,
                 label: binding.label,
                 onRecord: { key, modifiers, keyLabel in
                     shortcutError = model.setShortcut(
@@ -756,7 +758,8 @@ private extension SettingsSection where Footer == EmptyView {
     }
 }
 
-private struct SettingsCard<Content: View>: View {
+/// A rounded group of rows, shared by Settings and Quick Controls.
+struct SettingsCard<Content: View>: View {
     @ViewBuilder let content: Content
 
     init(@ViewBuilder content: () -> Content) {
@@ -908,18 +911,19 @@ private struct SettingsSidebarIcon: View {
 }
 
 private struct ShortcutRecorder: NSViewRepresentable {
+    let title: String
     let label: String
     let onRecord: (UInt32, UInt32, String) -> Void
     let onRecordingChange: (Bool) -> Void
 
     func makeNSView(context: Context) -> ShortcutRecorderButton {
         let button = ShortcutRecorderButton()
-        button.update(label: label, onRecord: onRecord, onRecordingChange: onRecordingChange)
+        button.update(actionTitle: title, label: label, onRecord: onRecord, onRecordingChange: onRecordingChange)
         return button
     }
 
     func updateNSView(_ button: ShortcutRecorderButton, context: Context) {
-        button.update(label: label, onRecord: onRecord, onRecordingChange: onRecordingChange)
+        button.update(actionTitle: title, label: label, onRecord: onRecord, onRecordingChange: onRecordingChange)
     }
 
     static func dismantleNSView(_ button: ShortcutRecorderButton, coordinator: ()) {
@@ -945,7 +949,6 @@ private final class ShortcutRecorderButton: NSButton {
         target = self
         action = #selector(toggleRecording)
         setButtonType(.momentaryPushIn)
-        setAccessibilityLabel("Record shortcut")
     }
 
     required init?(coder: NSCoder) {
@@ -953,10 +956,12 @@ private final class ShortcutRecorderButton: NSButton {
     }
 
     func update(
+        actionTitle: String,
         label: String,
         onRecord: @escaping (UInt32, UInt32, String) -> Void,
         onRecordingChange: @escaping (Bool) -> Void
     ) {
+        setAccessibilityLabel("Record shortcut for \(actionTitle)")
         bindingLabel = label
         self.onRecord = onRecord
         self.onRecordingChange = onRecordingChange
@@ -1012,7 +1017,8 @@ private final class ShortcutRecorderButton: NSButton {
 
     private func record(_ event: NSEvent) {
         let modifiers = carbonModifiers(event.modifierFlags)
-        if event.keyCode == UInt16(kVK_Escape), modifiers == 0 {
+        // Caps Lock is a recordable modifier, but it must not turn Esc into a shortcut.
+        if event.keyCode == UInt16(kVK_Escape), modifiers & ~UInt32(alphaLock) == 0 {
             stopRecording()
             return
         }
@@ -1063,7 +1069,9 @@ enum RGBHexColor {
     static func parse(_ text: String) -> NSColor? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let digits = trimmed.hasPrefix("#") ? String(trimmed.dropFirst()) : trimmed
-        guard digits.count == 6, let value = UInt32(digits, radix: 16) else { return nil }
+        // UInt32(_:radix:) also accepts a sign, so "+FFFFF" would parse.
+        guard digits.count == 6, digits.allSatisfy(\.isHexDigit),
+              let value = UInt32(digits, radix: 16) else { return nil }
         return NSColor(
             srgbRed: CGFloat((value >> 16) & 0xFF) / 255,
             green: CGFloat((value >> 8) & 0xFF) / 255,

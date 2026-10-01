@@ -28,7 +28,7 @@ struct QuickControlsView: View {
         VStack(alignment: .leading, spacing: 12) {
             header
 
-            QuickCard {
+            SettingsCard {
                 QuickRow("Stagehand") {
                     Toggle("Stagehand", isOn: Binding(
                         get: { model.isRunning },
@@ -183,26 +183,6 @@ struct QuickControlsView: View {
             model.start()
         } else {
             model.pause()
-        }
-    }
-}
-
-private struct QuickCard<Content: View>: View {
-    @ViewBuilder let content: Content
-
-    init(@ViewBuilder content: () -> Content) {
-        self.content = content()
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            content
-        }
-        .background(Color.white.opacity(0.05))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
         }
     }
 }
