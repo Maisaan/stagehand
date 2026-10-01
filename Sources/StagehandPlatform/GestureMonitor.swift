@@ -164,8 +164,7 @@ final class GestureMonitor {
     private var device: UnsafeMutableRawPointer?
     private var unregister: (@convention(c) (UnsafeMutableRawPointer, ContactCallback) -> Void)?
     private var stopDevice: (@convention(c) (UnsafeMutableRawPointer) -> Void)?
-    private var tap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
+    private var scrollTap: ScrollTapThread?
     private var generation: UInt64 = 0
 
     func start(fingerCount: Int = 4, unmodifiedEnabled: Bool, shortcutEnabled: Bool,
@@ -264,37 +263,78 @@ final class GestureMonitor {
     }
 
     private func installScrollTap() -> Bool {
-        let mask = CGEventMask(1) << CGEventType.scrollWheel.rawValue
-        guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap, eventsOfInterest: mask, callback: { _, type, event, context in
-            if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                if let context {
-                    let monitor = Unmanaged<GestureMonitor>.fromOpaque(context).takeUnretainedValue()
-                    MainActor.assumeIsolated {
-                        if let tap = monitor.tap { CGEvent.tapEnable(tap: tap, enable: true) }
-                    }
-                }
-                return Unmanaged.passUnretained(event)
-            }
-            let momentum = event.getIntegerValueField(.scrollWheelEventMomentumPhase) != 0
-            let suppress = gestureCallbackState.withLock { state in
-                guard state.enabled else { return false }
-                if state.suppressScroll { return true }
-                return momentum && ProcessInfo.processInfo.systemUptime - state.lastLiftTime < 0.15
-            }
-            return suppress ? nil : Unmanaged.passUnretained(event)
-        }, userInfo: Unmanaged.passUnretained(self).toOpaque()) else { return false }
-        self.tap = tap
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        runLoopSource = source
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
+        let scrollTap = ScrollTapThread()
+        guard scrollTap.start() else { return false }
+        self.scrollTap = scrollTap
         return true
     }
 
     private func removeScrollTap() {
-        if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
-        if let runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes) }
-        tap = nil
-        runLoopSource = nil
+        scrollTap?.stop()
+        scrollTap = nil
+    }
+}
+
+private let scrollTapCallback: CGEventTapCallBack = { _, type, event, context in
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        if let context { Unmanaged<ScrollTapThread>.fromOpaque(context).takeUnretainedValue().reenable() }
+        return Unmanaged.passUnretained(event)
+    }
+    let momentum = event.getIntegerValueField(.scrollWheelEventMomentumPhase) != 0
+    let suppress = gestureCallbackState.withLock { state in
+        guard state.enabled else { return false }
+        if state.suppressScroll { return true }
+        return momentum && ProcessInfo.processInfo.systemUptime - state.lastLiftTime < 0.15
+    }
+    return suppress ? nil : Unmanaged.passUnretained(event)
+}
+
+/// Hosts the scroll tap on its own run loop. The tap filters every scroll event on
+/// the system, so it must not wait behind Accessibility calls on the main thread.
+/// Its callback only reads `gestureCallbackState`, which is lock-protected.
+private final class ScrollTapThread: @unchecked Sendable {
+    // Written on the tap thread before `ready` is signaled, then only read.
+    private var tap: CFMachPort?
+    private var runLoop: CFRunLoop?
+    private let ready = DispatchSemaphore(value: 0)
+
+    func start() -> Bool {
+        // The thread retains this object until its run loop exits after `stop()`.
+        let thread = Thread { [self] in
+            let context = Unmanaged.passUnretained(self).toOpaque()
+            let mask = CGEventMask(1) << CGEventType.scrollWheel.rawValue
+            guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
+                                              options: .defaultTap, eventsOfInterest: mask,
+                                              callback: scrollTapCallback, userInfo: context) else {
+                ready.signal()
+                return
+            }
+            self.tap = tap
+            runLoop = CFRunLoopGetCurrent()
+            let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+            CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .defaultMode)
+            CGEvent.tapEnable(tap: tap, enable: true)
+            ready.signal()
+            // Invalidating the tap from another thread does not wake this run loop, so
+            // `stop()` also stops it. The validity check covers a stop that lands first.
+            while CFMachPortIsValid(tap),
+                  CFRunLoopRunInMode(.defaultMode, 1e10, false) != .stopped {}
+        }
+        thread.name = "Stagehand scroll tap"
+        thread.qualityOfService = .userInteractive
+        thread.start()
+        ready.wait()
+        return tap != nil
+    }
+
+    func reenable() {
+        if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+    }
+
+    func stop() {
+        guard let tap else { return }
+        CGEvent.tapEnable(tap: tap, enable: false)
+        CFMachPortInvalidate(tap)
+        if let runLoop { CFRunLoopStop(runLoop) }
     }
 }
