@@ -70,13 +70,13 @@ final class StagehandModel: ObservableObject {
 
     var showSettings: (() -> Void)?
     var onStateChange: (() -> Void)?
-    let windowSystem = WindowSystem()
-    let desktopScope = DesktopScope()
-    let input: InputController
-    let focusGate = FocusInputGate()
+    let windowSystem: any WindowManaging
+    let desktopScope: DesktopScope
+    let input: any InputControlling
+    let focusGate: FocusInputGate
     let overlays: NavigationOverlays
     let diagnostics: DiagnosticLogger
-    let ribbonMotion = RibbonMotion()
+    let ribbonMotion: RibbonMotion
     var presentationFrames: [String: CGRect]?
     var gestureBase: [String: CGRect]? {
         didSet { gesturePreviewCache = nil }
@@ -87,7 +87,7 @@ final class StagehandModel: ObservableObject {
     var gestureAxis: GestureAxis?
     var motionWrittenPositions: [String: CGPoint] = [:]
     var motionBackingScaleFactor: CGFloat = 1
-    let emptySpace = EmptySpaceWindow()
+    let emptySpace: any EmptySpacePresenting
     var refreshTask: Task<Void, Never>?
     var observedFocusTask: Task<Void, Never>?
     var worker: Task<Void, Never>?
@@ -182,12 +182,26 @@ final class StagehandModel: ObservableObject {
         let motionStart: [String: CGRect]?
     }
 
-    init(overlays: NavigationOverlays = NavigationOverlays(), diagnostics: DiagnosticLogger? = nil) {
+    init(
+        overlays: NavigationOverlays = NavigationOverlays(),
+        diagnostics: DiagnosticLogger? = nil,
+        windowSystem injectedWindowSystem: (any WindowManaging)? = nil,
+        input injectedInput: (any InputControlling)? = nil,
+        emptySpace injectedEmptySpace: (any EmptySpacePresenting)? = nil,
+        desktopScope: DesktopScope = DesktopScope(),
+        focusGate: FocusInputGate = FocusInputGate(),
+        ribbonMotion: RibbonMotion = RibbonMotion()
+    ) {
+        windowSystem = injectedWindowSystem ?? WindowSystem()
+        emptySpace = injectedEmptySpace ?? EmptySpaceWindow()
+        self.desktopScope = desktopScope
+        self.focusGate = focusGate
+        self.ribbonMotion = ribbonMotion
         self.overlays = overlays
         let defaults = UserDefaults.standard
         let shortcutBindings = ShortcutBinding.load(from: defaults)
         self.shortcutBindings = shortcutBindings
-        input = InputController(shortcutBindings: shortcutBindings)
+        input = injectedInput ?? InputController(shortcutBindings: shortcutBindings)
         diagnosticLoggingEnabled = defaults.bool(forKey: DiagnosticLogger.preferenceKey)
         self.diagnostics = diagnostics ?? DiagnosticLogger(
             enabled: defaults.bool(forKey: DiagnosticLogger.preferenceKey)

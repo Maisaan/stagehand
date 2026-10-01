@@ -21,7 +21,7 @@ public final class DesktopScope {
         userSessionIsActive = { NativeUserSessionReader.isActive() }
     }
 
-    init(currentDesktopID: @escaping () -> UInt64?, userSessionIsActive: @escaping () -> Bool = { true }) {
+    public init(currentDesktopID: @escaping () -> UInt64?, userSessionIsActive: @escaping () -> Bool = { true }) {
         self.currentDesktopID = currentDesktopID
         self.userSessionIsActive = userSessionIsActive
     }

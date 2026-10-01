@@ -70,19 +70,29 @@ public final class FocusInputGate {
     // buffered beyond that window, then discard it if the transfer still stalls.
     private let transferTimeoutMilliseconds: Int
     private let postEvent: (CGEvent, Int32) -> Void
+    /// Tests drive `processKeyboardEvent` directly and must never capture real typing.
+    private let installsEventTap: Bool
     private var shortcutBindings = ShortcutBinding.defaults
 
     public init() {
         transferTimeoutMilliseconds = 4_000
         postEvent = { event, pid in event.postToPid(pid) }
+        installsEventTap = true
     }
 
-    init(transferTimeoutMilliseconds: Int = 4_000, postEvent: @escaping (CGEvent, Int32) -> Void) {
+    init(transferTimeoutMilliseconds: Int = 4_000, installsEventTap: Bool = true,
+         postEvent: @escaping (CGEvent, Int32) -> Void) {
         self.transferTimeoutMilliseconds = transferTimeoutMilliseconds
+        self.installsEventTap = installsEventTap
         self.postEvent = postEvent
     }
 
     public func start() {
+        guard installsEventTap else {
+            tapIsAvailable = true
+            onAvailabilityChanged?()
+            return
+        }
         if tap != nil {
             guard !tapIsAvailable else { return }
             removeTap()

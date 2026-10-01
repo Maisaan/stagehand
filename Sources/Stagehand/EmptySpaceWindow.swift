@@ -1,9 +1,17 @@
 import AppKit
 import SwiftUI
 
+/// A blank, focusable window that keeps typing out of parked apps on an empty space.
+@MainActor
+protocol EmptySpacePresenting: AnyObject {
+    var isFocused: Bool { get }
+    func show(space: Int, frame: CGRect) async -> Bool
+    func hide()
+}
+
 /// The only Stagehand-owned working window: a keyboard-safe placeholder for an empty space.
 @MainActor
-final class EmptySpaceWindow {
+final class EmptySpaceWindow: EmptySpacePresenting {
     private let window: NSWindow = {
         let window = EmptyWindow(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
