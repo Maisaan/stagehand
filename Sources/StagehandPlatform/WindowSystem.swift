@@ -672,7 +672,7 @@ public final class WindowSystem {
 
     /// Reads the window's current physical frame, including its parking position.
     public func observedFrame(windowID: String) -> CGRect? {
-        if nativeWindows.contains(windowID: windowID) { return nativeWindows.frame(windowID: windowID) }
+        if nativeWindows.contains(windowID: windowID) { return nativeWindows.observedFrame(windowID: windowID) }
         guard let tracked = windows[windowID] else { return nil }
         return readFrame(tracked.element)
     }

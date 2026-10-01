@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Testing
 @testable import StagehandPlatform
@@ -294,4 +295,28 @@ struct WindowParkingTests {
         #expect(restored)
         #expect(parking.restoreFrame == nil)
     }
+}
+
+/// 2026-10-01T14:25:21Z: Settings, parked on another space, was hidden but kept an
+/// on-screen frame. Every refresh reported it as reappeared and laid out again
+/// about five times a second, flickering the focus border until restart.
+@MainActor
+@Test func parkedNativeWindowHasNoObservedFrameAndIsHiddenAgainIfShown() {
+    let system = WindowSystem()
+    let window = NSWindow(contentRect: CGRect(x: 200, y: 200, width: 400, height: 300),
+                          styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    defer { window.close() }
+    window.orderFront(nil)
+    let id = system.registerOwnWindow(window: window)
+
+    #expect(system.park(windowID: id, preferredSide: nil))
+    #expect(!window.isVisible)
+    #expect(system.observedFrame(windowID: id) == nil)
+
+    // Something shows the window again while Stagehand still considers it parked.
+    window.orderFront(nil)
+    #expect(system.observedFrame(windowID: id) != nil)
+    #expect(system.park(windowID: id, preferredSide: nil))
+    #expect(!window.isVisible)
 }

@@ -102,6 +102,13 @@ final class NativeWindowRegistry: NSObject {
         return identifier
     }
 
+    /// Parking hides a native window without moving it, so a hidden window
+    /// has no on-screen frame even though `frame` still reports its position.
+    func observedFrame(windowID: String) -> CGRect? {
+        guard windows[windowID]?.window?.isVisible == true else { return nil }
+        return frame(windowID: windowID)
+    }
+
     func isParked(windowID: String) -> Bool {
         windows[windowID]?.parked == true
     }
@@ -142,7 +149,8 @@ final class NativeWindowRegistry: NSObject {
     @discardableResult
     func park(windowID: String) -> Bool {
         guard let entry = windows[windowID], !entry.closed, let window = entry.window else { return false }
-        if entry.parked { return true }
+        // Trust what is on screen, not the flag: something may have shown it again.
+        if entry.parked && !window.isVisible { return true }
         captureOriginalFrame(windowID: windowID)
         window.orderOut(nil)
         guard !window.isVisible else { return false }
