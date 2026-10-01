@@ -44,6 +44,7 @@ struct ModelScenarioTests {
         #expect(!harness.model.state.currentSpace.windowIDs.contains(target))
         #expect(harness.model.state.focusedWindowID == harness.windows.focusedWindowID())
         #expect(harness.events("window_unavailable_detected").count == 1)
+        #expect(harness.overlays.warnings.isEmpty)
 
         // Restoring it returns the window to its membership.
         harness.windows.restoreFromDock(target)
@@ -72,6 +73,7 @@ struct ModelScenarioTests {
         #expect(pause?["reason"] == "focus_confirmation_failed")
         #expect(harness.events("window_unavailable_detected").isEmpty)
         #expect(harness.windows.windows.mapValues(\.frame) == originals)
+        #expect(harness.overlays.warnings.contains { $0.contains("paused and restored") })
     }
 
     /// Navigating to another space parks every window of the old one. A window

@@ -4,7 +4,7 @@ import StagehandPlatform
 /// Draws the focus border over one window and caches that window's native corner shape.
 @MainActor
 final class FocusBorderController {
-    private let overlays: NavigationOverlays
+    private let overlays: any NavigationPresenting
     private let windowNumber: (String) -> CGWindowID?
     private(set) var windowID: String?
     private(set) var cornerRadius: CGFloat?
@@ -12,7 +12,7 @@ final class FocusBorderController {
     private var cornerRadiusResolved = false
     private var radiusFrameSize: CGSize?
 
-    init(overlays: NavigationOverlays, windowNumber: @escaping (String) -> CGWindowID?) {
+    init(overlays: any NavigationPresenting, windowNumber: @escaping (String) -> CGWindowID?) {
         self.overlays = overlays
         self.windowNumber = windowNumber
     }

@@ -156,6 +156,29 @@ final class FakeEmptySpace: EmptySpacePresenting {
     func hide() { isFocused = false }
 }
 
+/// Records what the app bar and border would show without opening windows.
+@MainActor
+final class FakeOverlays: NavigationPresenting {
+    var onFocusWindow: ((String) -> Void)?
+    var onSelectSpace: ((Int) -> Void)?
+    var onShareWindow: ((String, Int) -> Void)?
+    var onRemoveWindow: ((String) -> Void)?
+    var onReorderWindow: ((String, Int) -> Void)?
+    var canRevealNavigation: (() -> Bool)?
+    private(set) var warnings: [String] = []
+    private(set) var borderFrame: CGRect?
+
+    func setBorderColor(_ color: NSColor) {}
+    func updateBorder(frame: CGRect, visible: Bool, cornerRadius: CGFloat?,
+                      focusChanged: Bool, raiseBorder: Bool) {
+        borderFrame = visible ? frame : nil
+    }
+    func showNavigation(state: WorkspaceState, windows: [WindowRecord]) {}
+    func updateNavigation(state: WorkspaceState, windows: [WindowRecord]) {}
+    func showWarning(_ message: String) { warnings.append(message) }
+    func hide() { borderFrame = nil }
+}
+
 /// Finishes every ribbon animation immediately, as with Reduce Motion.
 final class ImmediateFrameDriver: RibbonFrameDriving {
     func start(onFrame: @escaping (TimeInterval) -> Void) -> Bool { false }
@@ -167,6 +190,7 @@ final class ImmediateFrameDriver: RibbonFrameDriving {
 struct ModelHarness {
     let model: StagehandModel
     let windows: FakeWindowSystem
+    let overlays: FakeOverlays
     let logURL: URL
     let postedEvents: () -> Int
 
@@ -184,7 +208,9 @@ struct ModelHarness {
             .appendingPathComponent("stagehand-model-\(UUID().uuidString).log")
         var posted = 0
         let gate = FocusInputGate(installsEventTap: false) { _, _ in posted += 1 }
+        let overlays = FakeOverlays()
         model = StagehandModel(
+            overlays: overlays,
             diagnostics: DiagnosticLogger(logURL: logURL, enabled: true),
             windowSystem: windows,
             input: FakeInput(),
@@ -194,6 +220,7 @@ struct ModelHarness {
             ribbonMotion: RibbonMotion(frameDriver: ImmediateFrameDriver())
         )
         self.windows = windows
+        self.overlays = overlays
         postedEvents = { posted }
     }
 

@@ -74,7 +74,7 @@ final class StagehandModel: ObservableObject {
     let desktopScope: DesktopScope
     let input: any InputControlling
     let focusGate: FocusInputGate
-    let overlays: NavigationOverlays
+    let overlays: any NavigationPresenting
     let diagnostics: DiagnosticLogger
     let ribbonMotion: RibbonMotion
     var presentationFrames: [String: CGRect]?
@@ -183,7 +183,7 @@ final class StagehandModel: ObservableObject {
     }
 
     init(
-        overlays: NavigationOverlays = NavigationOverlays(),
+        overlays: any NavigationPresenting = NavigationOverlays(),
         diagnostics: DiagnosticLogger? = nil,
         windowSystem injectedWindowSystem: (any WindowManaging)? = nil,
         input injectedInput: (any InputControlling)? = nil,
