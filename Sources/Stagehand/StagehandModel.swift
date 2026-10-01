@@ -236,6 +236,7 @@ final class StagehandModel: ObservableObject {
             self?.windowDeminiaturized(windowID: id)
         }
         windowSystem.onFocusedWindowChange = { [weak self] id in self?.observedFocusChanged(windowID: id) }
+        windowSystem.onTitleChange = { [weak self] id, title in self?.windowTitleChanged(windowID: id, title: title) }
         windowSystem.onFrameChange = { [weak self] id, frame in
             guard let self, self.isRunning, !self.isSuspended,
                   !self.isLayingOutWindows, !self.ribbonMotion.isRunning, self.gestureBase == nil,

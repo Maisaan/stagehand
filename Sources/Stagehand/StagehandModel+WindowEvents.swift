@@ -4,6 +4,13 @@ import StagehandPlatform
 
 /// Reactions to windows and apps changing outside a layout pass.
 extension StagehandModel {
+    func windowTitleChanged(windowID: String, title: String) {
+        guard isRunning, !isSuspended,
+              let index = windows.firstIndex(where: { $0.id == windowID }) else { return }
+        windows[index] = windows[index].withTitle(title)
+        overlays.updateNavigation(state: state, windows: windows)
+    }
+
     func scheduleRefresh(immediately: Bool = false) {
         guard isRunning, !isSuspended else { return }
         refreshTask?.cancel()

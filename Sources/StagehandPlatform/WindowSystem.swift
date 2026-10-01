@@ -13,6 +13,11 @@ public struct WindowRecord: Identifiable, Equatable, Sendable {
     /// Accessibility coordinates: origin at the top left of the primary display.
     public let frame: CGRect
     public let isResizable: Bool
+
+    public func withTitle(_ title: String) -> WindowRecord {
+        WindowRecord(id: id, appName: appName, title: title, bundleIdentifier: bundleIdentifier,
+                     pid: pid, frame: frame, isResizable: isResizable)
+    }
 }
 
 /// Positive evidence that a managed window can no longer take part in the ribbon.
@@ -49,6 +54,8 @@ public final class WindowSystem {
     public var onChange: (() -> Void)?
     public var onFrameChange: ((String, CGRect) -> Void)?
     public var onFocusedWindowChange: ((String) -> Void)?
+    /// A tracked window's title changed. No rescan is scheduled for it.
+    public var onTitleChange: ((String, String) -> Void)?
     public var onApplicationTerminated: ((pid_t) -> Void)?
     public var onWindowDestroyed: ((String) -> Void)?
     public var onWindowMiniaturized: ((String) -> Void)?
@@ -1002,6 +1009,18 @@ public final class WindowSystem {
                         owner.onWindowDeminiaturized?(id)
                         return
                     }
+                }
+                if name == kAXTitleChangedNotification,
+                   let id = owner.directTrackedWindowID(matching: changedWindow),
+                   let tracked = owner.windows[id], tracked.isAdmitted {
+                    // Terminals and browsers retitle often. Update the one record
+                    // instead of rescanning every window of every app.
+                    if let title = owner.attribute(changedWindow, kAXTitleAttribute) as? String,
+                       title != tracked.record.title {
+                        owner.windows[id]?.record = tracked.record.withTitle(title)
+                        owner.onTitleChange?(id, title)
+                    }
+                    return
                 }
                 if name == kAXFocusedWindowChangedNotification { owner.reportCurrentFocus() }
                 if owner.onFrameChange != nil,
