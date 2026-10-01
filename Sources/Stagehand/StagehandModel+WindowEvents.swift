@@ -24,7 +24,7 @@ extension StagehandModel {
                 catch { return }
                 firstAttempt = false
                 guard !Task.isCancelled, let self, self.isRunning, !self.isSuspended else { return }
-                guard self.worker == nil, !self.ribbonMotion.isRunning,
+                guard !self.changes.isProcessing, !self.ribbonMotion.isRunning,
                       self.gestureBase == nil, !self.isLayingOutWindows else { continue }
                 self.refreshWindows()
                 return
@@ -146,7 +146,7 @@ extension StagehandModel {
     }
 
     func observedFocusChanged(windowID: String) {
-        guard isRunning, !isSuspended, worker == nil, gestureBase == nil,
+        guard isRunning, !isSuspended, !changes.isProcessing, gestureBase == nil,
               windows.contains(where: { $0.id == windowID }), desktopScope.refresh() == .home else { return }
         if windowID == state.focusedWindowID {
             // Activating the already-selected app can raise its window above the
@@ -171,7 +171,7 @@ extension StagehandModel {
             while NSEvent.pressedMouseButtons & 1 != 0 {
                 do { try await Task.sleep(for: .milliseconds(8)) } catch { return }
             }
-            guard !Task.isCancelled, let self, self.isRunning, !self.isSuspended, self.worker == nil,
+            guard !Task.isCancelled, let self, self.isRunning, !self.isSuspended, !self.changes.isProcessing,
                   self.desktopScope.refresh() == .home,
                   self.windowSystem.focusedWindowID() == windowID else { return }
             if self.windowSystem.frame(windowID: windowID) != original {
@@ -274,7 +274,7 @@ extension StagehandModel {
                 refreshTask?.cancel()
                 refreshTask = Task { [weak self] in
                     try? await Task.sleep(for: .milliseconds(450))
-                    guard !Task.isCancelled, let self, self.isRunning, !self.isSuspended, self.worker == nil else { return }
+                    guard !Task.isCancelled, let self, self.isRunning, !self.isSuspended, !self.changes.isProcessing else { return }
                     self.refreshWindows()
                 }
             }

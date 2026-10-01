@@ -154,7 +154,7 @@ extension StagehandModel {
 
     private func waitUntilIdle(timeout: Duration = .seconds(6)) async {
         let deadline = ContinuousClock.now.advanced(by: timeout)
-        while (worker != nil || ribbonMotion.isRunning), ContinuousClock.now < deadline {
+        while (changes.isProcessing || ribbonMotion.isRunning), ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(10))
         }
     }

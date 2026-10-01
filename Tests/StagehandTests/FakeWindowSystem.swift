@@ -229,7 +229,7 @@ struct ModelHarness {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         var quietSince: ContinuousClock.Instant?
         while ContinuousClock.now < deadline {
-            let busy = model.worker != nil || model.ribbonMotion.isRunning || model.automaticResumeTask != nil
+            let busy = model.changes.isProcessing || model.ribbonMotion.isRunning || model.automaticResumeTask != nil
             if busy {
                 quietSince = nil
             } else if let quietSince, quietSince.duration(to: .now) > .milliseconds(150) {

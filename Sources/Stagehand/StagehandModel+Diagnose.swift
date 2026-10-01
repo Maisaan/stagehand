@@ -24,7 +24,7 @@ extension StagehandModel {
         }
         start()
         let deadline = ContinuousClock.now.advanced(by: .seconds(8))
-        while (worker != nil || ribbonMotion.isRunning) && ContinuousClock.now < deadline {
+        while (changes.isProcessing || ribbonMotion.isRunning) && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(20))
         }
         guard isRunning, !isSuspended,
@@ -32,14 +32,14 @@ extension StagehandModel {
             return "Last-close setup failed. Running: \(isRunning). Warning: \(warning ?? "none")"
         }
         focusWindow(disposableID)
-        while (worker != nil || ribbonMotion.isRunning) && ContinuousClock.now < deadline {
+        while (changes.isProcessing || ribbonMotion.isRunning) && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(20))
         }
         guard isRunning, state.focusedWindowID == disposableID else {
             return "Last-close setup could not focus the disposable window. Warning: \(warning ?? "none")"
         }
         navigate(.moveToSpace(index: emptyIndex, follow: true))
-        while (worker != nil || ribbonMotion.isRunning) && ContinuousClock.now < deadline {
+        while (changes.isProcessing || ribbonMotion.isRunning) && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(20))
         }
         guard isRunning, state.activeSpaceIndex == emptyIndex, state.currentSpace.windowIDs == [disposableID] else {
@@ -50,7 +50,7 @@ extension StagehandModel {
         let closeDeadline = ContinuousClock.now.advanced(by: .seconds(2))
         repeat {
             try? await Task.sleep(for: .milliseconds(20))
-            if !isRunning || (state.spaces[emptyIndex].windowIDs.isEmpty && worker == nil &&
+            if !isRunning || (state.spaces[emptyIndex].windowIDs.isEmpty && !changes.isProcessing &&
                 (state.focusedWindowID.map { windowSystem.focusedWindowID() == $0 } ?? emptySpace.isFocused)) { break }
         } while ContinuousClock.now < closeDeadline
         return """
@@ -78,7 +78,7 @@ extension StagehandModel {
         let began = ContinuousClock.now
         start()
         let deadline = began.advanced(by: .seconds(4))
-        while (worker != nil || ribbonMotion.isRunning) && ContinuousClock.now < deadline {
+        while (changes.isProcessing || ribbonMotion.isRunning) && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(20))
         }
         var focusChecks: [String] = []
@@ -86,7 +86,7 @@ extension StagehandModel {
             for id in state.currentSpace.windowIDs {
                 guard isRunning, !isSuspended, ContinuousClock.now < deadline else { break }
                 focusWindow(id)
-                while (worker != nil || ribbonMotion.isRunning) && ContinuousClock.now < deadline {
+                while (changes.isProcessing || ribbonMotion.isRunning) && ContinuousClock.now < deadline {
                     try? await Task.sleep(for: .milliseconds(20))
                 }
                 focusChecks.append("Focus \(id): \(isRunning && windowSystem.focusedWindowID() == id)")
@@ -141,11 +141,11 @@ extension StagehandModel {
         }
         start()
         let preparationDeadline = ContinuousClock.now.advanced(by: .seconds(3))
-        while worker != nil && ContinuousClock.now < preparationDeadline {
+        while changes.isProcessing && ContinuousClock.now < preparationDeadline {
             try? await Task.sleep(for: .milliseconds(20))
         }
         navigate(.goToSpace(index: WorkspaceState.spaceCount - 1))
-        while worker != nil && ContinuousClock.now < preparationDeadline {
+        while changes.isProcessing && ContinuousClock.now < preparationDeadline {
             try? await Task.sleep(for: .milliseconds(20))
         }
         guard isRunning, !isSuspended, state.currentSpace.windowIDs.isEmpty else {
@@ -165,7 +165,7 @@ extension StagehandModel {
         while isRunning, !isSuspended, ContinuousClock.now < deadline {
             let discovered = windows.filter { $0.bundleIdentifier == probeID }
             if !discovered.isEmpty, discovered.allSatisfy({ state.currentSpace.windowIDs.contains($0.id) }),
-               worker == nil, !ribbonMotion.isRunning { break }
+               !changes.isProcessing, !ribbonMotion.isRunning { break }
             try? await Task.sleep(for: .milliseconds(25))
         }
         let discovered = windows.filter { $0.bundleIdentifier == probeID }

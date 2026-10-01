@@ -18,12 +18,12 @@ extension StagehandModel {
             nativeDesktopChanged()
             return
         }
-        if change == .preferences, pending.contains(where: { $0.change == .preferences }) { return }
+        if change == .preferences, changes.contains(where: { $0.change == .preferences }) { return }
         // Capture typing before the asynchronous AX activation starts.
         let token = change.policy.beginInputTransfer {
             focusGate.isAvailable ? focusGate.beginTransfer() : nil
         }
-        pending.append(PendingChange(
+        changes.append(PendingChange(
             change: change,
             token: token,
             initialHorizontalVelocity: initialHorizontalVelocity,
@@ -32,194 +32,204 @@ extension StagehandModel {
         ))
         diagnostics.record("change_queued", details: [
             "operation": change.diagnosticName,
-            "pendingChanges": String(pending.count),
+            "pendingChanges": String(changes.count),
             "transferToken": token.map(String.init) ?? "none"
         ])
-        if change.isWindowNavigation, worker != nil, ribbonMotion.isAnimating {
+        if change.isWindowNavigation, changes.isProcessing, ribbonMotion.isAnimating {
             ribbonMotion.cancel()
         }
-        guard worker == nil else { return }
-        workerGeneration += 1
-        let generation = workerGeneration
-        worker = Task { [weak self] in
-            guard let self else { return }
-            var batchMotionStart: [String: CGRect]?
-            var batchInitialHorizontalVelocity: CGFloat?
-            while self.isRunning && !self.isSuspended && !Task.isCancelled && !self.pending.isEmpty {
-                let pendingChange = self.pending.removeFirst()
-                let change = pendingChange.change
-                let token = pendingChange.token
-                self.diagnostics.record("change_started", details: [
-                    "operation": change.diagnosticName,
-                    "pendingChanges": String(self.pending.count),
-                    "transferToken": token.map(String.init) ?? "none"
-                ])
-                let previousState = pendingChange.previousState
-                    ?? self.workspaceRestoration.transitionStart(
-                        windowIDs: self.windows.map(\.id),
-                        trackedWindowIDs: self.windowSystem.trackedWindowIDs
-                    )
-                    ?? self.state
-                self.workspaceRestoration.beginTransition(from: self.state)
-                let hadPreview = self.presentationFrames != nil
-                let motionStart = pendingChange.motionStart ?? batchMotionStart ?? self.navigationFrames()
-                let initialHorizontalVelocity = batchInitialHorizontalVelocity
-                    ?? pendingChange.initialHorizontalVelocity
-                self.ribbonMotion.cancel()
-                self.presentationFrames = nil
-                if self.gestureAxis != nil { self.input.cancelGestureSequence() }
-                self.resetGestureTracking()
-                switch change {
-                case .action(let action) where action == .shrinkHeight || action == .growHeight:
-                    guard self.adjustFocusedWindowHeight(growing: action == .growHeight) else {
-                        if let token { self.focusGate.cancelTransfer(token: token) }
-                        self.workspaceRestoration.endTransition()
-                        continue
-                    }
-                case .action(let action):
-                    let sourceSpaceIndex = self.state.activeSpaceIndex
-                    guard self.state.apply(action) else {
-                        if let token { self.focusGate.cancelTransfer(token: token) }
-                        self.workspaceRestoration.endTransition()
-                        continue
-                    }
-                    if action == .moveWindowUpSpace {
-                        self.workspaceRestoration.compactEmptySpace(
-                            state: &self.state, at: sourceSpaceIndex
-                        )
-                    }
-                case .remove(let id): self.state.removeFromCurrentSpace(windowID: id)
-                case .share(let id, let index): self.state.share(windowID: id, toSpace: index)
-                case .focus(let id): self.state.focus(windowID: id)
-                case .moveMembership(let id, let sourceIndex, let destinationIndex):
-                    self.state.move(windowID: id, fromSpace: sourceIndex, toSpace: destinationIndex)
-                case .shareMembership(let id, let sourceIndex, let destinationIndex):
-                    self.state.share(windowID: id, fromSpace: sourceIndex, toSpace: destinationIndex)
-                case .removeMembership(let id, let sourceIndex):
-                    self.state.remove(windowID: id, fromSpace: sourceIndex)
-                case .reorderWindow(let id, let index, let spaceIndex):
-                    self.state.reorderWindow(windowID: id, to: index, inSpace: spaceIndex)
-                case .focusInSpace(let id, let spaceIndex):
-                    self.state.focus(windowID: id, inSpace: spaceIndex)
-                case .windowRemoval, .refresh, .preferences, .observedFocus: break
-                }
-                if change.isWindowNavigation, self.pending.first?.change.isWindowNavigation == true,
-                   let token, self.focusGate.cancelTransferIfEmpty(token: token) {
-                    // Keep every navigation step in state, but avoid flashing intermediate
-                    // windows when no typing belongs to them. Never merge input tokens.
-                    batchMotionStart = motionStart
-                    batchInitialHorizontalVelocity = initialHorizontalVelocity
-                    continue
-                }
-                batchMotionStart = nil
-                batchInitialHorizontalVelocity = nil
-                if change.policy == .preferences {
-                    let focusedWindowID = self.windowSystem.focusedWindowID()
-                    let prepared: WorkspaceState?
-                    if case .observedFocus(let notificationWindowID) = change {
-                        prepared = prepareObservedFocus(
-                            state: self.state,
-                            notificationWindowID: notificationWindowID,
-                            focusedWindowID: focusedWindowID
-                        )
-                    } else {
-                        self.preferencesNeedLayout = true
-                        prepared = change.policy.prepare(state: self.state, focusedWindowID: focusedWindowID)
-                    }
-                    guard let prepared else {
-                        if case .observedFocus = change {
-                            self.diagnostics.record("change_skipped", details: [
-                                "operation": change.diagnosticName,
-                                "reason": "focus_changed_before_layout"
-                            ])
-                        }
-                        self.workspaceRestoration.endTransition()
-                        continue
-                    }
-                    self.preferencesNeedLayout = true
-                    self.state = prepared
-                }
-                let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-                let canSlide = shouldSlideRibbon(
-                    from: previousState,
-                    to: self.state,
-                    source: change.ribbonTransitionSource,
-                    hadPreview: hadPreview,
-                    reduceMotion: reduceMotion
-                )
-                if change.policy == .navigation, self.diagnostics.isEnabled {
-                    let destinationID = self.state.focusedWindowID
-                    let observedFocus = self.windowSystem.focusedWindowID()
-                    let membershipCount = destinationID.map { id in
-                        self.state.spaces.count { $0.windowIDs.contains(id) }
-                    } ?? 0
-                    self.diagnostics.record("navigation_motion_planned", details: [
-                        "destinationFocusedWindowID": destinationID ?? "none",
-                        "destinationMembershipCount": String(membershipCount),
-                        "destinationParked": String(destinationID.map { self.windowSystem.isParked(windowID: $0) } ?? false),
-                        "destinationSpace": String(self.state.activeSpaceIndex + 1),
-                        "destinationWasSystemFocused": String(destinationID != nil && destinationID == observedFocus),
-                        "hadGesturePreview": String(hadPreview),
-                        "motionStartWindowCount": String(motionStart.count),
-                        "observedFocusedWindowID": observedFocus ?? "none",
-                        "operation": change.diagnosticName,
-                        "previousFocusedWindowID": previousState.focusedWindowID ?? "none",
-                        "previousSpace": String(previousState.activeSpaceIndex + 1),
-                        "reduceMotion": String(reduceMotion),
-                        "slideEnabled": String(canSlide)
-                    ])
-                }
-                let outcome = await self.applyLayout(token: token, request: change.policy,
-                                                       operation: change.diagnosticName,
-                                                       slideFrom: canSlide ? motionStart : nil,
-                                                       initialHorizontalVelocity: canSlide
-                                                        ? initialHorizontalVelocity : nil,
-                                                       focusAlongsideSlide: change.focusesAlongsideRibbon)
-                guard generation == self.workerGeneration, !Task.isCancelled else { return }
-                let failureReason: String
-                switch outcome {
-                case .completed:
-                    failureReason = ""
-                case .targetUnavailable(let windowID, let reason):
-                    // The destination disappeared without a notification. Drop it like
-                    // any other unavailable window; its removal layout is now pending.
-                    if self.dropUnavailableWindow(windowID, reason: reason, detectedBy: "focus") { continue }
-                    failureReason = "focus_target_unavailable"
-                case .failed(let reason):
-                    failureReason = reason
-                case .interrupted:
-                    // Interruptions normally end this worker's generation above.
-                    failureReason = "layout_stopped_unexpectedly"
-                }
-                guard outcome == .completed else {
-                    self.workspaceRestoration.rollBack(
-                        state: &self.state,
-                        windowIDs: self.windows.map(\.id),
-                        trackedWindowIDs: self.windowSystem.trackedWindowIDs
-                    )
-                    self.stop(
-                        reason: failureReason,
-                        automatic: true,
-                        details: ["operation": change.diagnosticName]
-                    )
-                    return
-                }
-                if let focusedWindowID = self.state.focusedWindowID {
-                    self.focusHistory.record(windowID: focusedWindowID)
-                }
-                self.diagnostics.record("change_completed", details: ["operation": change.diagnosticName])
-                if self.recoveryInProgress && change == .refresh {
-                    self.recoveryInProgress = false
-                    self.automaticResumeAttempted = false
-                    self.diagnostics.record("automatic_resume_succeeded")
-                }
-                self.workspaceRestoration.endTransition()
-            }
-            guard generation == self.workerGeneration, !Task.isCancelled else { return }
-            self.worker = nil
-            self.onStateChange?()
-            self.scheduleRefresh()
+        changes.startIfIdle { [weak self] generation in await self?.processChanges(generation: generation) }
+    }
+
+    /// Consecutive navigation steps without typing share one motion from the first start.
+    struct NavigationBatch {
+        var motionStart: [String: CGRect]?
+        var initialHorizontalVelocity: CGFloat?
+    }
+
+    private func processChanges(generation: Int) async {
+        var batch = NavigationBatch()
+        while isRunning, !isSuspended, !Task.isCancelled, let pendingChange = changes.removeFirst() {
+            guard await process(pendingChange, batch: &batch, generation: generation) else { return }
         }
+        guard changes.finish(generation: generation) else { return }
+        onStateChange?()
+        scheduleRefresh()
+    }
+
+    /// Applies one change. Returns false when processing must end (pause or stale).
+    private func process(_ pendingChange: PendingChange, batch: inout NavigationBatch,
+                         generation: Int) async -> Bool {
+        let change = pendingChange.change
+        let token = pendingChange.token
+        diagnostics.record("change_started", details: [
+            "operation": change.diagnosticName,
+            "pendingChanges": String(changes.count),
+            "transferToken": token.map(String.init) ?? "none"
+        ])
+        let previousState = pendingChange.previousState
+            ?? workspaceRestoration.transitionStart(
+                windowIDs: windows.map(\.id),
+                trackedWindowIDs: windowSystem.trackedWindowIDs
+            )
+            ?? state
+        workspaceRestoration.beginTransition(from: state)
+        let hadPreview = presentationFrames != nil
+        let motionStart = pendingChange.motionStart ?? batch.motionStart ?? navigationFrames()
+        let initialHorizontalVelocity = batch.initialHorizontalVelocity ?? pendingChange.initialHorizontalVelocity
+        ribbonMotion.cancel()
+        presentationFrames = nil
+        if gestureAxis != nil { input.cancelGestureSequence() }
+        resetGestureTracking()
+        guard applyToState(change) else {
+            if let token { focusGate.cancelTransfer(token: token) }
+            workspaceRestoration.endTransition()
+            return true
+        }
+        if change.isWindowNavigation, changes.first?.change.isWindowNavigation == true,
+           let token, focusGate.cancelTransferIfEmpty(token: token) {
+            // Keep every navigation step in state, but avoid flashing intermediate
+            // windows when no typing belongs to them. Never merge input tokens.
+            batch = NavigationBatch(motionStart: motionStart, initialHorizontalVelocity: initialHorizontalVelocity)
+            return true
+        }
+        batch = NavigationBatch()
+        guard prepareLayoutState(for: change) else {
+            workspaceRestoration.endTransition()
+            return true
+        }
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let canSlide = shouldSlideRibbon(
+            from: previousState,
+            to: state,
+            source: change.ribbonTransitionSource,
+            hadPreview: hadPreview,
+            reduceMotion: reduceMotion
+        )
+        recordMotionPlan(change: change, previousState: previousState, hadPreview: hadPreview,
+                         motionStartCount: motionStart.count, reduceMotion: reduceMotion, canSlide: canSlide)
+        let outcome = await applyLayout(token: token, request: change.policy,
+                                        operation: change.diagnosticName,
+                                        slideFrom: canSlide ? motionStart : nil,
+                                        initialHorizontalVelocity: canSlide ? initialHorizontalVelocity : nil,
+                                        focusAlongsideSlide: change.focusesAlongsideRibbon)
+        guard changes.isCurrent(generation) else { return false }
+        return finish(change, outcome: outcome)
+    }
+
+    /// Updates the logical workspace for a change. Returns false when it does nothing.
+    private func applyToState(_ change: Change) -> Bool {
+        switch change {
+        case .action(let action) where action == .shrinkHeight || action == .growHeight:
+            return adjustFocusedWindowHeight(growing: action == .growHeight)
+        case .action(let action):
+            let sourceSpaceIndex = state.activeSpaceIndex
+            guard state.apply(action) else { return false }
+            if action == .moveWindowUpSpace {
+                workspaceRestoration.compactEmptySpace(state: &state, at: sourceSpaceIndex)
+            }
+        case .remove(let id): state.removeFromCurrentSpace(windowID: id)
+        case .share(let id, let index): state.share(windowID: id, toSpace: index)
+        case .focus(let id): state.focus(windowID: id)
+        case .moveMembership(let id, let sourceIndex, let destinationIndex):
+            state.move(windowID: id, fromSpace: sourceIndex, toSpace: destinationIndex)
+        case .shareMembership(let id, let sourceIndex, let destinationIndex):
+            state.share(windowID: id, fromSpace: sourceIndex, toSpace: destinationIndex)
+        case .removeMembership(let id, let sourceIndex):
+            state.remove(windowID: id, fromSpace: sourceIndex)
+        case .reorderWindow(let id, let index, let spaceIndex):
+            state.reorderWindow(windowID: id, to: index, inSpace: spaceIndex)
+        case .focusInSpace(let id, let spaceIndex):
+            state.focus(windowID: id, inSpace: spaceIndex)
+        case .windowRemoval, .refresh, .preferences, .observedFocus: break
+        }
+        return true
+    }
+
+    /// Preference changes lay out around the window macOS reports focused. Returns
+    /// false when that focus moved before the layout could start.
+    private func prepareLayoutState(for change: Change) -> Bool {
+        guard change.policy == .preferences else { return true }
+        let focusedWindowID = windowSystem.focusedWindowID()
+        let prepared: WorkspaceState?
+        if case .observedFocus(let notificationWindowID) = change {
+            prepared = prepareObservedFocus(
+                state: state,
+                notificationWindowID: notificationWindowID,
+                focusedWindowID: focusedWindowID
+            )
+        } else {
+            preferencesNeedLayout = true
+            prepared = change.policy.prepare(state: state, focusedWindowID: focusedWindowID)
+        }
+        guard let prepared else {
+            if case .observedFocus = change {
+                diagnostics.record("change_skipped", details: [
+                    "operation": change.diagnosticName,
+                    "reason": "focus_changed_before_layout"
+                ])
+            }
+            return false
+        }
+        preferencesNeedLayout = true
+        state = prepared
+        return true
+    }
+
+    private func recordMotionPlan(change: Change, previousState: WorkspaceState, hadPreview: Bool,
+                                  motionStartCount: Int, reduceMotion: Bool, canSlide: Bool) {
+        guard change.policy == .navigation, diagnostics.isEnabled else { return }
+        let destinationID = state.focusedWindowID
+        let observedFocus = windowSystem.focusedWindowID()
+        let membershipCount = destinationID.map { id in state.spaces.count { $0.windowIDs.contains(id) } } ?? 0
+        diagnostics.record("navigation_motion_planned", details: [
+            "destinationFocusedWindowID": destinationID ?? "none",
+            "destinationMembershipCount": String(membershipCount),
+            "destinationParked": String(destinationID.map { windowSystem.isParked(windowID: $0) } ?? false),
+            "destinationSpace": String(state.activeSpaceIndex + 1),
+            "destinationWasSystemFocused": String(destinationID != nil && destinationID == observedFocus),
+            "hadGesturePreview": String(hadPreview),
+            "motionStartWindowCount": String(motionStartCount),
+            "observedFocusedWindowID": observedFocus ?? "none",
+            "operation": change.diagnosticName,
+            "previousFocusedWindowID": previousState.focusedWindowID ?? "none",
+            "previousSpace": String(previousState.activeSpaceIndex + 1),
+            "reduceMotion": String(reduceMotion),
+            "slideEnabled": String(canSlide)
+        ])
+    }
+
+    /// Records a finished change, or pauses and restores after a failure.
+    /// Returns false when processing must end.
+    private func finish(_ change: Change, outcome: LayoutOutcome) -> Bool {
+        let failureReason: String
+        switch outcome {
+        case .completed:
+            if let focusedWindowID = state.focusedWindowID { focusHistory.record(windowID: focusedWindowID) }
+            diagnostics.record("change_completed", details: ["operation": change.diagnosticName])
+            if recoveryInProgress && change == .refresh {
+                recoveryInProgress = false
+                automaticResumeAttempted = false
+                diagnostics.record("automatic_resume_succeeded")
+            }
+            workspaceRestoration.endTransition()
+            return true
+        case .targetUnavailable(let windowID, let reason):
+            // The destination disappeared without a notification. Drop it like any
+            // other unavailable window; its removal layout is now pending and keeps
+            // this transition's rollback.
+            if dropUnavailableWindow(windowID, reason: reason, detectedBy: "focus") { return true }
+            failureReason = "focus_target_unavailable"
+        case .failed(let reason):
+            failureReason = reason
+        case .interrupted:
+            // Interruptions normally end this worker's generation first.
+            failureReason = "layout_stopped_unexpectedly"
+        }
+        workspaceRestoration.rollBack(state: &state, windowIDs: windows.map(\.id),
+                                      trackedWindowIDs: windowSystem.trackedWindowIDs)
+        stop(reason: failureReason, automatic: true, details: ["operation": change.diagnosticName])
+        return false
     }
 
     func adjustFocusedWindowHeight(growing: Bool) -> Bool {
@@ -523,7 +533,7 @@ extension StagehandModel {
                 guard self.isRunning, !self.isSuspended, !Task.isCancelled else {
                     return RibbonTranslationOutcome.failed
                 }
-                guard !self.pending.isEmpty else { return RibbonTranslationOutcome.readyForFocus }
+                guard self.changes.count > 0 else { return RibbonTranslationOutcome.readyForFocus }
                 guard let token else { return RibbonTranslationOutcome.superseded }
                 return self.focusGate.cancelTransferIfEmpty(token: token)
                     ? RibbonTranslationOutcome.superseded : RibbonTranslationOutcome.readyForFocus

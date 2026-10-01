@@ -18,7 +18,7 @@ extension StagehandModel {
             case .changed: break
             default:
                 NSLog("[DEBUG-gesture] delivered %@ running=%d suspended=%d worker=%d axis=%@", String(describing: event),
-                      isRunning, isSuspended, worker != nil, String(describing: gestureAxis))
+                      isRunning, isSuspended, changes.isProcessing, String(describing: gestureAxis))
             }
         }
         guard isRunning, !isSuspended else { return }
@@ -26,7 +26,7 @@ extension StagehandModel {
         case .began(let axis, let displacement, let mode):
             guard desktopScope.refresh() == .home else { return }
             gestureAxis = axis
-            if mode == .plain, worker == nil, axis == .horizontal,
+            if mode == .plain, !changes.isProcessing, axis == .horizontal,
                !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
                 let frames = navigationFrames()
                 ribbonMotion.cancel()
@@ -111,7 +111,7 @@ extension StagehandModel {
 
     func previewGesture(displacement: Double) {
         guard let base = gestureBase, let availableFrame, gestureAxis == .horizontal,
-              worker == nil, displacement.isFinite else { return }
+              !changes.isProcessing, displacement.isFinite else { return }
         ribbonMotion.follow(frames: { [weak self] in
             guard let self, self.gestureBase != nil, self.desktopScope.relation == .home else { return [:] }
             return self.gesturePreviewFrames(

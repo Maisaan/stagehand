@@ -90,12 +90,10 @@ final class StagehandModel: ObservableObject {
     let emptySpace: any EmptySpacePresenting
     var refreshTask: Task<Void, Never>?
     var observedFocusTask: Task<Void, Never>?
-    var worker: Task<Void, Never>?
-    var pending: [PendingChange] = []
+    let changes = ChangeQueue<PendingChange>()
     var lastAppliedFrames: [String: CGRect] = [:]
     var preferredHeights: [String: CGFloat] = [:]
     var lastTransition = Date.distantPast
-    var workerGeneration = 0
     var automaticResumeTask: Task<Void, Never>?
     var automaticResumeAttempted = false
     var recoveryInProgress = false
@@ -297,9 +295,9 @@ final class StagehandModel: ObservableObject {
         focusGate.onTransferExpired = { [weak self] token in
             guard let self else { return }
             self.expiredTokens.insert(token)
-            let generation = self.workerGeneration
+            let generation = self.changes.generation
             Task { @MainActor [weak self] in
-                guard let self, self.isRunning, self.workerGeneration == generation else { return }
+                guard let self, self.isRunning, self.changes.generation == generation else { return }
                 self.stop(
                     reason: "input_transfer_expired",
                     automatic: true,
@@ -466,10 +464,7 @@ final class StagehandModel: ObservableObject {
         ribbonMotion.cancel()
         presentationFrames = nil
         resetGestureTracking()
-        workerGeneration += 1
-        worker?.cancel()
-        worker = nil
-        pending.removeAll()
+        changes.cancel()
         expiredTokens.removeAll()
         refreshTask?.cancel()
         observedFocusTask?.cancel()
@@ -491,10 +486,10 @@ final class StagehandModel: ObservableObject {
                 warning = (warning ?? "Stagehand paused and restored your windows.") + " Press Start to retry."
             } else {
                 automaticResumeAttempted = true
-                let generation = workerGeneration
+                let generation = changes.generation
                 automaticResumeTask = Task { @MainActor [weak self] in
                     do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-                    guard let self, !self.isRunning, self.workerGeneration == generation else { return }
+                    guard let self, !self.isRunning, self.changes.generation == generation else { return }
                     self.automaticResumeTask = nil
                     self.diagnostics.record("automatic_resume_attempt", details: ["reason": reason])
                     self.start(automaticRecovery: true)
@@ -525,10 +520,10 @@ final class StagehandModel: ObservableObject {
     func workspaceDetails() -> [String: String] {
         var details = [
             "activeSpace": String(state.activeSpaceIndex + 1),
-            "pendingChanges": String(pending.count),
+            "pendingChanges": String(changes.count),
             "suspended": String(isSuspended),
             "windowCount": String(windows.count),
-            "workerActive": String(worker != nil)
+            "workerActive": String(changes.isProcessing)
         ]
         if let focusedWindow {
             details["focusedBundleIdentifier"] = focusedWindow.bundleIdentifier
@@ -766,7 +761,7 @@ final class StagehandModel: ObservableObject {
             input.start()
             // Reconcile only after returning to the bound Desktop; away windows never enter state.
             refreshWindows()
-            if worker == nil { enqueue(.refresh) }
+            if !changes.isProcessing { enqueue(.refresh) }
             onStateChange?()
         case .away, .unknown:
             if !isSuspended {
@@ -774,10 +769,7 @@ final class StagehandModel: ObservableObject {
                     "relation": String(describing: desktopScope.relation)
                 ])
                 isSuspended = true
-                workerGeneration += 1
-                worker?.cancel()
-                worker = nil
-                pending.removeAll()
+                changes.cancel()
                 refreshTask?.cancel()
                 workspaceRestoration.rollBack(state: &state, windowIDs: windows.map(\.id),
                                               trackedWindowIDs: windowSystem.trackedWindowIDs)
