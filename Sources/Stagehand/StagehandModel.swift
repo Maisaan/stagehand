@@ -7,7 +7,9 @@ import StagehandPlatform
 @MainActor
 final class StagehandModel: ObservableObject {
     // Written only by StagehandModel and its extensions; views treat these as read-only.
-    @Published internal(set) var state = WorkspaceState()
+    @Published internal(set) var state = WorkspaceState() {
+        didSet { if isRunning, state != oldValue { scheduleLayoutSave() } }
+    }
     @Published internal(set) var windows: [WindowRecord] = []
     @Published private(set) var isRunning = false
     @Published private(set) var isSuspended = false
@@ -89,6 +91,11 @@ final class StagehandModel: ObservableObject {
     var motionBackingScaleFactor: CGFloat = 1
     let emptySpace: any EmptySpacePresenting
     var refreshTask: Task<Void, Never>?
+    let layoutStore: WorkspaceLayoutStore?
+    var layoutSaveTask: Task<Void, Never>?
+    /// The saved layout is applied only to the first start after launch. Later
+    /// starts resume the in-memory layout.
+    var savedLayoutConsidered = false
     var observedFocusTask: Task<Void, Never>?
     let changes = ChangeQueue<PendingChange>()
     var lastAppliedFrames: [String: CGRect] = [:]
@@ -188,9 +195,13 @@ final class StagehandModel: ObservableObject {
         emptySpace injectedEmptySpace: (any EmptySpacePresenting)? = nil,
         desktopScope: DesktopScope = DesktopScope(),
         focusGate: FocusInputGate = FocusInputGate(),
-        ribbonMotion: RibbonMotion = RibbonMotion()
+        ribbonMotion: RibbonMotion = RibbonMotion(),
+        layoutStore: WorkspaceLayoutStore? = nil
     ) {
         windowSystem = injectedWindowSystem ?? WindowSystem()
+        // An injected window system means a test or diagnostic run; it must not
+        // read or replace the user's saved layout unless given a store explicitly.
+        self.layoutStore = layoutStore ?? (injectedWindowSystem == nil ? WorkspaceLayoutStore() : nil)
         emptySpace = injectedEmptySpace ?? EmptySpaceWindow()
         self.desktopScope = desktopScope
         self.focusGate = focusGate
@@ -420,6 +431,23 @@ final class StagehandModel: ObservableObject {
         warning = nil
         overlays.hide()
         windows = windowSystem.start()
+        if !savedLayoutConsidered {
+            savedLayoutConsidered = true
+            if state.spaces.allSatisfy(\.windowIDs.isEmpty), let layoutStore {
+                switch layoutStore.load(windows: windows) {
+                case .restored(let saved):
+                    state = saved
+                    diagnostics.record("layout_restored", details: [
+                        "windowCount": String(Set(saved.spaces.flatMap(\.windowIDs)).count),
+                        "activeSpace": String(saved.activeSpaceIndex + 1)
+                    ])
+                case .unavailable(let reason):
+                    diagnostics.record("layout_not_restored", details: [
+                        "reason": reason, "discoveredWindowCount": String(windows.count)
+                    ])
+                }
+            }
+        }
         preferredHeights = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0.frame.height) })
         workspaceRestoration.reconcile(state: &state, windowIDs: windows.map(\.id),
                                        trackedWindowIDs: windowSystem.trackedWindowIDs,
@@ -461,6 +489,9 @@ final class StagehandModel: ObservableObject {
         isSuspended = false
         state = workspaceRestoration.pause(state: state, windowIDs: windows.map(\.id),
                                            trackedWindowIDs: windowSystem.trackedWindowIDs)
+        layoutSaveTask?.cancel()
+        layoutSaveTask = nil
+        layoutStore?.save(state, windows: windows)
         ribbonMotion.cancel()
         presentationFrames = nil
         resetGestureTracking()
@@ -504,6 +535,17 @@ final class StagehandModel: ObservableObject {
         }
         if let warning { overlays.showWarning(warning) }
         onStateChange?()
+    }
+
+    func scheduleLayoutSave() {
+        guard let layoutStore, layoutSaveTask == nil else { return }
+        layoutSaveTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            guard let self else { return }
+            self.layoutSaveTask = nil
+            guard self.isRunning else { return }
+            layoutStore.save(self.state, windows: self.windows)
+        }
     }
 
     func shutDown() { stop(reason: "application_termination", automatic: false) }

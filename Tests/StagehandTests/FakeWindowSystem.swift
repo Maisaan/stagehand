@@ -208,7 +208,7 @@ struct ModelHarness {
     let logURL: URL
     let postedEvents: () -> Int
 
-    init(windowIDs: [String], focused: String) {
+    init(windowIDs: [String], focused: String, layoutStore: WorkspaceLayoutStore? = nil) {
         let windows = FakeWindowSystem()
         let available = NSScreen.screens.first?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
         for (index, id) in windowIDs.enumerated() {
@@ -231,7 +231,8 @@ struct ModelHarness {
             emptySpace: FakeEmptySpace(),
             desktopScope: DesktopScope(currentDesktopID: { 1 }),
             focusGate: gate,
-            ribbonMotion: RibbonMotion(frameDriver: ImmediateFrameDriver())
+            ribbonMotion: RibbonMotion(frameDriver: ImmediateFrameDriver()),
+            layoutStore: layoutStore
         )
         self.windows = windows
         self.overlays = overlays

@@ -25,6 +25,46 @@ struct ModelScenarioTests {
         #expect(harness.events("automatic_pause").isEmpty)
     }
 
+    /// Quitting and relaunching Stagehand while apps keep running must return
+    /// windows to their spaces and order.
+    @Test func relaunchRestoresTheSavedLayoutOfStillRunningWindows() async {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("stagehand-layout-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let launchDate = Date(timeIntervalSinceReferenceDate: 1_000)
+        let store = WorkspaceLayoutStore(url: url, launchDate: { _ in launchDate })
+
+        let first = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a", layoutStore: store)
+        first.model.start()
+        await first.settle()
+        first.model.navigate(.reorderNext)
+        await first.settle()
+        first.model.navigate(.shareToSpace(index: 2))
+        await first.settle()
+        first.model.shutDown()
+        let saved = first.model.state
+        first.cleanUp()
+        #expect(saved.spaces[0].windowIDs == ["b", "a", "c"])
+        #expect(saved.spaces[2].windowIDs == ["a"])
+
+        let second = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a", layoutStore: store)
+        defer { second.cleanUp() }
+        second.model.start()
+        await second.settle()
+        #expect(second.model.state.spaces.map(\.windowIDs) == saved.spaces.map(\.windowIDs))
+        #expect(second.events("layout_restored").count == 1)
+
+        let relaunchedApps = ModelHarness(
+            windowIDs: ["a", "b", "c"], focused: "a",
+            layoutStore: WorkspaceLayoutStore(url: url, launchDate: { _ in launchDate.addingTimeInterval(1) })
+        )
+        defer { relaunchedApps.cleanUp() }
+        relaunchedApps.model.start()
+        await relaunchedApps.settle()
+        #expect(relaunchedApps.events("layout_restored").isEmpty)
+        #expect(relaunchedApps.model.state.spaces[2].windowIDs.isEmpty)
+    }
+
     /// 2026-10-01T01:53:56Z: a parked window was minimized without an AX
     /// notification, and navigating onto it paused Stagehand.
     @Test func navigatingOntoASilentlyMinimizedWindowDropsItInsteadOfPausing() async {
