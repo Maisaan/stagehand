@@ -124,6 +124,11 @@ extension StagehandModel {
 
     func gesturePreviewFrames(from base: [String: CGRect], availableFrame: CGRect,
                                       displacement: Double) -> [String: CGRect] {
+        if let cache = gesturePreviewCache, cache.displacement == displacement {
+            presentationFrames = cache.frames
+            return cache.frames
+        }
+        var complete = true
         let preview = RibbonMotion.dragFrames(state: state, from: base, availableFrame: availableFrame,
                                               gap: gap, displacement: displacement,
                                               configuration: ribbonAnimationConfiguration)
@@ -151,7 +156,11 @@ extension StagehandModel {
                         ]
                     )
                 }
-                guard frameWritten else { continue }
+                guard frameWritten else {
+                    // Retry this window's first move on the next tick.
+                    complete = false
+                    continue
+                }
                 gesturePrepared.insert(id)
                 let acceptedPosition = windowSystem.observedFrame(windowID: id)?.origin ?? shifted.origin
                 motionWrittenPositions[id] = RibbonMotion.pixelAligned(
@@ -162,6 +171,7 @@ extension StagehandModel {
             frames[id] = shifted
         }
         presentationFrames = frames
+        gesturePreviewCache = complete ? (displacement, frames) : nil
         return frames
     }
 

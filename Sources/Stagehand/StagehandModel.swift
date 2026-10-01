@@ -78,7 +78,11 @@ final class StagehandModel: ObservableObject {
     let diagnostics: DiagnosticLogger
     let ribbonMotion = RibbonMotion()
     var presentationFrames: [String: CGRect]?
-    var gestureBase: [String: CGRect]?
+    var gestureBase: [String: CGRect]? {
+        didSet { gesturePreviewCache = nil }
+    }
+    /// The last complete preview. Resting fingers repeat a displacement every display tick.
+    var gesturePreviewCache: (displacement: Double, frames: [String: CGRect])?
     var gesturePrepared: Set<String> = []
     var gestureAxis: GestureAxis?
     var motionWrittenPositions: [String: CGPoint] = [:]
