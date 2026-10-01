@@ -4,6 +4,8 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 
 ## Short cleanup check for focus and navigation
 
+`./scripts/run-acceptance.sh` automates steps 2 to 4 against disposable probe windows. Quit Stagehand first, and keep hands off the keyboard and trackpad until it prints PASS or FAIL. It manages only the probe's windows, makes rapid switches in both directions with reversals, checks where typing lands during and after transitions, pauses, verifies restored frames, and summarizes focus times and any pauses from the log. It does not cover trackpad gestures, Desktop changes, or other apps; run the relevant manual checks below for those.
+
 Run this on the build before and after a cleanup that touches focus, input, gestures, window ordering, parking, overlays, or lifecycle. Use the same apps, display, shortcuts, and signing identity for both runs. Confirm the rebuilt app still has Accessibility permission. Keep Diagnostic logging enabled.
 
 1. Record the UTC start time for each run: `start_utc=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')`.

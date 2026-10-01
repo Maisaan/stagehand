@@ -73,6 +73,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             return
         }
+        if let index = arguments.firstIndex(of: "--acceptance"), arguments.indices.contains(index + 1) {
+            Task { @MainActor in
+                print(await model.diagnoseAcceptance(probeURL: URL(fileURLWithPath: arguments[index + 1])))
+                NSApp.terminate(nil)
+            }
+            return
+        }
         if arguments.contains("--diagnose-last-close") {
             Task { @MainActor in
                 print(await model.diagnoseLastClose())

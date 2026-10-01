@@ -64,6 +64,9 @@ public final class WindowSystem {
     public var onScreenParametersChange: (() -> Void)?
     public var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
     public var focusDiagnosticsEnabled = false
+    /// Restricts management to these apps, excluding Stagehand's own windows. The
+    /// acceptance runner uses it so disposable windows are the only ones moved.
+    public var managedBundleIdentifiers: Set<String>?
     public private(set) var lastFocusReport: WindowFocusReport?
 
     /// Includes known windows omitted from a scan while busy, minimized, or on another Desktop.
@@ -526,7 +529,7 @@ public final class WindowSystem {
             }
         }
         if focusDiagnosticsEnabled { print("Scan admittedExternal=\(result.count) registeredNative=\(nativeWindows.records.count)") }
-        return result + nativeWindows.records
+        return result + (managedBundleIdentifiers == nil ? nativeWindows.records : [])
     }
 
     public func record(windowID: String) -> WindowRecord? {
@@ -1150,12 +1153,13 @@ public final class WindowSystem {
         from applications: [NSRunningApplication],
         accessoryPIDs: Set<pid_t>
     ) -> [NSRunningApplication] {
-        applications.filter {
-            $0.processIdentifier != ProcessInfo.processInfo.processIdentifier &&
+        applications.filter { app in
+            app.processIdentifier != ProcessInfo.processInfo.processIdentifier &&
+            managedBundleIdentifiers.map { allowed in app.bundleIdentifier.map(allowed.contains) ?? false } ?? true &&
             canManageWindows(
-                for: $0.activationPolicy,
-                hasVisibleOrTrackedWindow: accessoryPIDs.contains($0.processIdentifier)
-            ) && !$0.isTerminated
+                for: app.activationPolicy,
+                hasVisibleOrTrackedWindow: accessoryPIDs.contains(app.processIdentifier)
+            ) && !app.isTerminated
         }
     }
 
