@@ -70,3 +70,30 @@ import Testing
     try JSONEncoder().encode([extreme]).write(to: url)
     #expect(WindowRecoveryJournal(url: url).records.isEmpty)
 }
+
+/// The journal holds the only copy of frames a crash left displaced. One record
+/// from another version must not discard the rest, and an unreadable file must
+/// not be overwritten by the next save.
+@Test func windowRecoveryJournalKeepsReadableRecordsAndPreservesAnUnreadableFile() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let url = directory.appendingPathComponent("window-recovery.json")
+    let date = Date(timeIntervalSince1970: 1_700_000_000)
+    let valid = WindowRecoveryRecord(
+        windowID: "42:17", bundleIdentifier: "example.app", pid: 42,
+        launchDate: date, ownerPID: 99, ownerLaunchDate: date, windowNumber: 17,
+        frame: CGRect(x: 10, y: 20, width: 300, height: 200)
+    )
+    let validJSON = String(decoding: try JSONEncoder().encode(valid), as: UTF8.self)
+    try Data("[\(validJSON), {\"windowID\": \"43:1\", \"futureField\": true}]".utf8).write(to: url)
+    #expect(WindowRecoveryJournal(url: url).records == [valid.windowID: valid])
+
+    try Data("{ truncated".utf8).write(to: url)
+    let journal = WindowRecoveryJournal(url: url)
+    try journal.save(valid)
+    let preserved = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        .filter { $0.hasPrefix("window-recovery.unreadable") }
+    #expect(preserved.count == 1)
+    #expect(WindowRecoveryJournal(url: url).records == [valid.windowID: valid])
+}

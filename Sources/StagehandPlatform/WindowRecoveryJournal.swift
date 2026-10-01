@@ -43,10 +43,26 @@ final class WindowRecoveryJournal {
 
     init(url: URL = WindowRecoveryJournal.defaultURL) {
         self.url = url
-        guard let data = try? Data(contentsOf: url),
-              let decoded = try? JSONDecoder().decode([WindowRecoveryRecord].self, from: data) else { return }
-        for record in decoded where record.isValid {
+        guard let data = try? Data(contentsOf: url) else { return }
+        // Decode each record on its own so one unreadable entry cannot discard the rest.
+        guard let decoded = try? JSONDecoder().decode([LossyRecord].self, from: data) else {
+            // This file may hold the only copy of displaced frames. Keep it for manual
+            // recovery instead of letting the next save overwrite it.
+            let preserved = url.deletingLastPathComponent().appendingPathComponent(
+                "window-recovery.unreadable-\(Int(Date().timeIntervalSince1970)).json"
+            )
+            try? FileManager.default.moveItem(at: url, to: preserved)
+            return
+        }
+        for record in decoded.compactMap(\.record) where record.isValid {
             records[record.windowID] = record
+        }
+    }
+
+    private struct LossyRecord: Decodable {
+        let record: WindowRecoveryRecord?
+        init(from decoder: any Decoder) throws {
+            record = try? WindowRecoveryRecord(from: decoder)
         }
     }
 
