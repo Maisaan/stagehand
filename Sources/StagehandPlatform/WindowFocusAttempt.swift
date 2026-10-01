@@ -80,7 +80,8 @@ public struct WindowFocusReport: Codable, Equatable, Sendable {
 
     public var summary: String {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        // Embedded in a JSONL log line; indentation only adds escaped bytes.
+        encoder.outputFormatting = [.sortedKeys]
         guard let data = try? encoder.encode(self), let text = String(data: data, encoding: .utf8) else {
             return "Focus outcome: \(outcome.rawValue); elapsed: \(elapsedMilliseconds) ms"
         }
