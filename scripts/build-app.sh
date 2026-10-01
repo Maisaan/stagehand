@@ -19,12 +19,19 @@ cp -R "$stagehand_root/Sources/Stagehand/Resources/Phosphor" "$stagehand_bundle/
 # the build directory, but add no runtime value to the installed application.
 strip -x "$stagehand_bundle/Contents/MacOS/Stagehand"
 
-# For repeat development builds, provide a stable local signing identity if you have one.
-# The default is an ad-hoc development signature, not a notarized distribution build.
-stagehand_signing_identity="${STAGEHAND_SIGNING_IDENTITY:--}"
+# Accessibility permission follows the code signature. A stable identity keeps the
+# grant across rebuilds; an ad-hoc signature changes every time. Prefer an explicit
+# STAGEHAND_SIGNING_IDENTITY, then a local Apple Development certificate, then ad-hoc.
+# None of these produce a notarized distribution build.
+stagehand_signing_identity="${STAGEHAND_SIGNING_IDENTITY:-}"
+if [[ -z "$stagehand_signing_identity" ]]; then
+    stagehand_signing_identity="$(security find-identity -v -p codesigning 2>/dev/null \
+        | awk -F'"' '/"Apple Development: / { print $2; exit }')"
+fi
+stagehand_signing_identity="${stagehand_signing_identity:--}"
 codesign --force --sign "$stagehand_signing_identity" "$stagehand_bundle"
 codesign --verify --strict "$stagehand_bundle"
-printf 'Built %s\n' "$stagehand_bundle"
+printf 'Built %s\nSigned with: %s\n' "$stagehand_bundle" "$stagehand_signing_identity"
 if [[ "$stagehand_signing_identity" == "-" ]]; then
     printf 'Warning: this ad-hoc signature changes on rebuild; macOS will require Accessibility again after replacement.\n'
 fi

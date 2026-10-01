@@ -1,3 +1,5 @@
+import ApplicationServices
+import Foundation
 import CoreGraphics
 import Testing
 import StagehandCore
@@ -193,4 +195,27 @@ struct WindowFrameTests {
         #expect(actual.origin == destination.origin)
         #expect(success == sizeChanged)
     }
+}
+
+/// Batched Accessibility reads replace three round trips per frame. Each attribute
+/// keeps its own result, and a busy app must not trigger slower individual reads.
+@Test func batchedAttributeReadsKeepPerAttributeErrorsAndNeverRetryABusyApp() throws {
+    var point = CGPoint(x: 12, y: 34)
+    var error = AXError.noValue
+    let position = try #require(AXValueCreate(.cgPoint, &point))
+    let missing = try #require(AXValueCreate(.axError, &error))
+
+    let decoded = try #require(WindowSystem.batchedAttributes(
+        status: .success, values: [position, missing, NSNull()], count: 3
+    ))
+    #expect(WindowSystem.point(decoded[0].value) == point)
+    #expect(decoded[0].error == .success)
+    #expect(decoded[1].value == nil && decoded[1].error == .noValue)
+    #expect(decoded[2].value == nil && decoded[2].error == .noValue)
+
+    let busy = try #require(WindowSystem.batchedAttributes(status: .cannotComplete, values: nil, count: 2))
+    #expect(busy.allSatisfy { $0.value == nil && $0.error == .cannotComplete })
+    // Only an app that rejects batching falls back to individual reads.
+    #expect(WindowSystem.batchedAttributes(status: .attributeUnsupported, values: nil, count: 2) == nil)
+    #expect(WindowSystem.batchedAttributes(status: .success, values: [position], count: 2) == nil)
 }

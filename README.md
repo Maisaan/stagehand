@@ -40,7 +40,7 @@ cd stagehand
 open dist/Stagehand.app
 ```
 
-The script creates `dist/Stagehand.app` and signs it with an ad-hoc local signature. Rebuilding may make macOS ask for Accessibility again. Set `STAGEHAND_SIGNING_IDENTITY` to a stable local signing identity if you have one.
+The script creates `dist/Stagehand.app`. It signs with `STAGEHAND_SIGNING_IDENTITY` if set, otherwise with your first Apple Development certificate, otherwise with an ad-hoc signature. A certificate identity keeps the Accessibility grant across rebuilds. An ad-hoc signature changes on every build, so macOS asks for Accessibility again after each replacement.
 
 ## Quick start
 

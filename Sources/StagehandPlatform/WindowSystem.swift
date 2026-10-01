@@ -344,12 +344,13 @@ public final class WindowSystem {
                 continue
             }
             let candidates = elements.map { element in
-                return (element: element, windowNumber: windowNumber(element), frame: readFrame(element))
+                (element: element, windowNumber: windowNumber(element), metadata: readScanMetadata(element))
             }
             let appMain = elementAttribute(appElement, kAXMainWindowAttribute)
             let owners = candidates.map { candidate -> AXUIElement? in
-                let modal = attribute(candidate.element, kAXModalAttribute) as? Bool == true
-                guard let owner = explicitOwner(of: candidate.element) ?? (modal ? appMain : nil),
+                let modal = candidate.metadata.modal
+                guard let owner = explicitOwner(of: candidate.element, candidates: candidate.metadata.ownerCandidates,
+                                                application: appElement) ?? (modal ? appMain : nil),
                       !sameWindow(candidate.element, owner) else { return nil }
                 return owner
             }
@@ -357,7 +358,7 @@ public final class WindowSystem {
                 guard let owner = owners[index] else { return false }
                 return candidates.indices.contains { other in
                     other != index &&
-                    attribute(candidates[other].element, kAXSubroleAttribute) as? String == kAXStandardWindowSubrole &&
+                    candidates[other].metadata.subrole == kAXStandardWindowSubrole &&
                     sameWindow(candidates[other].element, owner)
                 } || directTrackedWindowID(matching: owner) != nil
             })
@@ -372,7 +373,7 @@ public final class WindowSystem {
                     }
                     return CFEqual($0.value.element, element)
                 }?.key
-                let geometryMatches = candidate.frame.map { frame in
+                let geometryMatches = candidate.metadata.frame.map { frame in
                     windows.filter {
                         $0.value.record.pid == app.processIdentifier &&
                         (candidate.windowNumber == nil || $0.value.windowNumber == nil) &&
@@ -384,14 +385,14 @@ public final class WindowSystem {
                 // Presence in AXWindows means the window still exists, even if an
                 // individual attribute temporarily times out. Keep restoration data.
                 if let existingID { seen.insert(existingID) }
-                guard let subrole = attribute(element, kAXSubroleAttribute) as? String,
-                      let currentFrame = candidate.frame,
-                      let minimized = attribute(element, kAXMinimizedAttribute) as? Bool else {
+                guard let subrole = candidate.metadata.subrole,
+                      let currentFrame = candidate.metadata.frame,
+                      let minimized = candidate.metadata.minimized else {
                     if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=missingMetadata") }
                     if let existing, existing.isAdmitted { result.append(existing.record) }
                     continue
                 }
-                let fullscreen = copyAttribute(element, "AXFullScreen")
+                let fullscreen = candidate.metadata.fullscreen
                 if fullscreen.error == .cannotComplete {
                     if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=fullscreenReadTimeout") }
                     if let existing, existing.isAdmitted { result.append(existing.record) }
@@ -420,7 +421,7 @@ public final class WindowSystem {
                             ?? sameBounds(visible.frame, currentFrame)
                     }
                     let geometryMatches = candidates.filter({
-                        $0.frame.map { sameBounds($0, currentFrame) } == true
+                        $0.metadata.frame.map { sameBounds($0, currentFrame) } == true
                     }).count
                     guard visibleMatch, candidate.windowNumber != nil || geometryMatches == 1 else {
                         if focusDiagnosticsEnabled {
@@ -453,7 +454,7 @@ public final class WindowSystem {
                 let record = WindowRecord(
                     id: id,
                     appName: app.localizedName ?? "Unknown app",
-                    title: attribute(element, kAXTitleAttribute) as? String ?? existing?.record.title ?? "",
+                    title: candidate.metadata.title ?? existing?.record.title ?? "",
                     bundleIdentifier: app.bundleIdentifier ?? "",
                     pid: app.processIdentifier,
                     frame: windows[id]?.logicalFrame ?? currentFrame,
@@ -492,7 +493,7 @@ public final class WindowSystem {
             for (index, candidate) in candidates.enumerated() {
                 let element = candidate.element
                 guard childIndices.contains(index),
-                      attribute(element, kAXMinimizedAttribute) as? Bool != true,
+                      candidate.metadata.minimized != true,
                       let owner = owners[index],
                       let parentID = directTrackedWindowID(matching: owner),
                       windows[parentID]?.isAdmitted == true else { continue }
@@ -1243,8 +1244,20 @@ public final class WindowSystem {
     }
 
     private func explicitOwner(of element: AXUIElement) -> AXUIElement? {
-        for name in [kAXWindowAttribute, kAXParentAttribute] {
-            guard let owner = elementAttribute(element, name),
+        explicitOwner(
+            of: element,
+            candidates: [kAXWindowAttribute, kAXParentAttribute].map { elementAttribute(element, $0) },
+            application: nil
+        )
+    }
+
+    /// `candidates` are the element's AXWindow and AXParent values. A standard window
+    /// reports itself and its application there, which need no further AX reads.
+    private func explicitOwner(of element: AXUIElement, candidates: [AXUIElement?],
+                               application: AXUIElement?) -> AXUIElement? {
+        for candidate in candidates {
+            guard let owner = candidate, !CFEqual(owner, element),
+                  application.map({ !CFEqual(owner, $0) }) ?? true,
                   !sameWindow(owner, element),
                   let role = attribute(owner, kAXRoleAttribute) as? String,
                   role == kAXWindowRole || role == kAXSheetRole else { continue }
@@ -1272,7 +1285,91 @@ public final class WindowSystem {
         return unsafeDowncast(value, to: AXUIElement.self)
     }
 
+    private struct ScanMetadata {
+        let frame: CGRect?
+        let subrole: String?
+        let minimized: Bool?
+        let modal: Bool
+        let fullscreen: (value: CFTypeRef?, error: AXError)
+        let title: String?
+        /// AXWindow and AXParent, the places an attached sheet or dialog names its owner.
+        let ownerCandidates: [AXUIElement?]
+    }
+
+    /// Everything a scan needs from one window, in a single round trip when the app
+    /// supports batched requests.
+    private func readScanMetadata(_ element: AXUIElement) -> ScanMetadata {
+        let names = [kAXPositionAttribute, kAXSizeAttribute, kAXSubroleAttribute, kAXMinimizedAttribute,
+                     kAXModalAttribute, "AXFullScreen", kAXTitleAttribute, kAXWindowAttribute, kAXParentAttribute]
+        guard let values = copyAttributes(element, names) else {
+            return ScanMetadata(
+                frame: readFrame(element),
+                subrole: attribute(element, kAXSubroleAttribute) as? String,
+                minimized: attribute(element, kAXMinimizedAttribute) as? Bool,
+                modal: attribute(element, kAXModalAttribute) as? Bool == true,
+                fullscreen: copyAttribute(element, "AXFullScreen"),
+                title: attribute(element, kAXTitleAttribute) as? String,
+                ownerCandidates: [kAXWindowAttribute, kAXParentAttribute].map { elementAttribute(element, $0) }
+            )
+        }
+        let frame = Self.point(values[0].value).flatMap { position in
+            Self.size(values[1].value).map { CGRect(origin: position, size: $0) }
+        }
+        return ScanMetadata(
+            frame: frame,
+            subrole: values[2].value as? String,
+            minimized: values[3].value as? Bool,
+            modal: values[4].value as? Bool == true,
+            fullscreen: values[5],
+            title: values[6].value as? String,
+            ownerCandidates: values[7...8].map { value in
+                value.value.flatMap { CFGetTypeID($0) == AXUIElementGetTypeID()
+                    ? unsafeDowncast($0, to: AXUIElement.self) : nil }
+            }
+        )
+    }
+
+    /// Reads several attributes in one Accessibility round trip. Returns nil only when
+    /// the app rejects batched requests; a busy app's timeout is returned per attribute
+    /// so callers never multiply the wait with individual reads.
+    private func copyAttributes(_ element: AXUIElement, _ names: [String]) -> [(value: CFTypeRef?, error: AXError)]? {
+        var raw: CFArray?
+        let status = AXUIElementCopyMultipleAttributeValues(
+            element, names as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &raw
+        )
+        return Self.batchedAttributes(status: status, values: raw as? [AnyObject], count: names.count)
+    }
+
+    nonisolated static func batchedAttributes(status: AXError, values: [AnyObject]?,
+                                  count: Int) -> [(value: CFTypeRef?, error: AXError)]? {
+        switch status {
+        case .success:
+            guard let values, values.count == count else { return nil }
+            return values.map { value in
+                if value is NSNull { return (nil, .noValue) }
+                if CFGetTypeID(value) == AXValueGetTypeID() {
+                    let axValue = unsafeDowncast(value, to: AXValue.self)
+                    if AXValueGetType(axValue) == .axError {
+                        var error = AXError.failure
+                        _ = AXValueGetValue(axValue, .axError, &error)
+                        return (nil, error)
+                    }
+                }
+                return (value, .success)
+            }
+        case .cannotComplete, .invalidUIElement, .apiDisabled, .notificationUnsupported:
+            return Array(repeating: (nil, status), count: count)
+        default:
+            return nil
+        }
+    }
+
     private func readFrame(_ element: AXUIElement) -> CGRect? {
+        // One request returns a position and size from the same app run-loop turn.
+        if let values = copyAttributes(element, [kAXPositionAttribute, kAXSizeAttribute]) {
+            guard let position = Self.point(values[0].value), let size = Self.size(values[1].value) else { return nil }
+            return CGRect(origin: position, size: size)
+        }
         guard let firstPosition = readPosition(element),
               let size = readSize(element),
               let secondPosition = readPosition(element) else { return nil }
@@ -1287,17 +1384,23 @@ public final class WindowSystem {
     }
 
     private func readPosition(_ element: AXUIElement) -> CGPoint? {
-        guard let raw = attribute(element, kAXPositionAttribute),
-              CFGetTypeID(raw) == AXValueGetTypeID() else { return nil }
+        Self.point(attribute(element, kAXPositionAttribute))
+    }
+
+    private func readSize(_ element: AXUIElement) -> CGSize? {
+        Self.size(attribute(element, kAXSizeAttribute))
+    }
+
+    nonisolated static func point(_ raw: CFTypeRef?) -> CGPoint? {
+        guard let raw, CFGetTypeID(raw) == AXValueGetTypeID() else { return nil }
         let value = unsafeDowncast(raw, to: AXValue.self)
         guard AXValueGetType(value) == .cgPoint else { return nil }
         var point = CGPoint.zero
         return AXValueGetValue(value, .cgPoint, &point) ? point : nil
     }
 
-    private func readSize(_ element: AXUIElement) -> CGSize? {
-        guard let raw = attribute(element, kAXSizeAttribute),
-              CFGetTypeID(raw) == AXValueGetTypeID() else { return nil }
+    nonisolated static func size(_ raw: CFTypeRef?) -> CGSize? {
+        guard let raw, CFGetTypeID(raw) == AXValueGetTypeID() else { return nil }
         let value = unsafeDowncast(raw, to: AXValue.self)
         guard AXValueGetType(value) == .cgSize else { return nil }
         var size = CGSize.zero

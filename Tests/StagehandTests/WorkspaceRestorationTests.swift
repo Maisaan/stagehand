@@ -162,7 +162,7 @@ struct WorkspaceRestorationTests {
                        widthFractions: ["shared": 0.4, "closed": 0.7])
         ], activeSpaceIndex: 2)
         var restoration = WorkspaceRestoration()
-        state = restoration.pause(state: state, transitionRollback: nil)
+        state = restoration.pause(state: state, windowIDs: [], trackedWindowIDs: [])
         #expect(state.isPaused)
         restoration.reconcile(state: &state, windowIDs: ["right", "shared", "left"],
                               trackedWindowIDs: ["left", "shared", "right"])
@@ -185,7 +185,7 @@ struct WorkspaceRestorationTests {
         ])
         let spaces = state.spaces
         var restoration = WorkspaceRestoration()
-        state = restoration.pause(state: state, transitionRollback: nil)
+        state = restoration.pause(state: state, windowIDs: [], trackedWindowIDs: [])
         restoration.reconcile(state: &state, windowIDs: ["other"], trackedWindowIDs: ["shared", "other"])
         state.isPaused = false
         #expect(state.spaces.allSatisfy { !$0.windowIDs.contains("shared") })
@@ -201,12 +201,12 @@ struct WorkspaceRestorationTests {
             SpaceState(windowIDs: ["shared"])
         ])
         var restoration = WorkspaceRestoration()
-        state = restoration.pause(state: state, transitionRollback: nil)
+        state = restoration.pause(state: state, windowIDs: [], trackedWindowIDs: [])
         restoration.reconcile(state: &state, windowIDs: ["left", "right"],
                               trackedWindowIDs: ["left", "shared", "right"])
         state.isPaused = false
         state.setWidthFraction(0.5, for: "left")
-        state = restoration.pause(state: state, transitionRollback: nil)
+        state = restoration.pause(state: state, windowIDs: [], trackedWindowIDs: [])
         restoration.reconcile(state: &state, windowIDs: ["right", "shared", "left"],
                               trackedWindowIDs: ["left", "shared", "right"])
 
@@ -224,7 +224,9 @@ struct WorkspaceRestorationTests {
         state.apply(.reorderNext)
         state.apply(.moveToSpace(index: 2, follow: true))
         var restoration = WorkspaceRestoration()
-        state = restoration.pause(state: state, transitionRollback: previous)
+        restoration.beginTransition(from: previous)
+        state = restoration.pause(state: state, windowIDs: ["other", "shared"],
+                                  trackedWindowIDs: ["shared", "other"])
         #expect(state.isPaused)
         restoration.reconcile(state: &state, windowIDs: ["other", "shared"],
                               trackedWindowIDs: ["shared", "other"])
@@ -239,7 +241,7 @@ struct WorkspaceRestorationTests {
             SpaceState(windowIDs: ["shared", "late"])
         ])
         var restoration = WorkspaceRestoration()
-        state = restoration.pause(state: state, transitionRollback: nil)
+        state = restoration.pause(state: state, windowIDs: [], trackedWindowIDs: [])
         restoration.reconcile(state: &state, windowIDs: ["other", "shared"],
                               trackedWindowIDs: ["other", "shared", "late"])
         state.isPaused = false
@@ -263,7 +265,7 @@ struct WorkspaceRestorationTests {
             SpaceState(windowIDs: ["closed"])
         ])
         var restoration = WorkspaceRestoration()
-        state = restoration.pause(state: state, transitionRollback: nil)
+        state = restoration.pause(state: state, windowIDs: [], trackedWindowIDs: [])
         restoration.reconcile(state: &state, windowIDs: ["other"], trackedWindowIDs: ["other", "closed"])
         restoration.reconcile(state: &state, windowIDs: ["other"], trackedWindowIDs: ["other"])
         #expect(state.spaces[1].windowIDs.isEmpty)
@@ -359,5 +361,52 @@ struct WorkspaceRestorationTests {
         #expect(state.activeSpaceIndex == 0)
         #expect(state.focusedWindowID == "moving")
         #expect(state.spaces[1].windowIDs == ["later"])
+    }
+
+    /// Compaction shifts pending snapshots to the live layout. Rolling back an
+    /// interrupted transition must also restore the snapshots that matched it,
+    /// or a busy window rejoins the wrong space.
+    @Test func rollingBackACompactingMoveReturnsPendingWindowsToTheirSpace() {
+        var state = WorkspaceState(spaces: [
+            SpaceState(windowIDs: ["a"]),
+            SpaceState(windowIDs: ["b"]),
+            SpaceState(windowIDs: ["c", "busy"])
+        ], activeSpaceIndex: 1)
+        var restoration = WorkspaceRestoration()
+        let tracked: Set<String> = ["a", "b", "c", "busy"]
+        restoration.reconcile(state: &state, windowIDs: ["a", "b", "c"], trackedWindowIDs: tracked)
+
+        restoration.beginTransition(from: state)
+        let moved = state.apply(.moveWindowUpSpace)
+        let compacted = restoration.compactEmptySpace(state: &state, at: 1)
+        #expect(moved && compacted)
+        state = restoration.pause(state: state, windowIDs: ["a", "b", "c"], trackedWindowIDs: tracked)
+        state.isPaused = false
+        restoration.reconcile(state: &state, windowIDs: ["a", "b", "c", "busy"], trackedWindowIDs: tracked)
+
+        #expect(state.spaces[0].windowIDs == ["a"])
+        #expect(state.spaces[1].windowIDs == ["b"])
+        #expect(state.spaces[2].windowIDs == ["c", "busy"])
+    }
+
+    /// A window that becomes unavailable during a transition keeps its membership
+    /// in the layout the transition rolls back to.
+    @Test func rollbackKeepsAWindowThatBecameUnavailableMidTransition() {
+        let before = WorkspaceState(spaces: [
+            SpaceState(windowIDs: ["left", "minimized", "right"], focusedWindowID: "left")
+        ])
+        var state = before
+        var restoration = WorkspaceRestoration()
+        let tracked: Set<String> = ["left", "minimized", "right"]
+        restoration.beginTransition(from: state)
+        state.apply(.focusNext)
+        restoration.reconcile(state: &state, windowIDs: ["left", "right"], trackedWindowIDs: tracked)
+
+        restoration.rollBack(state: &state, windowIDs: ["left", "right"], trackedWindowIDs: tracked)
+        #expect(state.currentSpace.windowIDs == ["left", "right"])
+        #expect(state.focusedWindowID == "left")
+        restoration.reconcile(state: &state, windowIDs: ["left", "minimized", "right"], trackedWindowIDs: tracked)
+
+        #expect(state.currentSpace.windowIDs == ["left", "minimized", "right"])
     }
 }

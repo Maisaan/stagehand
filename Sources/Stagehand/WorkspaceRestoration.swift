@@ -1,16 +1,61 @@
 import StagehandCore
 
-/// Retains memberships until a resumed window is discovered or confirmed closed.
+/// Owns everything needed to undo or resume a layout: memberships of windows that
+/// are temporarily unavailable, and the layout before an in-flight transition.
+/// They are kept together because compaction rewrites both.
 struct WorkspaceRestoration {
     private struct PendingMemberships {
         var state: WorkspaceState
         var windowIDs: Set<String>
     }
 
-    private var pending: [PendingMemberships] = []
+    private struct Transition {
+        let state: WorkspaceState
+        let pending: [PendingMemberships]
+    }
 
-    mutating func pause(state: WorkspaceState, transitionRollback: WorkspaceState?) -> WorkspaceState {
-        var paused = transitionRollback ?? state
+    private var pending: [PendingMemberships] = []
+    private var transition: Transition?
+
+    var isInTransition: Bool { transition != nil }
+
+    /// Records the layout to return to if the next transition fails. A transition
+    /// already in progress keeps its original starting point.
+    mutating func beginTransition(from state: WorkspaceState) {
+        if transition == nil { transition = Transition(state: state, pending: pending) }
+    }
+
+    mutating func endTransition() {
+        transition = nil
+    }
+
+    /// The transition's starting layout, reconciled with windows that changed since.
+    func transitionStart(windowIDs: [String], trackedWindowIDs: Set<String>) -> WorkspaceState? {
+        var copy = self
+        var state = WorkspaceState()
+        return copy.rollBack(state: &state, windowIDs: windowIDs, trackedWindowIDs: trackedWindowIDs)
+            ? state : nil
+    }
+
+    /// Restores the layout from before the current transition. Windows that closed,
+    /// became unavailable, or appeared meanwhile are reconciled against it.
+    @discardableResult
+    mutating func rollBack(state: inout WorkspaceState, windowIDs: [String],
+                           trackedWindowIDs: Set<String>) -> Bool {
+        guard let transition else { return false }
+        self.transition = nil
+        let isPaused = state.isPaused
+        state = transition.state
+        state.isPaused = isPaused
+        pending = transition.pending
+        reconcile(state: &state, windowIDs: windowIDs, trackedWindowIDs: trackedWindowIDs)
+        return true
+    }
+
+    mutating func pause(state: WorkspaceState, windowIDs: [String],
+                        trackedWindowIDs: Set<String>) -> WorkspaceState {
+        var paused = state
+        rollBack(state: &paused, windowIDs: windowIDs, trackedWindowIDs: trackedWindowIDs)
         paused.isPaused = true
         var remembered = paused
         for pending in pending {
