@@ -96,9 +96,9 @@ protocol WindowFocusDriving {
     var elapsedMilliseconds: Int { get }
     /// True after the target app let an Accessibility request time out.
     var targetUnresponsive: Bool { get }
-    func prepare() -> [WindowFocusReport.Operation]
-    func requestFocus(attempt: Int) -> [WindowFocusReport.Operation]
-    func observe() -> WindowFocusReport.Observation
+    func prepare() async -> [WindowFocusReport.Operation]
+    func requestFocus(attempt: Int) async -> [WindowFocusReport.Operation]
+    func observe() async -> WindowFocusReport.Observation
     func wait(milliseconds: Int) async throws
 }
 
@@ -110,13 +110,13 @@ enum WindowFocusAttempt {
                                      elapsedMilliseconds: driver.elapsedMilliseconds,
                                      operations: [], initialObservation: nil, observations: [])
         }
-        let initialObservation = recordDiagnostics ? driver.observe() : nil
+        let initialObservation = recordDiagnostics ? await driver.observe() : nil
         if Task.isCancelled {
             return WindowFocusReport(targetPID: driver.targetPID, outcome: .cancelled,
                                      elapsedMilliseconds: driver.elapsedMilliseconds,
                                      operations: [], initialObservation: initialObservation, observations: [])
         }
-        let preparationOperations = driver.prepare()
+        let preparationOperations = await driver.prepare()
         var operations = recordDiagnostics ? preparationOperations : []
         var observations: [WindowFocusReport.Observation] = []
         // Most switches finish in the first 180 ms. Allow slow activation some
@@ -144,12 +144,12 @@ enum WindowFocusAttempt {
                 (elapsed < fastDeadline && !targetBecameActive) || elapsed - $0 >= 120
             } ?? !awaitingBusyTarget
             if !finalObservationDue && shouldRequest {
-                let requestedOperations = driver.requestFocus(attempt: attempt)
+                let requestedOperations = await driver.requestFocus(attempt: attempt)
                 if recordDiagnostics { operations.append(contentsOf: requestedOperations) }
                 lastRequestAt = elapsed
                 attempt += 1
             }
-            let observation = driver.observe()
+            let observation = await driver.observe()
             if recordDiagnostics { observations.append(observation) }
             if observation.confirmsFocus(targetPID: driver.targetPID) {
                 outcome = .focused

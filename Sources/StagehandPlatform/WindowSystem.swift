@@ -833,35 +833,45 @@ public final class WindowSystem {
         return report.outcome == .focused
     }
 
+    /// Runs one focus attempt's Accessibility calls on a background queue. A busy
+    /// target app answers each call only when its run loop is free; waiting on the
+    /// main thread would stall ribbon motion, gestures, and the keyboard tap.
+    /// AppKit activation stays on the main actor, in the original order.
     @MainActor
     private final class FocusDriver: WindowFocusDriving {
+        private struct Context: @unchecked Sendable {
+            let system: WindowSystem
+            let target: AXUIElement
+            let targetID: String
+            let targetPID: pid_t
+            let appElement: AXUIElement
+            let systemElement: AXUIElement
+            let identities: IdentitySnapshot
+        }
+
+        private struct Step: Sendable {
+            let name: String
+            let status: Int32?
+            var accepted: Bool? = nil
+        }
+
         let targetPID: Int32
-        private let system: WindowSystem
-        private let target: AXUIElement
-        private let targetWindowID: String
+        private let context: Context
         private let app: NSRunningApplication
-        private let appElement: AXUIElement
         private let start = ContinuousClock.now
         private let recordsDiagnostics: Bool
         private var canSetFocusedWindow = false
-        private let focusBelongsToOwnedWindow: Bool
+        private var focusBelongsToOwnedWindow = false
         private(set) var targetUnresponsive = false
 
         init(system: WindowSystem, tracked: TrackedWindow, app: NSRunningApplication, recordsDiagnostics: Bool) {
-            self.system = system
-            self.target = tracked.element
-            self.targetWindowID = tracked.record.id
-            self.targetPID = tracked.record.pid
+            targetPID = tracked.record.pid
+            context = Context(system: system, target: tracked.element, targetID: tracked.record.id,
+                              targetPID: tracked.record.pid,
+                              appElement: AXUIElementCreateApplication(tracked.record.pid),
+                              systemElement: system.systemElement, identities: system.identitySnapshot())
             self.app = app
             self.recordsDiagnostics = recordsDiagnostics
-            self.appElement = AXUIElementCreateApplication(tracked.record.pid)
-            if let focused = system.elementAttribute(appElement, kAXFocusedWindowAttribute) {
-                let isSheet = system.attribute(focused, kAXRoleAttribute) as? String == kAXSheetRole
-                focusBelongsToOwnedWindow = system.trackedWindowID(matching: focused) == tracked.record.id &&
-                    (isSheet || system.directTrackedWindowID(matching: focused) == nil)
-            } else {
-                focusBelongsToOwnedWindow = false
-            }
         }
 
         var elapsedMilliseconds: Int {
@@ -869,57 +879,83 @@ public final class WindowSystem {
             return Int(duration.seconds * 1_000 + duration.attoseconds / 1_000_000_000_000_000)
         }
 
-        func prepare() -> [WindowFocusReport.Operation] {
-            if focusBelongsToOwnedWindow {
-                var operations: [WindowFocusReport.Operation] = []
-                if app.isHidden { record("unhide", accepted: app.unhide(), into: &operations) }
-                record("activate", accepted: app.activate(options: []), into: &operations)
-                return operations
-            }
-            var writable: DarwinBoolean = false
-            let status = AXUIElementIsAttributeSettable(appElement, kAXFocusedWindowAttribute as CFString, &writable)
-            canSetFocusedWindow = writable.boolValue
-            var operations: [WindowFocusReport.Operation] = []
-            record("isFocusedWindowSettable", status: status.rawValue, accepted: writable.boolValue, into: &operations)
-            if app.isHidden { record("unhide", accepted: app.unhide(), into: &operations) }
-            record("raise", status: AXUIElementPerformAction(target, kAXRaiseAction as CFString).rawValue, into: &operations)
-            record("setMain", status:
-                AXUIElementSetAttributeValue(target, kAXMainAttribute as CFString, kCFBooleanTrue).rawValue, into: &operations)
-            if canSetFocusedWindow {
-                record("setFocusedWindow", status:
-                    AXUIElementSetAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, target).rawValue, into: &operations)
-            }
-            record("setFrontmost", status:
-                AXUIElementSetAttributeValue(appElement, kAXFrontmostAttribute as CFString, kCFBooleanTrue).rawValue, into: &operations)
-            record("activate", accepted: app.activate(options: []), into: &operations)
-            return operations
-        }
-
-        func requestFocus(attempt: Int) -> [WindowFocusReport.Operation] {
-            if focusBelongsToOwnedWindow { return [] }
-            var operations: [WindowFocusReport.Operation] = []
-            if attempt % 4 == 0 {
-                record("raise", status: AXUIElementPerformAction(target, kAXRaiseAction as CFString).rawValue, into: &operations)
-                if canSetFocusedWindow {
-                    record("setFocusedWindow", status:
-                        AXUIElementSetAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, target).rawValue, into: &operations)
+        func prepare() async -> [WindowFocusReport.Operation] {
+            let context = self.context
+            let (owned, settable) = await Self.accessibility { () -> (Bool, Step?) in
+                // Focus already inside the target's sheet or dialog needs only activation.
+                if let focused = context.system.elementAttribute(context.appElement, kAXFocusedWindowAttribute) {
+                    let isSheet = context.system.attribute(focused, kAXRoleAttribute) as? String == kAXSheetRole
+                    let owned = context.system.trackedWindowID(matching: focused, in: context.identities) == context.targetID
+                        && (isSheet || context.system.directTrackedWindowID(matching: focused, in: context.identities) == nil)
+                    if owned { return (true, nil) }
                 }
+                var writable: DarwinBoolean = false
+                let status = AXUIElementIsAttributeSettable(context.appElement, kAXFocusedWindowAttribute as CFString, &writable)
+                return (false, Step(name: "isFocusedWindowSettable", status: status.rawValue, accepted: writable.boolValue))
             }
-            record("setFocused", status:
-                AXUIElementSetAttributeValue(target, kAXFocusedAttribute as CFString, kCFBooleanTrue).rawValue, into: &operations)
+            focusBelongsToOwnedWindow = owned
+            canSetFocusedWindow = settable?.accepted == true
+            var operations = record(settable.map { [$0] } ?? [])
+            if app.isHidden { operations += record([Step(name: "unhide", status: nil, accepted: app.unhide())]) }
+            if !owned {
+                let canSetFocusedWindow = self.canSetFocusedWindow
+                operations += record(await Self.accessibility {
+                    var steps = [
+                        Step(name: "raise", status: AXUIElementPerformAction(context.target, kAXRaiseAction as CFString).rawValue),
+                        Step(name: "setMain", status: AXUIElementSetAttributeValue(
+                            context.target, kAXMainAttribute as CFString, kCFBooleanTrue).rawValue)
+                    ]
+                    if canSetFocusedWindow {
+                        steps.append(Step(name: "setFocusedWindow", status: AXUIElementSetAttributeValue(
+                            context.appElement, kAXFocusedWindowAttribute as CFString, context.target).rawValue))
+                    }
+                    steps.append(Step(name: "setFrontmost", status: AXUIElementSetAttributeValue(
+                        context.appElement, kAXFrontmostAttribute as CFString, kCFBooleanTrue).rawValue))
+                    return steps
+                })
+            }
+            operations += record([Step(name: "activate", status: nil, accepted: app.activate(options: []))])
             return operations
         }
 
-        private func record(_ name: String, status: Int32? = nil, accepted: Bool? = nil,
-                            into operations: inout [WindowFocusReport.Operation]) {
-            if status == AXError.cannotComplete.rawValue { targetUnresponsive = true }
-            guard recordsDiagnostics else { return }
-            operations.append(.init(name, accessibilityStatus: status, accepted: accepted))
+        func requestFocus(attempt: Int) async -> [WindowFocusReport.Operation] {
+            guard !focusBelongsToOwnedWindow else { return [] }
+            let context = self.context
+            let canSetFocusedWindow = self.canSetFocusedWindow
+            return record(await Self.accessibility {
+                var steps: [Step] = []
+                if attempt % 4 == 0 {
+                    steps.append(Step(name: "raise", status: AXUIElementPerformAction(
+                        context.target, kAXRaiseAction as CFString).rawValue))
+                    if canSetFocusedWindow {
+                        steps.append(Step(name: "setFocusedWindow", status: AXUIElementSetAttributeValue(
+                            context.appElement, kAXFocusedWindowAttribute as CFString, context.target).rawValue))
+                    }
+                }
+                steps.append(Step(name: "setFocused", status: AXUIElementSetAttributeValue(
+                    context.target, kAXFocusedAttribute as CFString, kCFBooleanTrue).rawValue))
+                return steps
+            })
         }
 
-        func observe() -> WindowFocusReport.Observation {
+        private func record(_ steps: [Step]) -> [WindowFocusReport.Operation] {
+            if steps.contains(where: { $0.status == AXError.cannotComplete.rawValue }) { targetUnresponsive = true }
+            guard recordsDiagnostics else { return [] }
+            return steps.map { .init($0.name, accessibilityStatus: $0.status, accepted: $0.accepted) }
+        }
+
+        private struct AccessibilityFocus: Sendable {
+            var focusedPID: pid_t?
+            var applicationStatus: Int32
+            var windowStatus: Int32?
+            var matches = false
+            var directStatus: Int32
+            var directMatches = false
+        }
+
+        func observe() async -> WindowFocusReport.Observation {
             // Focus is confirmed only after AppKit reports the target active. Until
-            // then AX reads cannot confirm it, and they block while the app is busy.
+            // then AX reads cannot confirm it, and they wait while the app is busy.
             guard app.isActive else {
                 return WindowFocusReport.Observation(
                     frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
@@ -932,56 +968,66 @@ public final class WindowSystem {
                     targetWindowMatches: false
                 )
             }
-            let application = system.copyAttribute(system.systemElement, kAXFocusedApplicationAttribute)
-            var focusedPID: pid_t?
-            var windowStatus: Int32?
-            var matches = false
-            if let value = application.value, CFGetTypeID(value) == AXUIElementGetTypeID() {
-                let focusedApp = unsafeDowncast(value, to: AXUIElement.self)
-                var pid: pid_t = 0
-                if AXUIElementGetPid(focusedApp, &pid) == .success { focusedPID = pid }
-                if focusedPID == ProcessInfo.processInfo.processIdentifier {
-                    // The target is an external app. Never synchronously query
-                    // our own AX window from the main thread while handing off.
-                    windowStatus = nil
-                } else {
-                    let window = system.copyAttribute(focusedApp, kAXFocusedWindowAttribute)
-                    windowStatus = window.error.rawValue
-                    if let focusedWindow = window.value, CFGetTypeID(focusedWindow) == AXUIElementGetTypeID() {
-                        matches = system.trackedWindowID(
-                            matching: unsafeDowncast(focusedWindow, to: AXUIElement.self)
-                        ) == targetWindowID
+            let context = self.context
+            let focus = await Self.accessibility { () -> AccessibilityFocus in
+                let system = context.system
+                let ownPID = ProcessInfo.processInfo.processIdentifier
+                let application = system.copyAttribute(context.systemElement, kAXFocusedApplicationAttribute)
+                var result = AccessibilityFocus(applicationStatus: application.error.rawValue,
+                                                directStatus: AXError.attributeUnsupported.rawValue)
+                if let value = application.value, CFGetTypeID(value) == AXUIElementGetTypeID() {
+                    let focusedApp = unsafeDowncast(value, to: AXUIElement.self)
+                    var pid: pid_t = 0
+                    if AXUIElementGetPid(focusedApp, &pid) == .success { result.focusedPID = pid }
+                    // Stagehand's own windows are never the target of this driver.
+                    if result.focusedPID != ownPID {
+                        let window = system.copyAttribute(focusedApp, kAXFocusedWindowAttribute)
+                        result.windowStatus = window.error.rawValue
+                        if let focusedWindow = window.value, CFGetTypeID(focusedWindow) == AXUIElementGetTypeID() {
+                            result.matches = system.trackedWindowID(
+                                matching: unsafeDowncast(focusedWindow, to: AXUIElement.self), in: context.identities
+                            ) == context.targetID
+                        }
                     }
                 }
+                // Read the target directly when global AX has not caught up with
+                // AppKit after Stagehand's Start menu closes.
+                let applicationUnavailable = WindowFocusReport.Observation.isUnavailable(application.error.rawValue)
+                let focusedApplicationIsStagehand = result.focusedPID == ownPID && context.targetPID != ownPID
+                let focusedWindowUnavailable = result.focusedPID == context.targetPID
+                    && result.windowStatus.map(WindowFocusReport.Observation.isUnavailable) == true
+                if applicationUnavailable || focusedApplicationIsStagehand || focusedWindowUnavailable {
+                    let direct = system.copyAttribute(context.appElement, kAXFocusedWindowAttribute)
+                    result.directStatus = direct.error.rawValue
+                    result.directMatches = direct.value.map {
+                        CFGetTypeID($0) == AXUIElementGetTypeID() && system.trackedWindowID(
+                            matching: unsafeDowncast($0, to: AXUIElement.self), in: context.identities
+                        ) == context.targetID
+                    } ?? false
+                }
+                return result
             }
-            // Read the target directly when global AX has not caught up with
-            // AppKit after Stagehand's Start menu closes.
-            let applicationUnavailable = WindowFocusReport.Observation.isUnavailable(application.error.rawValue)
-            let focusedApplicationIsStagehand = focusedPID == ProcessInfo.processInfo.processIdentifier &&
-                targetPID != ProcessInfo.processInfo.processIdentifier
-            let focusedWindowUnavailable = focusedPID == targetPID && windowStatus.map {
-                WindowFocusReport.Observation.isUnavailable($0)
-            } == true
-            let directWindow = applicationUnavailable || focusedApplicationIsStagehand || focusedWindowUnavailable
-                ? system.copyAttribute(appElement, kAXFocusedWindowAttribute)
-                : (value: nil, error: AXError.attributeUnsupported)
-            let directMatches = directWindow.value.map {
-                CFGetTypeID($0) == AXUIElementGetTypeID() &&
-                    system.trackedWindowID(matching: unsafeDowncast($0, to: AXUIElement.self)) == targetWindowID
-            } ?? false
             return WindowFocusReport.Observation(
                 frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
-                focusedApplicationPID: focusedPID,
-                focusedApplicationStatus: application.error.rawValue,
-                focusedWindowStatus: windowStatus,
-                directFocusedWindowStatus: directWindow.error.rawValue,
-                directTargetWindowMatches: directMatches,
+                focusedApplicationPID: focus.focusedPID,
+                focusedApplicationStatus: focus.applicationStatus,
+                focusedWindowStatus: focus.windowStatus,
+                directFocusedWindowStatus: focus.directStatus,
+                directTargetWindowMatches: focus.directMatches,
                 targetApplicationActive: app.isActive,
-                targetWindowMatches: matches
+                targetWindowMatches: focus.matches
             )
         }
 
         func wait(milliseconds: Int) async throws { try await Task.sleep(for: .milliseconds(milliseconds)) }
+
+        private static let queue = DispatchQueue(label: "app.stagehand.focus-accessibility", qos: .userInteractive)
+
+        private static func accessibility<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+            await withCheckedContinuation { continuation in
+                queue.async { continuation.resume(returning: work()) }
+            }
+        }
     }
 
     private func observeApplication(_ element: AXUIElement, pid: pid_t) {
@@ -1187,11 +1233,11 @@ public final class WindowSystem {
         return complete
     }
 
-    private func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+    nonisolated private func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
         copyAttribute(element, name).value
     }
 
-    private func copyAttribute(_ element: AXUIElement, _ name: String) -> (value: CFTypeRef?, error: AXError) {
+    nonisolated private func copyAttribute(_ element: AXUIElement, _ name: String) -> (value: CFTypeRef?, error: AXError) {
         var value: CFTypeRef?
         let error = AXUIElementCopyAttributeValue(element, name as CFString, &value)
         return (error == .success ? value : nil, error)
@@ -1210,37 +1256,67 @@ public final class WindowSystem {
         }
     }
 
-    private func windowNumber(_ element: AXUIElement) -> CGWindowID? {
+    nonisolated private func windowNumber(_ element: AXUIElement) -> CGWindowID? {
         var identifier = CGWindowID(0)
         return axWindowID(element, &identifier) == .success && identifier != 0 ? identifier : nil
     }
 
     private func directTrackedWindowID(matching element: AXUIElement) -> String? {
-        var pid: pid_t = 0
-        guard AXUIElementGetPid(element, &pid) == .success else { return nil }
-        let identifier = windowNumber(element)
-        if let exactMatch = windows.first(where: { _, tracked in
-            guard tracked.record.pid == pid else { return false }
-            if let identifier, let trackedIdentifier = tracked.windowNumber {
-                return identifier == trackedIdentifier
-            }
-            return CFEqual(tracked.element, element)
-        })?.key {
-            return exactMatch
-        }
-        return nil
+        directTrackedWindowID(matching: element, in: identitySnapshot())
     }
 
     private func trackedWindowID(matching element: AXUIElement) -> String? {
+        trackedWindowID(matching: element, in: identitySnapshot())
+    }
+
+    /// Main-actor window identity state, captured so focus matching can run off the main thread.
+    fileprivate struct IdentitySnapshot: @unchecked Sendable {
+        struct Window {
+            let id: String
+            let pid: pid_t
+            let number: CGWindowID?
+            let element: AXUIElement
+            let admitted: Bool
+        }
+        let windows: [Window]
+        let owned: [(element: AXUIElement, parentID: String)]
+    }
+
+    fileprivate func identitySnapshot() -> IdentitySnapshot {
+        IdentitySnapshot(
+            windows: windows.map { id, tracked in
+                .init(id: id, pid: tracked.record.pid, number: tracked.windowNumber,
+                      element: tracked.element, admitted: tracked.isAdmitted)
+            },
+            owned: ownedWindows.map { ($0.element, $0.parentID) }
+        )
+    }
+
+    nonisolated private func directTrackedWindowID(matching element: AXUIElement,
+                                                   in snapshot: IdentitySnapshot) -> String? {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success else { return nil }
+        let identifier = windowNumber(element)
+        return snapshot.windows.first { window in
+            guard window.pid == pid else { return false }
+            if let identifier, let number = window.number { return identifier == number }
+            return CFEqual(window.element, element)
+        }?.id
+    }
+
+    /// Resolves a focused AX element to its managed window: the window itself, the
+    /// owner of an attached sheet or dialog, or a unique same-geometry equivalent.
+    nonisolated private func trackedWindowID(matching element: AXUIElement,
+                                             in snapshot: IdentitySnapshot) -> String? {
         let isSheet = attribute(element, kAXRoleAttribute) as? String == kAXSheetRole
-        if !isSheet, let id = directTrackedWindowID(matching: element) { return id }
-        if let owned = ownedWindows.first(where: { sameWindow($0.element, element) }) {
+        if !isSheet, let id = directTrackedWindowID(matching: element, in: snapshot) { return id }
+        if let owned = snapshot.owned.first(where: { sameWindow($0.element, element) }) {
             return owned.parentID
         }
         // AX reports an attached sheet as the focused window. Its AXWindow is
         // the owning standard window, which remains the managed focus target.
         if let owner = explicitOwner(of: element),
-           let parentID = directTrackedWindowID(matching: owner) {
+           let parentID = directTrackedWindowID(matching: owner, in: snapshot) {
             return parentID
         }
         // A newly opened modal can receive focus before the next window scan.
@@ -1248,7 +1324,7 @@ public final class WindowSystem {
             var pid: pid_t = 0
             if AXUIElementGetPid(element, &pid) == .success,
                let main = elementAttribute(AXUIElementCreateApplication(pid), kAXMainWindowAttribute),
-               let parentID = directTrackedWindowID(matching: main) {
+               let parentID = directTrackedWindowID(matching: main, in: snapshot) {
                 return parentID
             }
         }
@@ -1259,14 +1335,14 @@ public final class WindowSystem {
         guard AXUIElementGetPid(element, &pid) == .success else { return nil }
         return uniqueWindowID(
             matchingFrame: frame,
-            among: windows.compactMap { id, tracked in
-                guard tracked.record.pid == pid, tracked.isAdmitted else { return nil }
-                return (id: id, frame: readFrame(tracked.element))
+            among: snapshot.windows.compactMap { window in
+                guard window.pid == pid, window.admitted else { return nil }
+                return (id: window.id, frame: readFrame(window.element))
             }
         )
     }
 
-    private func explicitOwner(of element: AXUIElement) -> AXUIElement? {
+    nonisolated private func explicitOwner(of element: AXUIElement) -> AXUIElement? {
         explicitOwner(
             of: element,
             candidates: [kAXWindowAttribute, kAXParentAttribute].map { elementAttribute(element, $0) },
@@ -1276,7 +1352,7 @@ public final class WindowSystem {
 
     /// `candidates` are the element's AXWindow and AXParent values. A standard window
     /// reports itself and its application there, which need no further AX reads.
-    private func explicitOwner(of element: AXUIElement, candidates: [AXUIElement?],
+    nonisolated private func explicitOwner(of element: AXUIElement, candidates: [AXUIElement?],
                                application: AXUIElement?) -> AXUIElement? {
         for candidate in candidates {
             guard let owner = candidate, !CFEqual(owner, element),
@@ -1289,7 +1365,7 @@ public final class WindowSystem {
         return nil
     }
 
-    private func sameWindow(_ lhs: AXUIElement, _ rhs: AXUIElement) -> Bool {
+    nonisolated private func sameWindow(_ lhs: AXUIElement, _ rhs: AXUIElement) -> Bool {
         if CFEqual(lhs, rhs) { return true }
         guard attribute(lhs, kAXRoleAttribute) as? String == kAXWindowRole,
               attribute(rhs, kAXRoleAttribute) as? String == kAXWindowRole else { return false }
@@ -1303,7 +1379,7 @@ public final class WindowSystem {
         abs(lhs.width - rhs.width) < 1 && abs(lhs.height - rhs.height) < 1
     }
 
-    private func elementAttribute(_ element: AXUIElement, _ name: String) -> AXUIElement? {
+    nonisolated private func elementAttribute(_ element: AXUIElement, _ name: String) -> AXUIElement? {
         guard let value = attribute(element, name), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
         return unsafeDowncast(value, to: AXUIElement.self)
     }
@@ -1355,7 +1431,7 @@ public final class WindowSystem {
     /// Reads several attributes in one Accessibility round trip. Returns nil only when
     /// the app rejects batched requests; a busy app's timeout is returned per attribute
     /// so callers never multiply the wait with individual reads.
-    private func copyAttributes(_ element: AXUIElement, _ names: [String]) -> [(value: CFTypeRef?, error: AXError)]? {
+    nonisolated private func copyAttributes(_ element: AXUIElement, _ names: [String]) -> [(value: CFTypeRef?, error: AXError)]? {
         var raw: CFArray?
         let status = AXUIElementCopyMultipleAttributeValues(
             element, names as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &raw
@@ -1387,7 +1463,7 @@ public final class WindowSystem {
         }
     }
 
-    private func readFrame(_ element: AXUIElement) -> CGRect? {
+    nonisolated private func readFrame(_ element: AXUIElement) -> CGRect? {
         // One request returns a position and size from the same app run-loop turn.
         if let values = copyAttributes(element, [kAXPositionAttribute, kAXSizeAttribute]) {
             guard let position = Self.point(values[0].value), let size = Self.size(values[1].value) else { return nil }
@@ -1406,11 +1482,11 @@ public final class WindowSystem {
         return CGRect(origin: secondPosition, size: secondSize)
     }
 
-    private func readPosition(_ element: AXUIElement) -> CGPoint? {
+    nonisolated private func readPosition(_ element: AXUIElement) -> CGPoint? {
         Self.point(attribute(element, kAXPositionAttribute))
     }
 
-    private func readSize(_ element: AXUIElement) -> CGSize? {
+    nonisolated private func readSize(_ element: AXUIElement) -> CGSize? {
         Self.size(attribute(element, kAXSizeAttribute))
     }
 
@@ -1497,7 +1573,7 @@ public final class WindowSystem {
             abs(actual.width - frame.width) <= 1 && abs(actual.height - frame.height) <= 1
     }
 
-    private static func samePosition(_ lhs: CGPoint, _ rhs: CGPoint) -> Bool {
+    nonisolated private static func samePosition(_ lhs: CGPoint, _ rhs: CGPoint) -> Bool {
         abs(lhs.x - rhs.x) <= 1 && abs(lhs.y - rhs.y) <= 1
     }
 }
