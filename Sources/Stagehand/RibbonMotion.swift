@@ -89,7 +89,7 @@ struct RibbonAnimationConfiguration: Equatable {
         edgeResistance: 60
     )
 
-    let duration: Double
+    var duration: Double
     let curve: RibbonAnimationCurve
     let tracking: Double
     let commitProgress: Double
@@ -322,10 +322,8 @@ final class RibbonMotion {
         let currentGeneration = generation
         frames = from
         guard configuration.duration > 0, from != to else {
-            frames = to
-            update(to)
-            guard generation == currentGeneration else { return }
-            completion()
+            finishImmediately(to: to, generation: currentGeneration, update: update,
+                              cancellation: cancellation, completion: completion)
             return
         }
         animation = Animation(
@@ -345,12 +343,20 @@ final class RibbonMotion {
         )
         guard startFrameDriver() else {
             animation = nil
-            frames = to
-            update(to)
-            guard generation == currentGeneration else { return }
-            completion()
+            finishImmediately(to: to, generation: currentGeneration, update: update,
+                              cancellation: cancellation, completion: completion)
             return
         }
+    }
+
+    /// Without a running animation, `cancel()` has no callback to report. If the
+    /// update cancels this motion, report that here so every caller is resumed.
+    private func finishImmediately(to: [String: CGRect], generation currentGeneration: UInt64,
+                                   update: ([String: CGRect]) -> Void,
+                                   cancellation: () -> Void, completion: () -> Void) {
+        frames = to
+        update(to)
+        if generation == currentGeneration { completion() } else { cancellation() }
     }
 
     func animate(from: [String: CGRect], to: [String: CGRect],

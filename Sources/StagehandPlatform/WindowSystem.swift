@@ -15,6 +15,12 @@ public struct WindowRecord: Identifiable, Equatable, Sendable {
     public let isResizable: Bool
 }
 
+/// Positive evidence that a managed window can no longer take part in the ribbon.
+public enum WindowUnavailability: String, Sendable {
+    case minimized
+    case closed
+}
+
 func canManageWindows(
     for activationPolicy: NSApplication.ActivationPolicy,
     hasVisibleOrTrackedWindow: Bool
@@ -553,6 +559,20 @@ public final class WindowSystem {
         return readFrame(tracked.element)
     }
 
+    /// Some apps minimize or close a window without posting the matching AX
+    /// notification. Report only confirmed states; a busy app returns nil.
+    public func unavailability(windowID: String) -> WindowUnavailability? {
+        if nativeWindows.contains(windowID: windowID) {
+            return nativeWindows.record(windowID: windowID) == nil ? .closed : nil
+        }
+        guard let tracked = windows[windowID],
+              let app = NSRunningApplication(processIdentifier: tracked.record.pid),
+              !app.isTerminated else { return .closed }
+        let minimized = copyAttribute(tracked.element, kAXMinimizedAttribute)
+        if minimized.error == .invalidUIElement { return .closed }
+        return minimized.value as? Bool == true ? .minimized : nil
+    }
+
     public func isParked(windowID: String) -> Bool {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.isParked(windowID: windowID) }
         return windows[windowID]?.parking.isParked == true
@@ -814,6 +834,7 @@ public final class WindowSystem {
         private let recordsDiagnostics: Bool
         private var canSetFocusedWindow = false
         private let focusBelongsToOwnedWindow: Bool
+        private(set) var targetUnresponsive = false
 
         init(system: WindowSystem, tracked: TrackedWindow, app: NSRunningApplication, recordsDiagnostics: Bool) {
             self.system = system
@@ -880,11 +901,26 @@ public final class WindowSystem {
 
         private func record(_ name: String, status: Int32? = nil, accepted: Bool? = nil,
                             into operations: inout [WindowFocusReport.Operation]) {
+            if status == AXError.cannotComplete.rawValue { targetUnresponsive = true }
             guard recordsDiagnostics else { return }
             operations.append(.init(name, accessibilityStatus: status, accepted: accepted))
         }
 
         func observe() -> WindowFocusReport.Observation {
+            // Focus is confirmed only after AppKit reports the target active. Until
+            // then AX reads cannot confirm it, and they block while the app is busy.
+            guard app.isActive else {
+                return WindowFocusReport.Observation(
+                    frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                    focusedApplicationPID: nil,
+                    focusedApplicationStatus: nil,
+                    focusedWindowStatus: nil,
+                    directFocusedWindowStatus: nil,
+                    directTargetWindowMatches: false,
+                    targetApplicationActive: false,
+                    targetWindowMatches: false
+                )
+            }
             let application = system.copyAttribute(system.systemElement, kAXFocusedApplicationAttribute)
             var focusedPID: pid_t?
             var windowStatus: Int32?

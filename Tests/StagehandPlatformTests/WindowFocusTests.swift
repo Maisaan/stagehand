@@ -9,6 +9,8 @@ private final class FocusDriverFixture: WindowFocusDriving {
     var elapsedMilliseconds = 0
     var observationMilliseconds: [Int] = []
     var cancelOnObservation = false
+    var targetUnresponsive = false
+    private(set) var requestTimes: [Int] = []
     var readings: [WindowFocusReport.Observation]
     private var readingIndex = 0
     private(set) var preparations = 0
@@ -26,6 +28,7 @@ private final class FocusDriverFixture: WindowFocusDriving {
 
     func requestFocus(attempt: Int) -> [WindowFocusReport.Operation] {
         requests.append(attempt)
+        requestTimes.append(elapsedMilliseconds)
         return [.init("setFocused", accessibilityStatus: AXError.cannotComplete.rawValue)]
     }
 
@@ -95,6 +98,41 @@ private func missingGlobalReading(
         targetApplicationActive: active,
         targetWindowMatches: false
     )
+}
+
+/// Slow Electron activations logged 1.5 s confirmations with only two observations:
+/// every setter and read to the busy app blocked until AX timed out.
+@Test @MainActor func busyTargetGetsNoRequestsUntilActiveAndKeepsTheSlowDeadline() async {
+    let inactive = WindowFocusReport.Observation(
+        frontmostPID: 456, focusedApplicationPID: nil, focusedApplicationStatus: nil,
+        focusedWindowStatus: nil, directFocusedWindowStatus: nil, directTargetWindowMatches: false,
+        targetApplicationActive: false, targetWindowMatches: false
+    )
+    let driver = FocusDriverFixture(readings: Array(repeating: inactive, count: 40) + [
+        focusReading(active: true, matches: false),
+        focusReading(active: true, matches: false),
+        focusReading(active: true, matches: true),
+    ])
+    driver.targetUnresponsive = true
+
+    let report = await WindowFocusAttempt.run(driver: driver)
+
+    // Activation took longer than the 600 ms deadline for a responsive app.
+    #expect(report.outcome == .focused)
+    #expect(report.elapsedMilliseconds > 600)
+    // Requests resume only after the target became active.
+    let activeAt = report.elapsedMilliseconds - 80
+    #expect(!driver.requestTimes.isEmpty)
+    #expect(driver.requestTimes.allSatisfy { $0 >= activeAt })
+}
+
+@Test @MainActor func responsiveTargetThatNeverActivatesStillTimesOutAtTheShortDeadline() async {
+    let driver = FocusDriverFixture(readings: [focusReading(active: false, matches: false)])
+
+    let report = await WindowFocusAttempt.run(driver: driver)
+
+    #expect(report.outcome == .timedOut)
+    #expect(report.elapsedMilliseconds < 700)
 }
 
 @Test func equivalentAccessibilityWindowFallsBackToUniqueGeometry() {

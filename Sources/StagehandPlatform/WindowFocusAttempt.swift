@@ -23,9 +23,10 @@ public struct WindowFocusReport: Codable, Equatable, Sendable {
     public struct Observation: Codable, Equatable, Sendable {
         public let frontmostPID: Int32?
         public let focusedApplicationPID: Int32?
-        public let focusedApplicationStatus: Int32
+        /// Accessibility statuses are nil when they were not read.
+        public let focusedApplicationStatus: Int32?
         public let focusedWindowStatus: Int32?
-        public let directFocusedWindowStatus: Int32
+        public let directFocusedWindowStatus: Int32?
         public let directTargetWindowMatches: Bool
         public let targetApplicationActive: Bool
         public let targetWindowMatches: Bool
@@ -36,7 +37,7 @@ public struct WindowFocusReport: Codable, Equatable, Sendable {
             // The global AX focus can still point at Stagehand after its Start
             // menu closes. Trust the target app's exact window only when AppKit
             // also says that app is active and frontmost.
-            let applicationUnavailable = Self.isUnavailable(focusedApplicationStatus)
+            let applicationUnavailable = focusedApplicationStatus.map(Self.isUnavailable) == true
             let focusedApplicationIsStagehand = focusedApplicationPID == ProcessInfo.processInfo.processIdentifier &&
                 targetPID != ProcessInfo.processInfo.processIdentifier
             let windowUnavailable = focusedApplicationPID == targetPID &&
@@ -92,6 +93,8 @@ public struct WindowFocusReport: Codable, Equatable, Sendable {
 protocol WindowFocusDriving {
     var targetPID: Int32 { get }
     var elapsedMilliseconds: Int { get }
+    /// True after the target app let an Accessibility request time out.
+    var targetUnresponsive: Bool { get }
     func prepare() -> [WindowFocusReport.Operation]
     func requestFocus(attempt: Int) -> [WindowFocusReport.Operation]
     func observe() -> WindowFocusReport.Observation
@@ -133,9 +136,12 @@ enum WindowFocusAttempt {
                 break
             }
             let elapsed = driver.elapsedMilliseconds
-            let shouldRequest = lastRequestAt.map {
+            // Each request to a busy app blocks the main thread until AX times out.
+            // Once it stops answering, let activation finish before asking again.
+            let awaitingBusyTarget = driver.targetUnresponsive && !targetBecameActive
+            let shouldRequest = !awaitingBusyTarget && lastRequestAt.map {
                 (elapsed < fastDeadline && !targetBecameActive) || elapsed - $0 >= 120
-            } ?? true
+            } ?? !awaitingBusyTarget
             if !finalObservationDue && shouldRequest {
                 let requestedOperations = driver.requestFocus(attempt: attempt)
                 if recordDiagnostics { operations.append(contentsOf: requestedOperations) }
@@ -151,9 +157,10 @@ enum WindowFocusAttempt {
             if observation.targetApplicationActive, observation.frontmostPID == driver.targetPID {
                 targetBecameActive = true
             }
-            if WindowFocusReport.Observation.isUnavailable(observation.focusedApplicationStatus) ||
+            if driver.targetUnresponsive ||
+                observation.focusedApplicationStatus.map(WindowFocusReport.Observation.isUnavailable) == true ||
                 observation.focusedWindowStatus.map(WindowFocusReport.Observation.isUnavailable) == true ||
-                WindowFocusReport.Observation.isUnavailable(observation.directFocusedWindowStatus) {
+                observation.directFocusedWindowStatus.map(WindowFocusReport.Observation.isUnavailable) == true {
                 accessibilityUnavailable = true
             }
             let currentDeadline = targetBecameActive || accessibilityUnavailable

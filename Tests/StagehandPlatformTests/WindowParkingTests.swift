@@ -170,6 +170,23 @@ struct WindowParkingTests {
         #expect(!parking.isParked)
     }
 
+    /// Display arrangement or scaling changes move the parking bounds. Confirming an
+    /// existing park must adopt them, or restoring onto the new display looks failed.
+    @Test func reparkingAnAlreadyParkedWindowAdoptsTheNewBounds() {
+        var parking = makeParkedWindow()
+        let moved = CGRect(x: 2000, y: 0, width: 1800, height: 1169)
+        var actual = CGRect(x: moved.maxX - 1, y: original.minY, width: original.width, height: original.height)
+        let reparked = parking.park(frame: actual, bounds: moved, displays: [moved],
+                                    setPosition: { actual.origin = $0; return true }, readFrame: { actual })
+        #expect(reparked)
+
+        let destination = CGRect(x: 2100, y: 100, width: 900, height: 700)
+        let restored = parking.restore(to: destination, setFrame: { actual = $0; return true }, readFrame: { actual })
+
+        #expect(restored)
+        #expect(parking.restoreFrame == nil)
+    }
+
     @Test func pendingRecoveryCanBeParkedAgain() {
         var parking = WindowParking()
         var actual = original

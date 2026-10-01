@@ -4,6 +4,9 @@ import Foundation
 final class DiagnosticLogger {
     static let preferenceKey = "diagnosticLoggingEnabled"
     private static let retentionDuration: TimeInterval = 24 * 60 * 60
+    /// Pruning rewrites the whole file on the main thread. Entries may outlive
+    /// the retention period by up to this interval.
+    private static let minimumPruneInterval: TimeInterval = 60 * 60
 
     static var defaultLogURL: URL {
         let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
@@ -158,7 +161,10 @@ final class DiagnosticLogger {
         if removedEntry {
             try retained.write(to: logURL, options: .atomic)
         }
-        nextPruneDate = (oldestRetainedDate ?? date).addingTimeInterval(Self.retentionDuration)
+        nextPruneDate = max(
+            (oldestRetainedDate ?? date).addingTimeInterval(Self.retentionDuration),
+            date.addingTimeInterval(Self.minimumPruneInterval)
+        )
     }
 
     private func schedulePrune(for timestamp: Date) {

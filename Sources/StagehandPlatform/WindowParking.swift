@@ -21,6 +21,7 @@ struct WindowParking {
             if let actual = readFrame(), Self.valid(actual),
                Self.acceptablyParked(actual, bounds: bounds, displays: displays) {
                 isParked = true
+                parkingBounds = bounds
                 parkedFrame = actual
                 return true
             }

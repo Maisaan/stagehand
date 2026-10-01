@@ -157,6 +157,26 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     #expect(motion.frames["a"]?.minX == -100)
 }
 
+/// The model cancels motion from its frame update when a pointer interaction or
+/// Desktop change interrupts it. An instant move used to drop both callbacks,
+/// leaving the awaiting worker suspended and navigation stopped until a pause.
+@MainActor @Test func instantMotionCancelledFromItsUpdateStillFinishes() {
+    let motion = RibbonMotion(frameDriver: TestRibbonFrameDriver(), currentTime: { 0 })
+    let frame = CGRect(x: 0, y: 0, width: 10, height: 10)
+    for (to, duration) in [(frame.offsetBy(dx: 100, dy: 0), 0.0), (frame, 1.0)] {
+        var events: [String] = []
+        motion.animate(
+            from: ["a": frame],
+            to: ["a": to],
+            configuration: .init(duration: duration, curve: .linear),
+            update: { _ in motion.cancel() },
+            cancellation: { events.append("cancelled") },
+            completion: { events.append("completed") }
+        )
+        #expect(events == ["cancelled"])
+    }
+}
+
 @MainActor @Test func gestureFramesCoalesceToOneWritePerDisplayRefresh() {
     let driver = TestRibbonFrameDriver()
     let motion = RibbonMotion(frameDriver: driver, currentTime: { 0 })
@@ -207,6 +227,23 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
         park: { _ in false },
         observedFrame: { _ in CGRect(x: 0, y: 0, width: 10, height: 10) }
     ) == .failed)
+}
+
+/// A minimized window keeps a readable frame, so it used to exhaust the retries and pause.
+@MainActor @Test func parkingReportsAWindowMinimizedWithoutNotification() async {
+    var attempts = 0
+    let outcome = await parkWindow(
+        windowID: "a",
+        park: { _ in
+            attempts += 1
+            return false
+        },
+        observedFrame: { _ in CGRect(x: 0, y: 0, width: 10, height: 10) },
+        unavailability: { _ in .minimized }
+    )
+
+    #expect(outcome == .unavailable(.minimized))
+    #expect(attempts == 1)
 }
 
 @MainActor @Test func transientParkingFailureDoesNotPauseNavigation() async {

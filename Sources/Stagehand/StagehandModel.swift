@@ -162,6 +162,7 @@ struct RibbonPositionWriteFailure: Equatable {
 enum WindowParkingOutcome: Equatable {
     case parked
     case deferred
+    case unavailable(WindowUnavailability)
     case failed
 }
 
@@ -281,6 +282,7 @@ func parkWindow(
     windowID: String,
     park: (String) -> Bool,
     observedFrame: (String) -> CGRect?,
+    unavailability: (String) -> WindowUnavailability? = { _ in nil },
     canRetry: () -> Bool = { true }
 ) async -> WindowParkingOutcome {
     for delay in [Duration.zero, .milliseconds(8), .milliseconds(24), .milliseconds(56)] {
@@ -290,6 +292,7 @@ func parkWindow(
         }
         guard !Task.isCancelled, canRetry() else { return .deferred }
         if park(windowID) { return .parked }
+        if let reason = unavailability(windowID) { return .unavailable(reason) }
         if observedFrame(windowID) == nil { return .deferred }
     }
     return .failed
@@ -400,6 +403,7 @@ final class StagehandModel: ObservableObject {
     private var isLayingOutWindows = false
     private var preferencesNeedLayout = false
     private var layoutFailureReason: String?
+    private var unavailableLayoutTarget: (windowID: String, reason: WindowUnavailability)?
     private var isRecordingShortcut = false
     private static let legacyFocusBorderColorPreferenceKey = "focusBorderColor"
     private static let focusBorderColorsPreferenceKey = "focusBorderColors"
@@ -1229,76 +1233,77 @@ final class StagehandModel: ObservableObject {
     }
 
     private func applicationTerminated(pid: Int32) {
-        guard isRunning, !isSuspended else { return }
+        removeFromRibbon(forgetFocus: true, event: "application_removed", remove: {
+            removeTerminatedApplication(
+                pid: pid, windows: &windows, state: &state, restoration: &workspaceRestoration,
+                trackedWindowIDs: windowSystem.trackedWindowIDs
+            )
+        }, details: { ["pid": String(pid), "windowCount": String($0.count)] })
+    }
+
+    @discardableResult
+    private func windowDestroyed(windowID: String) -> Bool {
+        removeFromRibbon(forgetFocus: true, event: "window_removed", remove: {
+            removeDestroyedWindow(
+                windowID: windowID, windows: &windows, state: &state,
+                restoration: &workspaceRestoration, trackedWindowIDs: windowSystem.trackedWindowIDs
+            ) ? [windowID] : []
+        }, details: { _ in ["windowID": windowID] })
+    }
+
+    /// A minimized window keeps its focus history so it can return to its membership.
+    @discardableResult
+    private func windowMiniaturized(windowID: String) -> Bool {
+        removeFromRibbon(forgetFocus: false, event: "window_unavailable", remove: {
+            removeUnavailableWindow(
+                windowID: windowID, windows: &windows, state: &state,
+                restoration: &workspaceRestoration, trackedWindowIDs: windowSystem.trackedWindowIDs
+            ) ? [windowID] : []
+        }, details: { _ in ["windowID": windowID, "reason": "minimized"] })
+    }
+
+    /// Applies a removal immediately and animates the remaining ribbon closed.
+    @discardableResult
+    private func removeFromRibbon(
+        forgetFocus: Bool,
+        event: String,
+        remove: () -> Set<String>,
+        details: (Set<String>) -> [String: String]
+    ) -> Bool {
+        guard isRunning, !isSuspended else { return false }
         refreshTask?.cancel()
         let previousState = state
         let motionStart = navigationFrames()
         let focusedWindowID = state.focusedWindowID
-        let removedIDs = removeTerminatedApplication(
-            pid: pid, windows: &windows, state: &state, restoration: &workspaceRestoration,
-            trackedWindowIDs: windowSystem.trackedWindowIDs
-        )
-        guard !removedIDs.isEmpty else { return }
-        focusHistory.remove(windowIDs: removedIDs)
+        let removedIDs = remove()
+        guard !removedIDs.isEmpty else { return false }
+        if forgetFocus { focusHistory.remove(windowIDs: removedIDs) }
         focusMostRecentWindowAfterLoss(
             previousFocusedWindowID: focusedWindowID,
             history: focusHistory,
             state: &state
         )
         finishRemovingWindows(removedIDs, focusedWindowID: focusedWindowID)
-        diagnostics.record("application_removed", details: [
-            "pid": String(pid),
-            "windowCount": String(removedIDs.count)
+        diagnostics.record(event, details: details(removedIDs))
+        enqueue(.windowRemoval, transitionFrom: previousState, motionStart: motionStart)
+        onStateChange?()
+        return true
+    }
+
+    /// Handles a minimize or close that the app never reported, found while
+    /// focusing or parking the window.
+    @discardableResult
+    private func dropUnavailableWindow(_ windowID: String, reason: WindowUnavailability,
+                                       detectedBy source: String) -> Bool {
+        diagnostics.record("window_unavailable_detected", details: [
+            "detectedBy": source,
+            "reason": reason.rawValue,
+            "windowID": windowID
         ])
-        enqueue(.windowRemoval, transitionFrom: previousState, motionStart: motionStart)
-        onStateChange?()
-    }
-
-    private func windowDestroyed(windowID: String) {
-        guard isRunning, !isSuspended else { return }
-        refreshTask?.cancel()
-        let previousState = state
-        let motionStart = navigationFrames()
-        let focusedWindowID = state.focusedWindowID
-        guard removeDestroyedWindow(
-            windowID: windowID, windows: &windows, state: &state,
-            restoration: &workspaceRestoration, trackedWindowIDs: windowSystem.trackedWindowIDs
-        ) else { return }
-        let removedIDs = Set([windowID])
-        focusHistory.remove(windowIDs: removedIDs)
-        focusMostRecentWindowAfterLoss(
-            previousFocusedWindowID: focusedWindowID,
-            history: focusHistory,
-            state: &state
-        )
-        finishRemovingWindows(removedIDs, focusedWindowID: focusedWindowID)
-        diagnostics.record("window_removed", details: ["windowID": windowID])
-        enqueue(.windowRemoval, transitionFrom: previousState, motionStart: motionStart)
-        onStateChange?()
-    }
-
-    private func windowMiniaturized(windowID: String) {
-        guard isRunning, !isSuspended else { return }
-        refreshTask?.cancel()
-        let previousState = state
-        let motionStart = navigationFrames()
-        let focusedWindowID = state.focusedWindowID
-        guard removeUnavailableWindow(
-            windowID: windowID,
-            windows: &windows,
-            state: &state,
-            restoration: &workspaceRestoration,
-            trackedWindowIDs: windowSystem.trackedWindowIDs
-        ) else { return }
-        focusMostRecentWindowAfterLoss(
-            previousFocusedWindowID: focusedWindowID,
-            history: focusHistory,
-            state: &state
-        )
-        finishRemovingWindows([windowID], focusedWindowID: focusedWindowID)
-        diagnostics.record("window_unavailable", details: ["windowID": windowID, "reason": "minimized"])
-        enqueue(.windowRemoval, transitionFrom: previousState, motionStart: motionStart)
-        onStateChange?()
+        switch reason {
+        case .minimized: return windowMiniaturized(windowID: windowID)
+        case .closed: return windowDestroyed(windowID: windowID)
+        }
     }
 
     private func windowDeminiaturized(windowID: String) {
@@ -1668,6 +1673,7 @@ final class StagehandModel: ObservableObject {
                     ])
                 }
                 self.layoutFailureReason = nil
+                self.unavailableLayoutTarget = nil
                 let succeeded = await self.applyLayout(token: token, request: change.policy,
                                                        operation: change.diagnosticName,
                                                        slideFrom: canSlide ? motionStart : nil,
@@ -1676,6 +1682,12 @@ final class StagehandModel: ObservableObject {
                                                        focusAlongsideSlide: change.focusesAlongsideRibbon)
                 guard generation == self.workerGeneration, !Task.isCancelled else { return }
                 if !succeeded {
+                    // The destination disappeared without a notification. Drop it like
+                    // any other unavailable window; its removal layout is now pending.
+                    if let target = self.unavailableLayoutTarget,
+                       self.dropUnavailableWindow(target.windowID, reason: target.reason, detectedBy: "focus") {
+                        continue
+                    }
                     self.state = rollbackState
                     self.stop(
                         reason: self.layoutFailureReason ?? "layout_stopped_unexpectedly",
@@ -1759,13 +1771,17 @@ final class StagehandModel: ObservableObject {
     private func focusManagedWindow(_ record: WindowRecord, token: UInt64?,
                                     request: LayoutRequestPolicy, operation: String) async -> Bool {
         let observedFocusBefore = diagnostics.isEnabled ? windowSystem.focusedWindowID() : nil
-        let focused = await request.confirmFocus(
+        let confirmation = await request.confirmFocus(
             windowID: record.id,
             currentFocus: { windowSystem.focusedWindowID() },
-            activate: { await windowSystem.focus(windowID: record.id) }
+            activate: { await windowSystem.focus(windowID: record.id) },
+            unavailability: { windowSystem.unavailability(windowID: record.id) }
         )
+        let focused = confirmation == .focused
         if request == .navigation, diagnostics.isEnabled {
-            let observedFocusAfter = windowSystem.focusedWindowID()
+            // A confirmed focus already observed the target. Avoid another
+            // synchronous AX read while the newly active app may still be busy.
+            let observedFocusAfter = focused ? record.id : windowSystem.focusedWindowID()
             var details = [
                 "focusConfirmed": String(focused),
                 "membershipCount": String(state.spaces.count { $0.windowIDs.contains(record.id) }),
@@ -1794,6 +1810,11 @@ final class StagehandModel: ObservableObject {
         }
         guard focused, token.map({ expiredTokens.contains($0) }) != true else {
             if let token { focusGate.cancelTransfer(token: token) }
+            if case .unavailable(let reason) = confirmation {
+                unavailableLayoutTarget = (record.id, reason)
+                layoutFailureReason = "focus_target_unavailable"
+                return false
+            }
             warning = "Stagehand couldn't focus \(record.appName). It paused and restored your windows. Check for an open dialog or changed permissions."
             var details = [
                 "bundleIdentifier": record.bundleIdentifier,
@@ -1976,28 +1997,11 @@ final class StagehandModel: ObservableObject {
             nativeDesktopChanged()
             return false
         }
-        for window in windows where !visibleIDs.contains(window.id) && !animatedWindowIDs.contains(window.id) {
-            let parkingSide = preferredParkingSide(
-                for: placements.first(where: { $0.windowID == window.id })?.frame,
-                relativeTo: availableFrame
-            )
-            let parking = await parkWindow(
-                windowID: window.id,
-                park: { windowSystem.park(windowID: $0, preferredSide: parkingSide) },
-                observedFrame: { windowSystem.observedFrame(windowID: $0) },
-                canRetry: { self.isRunning && !self.isSuspended && self.desktopScope.refresh() == .home }
-            )
-            guard isRunning, !isSuspended, !Task.isCancelled else { return false }
-            guard desktopScope.refresh() == .home else {
-                nativeDesktopChanged()
-                return false
-            }
-            if parking == .failed {
-                warning = "Stagehand couldn't move \(window.appName) out of this space. It paused and restored your windows."
-                return failLayout("window_parking_failed", details: parkingFailureDetails(
-                    window: window, preferredSide: parkingSide
-                ))
-            }
+        let placementFrames = Dictionary(uniqueKeysWithValues: placements.map { ($0.windowID, $0.frame) })
+        switch await parkHiddenWindows(keeping: visibleIDs.union(animatedWindowIDs), layoutFrames: placementFrames) {
+        case .interrupted: return false
+        case .failed(let details): return failLayout("window_parking_failed", details: details)
+        case .completed: break
         }
         guard preferenceFocusStillMatches(request) else { return true }
         preferencesNeedLayout = false
@@ -2033,15 +2037,17 @@ final class StagehandModel: ObservableObject {
                         operation: operation
                       ) else { return false }
                 destinationPID = record.pid
-                if !focusAlongsideSlide,
-                   let target = placements.first(where: { $0.windowID == focusedID })?.frame,
-                   let actual = self.windowSystem.frame(windowID: focusedID),
-                   !framesMatch(observed: actual, target: target) {
+                guard !focusAlongsideSlide else { return true }
+                // The newly active app may still be busy. Each frame read is a
+                // blocking AX round trip, so read once and again only after a write.
+                var frame = self.windowSystem.frame(windowID: focusedID)
+                if let target = placements.first(where: { $0.windowID == focusedID })?.frame,
+                   let actual = frame, !framesMatch(observed: actual, target: target) {
                     _ = self.windowSystem.setFrame(windowID: focusedID, frame: target)
-                    self.lastAppliedFrames[focusedID] = self.windowSystem.frame(windowID: focusedID)
+                    frame = self.windowSystem.frame(windowID: focusedID)
+                    self.lastAppliedFrames[focusedID] = frame
                 }
-                if !focusAlongsideSlide,
-                   let frame = self.windowSystem.frame(windowID: focusedID) {
+                if let frame {
                     self.updateFocusBorder(windowID: focusedID, frame: frame, raiseBorder: true)
                 }
                 return true
@@ -2128,6 +2134,46 @@ final class StagehandModel: ObservableObject {
         return frames
     }
 
+    private enum HiddenWindowParking {
+        case completed
+        case interrupted
+        case failed(details: [String: String])
+    }
+
+    /// Parks every managed window outside `keeping`, on the side its layout frame
+    /// falls. A window that turns out to be minimized or closed leaves the ribbon.
+    private func parkHiddenWindows(keeping keptIDs: Set<String>,
+                                   layoutFrames: [String: CGRect]) async -> HiddenWindowParking {
+        let bounds = availableFrame
+        for window in windows where !keptIDs.contains(window.id) {
+            let parkingSide = bounds.flatMap {
+                preferredParkingSide(for: layoutFrames[window.id], relativeTo: $0)
+            }
+            let parking = await parkWindow(
+                windowID: window.id,
+                park: { windowSystem.park(windowID: $0, preferredSide: parkingSide) },
+                observedFrame: { windowSystem.observedFrame(windowID: $0) },
+                unavailability: { windowSystem.unavailability(windowID: $0) },
+                canRetry: { self.isRunning && !self.isSuspended && self.desktopScope.refresh() == .home }
+            )
+            guard isRunning, !isSuspended, !Task.isCancelled else { return .interrupted }
+            guard desktopScope.refresh() == .home else {
+                nativeDesktopChanged()
+                return .interrupted
+            }
+            switch parking {
+            case .unavailable(let reason):
+                dropUnavailableWindow(window.id, reason: reason, detectedBy: "parking")
+            case .failed:
+                warning = "Stagehand couldn't move \(window.appName) out of this space. It paused and restored your windows."
+                return .failed(details: parkingFailureDetails(window: window, preferredSide: parkingSide))
+            case .parked, .deferred:
+                break
+            }
+        }
+        return .completed
+    }
+
     private func applyMotionFrames(_ frames: [String: CGRect]) {
         guard isRunning, !isSuspended, desktopScope.relation == .home else {
             ribbonMotion.cancel()
@@ -2155,7 +2201,9 @@ final class StagehandModel: ObservableObject {
            var frame = frames[focused] {
             frame.origin = motionWrittenPositions[focused]
                 ?? RibbonMotion.pixelAligned(frame.origin, backingScaleFactor: motionBackingScaleFactor)
-            updateFocusBorder(windowID: focused, frame: frame)
+            // Motion is horizontal, so the shape cannot change. An unresolved radius
+            // would otherwise query WindowServer on every display tick.
+            updateFocusBorder(windowID: focused, frame: frame, refreshShape: false)
         }
     }
 
@@ -2165,23 +2213,14 @@ final class StagehandModel: ObservableObject {
         motionWrittenPositions = from.mapValues {
             RibbonMotion.pixelAligned($0.origin, backingScaleFactor: motionBackingScaleFactor)
         }
-        let animationConfiguration = RibbonAnimationConfiguration(
-            duration: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-                ? 0 : ribbonAnimationConfiguration.duration,
-            curve: ribbonAnimationConfiguration.curve,
-            tracking: ribbonAnimationConfiguration.tracking,
-            commitProgress: ribbonAnimationConfiguration.commitProgress,
-            flickDistance: ribbonAnimationConfiguration.flickDistance,
-            flickVelocity: ribbonAnimationConfiguration.flickVelocity,
-            edgeResistance: ribbonAnimationConfiguration.edgeResistance
-        )
+        var animationConfiguration = ribbonAnimationConfiguration
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { animationConfiguration.duration = 0 }
         if diagnostics.isEnabled {
             diagnostics.record("ribbon_animation_started", details: [
                 "curve": animationConfiguration.curve.diagnosticDescription,
                 "durationMilliseconds": String(Int((animationConfiguration.duration * 1_000).rounded())),
                 "focusedWindowID": state.focusedWindowID ?? "none",
                 "initialHorizontalVelocity": initialHorizontalVelocity.map { String(Double($0)) } ?? "none",
-                "observedFocusedWindowID": windowSystem.focusedWindowID() ?? "none",
                 "operation": operation,
                 "windowCount": String(to.count)
             ])
@@ -2224,8 +2263,9 @@ final class StagehandModel: ObservableObject {
                 actualFrame: failure.actualFrame,
                 details: ["attempts": "4"]
             )
-            warning = "Stagehand couldn't place the destination window safely. It paused and restored your windows."
-            layoutFailureReason = "ribbon_position_commit_failed"
+            // Motion ends here without pausing. Rewrite the ribbon with verified frame
+            // writes and parking so no window stays outside its slot.
+            enqueue(.refresh)
             return false
         }
         if diagnostics.isEnabled {
@@ -2238,30 +2278,12 @@ final class StagehandModel: ObservableObject {
                 "windowCount": String(to.count)
             ])
         }
-        for window in windows where !visibleIDs.contains(window.id) {
-            let parkingSide = availableFrame.flatMap {
-                    preferredParkingSide(for: to[window.id], relativeTo: $0)
-            }
-            let parking = await parkWindow(
-                windowID: window.id,
-                park: { windowSystem.park(windowID: $0, preferredSide: parkingSide) },
-                observedFrame: { windowSystem.observedFrame(windowID: $0) },
-                canRetry: { self.isRunning && !self.isSuspended && self.desktopScope.refresh() == .home }
-            )
-            guard isRunning, !isSuspended, !Task.isCancelled else { return false }
-            guard desktopScope.refresh() == .home else {
-                nativeDesktopChanged()
-                return false
-            }
-            if parking == .failed {
-                warning = "Stagehand couldn't move \(window.appName) out of this space. It paused and restored your windows."
-                stop(
-                    reason: "ribbon_parking_failed",
-                    automatic: true,
-                    details: parkingFailureDetails(window: window, preferredSide: parkingSide)
-                )
-                return false
-            }
+        switch await parkHiddenWindows(keeping: visibleIDs, layoutFrames: to) {
+        case .interrupted: return false
+        case .failed(let details):
+            stop(reason: "ribbon_parking_failed", automatic: true, details: details)
+            return false
+        case .completed: break
         }
         for id in visibleIDs { lastAppliedFrames[id] = windowSystem.frame(windowID: id) }
         lastTransition = Date()
@@ -2389,10 +2411,8 @@ final class StagehandModel: ObservableObject {
             if !gesturePrepared.contains(id) {
                 let beforeFrame = diagnostics.isEnabled ? windowSystem.observedFrame(windowID: id) : nil
                 let parkedBefore = diagnostics.isEnabled ? windowSystem.isParked(windowID: id) : false
-                let observedFocusBefore = diagnostics.isEnabled ? windowSystem.focusedWindowID() : nil
                 let frameWritten = windowSystem.setFrame(windowID: id, frame: shifted)
                 if diagnostics.isEnabled {
-                    let observedFocusAfter = windowSystem.focusedWindowID()
                     recordWindowGeometry(
                         event: "gesture_window_frame_applied",
                         windowID: id,
@@ -2404,12 +2424,8 @@ final class StagehandModel: ObservableObject {
                             "frameWriteAccepted": String(frameWritten),
                             "isLogicalFocused": String(state.focusedWindowID == id),
                             "membershipCount": String(state.spaces.count { $0.windowIDs.contains(id) }),
-                            "observedFocusedWindowIDAfter": observedFocusAfter ?? "none",
-                            "observedFocusedWindowIDBefore": observedFocusBefore ?? "none",
                             "parkedAfter": String(windowSystem.isParked(windowID: id)),
-                            "parkedBefore": String(parkedBefore),
-                            "systemFocusedAfter": String(observedFocusAfter == id),
-                            "systemFocusedBefore": String(observedFocusBefore == id)
+                            "parkedBefore": String(parkedBefore)
                         ]
                     )
                 }

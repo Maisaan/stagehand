@@ -1,4 +1,13 @@
 import StagehandCore
+import StagehandPlatform
+
+enum FocusConfirmation: Equatable {
+    case focused
+    /// The target was minimized or closed without a notification. Navigation
+    /// should drop it like any other unavailable window instead of pausing.
+    case unavailable(WindowUnavailability)
+    case failed
+}
 
 @MainActor
 enum LayoutRequestPolicy: Equatable {
@@ -21,9 +30,14 @@ enum LayoutRequestPolicy: Equatable {
         return state
     }
 
-    func confirmFocus(windowID: String, currentFocus: () -> String?, activate: () async -> Bool) async -> Bool {
-        guard self == .navigation else { return currentFocus() == windowID }
-        if await activate() { return true }
-        return currentFocus() == windowID
+    func confirmFocus(
+        windowID: String,
+        currentFocus: () -> String?,
+        activate: () async -> Bool,
+        unavailability: () -> WindowUnavailability? = { nil }
+    ) async -> FocusConfirmation {
+        guard self == .navigation else { return currentFocus() == windowID ? .focused : .failed }
+        if await activate() || currentFocus() == windowID { return .focused }
+        return unavailability().map(FocusConfirmation.unavailable) ?? .failed
     }
 }

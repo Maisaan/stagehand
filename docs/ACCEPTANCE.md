@@ -85,6 +85,8 @@ Record the app pairs, pass/fail result, and any relevant log timestamps in the c
 - Repeat with the navigation overlay visible. App menus and input remain with the active real app.
 - Open a confirmation dialog on a managed window. Switch away and back: the dialog stays with its owning window, does not get a ribbon slot, and keeps keyboard focus when that window is active. Repeat with two windows from the same app to check that the dialog follows the one that opened it.
 - Exercise a blocked/slow app or modal dialog. Failed focus must pause/restore and visibly report withheld input.
+- Minimize a ribbon window with Command-M, then immediately navigate onto and past its slot. Stagehand must skip it without pausing (`window_unavailable` or `window_unavailable_detected` in the log, no `automatic_pause`) and return it to its membership when restored.
+- Switch to a slow-activating app such as an Electron editor while the gesture or ribbon is moving. Focus may take longer, but the ribbon, app bar, and typing must not freeze while it activates.
 - Revoke Accessibility while Stagehand is running, then trigger navigation. It must stop moving windows and report the unavailable protection instead of assuming permission remains valid.
 - Check Setup when Secure Input is active. Do not assume interception remains available.
 - Keep macOS navigation gestures set to four fingers, then enable Stagehand's three-finger gestures. Test every direction, fast/slow swipes, diagonal starts, and staggered finger landing/lifting.

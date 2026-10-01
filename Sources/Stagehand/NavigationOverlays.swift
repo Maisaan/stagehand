@@ -268,11 +268,15 @@ final class NavigationOverlays {
             windowCount: hudModel.displayedItemCount, warningHeight: warningHeight)
         contentFrame = geometry.contentFrame
         updateHoverFrame()
-        hudModel.attachedToNotch = geometry.attachedToNotch
-        container.attachedToNotch = geometry.attachedToNotch
-        hud.setFrame(geometry.panelFrame, display: true)
-        container.needsLayout = true
-        container.layoutSubtreeIfNeeded()
+        // Successive navigations usually keep the same geometry. Avoid a forced
+        // synchronous layout and redraw just as ribbon motion starts.
+        if hud.frame != geometry.panelFrame || container.attachedToNotch != geometry.attachedToNotch {
+            hudModel.attachedToNotch = geometry.attachedToNotch
+            container.attachedToNotch = geometry.attachedToNotch
+            hud.setFrame(geometry.panelFrame, display: true)
+            container.needsLayout = true
+            container.layoutSubtreeIfNeeded()
+        }
         let wasVisible = hud.isVisible
         let wasExiting = hudIsExiting
         hudGeneration &+= 1
