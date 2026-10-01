@@ -75,7 +75,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if let index = arguments.firstIndex(of: "--acceptance"), arguments.indices.contains(index + 1) {
             Task { @MainActor in
-                print(await model.diagnoseAcceptance(probeURL: URL(fileURLWithPath: arguments[index + 1])))
+                let report = await model.diagnoseAcceptance(probeURL: URL(fileURLWithPath: arguments[index + 1]))
+                print(report)
+                // Launched through LaunchServices so macOS checks Stagehand's own
+                // Accessibility grant; stdout is not attached then.
+                if let output = arguments.firstIndex(of: "--acceptance-output").flatMap({
+                    arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil
+                }) {
+                    try? Data((report + "\n").utf8).write(to: URL(fileURLWithPath: output))
+                }
                 NSApp.terminate(nil)
             }
             return

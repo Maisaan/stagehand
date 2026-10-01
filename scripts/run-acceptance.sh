@@ -9,4 +9,9 @@ if pgrep -f "Stagehand.app/Contents/MacOS/Stagehand" >/dev/null; then
     exit 1
 fi
 [[ -d "$root/dist/AcceptanceProbe.app" ]] || "$root/scripts/build-acceptance-probe.sh" >/dev/null
-"$app/Contents/MacOS/Stagehand" --acceptance "$root/dist/AcceptanceProbe.app"
+report="$(mktemp -t stagehand-acceptance)"
+# Launch through LaunchServices: running the binary from a shell would make
+# macOS check the terminal's Accessibility permission instead of Stagehand's.
+open -W -n "$app" --args --acceptance "$root/dist/AcceptanceProbe.app" --acceptance-output "$report"
+cat "$report"
+rm -f "$report"
