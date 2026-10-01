@@ -28,6 +28,8 @@ public protocol WindowManaging: AnyObject {
     @discardableResult func start() -> [WindowRecord]
     func stop()
     func scanWindows() -> [WindowRecord]
+    /// Reads off the main thread; nil when windows changed during the read.
+    func scanWindowsOffMain() async -> [WindowRecord]?
     func record(windowID: String) -> WindowRecord?
 
     func frame(windowID: String) -> CGRect?

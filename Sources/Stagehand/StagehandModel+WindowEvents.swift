@@ -26,7 +26,22 @@ extension StagehandModel {
                 guard !Task.isCancelled, let self, self.isRunning, !self.isSuspended else { return }
                 guard !self.changes.isProcessing, !self.ribbonMotion.isRunning,
                       self.gestureBase == nil, !self.isLayingOutWindows else { continue }
-                self.refreshWindows()
+                // Scanning on another Desktop could admit its windows.
+                guard self.desktopScope.refresh() == .home else {
+                    self.nativeDesktopChanged()
+                    return
+                }
+                // Read windows off the main thread. Windows changed during the read
+                // (closed, minimized, another scan) make it stale; try again.
+                guard let current = await self.windowSystem.scanWindowsOffMain() else { continue }
+                guard !Task.isCancelled, self.isRunning, !self.isSuspended else { return }
+                guard !self.changes.isProcessing, !self.ribbonMotion.isRunning,
+                      self.gestureBase == nil, !self.isLayingOutWindows else { continue }
+                guard self.desktopScope.refresh() == .home else {
+                    self.nativeDesktopChanged()
+                    return
+                }
+                self.applyRefresh(current)
                 return
             }
         }
@@ -190,8 +205,12 @@ extension StagehandModel {
             nativeDesktopChanged()
             return
         }
+        applyRefresh(windowSystem.scanWindows())
+    }
+
+    /// Reconciles the workspace with a completed scan.
+    func applyRefresh(_ current: [WindowRecord]) {
         let motionStart = navigationFrames()
-        let current = windowSystem.scanWindows()
         let oldState = state
         windows = current
         workspaceRestoration.reconcile(state: &state, windowIDs: current.map(\.id),

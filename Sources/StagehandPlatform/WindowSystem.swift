@@ -233,6 +233,7 @@ public final class WindowSystem {
                         self.reportCurrentFocus()
                     }
                     if name == NSWorkspace.didTerminateApplicationNotification {
+                        self.trackedStateGeneration &+= 1
                         self.removeObserver(pid: pid)
                         let removedIDs = self.windows.compactMap {
                             $0.value.record.pid == pid ? $0.key : nil
@@ -320,6 +321,63 @@ public final class WindowSystem {
         guard isAccessibilityTrusted else {
             return windows.values.filter(\.isAdmitted).map(\.record) + nativeWindows.records
         }
+        let plan = beginScan()
+        return applyScan(plan, reads: Self.readApplications(plan.reads))
+    }
+
+    /// Reads Accessibility data on a background queue, then applies it on the main
+    /// actor. Returns nil when windows changed availability or another scan ran
+    /// during the read; callers should scan again later.
+    public func scanWindowsOffMain() async -> [WindowRecord]? {
+        guard isAccessibilityTrusted else { return scanWindows() }
+        let plan = beginScan()
+        let generation = trackedStateGeneration
+        let reads = await withCheckedContinuation { continuation in
+            Self.scanQueue.async { continuation.resume(returning: Self.readApplications(plan.reads)) }
+        }
+        guard started, generation == trackedStateGeneration else { return nil }
+        return applyScan(plan, reads: reads)
+    }
+
+    private static let scanQueue = DispatchQueue(label: "app.stagehand.scan-accessibility", qos: .userInitiated)
+
+    /// Advances whenever tracked windows change outside a scan. An off-main scan
+    /// whose reads predate the change must not apply them, or it could restore a
+    /// window that was just closed or minimized.
+    private var trackedStateGeneration = 0
+
+    private struct ScanPlan: @unchecked Sendable {
+        let apps: [NSRunningApplication]
+        let livePIDs: Set<pid_t>
+        let visibleWindows: [(pid: pid_t, windowNumber: CGWindowID, frame: CGRect)]
+        let reads: ScanReadRequest
+    }
+
+    fileprivate struct ScanReadRequest: @unchecked Sendable {
+        let system: WindowSystem
+        let pids: [pid_t]
+        let identities: IdentitySnapshot
+    }
+
+    /// Accessibility data for one app, gathered without touching tracked state.
+    fileprivate struct ApplicationRead: @unchecked Sendable {
+        struct Candidate {
+            let element: AXUIElement
+            let windowNumber: CGWindowID?
+            let metadata: ScanMetadata
+            let owner: AXUIElement?
+            let ownerPID: pid_t?
+            let ownerNumber: CGWindowID?
+            let isChild: Bool
+            /// Read only for windows that pass the cheap metadata filters.
+            let movable: (status: AXError, value: Bool)?
+            let resizable: (status: AXError, value: Bool)?
+        }
+        let windowsStatus: AXError
+        let candidates: [Candidate]?
+    }
+
+    private func beginScan() -> ScanPlan {
         let runningApps = NSWorkspace.shared.runningApplications
         let visibleWindows = onScreenWindows()
         let accessoryPIDs = Set(visibleWindows.map(\.pid)).union(windows.values.map(\.record.pid))
@@ -328,20 +386,89 @@ public final class WindowSystem {
         for pid in Array(observers.keys) where !livePIDs.contains(pid) {
             removeObserver(pid: pid)
         }
-        var seen = Set<String>()
-        var result: [WindowRecord] = []
-        var ownedWindows: [OwnedWindow] = []
         if focusDiagnosticsEnabled {
             print("Scan t=\(ProcessInfo.processInfo.systemUptime) runningApps=\(runningApps.count) eligibleApps=\(apps.count) cgVisibleWindows=\(visibleWindows.count)")
         }
-        for app in apps {
-            let appElement = AXUIElementCreateApplication(app.processIdentifier)
-            if started { observeApplication(appElement, pid: app.processIdentifier) }
-            let windowList = copyAttribute(appElement, kAXWindowsAttribute)
-            if focusDiagnosticsEnabled {
-                print("Scan pid=\(app.processIdentifier) AXWindowsStatus=\(windowList.error.rawValue) count=\((windowList.value as? [AXUIElement])?.count ?? -1)")
+        if started {
+            for app in apps {
+                observeApplication(AXUIElementCreateApplication(app.processIdentifier), pid: app.processIdentifier)
             }
-            guard let elements = windowList.value as? [AXUIElement] else {
+        }
+        return ScanPlan(apps: apps, livePIDs: livePIDs, visibleWindows: visibleWindows,
+                        reads: ScanReadRequest(system: self, pids: apps.map(\.processIdentifier),
+                                               identities: identitySnapshot()))
+    }
+
+    nonisolated private static func readApplications(_ request: ScanReadRequest) -> [pid_t: ApplicationRead] {
+        Dictionary(uniqueKeysWithValues: request.pids.map {
+            ($0, request.system.readApplication(pid: $0, identities: request.identities))
+        })
+    }
+
+    nonisolated private func readApplication(pid: pid_t, identities: IdentitySnapshot) -> ApplicationRead {
+        let appElement = AXUIElementCreateApplication(pid)
+        let windowList = copyAttribute(appElement, kAXWindowsAttribute)
+        guard let elements = windowList.value as? [AXUIElement] else {
+            return ApplicationRead(windowsStatus: windowList.error, candidates: nil)
+        }
+        let basics = elements.map { (element: $0, windowNumber: windowNumber($0), metadata: readScanMetadata($0)) }
+        let appMain = elementAttribute(appElement, kAXMainWindowAttribute)
+        let owners = basics.map { candidate -> AXUIElement? in
+            guard let owner = explicitOwner(of: candidate.element, candidates: candidate.metadata.ownerCandidates,
+                                            application: appElement) ?? (candidate.metadata.modal ? appMain : nil),
+                  !sameWindow(candidate.element, owner) else { return nil }
+            return owner
+        }
+        let candidates = basics.indices.map { index -> ApplicationRead.Candidate in
+            let candidate = basics[index]
+            let owner = owners[index]
+            let isChild = owner.map { owner in
+                basics.indices.contains { other in
+                    other != index &&
+                    basics[other].metadata.subrole == kAXStandardWindowSubrole &&
+                    sameWindow(basics[other].element, owner)
+                } || directTrackedWindowID(matching: owner, in: identities) != nil
+            } ?? false
+            var ownerPID: pid_t = 0
+            let hasOwnerPID = owner.map { AXUIElementGetPid($0, &ownerPID) == .success } ?? false
+            let metadata = candidate.metadata
+            let eligible = !isChild && metadata.subrole == kAXStandardWindowSubrole &&
+                metadata.minimized == false && metadata.fullscreen.error != .cannotComplete &&
+                metadata.fullscreen.value as? Bool != true &&
+                (metadata.frame.map { $0.width > 1 && $0.height > 1 } ?? false)
+            func settable(_ name: String) -> (status: AXError, value: Bool) {
+                var value: DarwinBoolean = false
+                let status = AXUIElementIsAttributeSettable(candidate.element, name as CFString, &value)
+                return (status, value.boolValue)
+            }
+            let movable = eligible ? settable(kAXPositionAttribute) : nil
+            return ApplicationRead.Candidate(
+                element: candidate.element,
+                windowNumber: candidate.windowNumber,
+                metadata: metadata,
+                owner: owner,
+                ownerPID: hasOwnerPID ? ownerPID : nil,
+                ownerNumber: isChild ? owner.flatMap { windowNumber($0) } : nil,
+                isChild: isChild,
+                movable: movable,
+                resizable: movable?.value == true ? settable(kAXSizeAttribute) : nil
+            )
+        }
+        return ApplicationRead(windowsStatus: windowList.error, candidates: candidates)
+    }
+
+    private func applyScan(_ plan: ScanPlan, reads: [pid_t: ApplicationRead]) -> [WindowRecord] {
+        trackedStateGeneration &+= 1
+        let visibleWindows = plan.visibleWindows
+        var seen = Set<String>()
+        var result: [WindowRecord] = []
+        var ownedWindows: [OwnedWindow] = []
+        for app in plan.apps {
+            guard let read = reads[app.processIdentifier] else { continue }
+            if focusDiagnosticsEnabled {
+                print("Scan pid=\(app.processIdentifier) AXWindowsStatus=\(read.windowsStatus.rawValue) count=\(read.candidates?.count ?? -1)")
+            }
+            guard let candidates = read.candidates else {
                 // A temporarily busy application must not lose its space memberships.
                 for tracked in windows.values where tracked.record.pid == app.processIdentifier {
                     seen.insert(tracked.record.id)
@@ -353,27 +480,7 @@ public final class WindowSystem {
                 })
                 continue
             }
-            let candidates = elements.map { element in
-                (element: element, windowNumber: windowNumber(element), metadata: readScanMetadata(element))
-            }
-            let appMain = elementAttribute(appElement, kAXMainWindowAttribute)
-            let owners = candidates.map { candidate -> AXUIElement? in
-                let modal = candidate.metadata.modal
-                guard let owner = explicitOwner(of: candidate.element, candidates: candidate.metadata.ownerCandidates,
-                                                application: appElement) ?? (modal ? appMain : nil),
-                      !sameWindow(candidate.element, owner) else { return nil }
-                return owner
-            }
-            let childIndices = Set(candidates.indices.filter { index in
-                guard let owner = owners[index] else { return false }
-                return candidates.indices.contains { other in
-                    other != index &&
-                    candidates[other].metadata.subrole == kAXStandardWindowSubrole &&
-                    sameWindow(candidates[other].element, owner)
-                } || directTrackedWindowID(matching: owner) != nil
-            })
-            for (index, candidate) in candidates.enumerated() {
-                if childIndices.contains(index) { continue }
+            for candidate in candidates where !candidate.isChild {
                 let element = candidate.element
                 let identityMatch = windows.first {
                     guard $0.value.record.pid == app.processIdentifier else { return false }
@@ -440,18 +547,15 @@ public final class WindowSystem {
                         continue
                     }
                 }
-                var movable: DarwinBoolean = false
-                guard AXUIElementIsAttributeSettable(element, kAXPositionAttribute as CFString, &movable) == .success else {
+                guard let movable = candidate.movable, movable.status == .success else {
                     if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=positionSettableReadFailed") }
                     if let existing, existing.isAdmitted { result.append(existing.record) }
                     continue
                 }
-                guard movable.boolValue else {
+                guard movable.value else {
                     if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=notMovable") }
                     continue
                 }
-                var resizable: DarwinBoolean = false
-                let sizeStatus = AXUIElementIsAttributeSettable(element, kAXSizeAttribute as CFString, &resizable)
                 let id: String
                 if let existingID {
                     id = existingID
@@ -461,6 +565,7 @@ public final class WindowSystem {
                     nextFallbackID += 1
                     id = "\(app.processIdentifier):fallback:\(nextFallbackID)"
                 }
+                let resizable = candidate.resizable
                 let record = WindowRecord(
                     id: id,
                     appName: app.localizedName ?? "Unknown app",
@@ -468,7 +573,8 @@ public final class WindowSystem {
                     bundleIdentifier: app.bundleIdentifier ?? "",
                     pid: app.processIdentifier,
                     frame: windows[id]?.logicalFrame ?? currentFrame,
-                    isResizable: sizeStatus == .success ? resizable.boolValue : existing?.record.isResizable ?? false
+                    isResizable: resizable?.status == .success ? resizable?.value == true
+                        : existing?.record.isResizable ?? false
                 )
                 if windows[id] != nil {
                     var replacedElement = false
@@ -500,24 +606,25 @@ public final class WindowSystem {
                 seen.insert(id)
                 result.append(record)
             }
-            for (index, candidate) in candidates.enumerated() {
-                let element = candidate.element
-                guard childIndices.contains(index),
-                      candidate.metadata.minimized != true,
-                      let owner = owners[index],
-                      let parentID = directTrackedWindowID(matching: owner),
+            // Match owners against the current tracked windows, which may include
+            // windows admitted earlier in this scan.
+            let identities = identitySnapshot()
+            for candidate in candidates where candidate.isChild && candidate.metadata.minimized != true {
+                guard let owner = candidate.owner, let ownerPID = candidate.ownerPID,
+                      let parentID = Self.trackedWindowID(pid: ownerPID, number: candidate.ownerNumber,
+                                                          element: owner, in: identities),
                       windows[parentID]?.isAdmitted == true else { continue }
-                if let previousID = directTrackedWindowID(matching: element), previousID != parentID {
+                if let previousID = Self.trackedWindowID(pid: app.processIdentifier, number: candidate.windowNumber,
+                                                         element: candidate.element, in: identities),
+                   previousID != parentID {
                     windows.removeValue(forKey: previousID)
                 }
-                ownedWindows.append(OwnedWindow(
-                    element: element, parentID: parentID
-                ))
+                ownedWindows.append(OwnedWindow(element: candidate.element, parentID: parentID))
             }
         }
         self.ownedWindows = ownedWindows
         for id in Array(windows.keys) where !seen.contains(id) {
-            guard let pid = windows[id]?.record.pid, livePIDs.contains(pid) else {
+            guard let pid = windows[id]?.record.pid, plan.livePIDs.contains(pid) else {
                 windows.removeValue(forKey: id)
                 continue
             }
@@ -1047,6 +1154,7 @@ public final class WindowSystem {
                 }
                 if let availabilityChange = windowAvailabilityChange(for: name),
                    let id = owner.directTrackedWindowID(matching: changedWindow) {
+                    owner.trackedStateGeneration &+= 1
                     switch availabilityChange {
                     case .destroyed:
                         owner.windows.removeValue(forKey: id)
@@ -1296,10 +1404,15 @@ public final class WindowSystem {
                                                    in snapshot: IdentitySnapshot) -> String? {
         var pid: pid_t = 0
         guard AXUIElementGetPid(element, &pid) == .success else { return nil }
-        let identifier = windowNumber(element)
-        return snapshot.windows.first { window in
+        return Self.trackedWindowID(pid: pid, number: windowNumber(element), element: element, in: snapshot)
+    }
+
+    /// Same app, then same window number when both are known, else the same element.
+    nonisolated private static func trackedWindowID(pid: pid_t, number: CGWindowID?, element: AXUIElement,
+                                                    in snapshot: IdentitySnapshot) -> String? {
+        snapshot.windows.first { window in
             guard window.pid == pid else { return false }
-            if let identifier, let number = window.number { return identifier == number }
+            if let number, let trackedNumber = window.number { return number == trackedNumber }
             return CFEqual(window.element, element)
         }?.id
     }
@@ -1384,7 +1497,7 @@ public final class WindowSystem {
         return unsafeDowncast(value, to: AXUIElement.self)
     }
 
-    private struct ScanMetadata {
+    fileprivate struct ScanMetadata {
         let frame: CGRect?
         let subrole: String?
         let minimized: Bool?
@@ -1397,7 +1510,7 @@ public final class WindowSystem {
 
     /// Everything a scan needs from one window, in a single round trip when the app
     /// supports batched requests.
-    private func readScanMetadata(_ element: AXUIElement) -> ScanMetadata {
+    nonisolated private func readScanMetadata(_ element: AXUIElement) -> ScanMetadata {
         let names = [kAXPositionAttribute, kAXSizeAttribute, kAXSubroleAttribute, kAXMinimizedAttribute,
                      kAXModalAttribute, "AXFullScreen", kAXTitleAttribute, kAXWindowAttribute, kAXParentAttribute]
         guard let values = copyAttributes(element, names) else {

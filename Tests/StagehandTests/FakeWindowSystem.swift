@@ -86,6 +86,20 @@ final class FakeWindowSystem: WindowManaging {
         windows.values.filter { !$0.minimized }.map(\.record).sorted { $0.id < $1.id }
     }
 
+    /// Off-main scans that report windows changed during their read.
+    var staleScansRemaining = 0
+    private(set) var offMainScans = 0
+
+    func scanWindowsOffMain() async -> [WindowRecord]? {
+        offMainScans += 1
+        await Task.yield()
+        guard staleScansRemaining == 0 else {
+            staleScansRemaining -= 1
+            return nil
+        }
+        return scanWindows()
+    }
+
     func record(windowID: String) -> WindowRecord? { windows[windowID]?.record }
     func frame(windowID: String) -> CGRect? { windows[windowID].map { $0.restoreFrame ?? $0.frame } }
     func observedFrame(windowID: String) -> CGRect? { windows[windowID]?.frame }

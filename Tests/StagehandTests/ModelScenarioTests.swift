@@ -118,6 +118,29 @@ struct ModelScenarioTests {
         #expect(harness.windows.focusedWindowID() == previous)
     }
 
+    /// Background scans are discarded when windows changed during the read. The
+    /// refresh must try again rather than miss a newly opened window.
+    @Test func aStaleBackgroundScanIsRetriedSoNewWindowsStillJoin() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        let scansBefore = harness.windows.offMainScans
+
+        harness.windows.addWindow("new", pid: 300, frame: CGRect(x: 80, y: 60, width: 700, height: 500))
+        harness.windows.staleScansRemaining = 1
+        harness.windows.onChange?()
+        await harness.settle()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !harness.model.state.currentSpace.windowIDs.contains("new"), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(harness.windows.offMainScans - scansBefore >= 2)
+        #expect(harness.model.state.currentSpace.windowIDs.contains("new"))
+        #expect(harness.events("automatic_pause").isEmpty)
+    }
+
     /// Typing during a switch is held and delivered only to the verified destination.
     @Test func bufferedTypingIsDeliveredAfterVerifiedFocus() async throws {
         let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
