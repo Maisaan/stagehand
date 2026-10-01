@@ -369,6 +369,9 @@ public final class WindowSystem {
             let ownerPID: pid_t?
             let ownerNumber: CGWindowID?
             let isChild: Bool
+            /// A tracked window with an attached child dialog. Chrome reports its browser
+            /// window as AXDialog while a JavaScript dialog is open.
+            let hostsTrackedChild: Bool
             /// Read only for windows that pass the cheap metadata filters.
             let movable: (status: AXError, value: Bool)?
             let resizable: (status: AXError, value: Bool)?
@@ -419,20 +422,27 @@ public final class WindowSystem {
                   !sameWindow(candidate.element, owner) else { return nil }
             return owner
         }
-        let candidates = basics.indices.map { index -> ApplicationRead.Candidate in
-            let candidate = basics[index]
-            let owner = owners[index]
-            let isChild = owner.map { owner in
+        let childFlags = basics.indices.map { index in
+            owners[index].map { owner in
                 basics.indices.contains { other in
                     other != index &&
                     basics[other].metadata.subrole == kAXStandardWindowSubrole &&
                     sameWindow(basics[other].element, owner)
                 } || directTrackedWindowID(matching: owner, in: identities) != nil
             } ?? false
+        }
+        let candidates = basics.indices.map { index -> ApplicationRead.Candidate in
+            let candidate = basics[index]
+            let owner = owners[index]
+            let isChild = childFlags[index]
+            let hostsTrackedChild = !isChild &&
+                basics.indices.contains { other in
+                    childFlags[other] && owners[other].map { sameWindow(candidate.element, $0) } == true
+                } && directTrackedWindowID(matching: candidate.element, in: identities) != nil
             var ownerPID: pid_t = 0
             let hasOwnerPID = owner.map { AXUIElementGetPid($0, &ownerPID) == .success } ?? false
             let metadata = candidate.metadata
-            let eligible = !isChild && metadata.subrole == kAXStandardWindowSubrole &&
+            let eligible = !isChild && (metadata.subrole == kAXStandardWindowSubrole || hostsTrackedChild) &&
                 metadata.minimized == false && metadata.fullscreen.error != .cannotComplete &&
                 metadata.fullscreen.value as? Bool != true &&
                 (metadata.frame.map { $0.width > 1 && $0.height > 1 } ?? false)
@@ -450,6 +460,7 @@ public final class WindowSystem {
                 ownerPID: hasOwnerPID ? ownerPID : nil,
                 ownerNumber: isChild ? owner.flatMap { windowNumber($0) } : nil,
                 isChild: isChild,
+                hostsTrackedChild: hostsTrackedChild,
                 movable: movable,
                 resizable: movable?.value == true ? settable(kAXSizeAttribute) : nil
             )
@@ -515,9 +526,11 @@ public final class WindowSystem {
                     if let existing, existing.isAdmitted { result.append(existing.record) }
                     continue
                 }
-                guard subrole == kAXStandardWindowSubrole,
+                guard subrole == kAXStandardWindowSubrole || (candidate.hostsTrackedChild && existing?.isAdmitted == true),
                       currentFrame.width > 1, currentFrame.height > 1 else {
-                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=nonstandardOrInvalidFrame") }
+                    if focusDiagnosticsEnabled {
+                        print("Scan pid=\(app.processIdentifier) rejected=nonstandardOrInvalidFrame window=\(candidate.windowNumber.map(String.init) ?? "nil") subrole=\(subrole) modal=\(candidate.metadata.modal) frame=\(currentFrame) tracked=\(existingID ?? "nil")")
+                    }
                     continue
                 }
                 guard fullscreen.value as? Bool != true else {
@@ -609,6 +622,11 @@ public final class WindowSystem {
             // Match owners against the current tracked windows, which may include
             // windows admitted earlier in this scan.
             let identities = identitySnapshot()
+            if focusDiagnosticsEnabled {
+                for candidate in candidates where candidate.isChild {
+                    print("Scan pid=\(app.processIdentifier) child window=\(candidate.windowNumber.map(String.init) ?? "nil") subrole=\(candidate.metadata.subrole ?? "nil") modal=\(candidate.metadata.modal) owner=\(candidate.ownerNumber.map(String.init) ?? "nil")")
+                }
+            }
             for candidate in candidates where candidate.isChild && candidate.metadata.minimized != true {
                 guard let owner = candidate.owner, let ownerPID = candidate.ownerPID,
                       let parentID = Self.trackedWindowID(pid: ownerPID, number: candidate.ownerNumber,
