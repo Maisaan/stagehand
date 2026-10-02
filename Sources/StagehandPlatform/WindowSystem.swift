@@ -349,7 +349,7 @@ public final class WindowSystem {
     private struct ScanPlan: @unchecked Sendable {
         let apps: [NSRunningApplication]
         let livePIDs: Set<pid_t>
-        let visibleWindows: [(pid: pid_t, windowNumber: CGWindowID, frame: CGRect)]
+        let visibleWindows: [VisibleWindow]
         let reads: ScanReadRequest
     }
 
@@ -372,6 +372,9 @@ public final class WindowSystem {
             /// A tracked window with an attached child dialog. Chrome reports its browser
             /// window as AXDialog while a JavaScript dialog is open.
             let hostsTrackedChild: Bool
+            /// A dialog attached to no window, such as Xcode's component installer.
+            /// It joins the ribbon while its Dock app has no standard window.
+            let isUnattachedDialog: Bool
             /// Read only for windows that pass the cheap metadata filters.
             let movable: (status: AXError, value: Bool)?
             let resizable: (status: AXError, value: Bool)?
@@ -382,8 +385,10 @@ public final class WindowSystem {
 
     private func beginScan() -> ScanPlan {
         let runningApps = NSWorkspace.shared.runningApplications
-        let visibleWindows = onScreenWindows()
-        let accessoryPIDs = Set(visibleWindows.map(\.pid)).union(windows.values.map(\.record.pid))
+        // Modal panels count only toward a standalone dialog's admission.
+        let visibleWindows = onScreenWindows(includingModalPanels: true)
+        let accessoryPIDs = Set(visibleWindows.filter { !$0.isModalPanel }.map(\.pid))
+            .union(windows.values.map(\.record.pid))
         let apps = eligibleApplications(from: runningApps, accessoryPIDs: accessoryPIDs)
         let livePIDs = Set(apps.map(\.processIdentifier))
         for pid in Array(observers.keys) where !livePIDs.contains(pid) {
@@ -442,7 +447,9 @@ public final class WindowSystem {
             var ownerPID: pid_t = 0
             let hasOwnerPID = owner.map { AXUIElementGetPid($0, &ownerPID) == .success } ?? false
             let metadata = candidate.metadata
-            let eligible = !isChild && (metadata.subrole == kAXStandardWindowSubrole || hostsTrackedChild) &&
+            let isUnattachedDialog = !isChild && owner == nil && metadata.subrole == kAXDialogSubrole
+            let eligible = !isChild &&
+                (metadata.subrole == kAXStandardWindowSubrole || hostsTrackedChild || isUnattachedDialog) &&
                 metadata.minimized == false && metadata.fullscreen.error != .cannotComplete &&
                 metadata.fullscreen.value as? Bool != true &&
                 (metadata.frame.map { $0.width > 1 && $0.height > 1 } ?? false)
@@ -461,6 +468,7 @@ public final class WindowSystem {
                 ownerNumber: isChild ? owner.flatMap { windowNumber($0) } : nil,
                 isChild: isChild,
                 hostsTrackedChild: hostsTrackedChild,
+                isUnattachedDialog: isUnattachedDialog,
                 movable: movable,
                 resizable: movable?.value == true ? settable(kAXSizeAttribute) : nil
             )
@@ -490,6 +498,9 @@ public final class WindowSystem {
                     return AXUIElementGetPid($0.element, &pid) == .success && pid == app.processIdentifier
                 })
                 continue
+            }
+            let hasStandardWindow = candidates.contains {
+                $0.metadata.subrole == kAXStandardWindowSubrole && $0.metadata.minimized != true
             }
             for candidate in candidates where !candidate.isChild {
                 let element = candidate.element
@@ -526,7 +537,12 @@ public final class WindowSystem {
                     if let existing, existing.isAdmitted { result.append(existing.record) }
                     continue
                 }
-                guard subrole == kAXStandardWindowSubrole || (candidate.hostsTrackedChild && existing?.isAdmitted == true),
+                // Only Dock apps qualify, so agent prompts such as Gatekeeper's stay floating.
+                // An admitted standalone dialog stays when its app later opens a standard window.
+                let standaloneDialog = candidate.isUnattachedDialog && app.activationPolicy == .regular &&
+                    (!hasStandardWindow || existing?.isAdmitted == true)
+                guard subrole == kAXStandardWindowSubrole || (candidate.hostsTrackedChild && existing?.isAdmitted == true) ||
+                        standaloneDialog,
                       currentFrame.width > 1, currentFrame.height > 1 else {
                     if focusDiagnosticsEnabled {
                         print("Scan pid=\(app.processIdentifier) rejected=nonstandardOrInvalidFrame window=\(candidate.windowNumber.map(String.init) ?? "nil") subrole=\(subrole) modal=\(candidate.metadata.modal) frame=\(currentFrame) tracked=\(existingID ?? "nil")")
@@ -546,7 +562,8 @@ public final class WindowSystem {
                     // Reject ambiguous geometry rather than accidentally admitting a
                     // same-sized window belonging to another native macOS Desktop.
                     let visibleMatch = visibleWindows.contains { visible in
-                        guard visible.pid == app.processIdentifier else { return false }
+                        guard visible.pid == app.processIdentifier,
+                              !visible.isModalPanel || standaloneDialog else { return false }
                         return candidate.windowNumber.map { $0 == visible.windowNumber }
                             ?? sameBounds(visible.frame, currentFrame)
                     }
@@ -1291,7 +1308,7 @@ public final class WindowSystem {
 
     private func applicationInventory(
         applications: [NSRunningApplication],
-        visibleWindows: [(pid: pid_t, windowNumber: CGWindowID, frame: CGRect)]
+        visibleWindows: [VisibleWindow]
     ) -> ApplicationInventory {
         let visiblePIDs = Set(visibleWindows.map(\.pid))
         return ApplicationInventory(
@@ -1369,16 +1386,22 @@ public final class WindowSystem {
         return (error == .success ? value : nil, error)
     }
 
-    private func onScreenWindows() -> [(pid: pid_t, windowNumber: CGWindowID, frame: CGRect)] {
+    private typealias VisibleWindow = (pid: pid_t, windowNumber: CGWindowID, frame: CGRect, isModalPanel: Bool)
+
+    /// Normal-level windows on the current Desktop. App-modal alerts sit at the
+    /// modal panel level instead.
+    private func onScreenWindows(includingModalPanels: Bool = false) -> [VisibleWindow] {
         guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
             as? [[String: Any]] else { return [] }
+        let modalPanelLevel = Int(CGWindowLevelForKey(.modalPanelWindow))
         return info.compactMap { window in
             guard let pid = window[kCGWindowOwnerPID as String] as? NSNumber,
                   let windowNumber = window[kCGWindowNumber as String] as? NSNumber,
-                  let layer = window[kCGWindowLayer as String] as? NSNumber, layer.intValue == 0,
+                  let layer = (window[kCGWindowLayer as String] as? NSNumber)?.intValue,
+                  layer == 0 || includingModalPanels && layer == modalPanelLevel,
                   let bounds = window[kCGWindowBounds as String] as? [String: Any],
                   let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return nil }
-            return (pid.int32Value, windowNumber.uint32Value, frame)
+            return (pid.int32Value, windowNumber.uint32Value, frame, layer != 0)
         }
     }
 

@@ -122,7 +122,8 @@ extension StagehandModel {
 
     /// Launches only our disposable delayed-window fixture and observes the normal refresh path.
     /// The final assertion intentionally does not scan: that would conceal a missed notification.
-    func diagnoseDiscovery(probeURL: URL, settlingWindow: Bool = false) async -> String {
+    func diagnoseDiscovery(probeURL: URL, settlingWindow: Bool = false,
+                           standaloneDialog: Bool = false) async -> String {
         let probeID = "dev.stagehand.DiscoveryProbe"
         guard Bundle(url: probeURL)?.bundleIdentifier == probeID else {
             return "Discovery failed: expected the Stagehand DiscoveryProbe fixture. No windows were changed."
@@ -156,7 +157,8 @@ extension StagehandModel {
         do {
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = true
-            configuration.arguments = settlingWindow ? ["--settling-window"] : []
+            configuration.arguments = (settlingWindow ? ["--settling-window"] : []) +
+                (standaloneDialog ? ["--standalone-dialog"] : [])
             probe = try await NSWorkspace.shared.openApplication(at: probeURL, configuration: configuration)
         } catch {
             return "Discovery failed: could not launch the disposable probe."

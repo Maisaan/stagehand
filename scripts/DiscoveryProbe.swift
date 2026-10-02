@@ -9,6 +9,17 @@ final class DiscoveryProbeDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(700))
+            if ProcessInfo.processInfo.arguments.contains("--standalone-dialog") {
+                // An app-modal alert with no other window, like Xcode's component installer.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 10) { exit(0) }
+                NSApp.activate()
+                let alert = NSAlert()
+                alert.messageText = "Stagehand discovery probe"
+                alert.informativeText = "A standalone dialog with no owning window."
+                alert.runModal()
+                NSApp.terminate(nil)
+                return
+            }
             let window = NSWindow(contentRect: NSRect(x: 180, y: 220, width: 620, height: 420),
                                   styleMask: [.titled, .closable, .resizable, .miniaturizable],
                                   backing: .buffered, defer: false)

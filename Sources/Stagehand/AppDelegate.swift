@@ -68,7 +68,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let index = arguments.firstIndex(of: "--diagnose-discovery"), arguments.indices.contains(index + 1) {
             Task { @MainActor in
                 print(await model.diagnoseDiscovery(probeURL: URL(fileURLWithPath: arguments[index + 1]),
-                                                    settlingWindow: arguments.contains("--settling-window")))
+                                                    settlingWindow: arguments.contains("--settling-window"),
+                                                    standaloneDialog: arguments.contains("--standalone-dialog")))
                 NSApp.terminate(nil)
             }
             return
