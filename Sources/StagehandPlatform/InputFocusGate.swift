@@ -95,9 +95,10 @@ private struct RoutingEffects: @unchecked Sendable {
     /// Events for already-verified destinations. Posting stays on the main actor so an
     /// injected replay sink never runs on the tap thread.
     var postings: [(event: CGEvent, pid: Int32)] = []
+    var cancelledTokens: [UInt64] = []
     var isEmpty: Bool {
         navigationAction == nil && discardedCount == 0 && expiredToken == nil && provisionalToken == nil
-            && postings.isEmpty
+            && postings.isEmpty && cancelledTokens.isEmpty
     }
 }
 
@@ -134,11 +135,14 @@ public final class FocusInputGate {
     static let defaultTransferTimeoutMilliseconds = 4_000
     /// Delays before re-enabling a tap that macOS disabled. The last delay repeats.
     static let tapReenableDelays: [DispatchTimeInterval] = [.milliseconds(250), .seconds(1), .seconds(5)]
+    /// How often a pending transfer re-checks Secure Input and tap availability.
+    static let availabilityWatchInterval: DispatchTimeInterval = .milliseconds(200)
 
     private let core = OSAllocatedUnfairLock(uncheckedState: GateState())
     private var deadlines: [UInt64: DispatchWorkItem] = [:]
     private var tapThread: KeyboardTapThread?
     private var tapGeneration: UInt64 = 0
+    private var availabilityWatch: DispatchSourceTimer?
     private let transferTimeoutMilliseconds: Int
     private let postEvent: (CGEvent, Int32) -> Void
     private let secureInputEnabled: @Sendable () -> Bool
@@ -235,6 +239,7 @@ public final class FocusInputGate {
             return (state.buffer.begin(), false)
         }
         if !adopted { scheduleDeadline(token) }
+        startAvailabilityWatch()
         return token
     }
 
@@ -268,6 +273,7 @@ public final class FocusInputGate {
             return events
         }
         for event in events { post(event, processIdentifier: processIdentifier) }
+        stopAvailabilityWatchIfIdle()
     }
 
     public func cancelTransfer(token: UInt64) {
@@ -279,6 +285,7 @@ public final class FocusInputGate {
             return events
         }
         if !events.isEmpty { onInputDiscarded?(events.count) }
+        stopAvailabilityWatchIfIdle()
     }
 
     /// Only visual-only navigation may be skipped. A transfer that owns typing
@@ -293,7 +300,50 @@ public final class FocusInputGate {
         for deadline in deadlines.values { deadline.cancel() }
         deadlines.removeAll()
         let count = core.withLockUnchecked { $0.removeAllTransfers() }
+        stopAvailabilityWatchIfIdle()
         if count > 0 { onInputDiscarded?(count) }
+    }
+
+    // MARK: Availability changes during a transfer
+
+    /// Secure Input or a disabled tap lets new keys bypass the gate while held keys would
+    /// replay later, reordering typing and splitting key down/up pairs. Drop the held input
+    /// instead and warn, and forget held keys so a bypassed key-up cannot route a later press.
+    private func startAvailabilityWatch() {
+        guard availabilityWatch == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + Self.availabilityWatchInterval, repeating: Self.availabilityWatchInterval)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                guard self.core.withLockUnchecked({ $0.buffer.transferCount > 0 }) else {
+                    self.stopAvailabilityWatchIfIdle()
+                    return
+                }
+                if !self.isAvailable { self.cancelAllForAvailabilityChange() }
+            }
+        }
+        timer.resume()
+        availabilityWatch = timer
+    }
+
+    private func stopAvailabilityWatchIfIdle() {
+        guard core.withLockUnchecked({ $0.buffer.transferCount == 0 }) else { return }
+        availabilityWatch?.cancel()
+        availabilityWatch = nil
+    }
+
+    private func cancelAllForAvailabilityChange() {
+        for deadline in deadlines.values { deadline.cancel() }
+        deadlines.removeAll()
+        let count = core.withLockUnchecked { state -> Int in
+            let count = state.removeAllTransfers()
+            state.clearKeys()
+            return count
+        }
+        stopAvailabilityWatchIfIdle()
+        if count > 0 { onInputDiscarded?(count) }
+        onAvailabilityChanged?()
     }
 
     // MARK: Tap thread
@@ -321,7 +371,13 @@ public final class FocusInputGate {
         guard event.getIntegerValueField(.eventSourceUserData) != Self.eventMarker else { return false }
         let secureInput = secureInputEnabled()
         let (consumed, effects) = core.withLockUnchecked { state -> (Bool, RoutingEffects) in
-            guard state.tapIsAvailable, !secureInput else { return (false, RoutingEffects()) }
+            guard state.tapIsAvailable, !secureInput else {
+                var effects = RoutingEffects()
+                effects.cancelledTokens = state.buffer.tokens
+                effects.discardedCount = state.removeAllTransfers()
+                state.clearKeys()
+                return (false, effects)
+            }
             return Self.route(type: type, event: event, state: &state, allowProvisional: true)
         }
         if !effects.isEmpty {
@@ -335,6 +391,7 @@ public final class FocusInputGate {
     private func tapWasDisabled(discardedCount: Int) {
         for deadline in deadlines.values { deadline.cancel() }
         deadlines.removeAll()
+        stopAvailabilityWatchIfIdle()
         if discardedCount > 0 { onInputDiscarded?(discardedCount) }
         onAvailabilityChanged?()
         scheduleTapReenable(attempt: 0, generation: tapGeneration)
@@ -358,9 +415,11 @@ public final class FocusInputGate {
 
     /// Main-actor half of a tap-thread routing decision.
     private func deliver(_ effects: RoutingEffects) {
+        for token in effects.cancelledTokens { deadlines.removeValue(forKey: token)?.cancel() }
         if let token = effects.expiredToken { deadlines.removeValue(forKey: token)?.cancel() }
         if let token = effects.provisionalToken {
             scheduleDeadline(token)
+            startAvailabilityWatch()
             onBeforeKeyboardEvent?()
             releaseProvisionalTransferIfUnadopted(token)
         }
@@ -368,6 +427,7 @@ public final class FocusInputGate {
         for posting in effects.postings { post(posting.event, processIdentifier: posting.pid) }
         if effects.discardedCount > 0 { onInputDiscarded?(effects.discardedCount) }
         if let token = effects.expiredToken { onTransferExpired?(token) }
+        stopAvailabilityWatchIfIdle()
     }
 
     /// No navigation claimed the typing, so it belongs to the window that had focus when it
@@ -390,6 +450,10 @@ public final class FocusInputGate {
         // A trackpad release may already be committed on its callback thread while
         // its main-queue delivery is pending. Enqueue that handoff before this key.
         onBeforeKeyboardEvent?()
+        if isSecureInputEnabled {
+            if core.withLockUnchecked({ $0.buffer.transferCount > 0 }) { cancelAllForAvailabilityChange() }
+            return false
+        }
         let (consumed, effects) = core.withLockUnchecked { state in
             Self.route(type: type, event: event, state: &state, allowProvisional: false)
         }

@@ -396,6 +396,30 @@ func sizeShortcutChordsResolve(key: Int, flags: CGEventFlags, action: Navigation
     #expect(discarded == 0)
 }
 
+@MainActor @Test func secureInputDuringATransferDropsHeldTypingInsteadOfReorderingIt() throws {
+    let secureInput = OSAllocatedUnfairLock(initialState: false)
+    var posted = 0
+    var discarded: [Int] = []
+    var availabilityChanges = 0
+    let gate = FocusInputGate(secureInputEnabled: { secureInput.withLock { $0 } }, postEvent: { _, _ in posted += 1 })
+    gate.onInputDiscarded = { discarded.append($0) }
+    gate.onAvailabilityChanged = { availabilityChanges += 1 }
+    let token = gate.beginTransfer()
+    let aDown = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
+    #expect(gate.processKeyboardEvent(type: .keyDown, event: aDown))
+    secureInput.withLock { $0 = true }
+    let bDown = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 11, keyDown: true))
+    #expect(!gate.processKeyboardEvent(type: .keyDown, event: bDown))
+    #expect(discarded == [1])
+    #expect(availabilityChanges == 1)
+    #expect(gate.pendingEventCount == 0)
+    // The held key's release is no longer routed anywhere: it reaches the focused window itself.
+    let aUp = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false))
+    #expect(!gate.processKeyboardEvent(type: .keyUp, event: aUp))
+    gate.commitTransfer(token: token, processIdentifier: 100)
+    #expect(posted == 0)
+}
+
 
 /// The tap thread holds typing that follows a trackpad release whose delivery is still
 /// queued, then the release's navigation adopts that transfer on the main actor.
