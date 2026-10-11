@@ -122,6 +122,10 @@ public final class WindowSystem {
     private var observationRetries: [pid_t: Task<Void, Never>] = [:]
     private let launchDiscovery = ApplicationLaunchDiscovery()
     private var applicationInventoryTask: Task<Void, Never>?
+    /// Set while the login session is inactive or the displays are asleep. The
+    /// inventory poll keeps its cadence but skips the CGWindowList read, which
+    /// cannot change while nothing is being drawn.
+    private var inventoryPaused = false
     private var lastApplicationInventory: ApplicationInventory?
     private var workspaceTokens: [NSObjectProtocol] = []
     private var applicationTokens: [NSObjectProtocol] = []
@@ -316,14 +320,23 @@ public final class WindowSystem {
             workspaceTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self, self.started else { return }
+                    self.inventoryPaused = name == NSWorkspace.sessionDidResignActiveNotification
                     self.onNativeDesktopChange?()
                 }
             })
         }
+        workspaceTokens.append(center.addObserver(forName: NSWorkspace.screensDidSleepNotification,
+                                                   object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.started else { return }
+                self.inventoryPaused = true
+            }
+        })
         for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
             workspaceTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self, self.started else { return }
+                    self.inventoryPaused = false
                     self.onNativeDesktopChange?()
                     self.onChange?()
                 }
@@ -364,6 +377,7 @@ public final class WindowSystem {
         started = false
         applicationInventoryTask?.cancel()
         applicationInventoryTask = nil
+        inventoryPaused = false
         lastApplicationInventory = nil
         launchDiscovery.cancelAll()
         restoreAll()
@@ -1440,6 +1454,7 @@ public final class WindowSystem {
                 do { try await Task.sleep(for: .seconds(2)) }
                 catch { return }
                 guard let self, self.started, !Task.isCancelled else { return }
+                if self.inventoryPaused { continue }
                 let visibleWindows = self.onScreenWindows()
                 let applications = NSWorkspace.shared.runningApplications
                 let visiblePIDs = Set(visibleWindows.map(\.pid))
