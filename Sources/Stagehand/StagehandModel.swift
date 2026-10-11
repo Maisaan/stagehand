@@ -341,6 +341,7 @@ final class StagehandModel: ObservableObject {
         refreshLaunchAtLogin()
         focusGate.onNavigationAction = { [weak self] action in self?.navigate(action) }
         focusGate.setShortcutBindings(shortcutBindings)
+        focusGate.setPendingGestureCompletionCheck { InputController.hasPendingGestureCompletion() }
         focusGate.onBeforeKeyboardEvent = { [weak self] in
             guard let self, self.isRunning, !self.isSuspended else { return }
             while let completion = self.input.takePendingGestureCompletion() {
@@ -354,6 +355,7 @@ final class StagehandModel: ObservableObject {
             }
         }
         focusGate.onAvailabilityChanged = { [weak self] in self?.updateInputStatus() }
+        (input as? InputController)?.navigationChordsHandledByTap = { [weak self] in self?.focusGate.isAvailable ?? false }
         focusGate.onInputDiscarded = { [weak self] count in
             self?.warning = "Stagehand couldn't confirm the new window, so it did not send \(count) buffered key \(count == 1 ? "event" : "events"). Check your last input."
             NSSound.beep()
@@ -807,11 +809,11 @@ final class StagehandModel: ObservableObject {
 
     func setShortcut(id: String, key: UInt32, modifiers: UInt32, keyLabel: String) -> String? {
         guard let index = shortcutBindings.firstIndex(where: { $0.id == id }) else { return nil }
-        guard modifiers & ShortcutBinding.supportedModifiers != 0 else {
-            return "Add Control, Option, Shift, Command, or Caps Lock to the shortcut."
+        if let issue = ShortcutBinding.validationIssue(key: key, modifiers: modifiers, keyLabel: keyLabel) {
+            return issue
         }
         if shortcutBindings[index].isEnabled,
-           let conflict = shortcutConflict(key: key, modifiers: modifiers, excluding: id) {
+           let conflict = ShortcutBinding.conflict(in: shortcutBindings, key: key, modifiers: modifiers, excluding: id) {
             return "That shortcut is already assigned to \(conflict.title)."
         }
         shortcutBindings[index].key = key

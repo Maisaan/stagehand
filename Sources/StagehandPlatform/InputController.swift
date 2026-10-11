@@ -7,6 +7,9 @@ public final class InputController {
     public var onAction: ((NavigationAction) -> Void)?
     public var onGesture: ((GestureNavigationEvent) -> Void)?
     public var onStatusChange: (() -> Void)?
+    /// Answers whether the keyboard tap is consuming navigation chords right now. While it
+    /// is, the tap dispatches those actions itself and Carbon must not dispatch them again.
+    public var navigationChordsHandledByTap: (() -> Bool)?
     public var gesturesEnabled = false {
         didSet { if isRunning && oldValue != gesturesEnabled { updateGestures() } }
     }
@@ -20,23 +23,38 @@ public final class InputController {
     public var gesturesAvailable: Bool { gestures.isRunning }
 
     static let navigationGestureFingerCount = 3
+    /// `defaults write com.example.Stagehand StagehandDisableTrackpadGestures -bool YES` keeps
+    /// the private MultitouchSupport framework from loading, as a recovery switch after a
+    /// macOS update.
+    public static let disableTrackpadGesturesPreferenceKey = GestureMonitor.disablePreferenceKey
 
     private var isRunning = false
     private var eventHandler: EventHandlerRef?
     private var hotKeys: [EventHotKeyRef] = []
     private var actions: [UInt32: NavigationAction] = [:]
     private var shortcutIssues: [String] = []
+    /// Saved shortcuts that load turned off. Cleared once the user saves a new set.
+    private var shortcutLoadIssues: [String]
     private var shortcutBindings: [ShortcutBinding]
     private var shortcutCaptureActive = false
     private let gestures = GestureMonitor()
+    private var wakeObserver: NSObjectProtocol?
 
-    public init(shortcutBindings: [ShortcutBinding] = ShortcutBinding.load()) {
+    public init(shortcutBindings: [ShortcutBinding] = ShortcutBinding.load(), shortcutLoadIssues: [String] = []) {
         self.shortcutBindings = shortcutBindings
+        self.shortcutLoadIssues = shortcutLoadIssues
+        gestures.onFailure = { [weak self] _ in self?.refreshGestureStatus() }
+    }
+
+    isolated deinit {
+        onStatusChange = nil
+        stop()
     }
 
     public func start() {
         guard !isRunning else { return }
         isRunning = true
+        observeWake()
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let status = InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
             guard let event, let context else { return OSStatus(eventNotHandledErr) }
@@ -46,7 +64,9 @@ public final class InputController {
             let controller = Unmanaged<InputController>.fromOpaque(context).takeUnretainedValue()
             // Carbon delivers this handler on the application event loop.
             MainActor.assumeIsolated {
-                if let action = controller.actions[identifier.id] { controller.onAction?(action) }
+                guard let action = controller.actions[identifier.id] else { return }
+                let tapHandles = controller.navigationChordsHandledByTap?() ?? false
+                if InputController.shouldDispatchHotKey(action, tapHandlesNavigation: tapHandles) { controller.onAction?(action) }
             }
             return noErr
         }, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), &eventHandler)
@@ -58,8 +78,17 @@ public final class InputController {
         registerHotKeys()
     }
 
+    /// Settings and pause chords always pass through the tap, so Carbon owns them. Every
+    /// other chord is consumed by the tap whenever it is available, which is the only time
+    /// the same press could reach both paths.
+    static func shouldDispatchHotKey(_ action: NavigationAction, tapHandlesNavigation: Bool) -> Bool {
+        if action == .showSettings || action == .togglePause { return true }
+        return !tapHandlesNavigation
+    }
+
     public func setShortcutBindings(_ bindings: [ShortcutBinding]) {
         shortcutBindings = bindings
+        shortcutLoadIssues = []
         if eventHandler != nil { registerHotKeys() }
     }
 
@@ -93,6 +122,8 @@ public final class InputController {
     }
 
     public func stop() {
+        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
+        wakeObserver = nil
         gestures.stop()
         for hotKey in hotKeys { UnregisterEventHotKey(hotKey) }
         hotKeys.removeAll()
@@ -109,10 +140,31 @@ public final class InputController {
         if isRunning { updateGestures() }
     }
 
+    /// Gestures can stop arriving after sleep. Rebuild the monitor with a fresh device.
+    private func observeWake() {
+        guard wakeObserver == nil else { return }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.isRunning else { return }
+                self.gestures.stop()
+                self.gestures.invalidateDevice()
+                self.updateGestures()
+            }
+        }
+    }
+
     /// Call before routing a physical keyboard event. The caller must resolve the gesture
     /// and begin any focus transfer synchronously, leaving activation to queued work.
     public func takePendingGestureCompletion() -> GestureNavigationCompletion? {
         gestures.takePendingGestureCompletion()
+    }
+
+    /// Safe from any thread, for the keyboard tap's routing decision. Gesture state is
+    /// process-wide, so this does not need the controller instance.
+    nonisolated public static func hasPendingGestureCompletion() -> Bool {
+        GestureMonitor.hasPendingGestureCompletion()
     }
 
     /// Cancel a preview without rearming its still-held contacts. The caller owns
@@ -123,7 +175,7 @@ public final class InputController {
 
     private func updateGestures() {
         gestures.stop()
-        issues = shortcutIssues
+        issues = shortcutLoadIssues + shortcutIssues
         if gesturesEnabled || shortcutSwipesEnabled {
             issues += Self.nativeGestureConflicts()
             gestures.onGesture = { [weak self] event in
