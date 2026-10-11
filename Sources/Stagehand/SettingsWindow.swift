@@ -48,6 +48,7 @@ private final class SettingsPanelWindow: NSWindow, FocusBorderCornerRadiusProvid
     private var transitionGeneration: UInt64 = 0
     private var isDismissing = false
     private var isTransitioning = false
+    private var dormantContentView: NSView?
     var focusBorderCornerRadius: CGFloat { SettingsWindow.cornerRadius }
 
     override func makeKeyAndOrderFront(_ sender: Any?) {
@@ -56,6 +57,7 @@ private final class SettingsPanelWindow: NSWindow, FocusBorderCornerRadiusProvid
         let shouldAnimate = NSApp.currentEvent?.type != .keyDown
         transitionGeneration &+= 1
         isDismissing = false
+        restoreContentViewIfNeeded()
 
         // A display change or a resolution switch while the window was closed can
         // leave its last frame outside every screen. Bring it back before showing.
@@ -84,6 +86,34 @@ private final class SettingsPanelWindow: NSWindow, FocusBorderCornerRadiusProvid
             self.isDismissing = false
             self.finishClosing(sender)
         }
+    }
+
+    override func orderFront(_ sender: Any?) {
+        restoreContentViewIfNeeded()
+        super.orderFront(sender)
+    }
+
+    override func orderFrontRegardless() {
+        restoreContentViewIfNeeded()
+        super.orderFrontRegardless()
+    }
+
+    private func restoreContentViewIfNeeded() {
+        guard let dormantContentView else { return }
+        contentView = dormantContentView
+        self.dormantContentView = nil
+        alignWindowControls()
+    }
+
+    override func close() {
+        super.close()
+        // The window stays allocated for reopening, and a hosting view that is
+        // still in a window re-renders on every model change even while hidden.
+        // Detach it so hidden Settings cost nothing; its SwiftUI state, such as
+        // the selected page, survives for the next open.
+        guard let contentView else { return }
+        dormantContentView = contentView
+        self.contentView = nil
     }
 
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {

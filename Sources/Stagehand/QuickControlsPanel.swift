@@ -7,6 +7,7 @@ final class QuickControlsPanel: NSPanel {
     private static let screenInset: CGFloat = 8
 
     var onDismiss: (() -> Void)?
+    private var dormantContentView: NSView?
 
     init(contentView: NSView) {
         let fittingSize = contentView.fittingSize
@@ -37,6 +38,7 @@ final class QuickControlsPanel: NSPanel {
 
     func present(relativeTo button: NSStatusBarButton) {
         guard let window = button.window else { return }
+        restoreContentView()
         contentView?.layoutSubtreeIfNeeded()
         if let contentView {
             setContentSize(NSSize(width: Self.width, height: ceil(contentView.fittingSize.height)))
@@ -58,6 +60,7 @@ final class QuickControlsPanel: NSPanel {
     }
 
     func present(at origin: CGPoint) {
+        restoreContentView()
         setFrameOrigin(origin)
         makeKeyAndOrderFront(nil)
         makeFirstResponder(nil)
@@ -66,7 +69,19 @@ final class QuickControlsPanel: NSPanel {
     func dismiss() {
         guard isVisible else { return }
         orderOut(nil)
+        // An ordered-out panel still re-renders its hosting view on every model
+        // change. Detach the view while hidden; its SwiftUI state is kept.
+        if let contentView {
+            dormantContentView = contentView
+            self.contentView = nil
+        }
         onDismiss?()
+    }
+
+    private func restoreContentView() {
+        guard let dormantContentView else { return }
+        contentView = dormantContentView
+        self.dormantContentView = nil
     }
 
     override func cancelOperation(_ sender: Any?) {
