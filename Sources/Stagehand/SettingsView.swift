@@ -415,12 +415,11 @@ struct SettingsView: View {
                             }
                             .id(selectedSpaceIndex)
                             .frame(width: 104, height: TextInputMetrics.height)
-                            ForegroundColorPicker(
+                            SpaceColorPicker(
                                 "Space \(selectedSpaceIndex + 1) border color",
-                                selection: Binding(
-                                    get: { Color(nsColor: model.focusBorderColor(forSpace: selectedSpaceIndex)) },
-                                    set: { model.setFocusBorderColor(NSColor($0), forSpace: selectedSpaceIndex) }
-                                )
+                                model: model,
+                                spaceIndex: selectedSpaceIndex,
+                                color: model.focusBorderColor(forSpace: selectedSpaceIndex)
                             )
                         }
                     }
@@ -1208,6 +1207,54 @@ final class HexColorTextField: InsetTextField, NSTextFieldDelegate {
         if let editor {
             editor.string = text
             editor.setSelectedRange(NSRange(location: text.utf16.count, length: 0))
+        }
+    }
+}
+
+/// A space color picker whose live border follows the color panel while the
+/// UserDefaults write and model republish wait until the drag settles.
+struct SpaceColorPicker: View {
+    static let saveDelay: Duration = .milliseconds(250)
+
+    let title: String
+    let model: StagehandModel
+    let spaceIndex: Int
+    let color: NSColor
+    @State private var draft: NSColor?
+    @State private var saveTask: Task<Void, Never>?
+
+    init(_ title: String, model: StagehandModel, spaceIndex: Int, color: NSColor) {
+        self.title = title
+        self.model = model
+        self.spaceIndex = spaceIndex
+        self.color = color
+    }
+
+    var body: some View {
+        ForegroundColorPicker(title, selection: Binding(
+            get: { Color(nsColor: draft ?? color) },
+            set: { colorChanged(NSColor($0)) }
+        ))
+    }
+
+    private func colorChanged(_ newColor: NSColor) {
+        draft = newColor
+        // NSColorPanel sends a change for every pointer move. Show it on the border
+        // at once, and persist once the changes stop; the final value is the same
+        // one setFocusBorderColor would have stored on every step.
+        if spaceIndex == model.state.activeSpaceIndex,
+           let normalized = StagehandModel.normalizedColor(newColor, alpha: BorderView.defaultColor.alphaComponent) {
+            model.overlays.setBorderColor(normalized)
+        }
+        saveTask?.cancel()
+        let model = model
+        let spaceIndex = spaceIndex
+        saveTask = Task { @MainActor in
+            try? await Task.sleep(for: Self.saveDelay)
+            guard !Task.isCancelled else { return }
+            model.setFocusBorderColor(newColor, forSpace: spaceIndex)
+            draft = nil
+            saveTask = nil
         }
     }
 }
