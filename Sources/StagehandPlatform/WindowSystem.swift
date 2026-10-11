@@ -1,8 +1,22 @@
 import AppKit
 @preconcurrency import ApplicationServices
+import Darwin
 
-@_silgen_name("_AXUIElementGetWindow")
-private func axWindowID(_ element: AXUIElement, _ windowID: UnsafeMutablePointer<CGWindowID>) -> AXError
+/// `_AXUIElementGetWindow` is private HIServices API. Binding it at link time
+/// would stop the app launching on a system where the symbol is gone; resolving
+/// it at first use leaves window numbers unavailable instead, and matching then
+/// falls back to element identity and geometry.
+private enum AccessibilityWindowNumber {
+    typealias Function = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
+
+    static let function: Function? = {
+        let path = "/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices"
+        // Keep this framework reference for process lifetime while the pointer is in use.
+        let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL) ?? dlopen(nil, RTLD_NOW)
+        guard let handle, let symbol = dlsym(handle, "_AXUIElementGetWindow") else { return nil }
+        return unsafeBitCast(symbol, to: Function.self)
+    }()
+}
 
 public struct WindowRecord: Identifiable, Equatable, Sendable {
     public let id: String
@@ -1562,6 +1576,7 @@ public final class WindowSystem {
     }
 
     nonisolated private func windowNumber(_ element: AXUIElement) -> CGWindowID? {
+        guard let axWindowID = AccessibilityWindowNumber.function else { return nil }
         var identifier = CGWindowID(0)
         return axWindowID(element, &identifier) == .success && identifier != 0 ? identifier : nil
     }
