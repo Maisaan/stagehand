@@ -308,6 +308,9 @@ final class StagehandModel: ObservableObject {
             self?.screenParametersChanged()
         }
         windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
+        ribbonMotion.onStall = { [weak self] in
+            self?.diagnostics.record("ribbon_animation_stalled")
+        }
         refreshLaunchAtLogin()
         focusGate.onNavigationAction = { [weak self] action in self?.navigate(action) }
         focusGate.setShortcutBindings(shortcutBindings)

@@ -374,3 +374,88 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     #expect(outcome == .failed)
     #expect(events == ["translateStarted", "focus", "cancel", "translateCancelled"])
 }
+
+/// A display link stops ticking while the display sleeps. The awaiting layout
+/// worker used to stay suspended until the display woke, holding the change
+/// queue with it.
+@MainActor @Test func aDisplayLinkThatNeverFiresCancelsTheAnimationAfterTheWatchdog() async {
+    let driver = TestRibbonFrameDriver()
+    let motion = RibbonMotion(frameDriver: driver, currentTime: { 0 })
+    motion.watchdogGrace = .milliseconds(30)
+    var stalls = 0
+    motion.onStall = { stalls += 1 }
+
+    let completed = await motion.animate(
+        from: ["a": CGRect(x: 0, y: 0, width: 10, height: 10)],
+        to: ["a": CGRect(x: 100, y: 0, width: 10, height: 10)],
+        configuration: .init(duration: 0.01, curve: .linear),
+        update: { _ in }
+    )
+
+    #expect(!completed)
+    #expect(stalls == 1)
+    #expect(!motion.isRunning)
+    #expect(driver.startCount == 1)
+    #expect(driver.stopCount >= 1)
+}
+
+@MainActor @Test func cancellingTheAwaitingTaskCancelsTheAnimation() async {
+    let driver = TestRibbonFrameDriver()
+    let motion = RibbonMotion(frameDriver: driver, currentTime: { 0 })
+    let task = Task { @MainActor in
+        await motion.animate(
+            from: ["a": CGRect(x: 0, y: 0, width: 10, height: 10)],
+            to: ["a": CGRect(x: 100, y: 0, width: 10, height: 10)],
+            configuration: .init(duration: 1, curve: .linear),
+            update: { _ in }
+        )
+    }
+    let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+    while !motion.isRunning, ContinuousClock.now < deadline {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(motion.isRunning)
+
+    task.cancel()
+
+    #expect(await task.value == false)
+    #expect(!motion.isRunning)
+}
+
+/// Cancelling a task whose animation already finished must not cancel the
+/// animation that replaced it.
+@MainActor @Test func aLateTaskCancellationLeavesTheNextAnimationRunning() async {
+    let driver = TestRibbonFrameDriver()
+    let motion = RibbonMotion(frameDriver: driver, currentTime: { 0 })
+    let first = Task { @MainActor in
+        await motion.animate(
+            from: ["a": CGRect(x: 0, y: 0, width: 10, height: 10)],
+            to: ["a": CGRect(x: 100, y: 0, width: 10, height: 10)],
+            configuration: .init(duration: 1, curve: .linear),
+            update: { _ in }
+        )
+    }
+    let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+    while !motion.isRunning, ContinuousClock.now < deadline {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    driver.emit(at: 1)
+    #expect(await first.value == true)
+
+    var secondEvents: [String] = []
+    motion.animate(
+        from: ["a": CGRect(x: 100, y: 0, width: 10, height: 10)],
+        to: ["a": CGRect(x: 0, y: 0, width: 10, height: 10)],
+        configuration: .init(duration: 1, curve: .linear),
+        update: { _ in },
+        cancellation: { secondEvents.append("cancelled") },
+        completion: { secondEvents.append("completed") }
+    )
+    first.cancel()
+    try? await Task.sleep(for: .milliseconds(50))
+
+    #expect(motion.isAnimating)
+    #expect(secondEvents.isEmpty)
+    driver.emit(at: 2)
+    #expect(secondEvents == ["completed"])
+}

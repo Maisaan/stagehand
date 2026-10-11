@@ -193,9 +193,16 @@ final class RibbonMotion {
     private var followingFrames: (() -> [String: CGRect])?
     private var followingUpdate: (([String: CGRect]) -> Void)?
     private var generation: UInt64 = 0
+    private var watchdog: Task<Void, Never>?
     private(set) var frames: [String: CGRect] = [:]
     var isRunning: Bool { animation != nil || followingUpdate != nil }
     var isAnimating: Bool { animation != nil }
+    /// A display link stops ticking while the display sleeps. An animation
+    /// that has not finished this long after its duration is cancelled so the
+    /// awaiting layout worker is released.
+    var watchdogGrace: Duration = .seconds(1)
+    /// Called before a stalled animation is cancelled.
+    var onStall: (() -> Void)?
 
     init(frameDriver: RibbonFrameDriving = SystemRibbonFrameDriver(),
          currentTime: @escaping () -> TimeInterval = CACurrentMediaTime) {
@@ -286,6 +293,8 @@ final class RibbonMotion {
     func cancel() {
         let cancellation = animation?.cancellation
         generation &+= 1
+        watchdog?.cancel()
+        watchdog = nil
         frameDriver.stop()
         animation = nil
         followingFrames = nil
@@ -347,6 +356,24 @@ final class RibbonMotion {
                               cancellation: cancellation, completion: completion)
             return
         }
+        startWatchdog(generation: currentGeneration,
+                      after: .seconds(animation?.timeline.duration ?? configuration.duration) + watchdogGrace)
+    }
+
+    private func startWatchdog(generation watched: UInt64, after delay: Duration) {
+        watchdog?.cancel()
+        watchdog = Task { [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard let self, self.generation == watched, self.animation != nil else { return }
+            self.onStall?()
+            self.cancel()
+        }
+    }
+
+    /// Cancels only the animation started under `watched`; a later one is left alone.
+    private func cancel(ifCurrent watched: UInt64) {
+        guard generation == watched, animation != nil else { return }
+        cancel()
     }
 
     /// Without a running animation, `cancel()` has no callback to report. If the
@@ -359,21 +386,43 @@ final class RibbonMotion {
         if generation == currentGeneration { completion() } else { cancellation() }
     }
 
+    /// Resumes false when the motion is cancelled, when the awaiting task is
+    /// cancelled, or when the display link stalls past the watchdog.
     func animate(from: [String: CGRect], to: [String: CGRect],
                  configuration: RibbonAnimationConfiguration = .default,
                  initialHorizontalVelocity: CGFloat? = nil,
                  update: @escaping ([String: CGRect]) -> Void) async -> Bool {
-        await withCheckedContinuation { continuation in
-            animate(
-                from: from,
-                to: to,
-                configuration: configuration,
-                initialHorizontalVelocity: initialHorizontalVelocity,
-                update: update,
-                cancellation: { continuation.resume(returning: false) },
-                completion: { continuation.resume(returning: true) }
-            )
+        let started = StartedAnimation()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                animate(
+                    from: from,
+                    to: to,
+                    configuration: configuration,
+                    initialHorizontalVelocity: initialHorizontalVelocity,
+                    update: update,
+                    cancellation: { continuation.resume(returning: false) },
+                    completion: { continuation.resume(returning: true) }
+                )
+                started.generation = generation
+            }
+        } onCancel: {
+            // Runs on the cancelling thread; hop to the main actor for the state.
+            Task { @MainActor in
+                guard let generation = started.generation else { return }
+                self.cancel(ifCurrent: generation)
+            }
         }
+    }
+
+    /// The generation of the animation an async call started, for its cancellation handler.
+    @MainActor
+    private final class StartedAnimation {
+        var generation: UInt64?
     }
 
     private func startFrameDriver() -> Bool {
@@ -401,6 +450,8 @@ final class RibbonMotion {
         guard generation == currentGeneration else { return }
         if progress >= 1 {
             self.animation = nil
+            watchdog?.cancel()
+            watchdog = nil
             frameDriver.stop()
             animation.completion()
         }
