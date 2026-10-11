@@ -429,15 +429,42 @@ private struct AccessibilityOnboardingPage: View {
         NSWorkspace.shared.open(url)
     }
 
-    /// Start a fresh instance and quit this one once it is running, so the new
-    /// process reads the Accessibility grant that this one may have missed.
     private func relaunchStagehand() {
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.createsNewApplicationInstance = true
-        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { application, _ in
-            guard application != nil else { return }
-            DispatchQueue.main.async { NSApp.terminate(nil) }
+        OnboardingRelaunch.relaunch()
+    }
+}
+
+/// Quits this instance and starts a new one from the same bundle, so the new
+/// process reads the Accessibility grant that this one may have missed.
+///
+/// Stagehand allows one running instance: AppDelegate.claimSingleInstance holds a
+/// file lock and refuses a second launch while the first is alive. Opening the
+/// replacement before quitting therefore produced the "another instance" alert
+/// and then no Stagehand at all. A detached shell waits for this PID to exit and
+/// only then asks LaunchServices to open the bundle.
+enum OnboardingRelaunch {
+    /// The script the helper runs. Single quotes in the path are closed, escaped,
+    /// and reopened so `sh` sees one literal argument.
+    static func script(pid: pid_t, bundlePath: String) -> String {
+        let quoted = "'" + bundlePath.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        return "while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done; open -n \(quoted)"
+    }
+
+    @MainActor
+    static func relaunch() {
+        let helper = Process()
+        helper.executableURL = URL(fileURLWithPath: "/bin/sh")
+        helper.arguments = ["-c", script(pid: ProcessInfo.processInfo.processIdentifier, bundlePath: Bundle.main.bundlePath)]
+        helper.standardInput = FileHandle.nullDevice
+        helper.standardOutput = FileHandle.nullDevice
+        helper.standardError = FileHandle.nullDevice
+        do {
+            try helper.run()
+        } catch {
+            NSLog("Stagehand could not start its relaunch helper: %@", String(describing: error))
+            return
         }
+        NSApp.terminate(nil)
     }
 }
 

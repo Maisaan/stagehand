@@ -238,3 +238,11 @@ private func waitUntil(
         logURL: FileManager.default.temporaryDirectory.appendingPathComponent("stagehand-test-\(UUID().uuidString).log"),
         enabled: false), persistence: .ephemeral)
 }
+
+/// The relaunch helper must wait for this process to exit before opening the
+/// bundle, and must pass a path with spaces or quotes as one shell argument.
+@Test func onboardingRelaunchScriptWaitsForThePidAndQuotesThePath() {
+    let script = OnboardingRelaunch.script(pid: 4242, bundlePath: "/Apps/It's here/Stagehand.app")
+    #expect(script.hasPrefix("while kill -0 4242 2>/dev/null; do sleep 0.2; done; open -n "))
+    #expect(script.hasSuffix("open -n '/Apps/It'\\''s here/Stagehand.app'"))
+}
