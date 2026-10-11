@@ -31,27 +31,68 @@ struct WindowRecoveryRecord: Codable, Equatable {
 }
 
 final class WindowRecoveryJournal {
-    enum JournalError: Error { case invalidRecord }
-    static var defaultURL: URL {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
+    enum JournalError: Error, Equatable {
+        case invalidRecord
+        /// The on-disk journal could not be read or set aside. Saving would overwrite
+        /// the only copy of frames an earlier session may have left displaced.
+        case unreadable(String)
+        /// No per-user Application Support directory. A journal in a temporary
+        /// directory would not survive to the next launch, so refuse instead.
+        case noStorage
+    }
+
+    /// Unreadable journals set aside for manual recovery. Older copies are deleted
+    /// once this many exist, so a repeatedly corrupt file cannot fill the disk.
+    static let quarantineLimit = 5
+    static let quarantinePrefix = "window-recovery.unreadable-"
+
+    static var defaultURL: URL? {
+        guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
         return support.appendingPathComponent("Stagehand/window-recovery.json")
     }
 
     private(set) var records: [String: WindowRecoveryRecord] = [:]
-    private let url: URL
+    /// Set when the journal cannot be trusted. `save` throws until the process restarts.
+    private(set) var failure: JournalError?
+    private let url: URL?
 
-    init(url: URL = WindowRecoveryJournal.defaultURL) {
+    convenience init() {
+        self.init(url: WindowRecoveryJournal.defaultURL)
+    }
+
+    init(url: URL?) {
         self.url = url
-        guard let data = try? Data(contentsOf: url) else { return }
+        guard let url else {
+            failure = .noStorage
+            return
+        }
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError {
+            return
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == ENOENT {
+            return
+        } catch {
+            failure = .unreadable(error.localizedDescription)
+            return
+        }
         // Decode each record on its own so one unreadable entry cannot discard the rest.
         guard let decoded = try? JSONDecoder().decode([LossyRecord].self, from: data) else {
             // This file may hold the only copy of displaced frames. Keep it for manual
             // recovery instead of letting the next save overwrite it.
             let preserved = url.deletingLastPathComponent().appendingPathComponent(
-                "window-recovery.unreadable-\(Int(Date().timeIntervalSince1970)).json"
+                "\(Self.quarantinePrefix)\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString.prefix(8)).json"
             )
-            try? FileManager.default.moveItem(at: url, to: preserved)
+            do {
+                try FileManager.default.moveItem(at: url, to: preserved)
+            } catch {
+                failure = .unreadable(error.localizedDescription)
+                return
+            }
+            Self.pruneQuarantine(in: url.deletingLastPathComponent())
             return
         }
         for record in decoded.compactMap(\.record) where record.isValid {
@@ -68,6 +109,7 @@ final class WindowRecoveryJournal {
 
     func save(_ record: WindowRecoveryRecord) throws {
         guard record.isValid else { throw JournalError.invalidRecord }
+        if let failure { throw failure }
         guard records[record.windowID] == nil else { return }
         var updated = records
         updated[record.windowID] = record
@@ -84,7 +126,32 @@ final class WindowRecoveryJournal {
     }
 
     private func write(_ records: [String: WindowRecoveryRecord]) throws {
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try JSONEncoder().encode(Array(records.values)).write(to: url, options: .atomic)
+        guard let url else { throw JournalError.noStorage }
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(Array(records.values))
+        // Write through a sibling with owner-only permissions, then swap it in so the
+        // journal is never observed half-written and never world-readable.
+        let staging = directory.appendingPathComponent(".window-recovery.\(ProcessInfo.processInfo.processIdentifier).tmp")
+        guard FileManager.default.createFile(atPath: staging.path, contents: data,
+                                             attributes: [.posixPermissions: 0o600]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        if FileManager.default.fileExists(atPath: url.path) {
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: staging)
+        } else {
+            try FileManager.default.moveItem(at: staging, to: url)
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    /// Keeps the newest `quarantineLimit` set-aside journals, by name, which embeds the time.
+    private static func pruneQuarantine(in directory: URL) {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return }
+        let quarantined = names.filter { $0.hasPrefix(quarantinePrefix) && $0.hasSuffix(".json") }.sorted()
+        guard quarantined.count > quarantineLimit else { return }
+        for name in quarantined.prefix(quarantined.count - quarantineLimit) {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+        }
     }
 }
