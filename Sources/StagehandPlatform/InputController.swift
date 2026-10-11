@@ -23,6 +23,10 @@ public final class InputController {
     public var gesturesAvailable: Bool { gestures.isRunning }
 
     static let navigationGestureFingerCount = 3
+    /// `defaults write com.example.Stagehand StagehandDisableTrackpadGestures -bool YES` keeps
+    /// the private MultitouchSupport framework from loading, as a recovery switch after a
+    /// macOS update.
+    public static let disableTrackpadGesturesPreferenceKey = GestureMonitor.disablePreferenceKey
 
     private var isRunning = false
     private var eventHandler: EventHandlerRef?
@@ -39,6 +43,7 @@ public final class InputController {
     public init(shortcutBindings: [ShortcutBinding] = ShortcutBinding.load(), shortcutLoadIssues: [String] = []) {
         self.shortcutBindings = shortcutBindings
         self.shortcutLoadIssues = shortcutLoadIssues
+        gestures.onFailure = { [weak self] _ in self?.refreshGestureStatus() }
     }
 
     isolated deinit {

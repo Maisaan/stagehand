@@ -42,6 +42,49 @@ private let momentumSuppressionWindow: TimeInterval = 0.15
 /// If the framework stops reporting frames mid-drag, scrolling recovers after this long.
 private let scrollSuppressionStaleInterval: TimeInterval = 0.1
 
+/// Rejects contact frames that cannot have come from a working trackpad. The private
+/// framework has no contract; after a macOS update it may report garbage with the right
+/// struct size, and the recognizer must not act on it.
+struct GestureFrameValidator: Sendable {
+    struct Touch: Sendable {
+        var frame: Int32
+        var state: UInt32
+        var x: Float
+        var y: Float
+        var isTouching: Bool
+    }
+
+    /// MultitouchSupport states run 0 (not tracking) through 7 (out of range).
+    static let maximumTouchState: UInt32 = 7
+    /// Positions are normalized 0...1; a small tolerance absorbs edge rounding.
+    static let positionTolerance: Float = 0.05
+    /// Consecutive corrupt frames before gestures turn themselves off.
+    static let maximumBadFrames = 10
+
+    private(set) var badFrames = 0
+    private var lastTimestamp: Double = 0
+    private var lastFrame: Int32 = 0
+    var isExhausted: Bool { badFrames >= Self.maximumBadFrames }
+
+    /// Returns false when the frame must be ignored. A rejected frame also resets the
+    /// baseline so one clock reset counts once rather than failing every later frame.
+    mutating func accept(timestamp: Double, touches: [Touch]) -> Bool {
+        let range = -Self.positionTolerance...(1 + Self.positionTolerance)
+        let valid = timestamp.isFinite && timestamp >= lastTimestamp && touches.allSatisfy { touch in
+            touch.state <= Self.maximumTouchState && touch.frame >= lastFrame
+                && (!touch.isTouching || (touch.x.isFinite && touch.y.isFinite && range.contains(touch.x) && range.contains(touch.y)))
+        }
+        lastTimestamp = timestamp.isFinite ? timestamp : 0
+        lastFrame = touches.map(\.frame).max() ?? lastFrame
+        if valid {
+            badFrames = 0
+        } else {
+            badFrames += 1
+        }
+        return valid
+    }
+}
+
 private typealias ContactCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, Int32, Double, Int32) -> Int32
 
 func shortcutGestureModifiers(for flags: CGEventFlags, bindings: [ShortcutBinding]) -> UInt32? {
@@ -78,6 +121,9 @@ private struct GestureCallbackState {
     var suppressScroll = false
     var lastLiftTime: TimeInterval = 0
     var lastContactFrameTime: TimeInterval = 0
+    var frameValidator = GestureFrameValidator()
+    /// Set once corrupt frames exhaust the validator; delivered to the monitor on main.
+    var failure: String?
     var pendingEvents = GestureEventBuffer()
     var deliveryScheduled = false
     var scheduleDelivery: (@Sendable () -> Void)?
@@ -89,20 +135,44 @@ private let traceGestures = ProcessInfo.processInfo.arguments.contains("--trace-
 private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
     guard count >= 0, count <= maximumContactsPerFrame, count == 0 || raw != nil else { return 0 }
     var contacts: [GestureContact] = []
+    var touches: [GestureFrameValidator.Touch] = []
     contacts.reserveCapacity(Int(count))
+    touches.reserveCapacity(Int(count))
     if let raw {
         let buffer = raw.assumingMemoryBound(to: RawContact.self)
         for index in 0..<Int(count) {
             let touch = buffer[index]
-            if touch.state == touchStateMake || touch.state == touchStateTouching {
+            let isTouching = touch.state == touchStateMake || touch.state == touchStateTouching
+            touches.append(.init(frame: touch.frame, state: touch.state, x: touch.normalized.position.x,
+                                 y: touch.normalized.position.y, isTouching: isTouching))
+            if isTouching {
                 contacts.append(GestureContact(id: touch.identifier, x: Double(touch.normalized.position.x), y: Double(touch.normalized.position.y)))
             }
         }
     }
     let snapshot = contacts
+    let frameTouches = touches
     let flags = CGEventSource.flagsState(.combinedSessionState)
     let delivery = gestureCallbackState.withLock { state -> (@Sendable () -> Void)? in
         guard state.enabled else { return nil }
+        guard state.frameValidator.accept(timestamp: timestamp, touches: frameTouches) else {
+            // Drop the frame and any gesture it was part of. Enough corrupt frames in a
+            // row mean the private data layout no longer matches; stop trusting it.
+            let wasDragging = state.recognizer.isDragging
+            state.recognizer.cancelUntilLift()
+            state.suppressScroll = false
+            if wasDragging { state.pendingEvents.append(.cancelled) }
+            if state.frameValidator.isExhausted {
+                state.enabled = false
+                state.failure = "Trackpad data from this version of macOS looks invalid, so gestures are off until Stagehand relaunches. Keyboard shortcuts still work."
+            }
+            if traceGestures {
+                NSLog("[DEBUG-gesture] rejected frame t=%.3f raw=%d bad=%d", timestamp, count, state.frameValidator.badFrames)
+            }
+            guard wasDragging || state.failure != nil, !state.deliveryScheduled else { return nil }
+            state.deliveryScheduled = true
+            return state.scheduleDelivery
+        }
         if state.ignoredUntilLift {
             if snapshot.isEmpty { state.ignoredUntilLift = false }
             return nil
@@ -179,8 +249,15 @@ private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
 
 @MainActor
 final class GestureMonitor {
+    /// Hidden preference that keeps the private framework from being loaded at all.
+    static let disablePreferenceKey = "StagehandDisableTrackpadGestures"
+
     var onGesture: ((GestureNavigationEvent) -> Void)?
+    /// Called on main after corrupt frames turned gestures off. `start()` keeps returning
+    /// the message for the rest of the process.
+    var onFailure: ((String) -> Void)?
     private(set) var isRunning = false
+    private var dataFailure: String?
     private var framework: UnsafeMutableRawPointer?
     private var device: UnsafeMutableRawPointer?
     private var unregister: (@convention(c) (UnsafeMutableRawPointer, ContactCallback) -> Void)?
@@ -191,6 +268,10 @@ final class GestureMonitor {
     func start(fingerCount: Int = 4, unmodifiedEnabled: Bool, shortcutEnabled: Bool,
                shortcutBindings: [ShortcutBinding], reverseShortcutDirection: Bool) -> String? {
         guard !isRunning else { return nil }
+        if UserDefaults.standard.bool(forKey: Self.disablePreferenceKey) {
+            return "Trackpad gestures are turned off by the \(Self.disablePreferenceKey) setting. Keyboard shortcuts still work."
+        }
+        if let dataFailure { return dataFailure }
         guard AXIsProcessTrusted() else { return "Allow Stagehand in Accessibility settings to use gestures." }
         guard MemoryLayout<RawContact>.stride == rawContactStride,
               MemoryLayout<RawContact>.offset(of: \.normalized) == rawContactNormalizedOffset,
@@ -232,13 +313,18 @@ final class GestureMonitor {
             state.scheduleDelivery = { [weak self] in
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isRunning, self.generation == activeGeneration else { return }
-                    let events = gestureCallbackState.withLock { state in
+                    let (events, failure) = gestureCallbackState.withLock { state in
                         state.deliveryScheduled = false
-                        return state.pendingEvents.drain()
+                        return (state.pendingEvents.drain(), state.failure)
                     }
                     for event in events {
                         guard self.isRunning, self.generation == activeGeneration else { return }
                         self.onGesture?(event)
+                    }
+                    if let failure, self.isRunning, self.generation == activeGeneration {
+                        self.dataFailure = failure
+                        self.stop()
+                        self.onFailure?(failure)
                     }
                 }
             }

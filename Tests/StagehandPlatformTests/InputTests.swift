@@ -598,3 +598,32 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     #expect(InputController.shouldDispatchHotKey(.showSettings, tapHandlesNavigation: true))
     #expect(InputController.shouldDispatchHotKey(.togglePause, tapHandlesNavigation: true))
 }
+
+@Test func corruptContactFramesAreRejectedAndEventuallyDisableGestures() {
+    var validator = GestureFrameValidator()
+    func touch(frame: Int32 = 1, state: UInt32 = 4, x: Float = 0.5, y: Float = 0.5) -> GestureFrameValidator.Touch {
+        .init(frame: frame, state: state, x: x, y: y, isTouching: state == 3 || state == 4)
+    }
+    func accept(_ timestamp: Double, _ touches: [GestureFrameValidator.Touch]) -> Bool {
+        validator.accept(timestamp: timestamp, touches: touches)
+    }
+    #expect(accept(1, [touch()]))
+    #expect(!accept(1.01, [touch(state: 9)]))
+    #expect(!accept(1.02, [touch(x: 1.5)]))
+    #expect(!accept(1.03, [touch(y: -0.5)]))
+    #expect(!accept(1.04, [touch(x: .nan)]))
+    #expect(!accept(.infinity, [touch()]))
+    // A hover state may carry any position; only touching contacts are range checked.
+    #expect(accept(1.05, [touch(state: 2, x: 7)]))
+    #expect(validator.badFrames == 0)
+    // Time running backwards counts once, then the new baseline is accepted.
+    #expect(!accept(0.5, [touch()]))
+    #expect(accept(0.6, [touch()]))
+    #expect(!accept(0.7, [touch(frame: 0)]))
+    #expect(accept(0.8, [touch(frame: 2)]))
+    for index in 0 ..< GestureFrameValidator.maximumBadFrames {
+        #expect(!validator.isExhausted)
+        #expect(!accept(1 + Double(index), [touch(state: 200)]))
+    }
+    #expect(validator.isExhausted)
+}
