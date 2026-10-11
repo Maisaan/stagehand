@@ -66,10 +66,23 @@ private struct GateState {
     var navigationKeys: Set<Int64> = []
     var shortcutBindings = ShortcutBinding.defaults
     var tapIsAvailable = false
-    /// A transfer the tap thread began for typing that followed a trackpad release whose
-    /// main-queue delivery was still pending. The next `beginTransfer` adopts it.
-    var provisionalToken: UInt64?
+    /// Transfers the tap thread began before the main actor could: one per navigation chord
+    /// it consumed, and one for typing that followed a trackpad release whose main-queue
+    /// delivery was still pending. `beginTransfer` adopts them oldest first, so the typing
+    /// captured after a chord belongs to that chord's navigation and not to whatever
+    /// transfer happened to be newest while main was busy.
+    var reservedTokens: [UInt64] = []
     var hasPendingGestureCompletion: (@Sendable () -> Bool)?
+
+    mutating func reserveTransfer() -> UInt64 {
+        let token = buffer.begin()
+        reservedTokens.append(token)
+        return token
+    }
+
+    mutating func unreserve(_ token: UInt64) {
+        reservedTokens.removeAll { $0 == token }
+    }
 
     /// Forget held-key bookkeeping. Call whenever the tap stops seeing events, so a key-up
     /// that bypassed the tap cannot route a later press.
@@ -90,7 +103,7 @@ private struct GateState {
         for (key, destination) in keyDestinations {
             if case .pending = destination { keyDestinations[key] = .discarded }
         }
-        provisionalToken = nil
+        reservedTokens.removeAll()
         return count
     }
 }
@@ -101,13 +114,15 @@ private struct RoutingEffects: @unchecked Sendable {
     var navigationAction: NavigationAction?
     var discardedCount = 0
     var expiredToken: UInt64?
-    var provisionalToken: UInt64?
+    /// A transfer begun under the lock for this event; main schedules its deadline, lets the
+    /// navigation or gesture handoff adopt it, and releases it if nothing did.
+    var reservedToken: UInt64?
     /// Events for already-verified destinations. Posting stays on the main actor so an
     /// injected replay sink never runs on the tap thread.
     var postings: [(event: CGEvent, pid: Int32)] = []
     var cancelledTokens: [UInt64] = []
     var isEmpty: Bool {
-        navigationAction == nil && discardedCount == 0 && expiredToken == nil && provisionalToken == nil
+        navigationAction == nil && discardedCount == 0 && expiredToken == nil && reservedToken == nil
             && postings.isEmpty && cancelledTokens.isEmpty
     }
 }
@@ -246,9 +261,9 @@ public final class FocusInputGate {
 
     public func beginTransfer() -> UInt64 {
         let (token, adopted, dropped) = core.withLockUnchecked { state -> (UInt64, Bool, [UInt64]) in
-            if let provisional = state.provisionalToken {
-                state.provisionalToken = nil
-                return (provisional, true, [])
+            while !state.reservedTokens.isEmpty {
+                let reserved = state.reservedTokens.removeFirst()
+                if state.buffer.contains(token: reserved) { return (reserved, true, []) }
             }
             let token = state.buffer.begin()
             let dropped = state.buffer.removeOldestEmptyTransfers(keepingAtMost: Self.maximumActiveTransfers)
@@ -280,7 +295,7 @@ public final class FocusInputGate {
         guard processIdentifier > 0 else { cancelTransfer(token: token); return }
         deadlines.removeValue(forKey: token)?.cancel()
         let events = core.withLockUnchecked { state -> [CGEvent] in
-            if state.provisionalToken == token { state.provisionalToken = nil }
+            state.unreserve(token)
             let events = state.buffer.take(token: token)
             for (key, destination) in state.keyDestinations {
                 if case .pending(let pendingToken) = destination, pendingToken == token {
@@ -296,7 +311,7 @@ public final class FocusInputGate {
     public func cancelTransfer(token: UInt64) {
         deadlines.removeValue(forKey: token)?.cancel()
         let events = core.withLockUnchecked { state -> [CGEvent] in
-            if state.provisionalToken == token { state.provisionalToken = nil }
+            state.unreserve(token)
             let events = state.buffer.take(token: token)
             state.discardDestinations(for: token)
             return events
@@ -434,13 +449,15 @@ public final class FocusInputGate {
     private func deliver(_ effects: RoutingEffects) {
         for token in effects.cancelledTokens { deadlines.removeValue(forKey: token)?.cancel() }
         if let token = effects.expiredToken { deadlines.removeValue(forKey: token)?.cancel() }
-        if let token = effects.provisionalToken {
+        if let token = effects.reservedToken {
             scheduleDeadline(token)
             startAvailabilityWatch()
-            onBeforeKeyboardEvent?()
-            releaseProvisionalTransferIfUnadopted(token)
+            // The handoff runs synchronously and adopts the reservation through beginTransfer.
+            if let action = effects.navigationAction { onNavigationAction?(action) } else { onBeforeKeyboardEvent?() }
+            releaseReservedTransferIfUnadopted(token)
+        } else if let action = effects.navigationAction {
+            onNavigationAction?(action)
         }
-        if let action = effects.navigationAction { onNavigationAction?(action) }
         for posting in effects.postings { post(posting.event, processIdentifier: posting.pid) }
         if effects.discardedCount > 0 { onInputDiscarded?(effects.discardedCount) }
         if let token = effects.expiredToken { onTransferExpired?(token) }
@@ -449,8 +466,13 @@ public final class FocusInputGate {
 
     /// No navigation claimed the typing, so it belongs to the window that had focus when it
     /// was typed. Replay it there in order, as passing it through would have done.
-    private func releaseProvisionalTransferIfUnadopted(_ token: UInt64) {
-        guard core.withLockUnchecked({ $0.provisionalToken == token }) else { return }
+    private func releaseReservedTransferIfUnadopted(_ token: UInt64) {
+        let reserved = core.withLockUnchecked { state -> Bool in
+            guard state.reservedTokens.contains(token) else { return false }
+            state.unreserve(token)
+            return true
+        }
+        guard reserved else { return }
         guard let pid = frontmostProcessIdentifier(), pid > 0 else {
             cancelTransfer(token: token)
             return
@@ -490,9 +512,14 @@ public final class FocusInputGate {
             if action != .showSettings, action != .togglePause {
                 state.navigationKeys.insert(key)
                 // The caller only enqueues work. It must not run AX calls on the event tap.
-                // Beginning capture here closes the gap before Carbon dispatches a hotkey.
-                // A held chord repeats focus and size steps; space and move steps run once.
-                if !isAutorepeat || action.repeatsWhileHeld { effects.navigationAction = action }
+                // Capture starts here, under the lock, so typing that follows the chord while
+                // main is busy is held for this navigation rather than passing through or
+                // joining an earlier transfer. A held chord repeats focus and size steps;
+                // space and move steps run once.
+                if !isAutorepeat || action.repeatsWhileHeld {
+                    effects.navigationAction = action
+                    effects.reservedToken = state.reserveTransfer()
+                }
                 return (true, effects)
             }
             state.exemptKeys.insert(key)
@@ -528,10 +555,9 @@ public final class FocusInputGate {
         guard type == .keyDown else { return (false, effects) }
         var token = state.buffer.latestToken
         if token == nil, allowProvisional, state.hasPendingGestureCompletion?() == true {
-            let provisional = state.buffer.begin()
-            state.provisionalToken = provisional
-            effects.provisionalToken = provisional
-            token = provisional
+            let reserved = state.reserveTransfer()
+            effects.reservedToken = reserved
+            token = reserved
         }
         guard let token else { return (false, effects) }
         state.keyDestinations[key] = .pending(token)
@@ -546,7 +572,7 @@ public final class FocusInputGate {
             // event that could not be buffered as one count.
             let held = state.buffer.take(token: token).count
             state.discardDestinations(for: token)
-            if state.provisionalToken == token { state.provisionalToken = nil }
+            state.unreserve(token)
             effects.discardedCount += held + 1
             effects.expiredToken = token
             return

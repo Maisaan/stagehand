@@ -627,3 +627,68 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     }
     #expect(validator.isExhausted)
 }
+
+/// A chord consumed on the tap thread reserves its transfer under the lock, so typing that
+/// follows while main is still busy is held for that navigation.
+@MainActor @Test func typingRightAfterAShortcutIsHeldForItsNavigationWhileMainIsBusy() async throws {
+    var posted: [Int32] = []
+    let gate = FocusInputGate(installsEventTap: false, frontmostProcessIdentifier: { 77 },
+                              postEvent: { _, pid in posted.append(pid) })
+    gate.start()
+    defer { gate.stop() }
+    var adopted: UInt64?
+    gate.onNavigationAction = { _ in adopted = gate.beginTransfer() }
+    // Both events reach the tap before any main-queue hop runs.
+    let consumed = await Task.detached { () -> [Bool] in
+        let chord = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_RightArrow), keyDown: true)!
+        chord.flags = [.maskControl, .maskAlternate]
+        let typing = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)!
+        return [gate.receiveFromTap(type: .keyDown, event: chord), gate.receiveFromTap(type: .keyDown, event: typing)]
+    }.value
+    #expect(consumed == [true, true])
+    try await waitUntil { adopted != nil }
+    #expect(gate.pendingEventCount == 1)
+    gate.commitTransfer(token: try #require(adopted), processIdentifier: 99)
+    #expect(posted == [99])
+}
+
+@MainActor @Test func typingAfterAShortcutJoinsThatChordNotAnEarlierTransfer() async throws {
+    var posted: [Int32] = []
+    let gate = FocusInputGate(installsEventTap: false, postEvent: { _, pid in posted.append(pid) })
+    gate.start()
+    defer { gate.stop() }
+    let earlier = gate.beginTransfer()
+    var adopted: UInt64?
+    gate.onNavigationAction = { _ in adopted = gate.beginTransfer() }
+    _ = await Task.detached { () -> [Bool] in
+        let chord = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_RightArrow), keyDown: true)!
+        chord.flags = [.maskControl, .maskAlternate]
+        let typing = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)!
+        return [gate.receiveFromTap(type: .keyDown, event: chord), gate.receiveFromTap(type: .keyDown, event: typing)]
+    }.value
+    try await waitUntil { adopted != nil }
+    gate.commitTransfer(token: earlier, processIdentifier: 11)
+    #expect(posted.isEmpty)
+    gate.commitTransfer(token: try #require(adopted), processIdentifier: 22)
+    #expect(posted == [22])
+}
+
+@MainActor @Test func unclaimedShortcutReservationReturnsTypingToTheFocusedProcess() async throws {
+    var posted: [Int32] = []
+    let gate = FocusInputGate(installsEventTap: false, frontmostProcessIdentifier: { 77 },
+                              postEvent: { _, pid in posted.append(pid) })
+    gate.start()
+    defer { gate.stop() }
+    gate.onNavigationAction = { _ in }
+    _ = await Task.detached { () -> [Bool] in
+        let chord = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_RightArrow), keyDown: true)!
+        chord.flags = [.maskControl, .maskAlternate]
+        let typing = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)!
+        return [gate.receiveFromTap(type: .keyDown, event: chord), gate.receiveFromTap(type: .keyDown, event: typing)]
+    }.value
+    try await waitUntil { posted == [77] }
+    #expect(gate.pendingEventCount == 0)
+}
+
+
+
