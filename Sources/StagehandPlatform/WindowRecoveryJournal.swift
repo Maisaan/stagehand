@@ -12,9 +12,14 @@ struct WindowRecoveryRecord: Codable, Equatable {
     let windowNumber: UInt32
     let frame: CGRect
 
+    /// The window ID is the tracking key. It is normally "pid:windowNumber", but a
+    /// window first seen before WindowServer reported its number keeps its
+    /// "pid:fallback:N" key for life, so only the pid prefix is required here.
+    /// Recovery locates the window through `windowNumber`, never through the key.
     var isValid: Bool {
         pid > 0 && windowNumber > 0 && ownerPID > 0 &&
-        windowID == "\(pid):\(windowNumber)" && !bundleIdentifier.isEmpty &&
+        (windowID == "\(pid):\(windowNumber)" || windowID.hasPrefix("\(pid):fallback:")) &&
+        !bundleIdentifier.isEmpty &&
         frame.minX.isFinite && frame.minY.isFinite && frame.width.isFinite && frame.height.isFinite &&
         abs(frame.minX) < 100_000 && abs(frame.minY) < 100_000 &&
         frame.width > 0 && frame.height > 0 && frame.width < 100_000 && frame.height < 100_000

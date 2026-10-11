@@ -813,26 +813,40 @@ public final class WindowSystem {
         guard let tracked = windows[windowID] else { return false }
         guard tracked.originalFrame == nil else { return true }
         guard let frame = readFrame(tracked.element) else { return false }
-        if let number = tracked.windowNumber,
-           let app = NSRunningApplication(processIdentifier: tracked.record.pid),
-           let launchDate = app.launchDate,
-           let ownerLaunchDate = NSRunningApplication.current.launchDate,
-           !tracked.record.bundleIdentifier.isEmpty {
-            let record = WindowRecoveryRecord(
-                windowID: windowID, bundleIdentifier: tracked.record.bundleIdentifier,
-                pid: tracked.record.pid, launchDate: launchDate,
-                ownerPID: ProcessInfo.processInfo.processIdentifier, ownerLaunchDate: ownerLaunchDate,
-                windowNumber: number, frame: frame
-            )
-            do {
-                try recoveryJournal.save(record)
-            } catch {
-                NSLog("Stagehand window recovery save failed: %@", error.localizedDescription)
-                return false
-            }
+        // Without an on-disk record a crash would leave the window wherever the
+        // ribbon or parking put it. Refuse to move it at all in that case.
+        guard let record = Self.recoveryRecord(
+            windowID: windowID, bundleIdentifier: tracked.record.bundleIdentifier, pid: tracked.record.pid,
+            windowNumber: tracked.windowNumber,
+            launchDate: NSRunningApplication(processIdentifier: tracked.record.pid)?.launchDate,
+            ownerPID: ProcessInfo.processInfo.processIdentifier,
+            ownerLaunchDate: NSRunningApplication.current.launchDate, frame: frame
+        ) else {
+            NSLog("Stagehand refused to manage window %@: no recovery record can be written", windowID)
+            return false
+        }
+        do {
+            try recoveryJournal.save(record)
+        } catch {
+            NSLog("Stagehand window recovery save failed: %@", error.localizedDescription)
+            return false
         }
         windows[windowID]?.originalFrame = frame
         return true
+    }
+
+    /// The journal entry that lets a later process put the window back. Nil when
+    /// any identity is missing, which means the window must not be moved.
+    nonisolated static func recoveryRecord(
+        windowID: String, bundleIdentifier: String, pid: pid_t, windowNumber: CGWindowID?,
+        launchDate: Date?, ownerPID: pid_t, ownerLaunchDate: Date?, frame: CGRect
+    ) -> WindowRecoveryRecord? {
+        guard let windowNumber, let launchDate, let ownerLaunchDate, !bundleIdentifier.isEmpty else { return nil }
+        let record = WindowRecoveryRecord(
+            windowID: windowID, bundleIdentifier: bundleIdentifier, pid: pid, launchDate: launchDate,
+            ownerPID: ownerPID, ownerLaunchDate: ownerLaunchDate, windowNumber: windowNumber, frame: frame
+        )
+        return record.isValid ? record : nil
     }
 
     /// Call on pause/quit, before releasing tracking, to return windows to their original positions.

@@ -53,12 +53,20 @@ import Testing
     #expect(WindowRecoveryJournal(url: url).records.isEmpty)
 
     let invalid = WindowRecoveryRecord(
-        windowID: "42:fallback:1", bundleIdentifier: "example.app", pid: 42,
+        windowID: "42:17", bundleIdentifier: "example.app", pid: 42,
         launchDate: Date(), ownerPID: 99, ownerLaunchDate: Date(), windowNumber: 17,
         frame: CGRect(x: 0, y: 0, width: 0, height: 100)
     )
     #expect(throws: WindowRecoveryJournal.JournalError.self) {
         try WindowRecoveryJournal(url: url).save(invalid)
+    }
+    let otherProcessKey = WindowRecoveryRecord(
+        windowID: "43:17", bundleIdentifier: "example.app", pid: 42,
+        launchDate: Date(), ownerPID: 99, ownerLaunchDate: Date(), windowNumber: 17,
+        frame: CGRect(x: 0, y: 0, width: 100, height: 100)
+    )
+    #expect(throws: WindowRecoveryJournal.JournalError.self) {
+        try WindowRecoveryJournal(url: url).save(otherProcessKey)
     }
     #expect(WindowRecoveryJournal(url: url).records.isEmpty)
 
@@ -96,6 +104,53 @@ import Testing
         .filter { $0.hasPrefix("window-recovery.unreadable") }
     #expect(preserved.count == 1)
     #expect(WindowRecoveryJournal(url: url).records == [valid.windowID: valid])
+}
+
+/// A window tracked before WindowServer reported its number keeps its fallback
+/// key. Its record must still be writable once the number is known, or the window
+/// could never be managed.
+@Test func windowRecoveryJournalAcceptsAFallbackKeyOnceTheWindowNumberIsKnown() throws {
+    let (directory, url, _) = try journalFixture()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let date = Date(timeIntervalSince1970: 1_700_000_000)
+    let fallback = WindowRecoveryRecord(
+        windowID: "42:fallback:3", bundleIdentifier: "example.app", pid: 42,
+        launchDate: date, ownerPID: 99, ownerLaunchDate: date, windowNumber: 17,
+        frame: CGRect(x: 10, y: 20, width: 300, height: 200)
+    )
+    try WindowRecoveryJournal(url: url).save(fallback)
+    #expect(WindowRecoveryJournal(url: url).records == [fallback.windowID: fallback])
+}
+
+@Test func recoveryRecordRequiresEveryIdentityBeforeAWindowIsMoved() {
+    let date = Date(timeIntervalSince1970: 1_700_000_000)
+    let frame = CGRect(x: 10, y: 20, width: 300, height: 200)
+    let complete = WindowSystem.recoveryRecord(
+        windowID: "42:17", bundleIdentifier: "example.app", pid: 42, windowNumber: 17,
+        launchDate: date, ownerPID: 99, ownerLaunchDate: date, frame: frame
+    )
+    #expect(complete?.windowID == "42:17")
+    #expect(complete?.isValid == true)
+    #expect(WindowSystem.recoveryRecord(
+        windowID: "42:fallback:1", bundleIdentifier: "example.app", pid: 42, windowNumber: nil,
+        launchDate: date, ownerPID: 99, ownerLaunchDate: date, frame: frame
+    ) == nil)
+    #expect(WindowSystem.recoveryRecord(
+        windowID: "42:17", bundleIdentifier: "example.app", pid: 42, windowNumber: 17,
+        launchDate: nil, ownerPID: 99, ownerLaunchDate: date, frame: frame
+    ) == nil)
+    #expect(WindowSystem.recoveryRecord(
+        windowID: "42:17", bundleIdentifier: "example.app", pid: 42, windowNumber: 17,
+        launchDate: date, ownerPID: 99, ownerLaunchDate: nil, frame: frame
+    ) == nil)
+    #expect(WindowSystem.recoveryRecord(
+        windowID: "42:17", bundleIdentifier: "", pid: 42, windowNumber: 17,
+        launchDate: date, ownerPID: 99, ownerLaunchDate: date, frame: frame
+    ) == nil)
+    #expect(WindowSystem.recoveryRecord(
+        windowID: "42:17", bundleIdentifier: "example.app", pid: 42, windowNumber: 17,
+        launchDate: date, ownerPID: 99, ownerLaunchDate: date, frame: CGRect(x: 0, y: 0, width: 0, height: 10)
+    ) == nil)
 }
 
 private func journalFixture() throws -> (directory: URL, url: URL, record: WindowRecoveryRecord) {
