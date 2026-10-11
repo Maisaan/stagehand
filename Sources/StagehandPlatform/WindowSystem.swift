@@ -249,12 +249,14 @@ public final class WindowSystem {
                 try? recoveryJournal.remove(windowID: record.windowID)
                 continue
             }
-            let appElement = AXUIElementCreateApplication(record.pid)
-            guard let elements = copyAttribute(appElement, kAXWindowsAttribute).value as? [AXUIElement] else {
+            let element: AXUIElement
+            switch recoveryElement(for: record) {
+            case .found(let match):
+                element = match
+            case .unavailable:
                 foundInterruptedWindow = true
                 continue
-            }
-            guard let element = elements.first(where: { windowNumber($0) == record.windowNumber }) else {
+            case .absent:
                 // Some apps publish their AX window list late after Stagehand launches.
                 // Require a second complete inventory before treating a window as closed.
                 if missingRecoveryWindowIDs.insert(id).inserted {
@@ -285,6 +287,35 @@ public final class WindowSystem {
         interruptedWindowIDs = interruptedWindowIDs.filter { recoveryJournal.records[$0] != nil }
         deferredRecoveryWindowIDs = deferredRecoveryWindowIDs.filter { recoveryJournal.records[$0] != nil }
         return foundInterruptedWindow
+    }
+
+    enum RecoverySearch {
+        case found(AXUIElement)
+        /// The window is confirmed gone from its app's window list.
+        case absent
+        /// The app did not answer, or window identities cannot be read at all, so
+        /// absence is not established and the record must be kept.
+        case unavailable
+    }
+
+    private func recoveryElement(for record: WindowRecoveryRecord) -> RecoverySearch {
+        let appElement = AXUIElementCreateApplication(record.pid)
+        guard let elements = copyAttribute(appElement, kAXWindowsAttribute).value as? [AXUIElement] else {
+            return .unavailable
+        }
+        return Self.recoveryMatch(elements, numbers: elements.map { windowNumber($0) },
+                                  target: record.windowNumber, identityAvailable: Self.windowIdentityAvailable)
+    }
+
+    /// Without _AXUIElementGetWindow every lookup is nil, which must not read as
+    /// "every journaled window has closed".
+    nonisolated static var windowIdentityAvailable: Bool { AccessibilityWindowNumber.function != nil }
+
+    nonisolated static func recoveryMatch(_ elements: [AXUIElement], numbers: [CGWindowID?],
+                                          target: CGWindowID, identityAvailable: Bool) -> RecoverySearch {
+        guard identityAvailable else { return .unavailable }
+        guard let index = numbers.firstIndex(where: { $0 == target }) else { return .absent }
+        return .found(elements[index])
     }
 
     /// A de-miniaturized window whose recovery was deferred goes back to its

@@ -1,3 +1,4 @@
+import ApplicationServices
 import CoreGraphics
 import Foundation
 import Testing
@@ -151,6 +152,31 @@ import Testing
         windowID: "42:17", bundleIdentifier: "example.app", pid: 42, windowNumber: 17,
         launchDate: date, ownerPID: 99, ownerLaunchDate: date, frame: CGRect(x: 0, y: 0, width: 0, height: 10)
     ) == nil)
+}
+
+/// Without _AXUIElementGetWindow every identity lookup is nil. The second
+/// recovery inventory must not read that as "every journaled window closed" and
+/// delete the journal.
+@Test func recoverySearchDistinguishesAbsentFromUnidentifiable() {
+    let first = AXUIElementCreateApplication(1)
+    let second = AXUIElementCreateApplication(2)
+    let elements = [first, second]
+    switch WindowSystem.recoveryMatch(elements, numbers: [5, 7], target: 7, identityAvailable: true) {
+    case .found(let element): #expect(CFEqual(element, second))
+    default: Issue.record("Expected the element whose number matched")
+    }
+    switch WindowSystem.recoveryMatch(elements, numbers: [5, 7], target: 9, identityAvailable: true) {
+    case .absent: break
+    default: Issue.record("A number missing from a readable list means the window closed")
+    }
+    switch WindowSystem.recoveryMatch(elements, numbers: [nil, nil], target: 7, identityAvailable: false) {
+    case .unavailable: break
+    default: Issue.record("Nil identities from a missing symbol must keep the record")
+    }
+    switch WindowSystem.recoveryMatch([], numbers: [], target: 7, identityAvailable: false) {
+    case .unavailable: break
+    default: Issue.record("An empty list is still not evidence without identities")
+    }
 }
 
 private func journalFixture() throws -> (directory: URL, url: URL, record: WindowRecoveryRecord) {
