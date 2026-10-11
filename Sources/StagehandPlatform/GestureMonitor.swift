@@ -27,6 +27,18 @@ private struct RawContact {
     var density: Float
 }
 
+/// Layout of the private contact record, checked before any frame is read.
+private let rawContactStride = 96
+private let rawContactNormalizedOffset = 32
+private let rawContactAbsoluteOffset = 68
+/// MultitouchSupport reports more contacts than any trackpad has only when the frame is corrupt.
+private let maximumContactsPerFrame: Int32 = 32
+/// Contact states that mean a finger is on the surface: 3 is "make" (just landed), 4 is "touching".
+private let touchStateMake: UInt32 = 3
+private let touchStateTouching: UInt32 = 4
+/// Momentum scroll events that follow a lift within this window belong to the gesture.
+private let momentumSuppressionWindow: TimeInterval = 0.15
+
 private typealias ContactCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, Int32, Double, Int32) -> Int32
 
 func shortcutGestureModifiers(for flags: CGEventFlags, bindings: [ShortcutBinding]) -> UInt32? {
@@ -71,14 +83,14 @@ private let gestureCallbackState = OSAllocatedUnfairLock(initialState: GestureCa
 private let traceGestures = ProcessInfo.processInfo.arguments.contains("--trace-gestures")
 
 private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
-    guard count >= 0, count <= 32, count == 0 || raw != nil else { return 0 }
+    guard count >= 0, count <= maximumContactsPerFrame, count == 0 || raw != nil else { return 0 }
     var contacts: [GestureContact] = []
     contacts.reserveCapacity(Int(count))
     if let raw {
         let buffer = raw.assumingMemoryBound(to: RawContact.self)
         for index in 0..<Int(count) {
             let touch = buffer[index]
-            if touch.state == 3 || touch.state == 4 {
+            if touch.state == touchStateMake || touch.state == touchStateTouching {
                 contacts.append(GestureContact(id: touch.identifier, x: Double(touch.normalized.position.x), y: Double(touch.normalized.position.y)))
             }
         }
@@ -171,9 +183,9 @@ final class GestureMonitor {
                shortcutBindings: [ShortcutBinding], reverseShortcutDirection: Bool) -> String? {
         guard !isRunning else { return nil }
         guard AXIsProcessTrusted() else { return "Allow Stagehand in Accessibility settings to use gestures." }
-        guard MemoryLayout<RawContact>.stride == 96,
-              MemoryLayout<RawContact>.offset(of: \.normalized) == 32,
-              MemoryLayout<RawContact>.offset(of: \.absolute) == 68 else {
+        guard MemoryLayout<RawContact>.stride == rawContactStride,
+              MemoryLayout<RawContact>.offset(of: \.normalized) == rawContactNormalizedOffset,
+              MemoryLayout<RawContact>.offset(of: \.absolute) == rawContactAbsoluteOffset else {
             return "This version of macOS does not expose trackpad data Stagehand can use. Keyboard shortcuts still work."
         }
         guard installScrollTap() else { return "Gesture navigation couldn't start. Re-enable Accessibility for Stagehand, then try again." }
@@ -284,7 +296,7 @@ private let scrollTapCallback: CGEventTapCallBack = { _, type, event, context in
     let suppress = gestureCallbackState.withLock { state in
         guard state.enabled else { return false }
         if state.suppressScroll { return true }
-        return momentum && ProcessInfo.processInfo.systemUptime - state.lastLiftTime < 0.15
+        return momentum && ProcessInfo.processInfo.systemUptime - state.lastLiftTime < momentumSuppressionWindow
     }
     return suppress ? nil : Unmanaged.passUnretained(event)
 }

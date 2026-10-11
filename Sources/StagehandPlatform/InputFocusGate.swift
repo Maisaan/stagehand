@@ -64,10 +64,13 @@ public final class FocusInputGate {
     private var navigationKeys: Set<Int64> = []
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
-    private let eventMarker: Int64 = 0x53544748414E44
-    private let maximumEvents = 128
+    /// Stamped into `eventSourceUserData` on replayed events so the tap passes them through ("STGHAND").
+    static let eventMarker: Int64 = 0x53544748414E44
+    /// Total events held across all transfers before the owning transfer is abandoned.
+    static let maximumBufferedEvents = 128
     // Focus may need a longer confirmation window when AX is slow. Keep input
     // buffered beyond that window, then discard it if the transfer still stalls.
+    static let defaultTransferTimeoutMilliseconds = 4_000
     private let transferTimeoutMilliseconds: Int
     private let postEvent: (CGEvent, Int32) -> Void
     /// Tests drive `processKeyboardEvent` directly and must never capture real typing.
@@ -75,12 +78,12 @@ public final class FocusInputGate {
     private var shortcutBindings = ShortcutBinding.defaults
 
     public init() {
-        transferTimeoutMilliseconds = 4_000
+        transferTimeoutMilliseconds = Self.defaultTransferTimeoutMilliseconds
         postEvent = { event, pid in event.postToPid(pid) }
         installsEventTap = true
     }
 
-    init(transferTimeoutMilliseconds: Int = 4_000, installsEventTap: Bool = true,
+    init(transferTimeoutMilliseconds: Int = defaultTransferTimeoutMilliseconds, installsEventTap: Bool = true,
          postEvent: @escaping (CGEvent, Int32) -> Void) {
         self.transferTimeoutMilliseconds = transferTimeoutMilliseconds
         self.installsEventTap = installsEventTap
@@ -210,7 +213,7 @@ public final class FocusInputGate {
     /// Returns true when consumed. Separate from tap availability so tests can use synthetic
     /// events and an injected replay sink without starting global capture or posting input.
     func processKeyboardEvent(type: CGEventType, event: CGEvent) -> Bool {
-        guard event.getIntegerValueField(.eventSourceUserData) != eventMarker else { return false }
+        guard event.getIntegerValueField(.eventSourceUserData) != Self.eventMarker else { return false }
         // A trackpad release may already be committed on its callback thread while
         // its main-queue delivery is pending. Enqueue that handoff before this key.
         onBeforeKeyboardEvent?()
@@ -256,7 +259,7 @@ public final class FocusInputGate {
     }
 
     private func capture(_ event: CGEvent, token: UInt64) {
-        guard buffer.eventCount < maximumEvents, let copy = event.copy() else {
+        guard buffer.eventCount < Self.maximumBufferedEvents, let copy = event.copy() else {
             // Include the event that could not be buffered in the reported count.
             cancelTransfer(token: token)
             onInputDiscarded?(1)
@@ -267,7 +270,7 @@ public final class FocusInputGate {
     }
 
     private func post(_ event: CGEvent, processIdentifier: Int32) {
-        event.setIntegerValueField(.eventSourceUserData, value: eventMarker)
+        event.setIntegerValueField(.eventSourceUserData, value: Self.eventMarker)
         postEvent(event, processIdentifier)
     }
 }
