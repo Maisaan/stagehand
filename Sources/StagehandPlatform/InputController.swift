@@ -26,12 +26,15 @@ public final class InputController {
     private var hotKeys: [EventHotKeyRef] = []
     private var actions: [UInt32: NavigationAction] = [:]
     private var shortcutIssues: [String] = []
+    /// Saved shortcuts that load turned off. Cleared once the user saves a new set.
+    private var shortcutLoadIssues: [String]
     private var shortcutBindings: [ShortcutBinding]
     private var shortcutCaptureActive = false
     private let gestures = GestureMonitor()
 
-    public init(shortcutBindings: [ShortcutBinding] = ShortcutBinding.load()) {
+    public init(shortcutBindings: [ShortcutBinding] = ShortcutBinding.load(), shortcutLoadIssues: [String] = []) {
         self.shortcutBindings = shortcutBindings
+        self.shortcutLoadIssues = shortcutLoadIssues
     }
 
     public func start() {
@@ -60,6 +63,7 @@ public final class InputController {
 
     public func setShortcutBindings(_ bindings: [ShortcutBinding]) {
         shortcutBindings = bindings
+        shortcutLoadIssues = []
         if eventHandler != nil { registerHotKeys() }
     }
 
@@ -129,7 +133,7 @@ public final class InputController {
 
     private func updateGestures() {
         gestures.stop()
-        issues = shortcutIssues
+        issues = shortcutLoadIssues + shortcutIssues
         if gesturesEnabled || shortcutSwipesEnabled {
             issues += Self.nativeGestureConflicts()
             gestures.onGesture = { [weak self] event in

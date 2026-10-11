@@ -35,6 +35,21 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
     }
 
     public static let supportedModifiers = UInt32(controlKey | optionKey | shiftKey | cmdKey | alphaLock)
+    /// A chord needs one of these. Shift and Caps Lock alone would capture ordinary typing.
+    public static let requiredModifiers = UInt32(controlKey | optionKey | cmdKey)
+    /// Virtual key codes above this are not keyboard keys.
+    public static let maximumVirtualKeyCode: UInt32 = 0x7F
+    /// Chords macOS owns. Consuming them would hide quitting, closing, switching, and Spotlight.
+    static let systemChords: [(key: UInt32, modifiers: UInt32, label: String)] = [
+        (UInt32(kVK_ANSI_Q), UInt32(cmdKey), "⌘ Q"),
+        (UInt32(kVK_ANSI_W), UInt32(cmdKey), "⌘ W"),
+        (UInt32(kVK_Tab), UInt32(cmdKey), "⌘ Tab"),
+        (UInt32(kVK_Space), UInt32(cmdKey), "⌘ Space"),
+        (UInt32(kVK_ANSI_H), UInt32(cmdKey), "⌘ H"),
+        (UInt32(kVK_ANSI_M), UInt32(cmdKey), "⌘ M"),
+        (UInt32(kVK_ANSI_Q), UInt32(controlKey | cmdKey), "⌃ ⌘ Q"),
+        (UInt32(kVK_Escape), UInt32(optionKey | cmdKey), "⌥ ⌘ Esc"),
+    ]
     public static let preferenceKey = "shortcutBindings"
     private static let preferenceVersionKey = "shortcutBindingsVersion"
     private static let preferenceVersion = 1
@@ -120,22 +135,59 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
 
     private static let defaultsByID = Dictionary(uniqueKeysWithValues: defaults.map { ($0.id, $0) })
 
-    public static func load(from userDefaults: UserDefaults = .standard) -> [Self] {
-        guard let data = userDefaults.data(forKey: preferenceKey),
-              let saved = try? JSONDecoder().decode([SavedBinding].self, from: data) else {
-            return defaults
+    /// The user-facing reason a chord cannot be a Stagehand shortcut, or nil when it can.
+    public static func validationIssue(key: UInt32, modifiers: UInt32, keyLabel: String) -> String? {
+        guard key <= maximumVirtualKeyCode else { return "That key isn't supported." }
+        guard modifiers & ~supportedModifiers == 0 else { return "That modifier isn't supported." }
+        guard modifiers & requiredModifiers != 0 else {
+            return "Add Control, Option, or Command to the shortcut. Shift and Caps Lock only work together with one of those."
         }
+        let withoutCapsLock = modifiers & ~UInt32(alphaLock)
+        if let system = systemChords.first(where: { $0.key == key && $0.modifiers == withoutCapsLock }) {
+            return "\(system.label) is a macOS shortcut and can't be reassigned."
+        }
+        guard !keyLabel.isEmpty, keyLabel.count <= 12 else { return "That key isn't supported." }
+        return nil
+    }
+
+    /// Caps Lock is optional when matching, so two chords that differ only by Caps Lock
+    /// would both fire for the same press.
+    public static func conflict(in bindings: [Self], key: UInt32, modifiers: UInt32, excluding id: String) -> Self? {
+        let chord = Self.chord(key: key, modifiers: modifiers)
+        return bindings.first { $0.id != id && $0.isEnabled && $0.chordIgnoringCapsLock == chord }
+    }
+
+    public struct LoadResult: Sendable {
+        public let bindings: [ShortcutBinding]
+        /// Saved bindings that were turned off or replaced, in user-facing words.
+        public let issues: [String]
+    }
+
+    public static func load(from userDefaults: UserDefaults = .standard) -> [Self] {
+        loadReportingIssues(from: userDefaults).bindings
+    }
+
+    /// Saved chords that fail validation revert to their default chord and are turned off,
+    /// so a stale or hand-edited preference can never capture ordinary typing or a system chord.
+    public static func loadReportingIssues(from userDefaults: UserDefaults = .standard) -> LoadResult {
+        guard let data = userDefaults.data(forKey: preferenceKey) else {
+            return LoadResult(bindings: defaults, issues: [])
+        }
+        guard let saved = try? JSONDecoder().decode([SavedBinding].self, from: data) else {
+            return LoadResult(bindings: defaults, issues: ["Saved shortcuts couldn't be read, so the defaults are in use."])
+        }
+        var issues: [String] = []
         let savedByID = Dictionary(saved.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let shouldMigrateLegacyWidthBindings = userDefaults.integer(forKey: preferenceVersionKey) < preferenceVersion
         var migrated = false
         var bindings = defaults.map { defaultBinding in
-            guard let value = savedByID[defaultBinding.id],
-                  value.key <= UInt32(UInt16.max),
-                  value.modifiers & ~supportedModifiers == 0,
-                  value.modifiers & supportedModifiers != 0,
-                  !value.keyLabel.isEmpty,
-                  value.keyLabel.count <= 12 else { return defaultBinding }
+            guard let value = savedByID[defaultBinding.id] else { return defaultBinding }
             var binding = defaultBinding
+            if let issue = validationIssue(key: value.key, modifiers: value.modifiers, keyLabel: value.keyLabel) {
+                binding.isEnabled = false
+                issues.append("\(defaultBinding.title) was turned off because its saved shortcut isn't allowed. \(issue)")
+                return binding
+            }
             if shouldMigrateLegacyWidthBindings,
                Self.isLegacyWidthDefault(id: value.id, key: value.key, modifiers: value.modifiers) {
                 migrated = true
@@ -147,14 +199,18 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
             binding.isEnabled = value.isEnabled
             return binding
         }
-        var usedChords = Set<UInt64>()
+        var usedChords: [UInt64: String] = [:]
         for index in bindings.indices where bindings[index].isEnabled {
-            if !usedChords.insert(bindings[index].chord).inserted {
+            let chord = bindings[index].chordIgnoringCapsLock
+            if let owner = usedChords[chord] {
                 bindings[index].isEnabled = false
+                issues.append("\(bindings[index].title) was turned off because \(bindings[index].label) is also assigned to \(owner).")
+            } else {
+                usedChords[chord] = bindings[index].title
             }
         }
         if migrated { save(bindings, to: userDefaults) }
-        return bindings
+        return LoadResult(bindings: bindings, issues: issues)
     }
 
     public static func save(_ bindings: [Self], to userDefaults: UserDefaults = .standard) {
@@ -210,8 +266,12 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
         return labels.joined(separator: " ")
     }
 
-    var chord: UInt64 {
-        UInt64(key) << 32 | UInt64(modifiers)
+    var chordIgnoringCapsLock: UInt64 {
+        Self.chord(key: key, modifiers: modifiers)
+    }
+
+    private static func chord(key: UInt32, modifiers: UInt32) -> UInt64 {
+        UInt64(key) << 32 | UInt64(modifiers & ~UInt32(alphaLock))
     }
 
     private static func isLegacyWidthDefault(id: String, key: UInt32, modifiers: UInt32) -> Bool {

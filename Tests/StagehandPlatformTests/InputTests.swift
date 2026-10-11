@@ -235,10 +235,94 @@ func sizeShortcutChordsResolve(key: Int, flags: CGEventFlags, action: Navigation
     defaults.set(try JSONSerialization.data(withJSONObject: saved), forKey: ShortcutBinding.preferenceKey)
     defaults.set(1, forKey: "shortcutBindingsVersion")
 
-    let loaded = ShortcutBinding.load(from: defaults)
-    #expect(loaded.first { $0.id == "focusNext" } == ShortcutBinding.defaultBinding(id: "focusNext"))
+    let result = ShortcutBinding.loadReportingIssues(from: defaults)
+    let loaded = result.bindings
+    // An unsafe saved chord reverts to the default chord but stays off until the user re-enables it.
+    var expectedNext = try #require(ShortcutBinding.defaultBinding(id: "focusNext"))
+    expectedNext.isEnabled = false
+    #expect(loaded.first { $0.id == "focusNext" } == expectedNext)
     #expect(loaded.first { $0.id == "focusPrevious" }?.isEnabled == true)
     #expect(loaded.first { $0.id == "showSettings" }?.isEnabled == false)
+    #expect(result.issues.count == 2)
+    #expect(result.issues[0].hasPrefix("Next window was turned off"))
+    #expect(result.issues[1].hasPrefix("Open settings was turned off"))
+    #expect(ShortcutBinding.load(from: defaults) == loaded)
+}
+
+@Test(arguments: [
+    (kVK_ANSI_K, UInt32(shiftKey), false),
+    (kVK_ANSI_K, UInt32(alphaLock), false),
+    (kVK_ANSI_K, UInt32(shiftKey | alphaLock), false),
+    (kVK_ANSI_K, 0, false),
+    (kVK_ANSI_K, UInt32(controlKey), true),
+    (kVK_ANSI_K, UInt32(optionKey | shiftKey), true),
+    (kVK_ANSI_K, UInt32(cmdKey | alphaLock), true),
+    (kVK_ANSI_Q, UInt32(cmdKey), false),
+    (kVK_ANSI_Q, UInt32(cmdKey | alphaLock), false),
+    (kVK_ANSI_Q, UInt32(cmdKey | shiftKey), true),
+    (kVK_ANSI_W, UInt32(cmdKey), false),
+    (kVK_Tab, UInt32(cmdKey), false),
+    (kVK_Space, UInt32(cmdKey), false),
+    (kVK_ANSI_H, UInt32(cmdKey), false),
+    (kVK_ANSI_M, UInt32(cmdKey), false),
+    (kVK_ANSI_Q, UInt32(controlKey | cmdKey), false),
+    (kVK_Escape, UInt32(optionKey | cmdKey), false),
+    (0x80, UInt32(controlKey), false),
+    (kVK_ANSI_K, UInt32(controlKey | 1 << 20), false),
+])
+func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modifiers: UInt32, valid: Bool) {
+    let issue = ShortcutBinding.validationIssue(key: UInt32(key), modifiers: modifiers, keyLabel: "K")
+    #expect((issue == nil) == valid, "\(String(describing: issue))")
+}
+
+@Test func everyDefaultShortcutPassesValidation() {
+    for binding in ShortcutBinding.defaults {
+        #expect(ShortcutBinding.validationIssue(key: binding.key, modifiers: binding.modifiers,
+                                                keyLabel: binding.keyLabel) == nil, Comment(rawValue: binding.id))
+    }
+}
+
+@Test func chordsThatDifferOnlyByCapsLockConflict() throws {
+    var bindings = ShortcutBinding.defaults
+    let index = try #require(bindings.firstIndex { $0.id == "focusNext" })
+    bindings[index].key = UInt32(kVK_ANSI_K)
+    bindings[index].modifiers = UInt32(controlKey)
+    bindings[index].keyLabel = "K"
+    #expect(ShortcutBinding.conflict(in: bindings, key: UInt32(kVK_ANSI_K), modifiers: UInt32(controlKey | alphaLock),
+                                     excluding: "focusPrevious")?.id == "focusNext")
+    #expect(ShortcutBinding.conflict(in: bindings, key: UInt32(kVK_ANSI_K), modifiers: UInt32(controlKey),
+                                     excluding: "focusNext") == nil)
+    #expect(ShortcutBinding.conflict(in: bindings, key: UInt32(kVK_ANSI_K), modifiers: UInt32(controlKey | shiftKey),
+                                     excluding: "focusPrevious") == nil)
+}
+
+@Test func loadTurnsOffOutOfRangeKeysAndCapsLockDuplicates() throws {
+    let suiteName = "ShortcutBindingLoadTests.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    var bindings = ShortcutBinding.defaults
+    let grow = try #require(bindings.firstIndex { $0.id == "growWidth" })
+    bindings[grow].key = 0x1FF
+    bindings[grow].keyLabel = "?"
+    let settings = try #require(bindings.firstIndex { $0.id == "showSettings" })
+    let previous = try #require(bindings.first { $0.id == "focusPrevious" })
+    bindings[settings].key = previous.key
+    bindings[settings].modifiers = previous.modifiers | UInt32(alphaLock)
+    bindings[settings].keyLabel = previous.keyLabel
+    let saved = bindings.map {
+        ["id": $0.id, "key": $0.key, "modifiers": $0.modifiers,
+         "keyLabel": $0.keyLabel, "isEnabled": $0.isEnabled] as [String: Any]
+    }
+    defaults.set(try JSONSerialization.data(withJSONObject: saved), forKey: ShortcutBinding.preferenceKey)
+    defaults.set(1, forKey: "shortcutBindingsVersion")
+
+    let result = ShortcutBinding.loadReportingIssues(from: defaults)
+    #expect(result.bindings.first { $0.id == "growWidth" }?.isEnabled == false)
+    #expect(result.bindings.first { $0.id == "growWidth" }?.key == ShortcutBinding.defaultBinding(id: "growWidth")?.key)
+    #expect(result.bindings.first { $0.id == "showSettings" }?.isEnabled == false)
+    #expect(result.bindings.first { $0.id == "focusPrevious" }?.isEnabled == true)
+    #expect(result.issues.count == 2)
+    #expect(result.issues.contains { $0.contains("Open settings") && $0.contains("Previous window") })
 }
 
 @Test func legacyWidthDefaultsMigrateWithoutOverwritingCustomBindings() throws {
