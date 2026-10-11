@@ -123,6 +123,12 @@ final class StagehandModel: ObservableObject {
     var recoveryInProgress = false
     var desktopCheckTask: Task<Void, Never>?
     var sleepObserver: NSObjectProtocol?
+    /// Where the ribbon lives. Tests substitute a screen; the app uses the built-in display only.
+    var builtInScreenProvider: @MainActor () -> NSScreen? = StagehandModel.builtInDisplay
+    var displayCheckTask: Task<Void, Never>?
+    /// Display sets change in steps (clamshell, wake, a cable). Wait this long
+    /// after the built-in display disappears before pausing on it.
+    var displayCheckDelay: Duration = .seconds(1)
     /// Consecutive checks that found no Desktop identity. The first few repeat
     /// quickly for the unlock case; after that, checks slow down and session
     /// notifications carry the recovery.
@@ -495,6 +501,13 @@ final class StagehandModel: ObservableObject {
             warning = "Stagehand couldn't restore every window from its interrupted session. Try Start again when their apps respond."
             return
         }
+        guard builtInScreen != nil else {
+            diagnostics.record("start_failed", details: [
+                "reason": "built_in_display_unavailable", "screenCount": String(NSScreen.screens.count)
+            ])
+            warning = "Stagehand manages only the built-in display, and none is available right now. Open the lid or disconnect from clamshell mode, then start it again."
+            return
+        }
         guard desktopScope.bindToCurrentDesktop() else {
             diagnostics.record("start_failed", details: ["reason": "desktop_unavailable"])
             warning = "Stagehand couldn't identify the current macOS Desktop, so it left your windows unchanged."
@@ -575,6 +588,8 @@ final class StagehandModel: ObservableObject {
         observedFocusTask?.cancel()
         desktopCheckTask?.cancel()
         desktopCheckAttempts = 0
+        displayCheckTask?.cancel()
+        displayCheckTask = nil
         if !automatic { desktopScope.reset() }
         pointerInteraction = nil
         preferencesNeedLayout = false
@@ -943,9 +958,27 @@ final class StagehandModel: ObservableObject {
 
     func screenParametersChanged() {
         guard isRunning, !isSuspended else { return }
-        diagnostics.record("screen_parameters_changed")
+        let hasBuiltInDisplay = builtInScreen != nil
+        diagnostics.record("screen_parameters_changed", details: [
+            "builtInDisplay": String(hasBuiltInDisplay),
+            "screenCount": String(NSScreen.screens.count)
+        ])
         ribbonMotion.cancel()
         focusBorder.reset()
+        displayCheckTask?.cancel()
+        guard hasBuiltInDisplay else {
+            // Lid closed or clamshell: there is no frame to lay out in. Give the
+            // reconfiguration a moment to finish, then pause and restore rather
+            // than manage whatever display macOS moved the windows to.
+            let delay = displayCheckDelay
+            displayCheckTask = Task { [weak self] in
+                do { try await Task.sleep(for: delay) } catch { return }
+                guard !Task.isCancelled, let self else { return }
+                self.displayCheckTask = nil
+                self.pauseIfBuiltInDisplayMissing()
+            }
+            return
+        }
         enqueue(.preferences)
     }
 }

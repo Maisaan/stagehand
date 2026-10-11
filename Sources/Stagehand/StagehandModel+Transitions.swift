@@ -247,11 +247,30 @@ extension StagehandModel {
         return true
     }
 
-    var builtInScreen: NSScreen? {
+    /// The built-in display, or nil when the lid is closed or the Mac has none.
+    /// Stagehand manages only that display (README), so there is no fallback to
+    /// an external one.
+    static func builtInDisplay() -> NSScreen? {
         NSScreen.screens.first { screen in
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return false }
             return CGDisplayIsBuiltin(number.uint32Value) != 0
-        } ?? NSScreen.main
+        }
+    }
+
+    var builtInScreen: NSScreen? { builtInScreenProvider() }
+
+    static let missingDisplayWarning = "Stagehand paused because the built-in display is unavailable. It manages only the built-in display, so it restored your windows. Press Start once the display is back."
+
+    /// Pauses if the built-in display is still missing after display changes settled.
+    func pauseIfBuiltInDisplayMissing() {
+        guard isRunning, !isSuspended else { return }
+        guard builtInScreen == nil else {
+            enqueue(.preferences)
+            return
+        }
+        stop(reason: "built_in_display_unavailable", automatic: false,
+             details: ["screenCount": String(NSScreen.screens.count)])
+        warning = Self.missingDisplayWarning
     }
 
     var availableFrame: CGRect? {

@@ -259,6 +259,8 @@ struct ModelHarness {
             ribbonMotion: RibbonMotion(frameDriver: ImmediateFrameDriver()),
             layoutStore: layoutStore
         )
+        // Tests lay out on the first screen; a desktop Mac has no built-in display.
+        model.builtInScreenProvider = { NSScreen.screens.first }
         self.windows = windows
         self.overlays = overlays
         postedEvents = { posted }

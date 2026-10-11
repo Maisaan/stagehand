@@ -472,4 +472,52 @@ struct ModelScenarioTests {
             ($0["details"] as? [String: String])?["operation"] == "preferences"
         })
     }
+
+    /// README: one built-in display only. With the lid closed on an external
+    /// display, Stagehand used to fall back to NSScreen.main and manage that
+    /// display. Now it pauses once the display change settles, and refuses to
+    /// start without the built-in display.
+    @Test func losingTheBuiltInDisplayPausesAndRestoresAfterTheChangeSettles() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        let originals = harness.windows.windows.mapValues(\.original)
+        harness.model.displayCheckDelay = .milliseconds(60)
+        harness.model.start()
+        await harness.settle()
+        harness.model.navigate(.focusNext)
+        await harness.settle()
+        #expect(harness.windows.windows.mapValues(\.frame) != originals)
+
+        // A transient change that comes back within the delay does not pause.
+        harness.model.builtInScreenProvider = { nil }
+        harness.model.screenParametersChanged()
+        harness.model.builtInScreenProvider = { NSScreen.screens.first }
+        harness.model.screenParametersChanged()
+        try? await Task.sleep(for: .milliseconds(150))
+        await harness.settle()
+        #expect(harness.model.isRunning)
+
+        harness.model.builtInScreenProvider = { nil }
+        harness.model.screenParametersChanged()
+        #expect(harness.model.isRunning)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while harness.model.isRunning, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(!harness.model.isRunning)
+        #expect(harness.windows.windows.mapValues(\.frame) == originals)
+        #expect((harness.events("paused").last?["details"] as? [String: String])?["reason"] == "built_in_display_unavailable")
+        #expect(harness.model.warning == StagehandModel.missingDisplayWarning)
+        #expect(harness.events("automatic_pause").isEmpty)
+
+        harness.model.start()
+        #expect(!harness.model.isRunning)
+        #expect((harness.events("start_failed").last?["details"] as? [String: String])?["reason"] == "built_in_display_unavailable")
+
+        harness.model.builtInScreenProvider = { NSScreen.screens.first }
+        harness.model.start()
+        await harness.settle()
+        #expect(harness.model.isRunning)
+    }
 }
