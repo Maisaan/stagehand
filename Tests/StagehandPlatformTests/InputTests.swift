@@ -420,6 +420,43 @@ func sizeShortcutChordsResolve(key: Int, flags: CGEventFlags, action: Navigation
     #expect(posted == 0)
 }
 
+@MainActor @Test func heldNavigationChordsRepeatFocusStepsButNotSpaceSteps() throws {
+    let gate = FocusInputGate(postEvent: { _, _ in })
+    var actions: [NavigationAction] = []
+    gate.onNavigationAction = { actions.append($0) }
+    func chord(_ key: Int, repeated: Bool) throws -> CGEvent {
+        let event = try #require(CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(key), keyDown: true))
+        event.flags = [.maskControl, .maskAlternate]
+        if repeated { event.setIntegerValueField(.keyboardEventAutorepeat, value: 1) }
+        return event
+    }
+    #expect(gate.processKeyboardEvent(type: .keyDown, event: try chord(kVK_DownArrow, repeated: false)))
+    for _ in 0 ..< 3 {
+        #expect(gate.processKeyboardEvent(type: .keyDown, event: try chord(kVK_DownArrow, repeated: true)))
+    }
+    let downUp = try #require(CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_DownArrow), keyDown: false))
+    #expect(gate.processKeyboardEvent(type: .keyUp, event: downUp))
+    #expect(actions == [.nextSpace])
+    #expect(gate.processKeyboardEvent(type: .keyDown, event: try chord(kVK_RightArrow, repeated: false)))
+    #expect(gate.processKeyboardEvent(type: .keyDown, event: try chord(kVK_RightArrow, repeated: true)))
+    #expect(actions == [.nextSpace, .focusNext, .focusNext])
+}
+
+@MainActor @Test func transfersWithoutTypingAreCappedOldestFirst() throws {
+    var posted = 0
+    let gate = FocusInputGate(postEvent: { _, _ in posted += 1 })
+    defer { gate.cancelAll() }
+    let typed = gate.beginTransfer()
+    let down = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
+    #expect(gate.processKeyboardEvent(type: .keyDown, event: down))
+    let oldestEmpty = gate.beginTransfer()
+    for _ in 0 ..< FocusInputGate.maximumActiveTransfers { _ = gate.beginTransfer() }
+    // The oldest empty transfer was dropped; the one that owns typing was kept.
+    #expect(!gate.cancelTransferIfEmpty(token: oldestEmpty))
+    #expect(!gate.cancelTransferIfEmpty(token: typed))
+    gate.commitTransfer(token: typed, processIdentifier: 100)
+    #expect(posted == 1)
+}
 
 /// The tap thread holds typing that follows a trackpad release whose delivery is still
 /// queued, then the release's navigation adopts that transfer on the main actor.

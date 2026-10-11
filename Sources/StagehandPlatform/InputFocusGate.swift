@@ -40,6 +40,16 @@ struct InputTransferBuffer<Event> {
         return count
     }
 
+    /// Drops the oldest transfers that hold no events until at most `limit` remain.
+    /// Transfers with events are never dropped here; they own typing.
+    mutating func removeOldestEmptyTransfers(keepingAtMost limit: Int) -> [UInt64] {
+        var dropped: [UInt64] = []
+        while transfers.count > limit,
+              let index = transfers.firstIndex(where: { $0.events.isEmpty && $0.token != latestToken }) {
+            dropped.append(transfers.remove(at: index).token)
+        }
+        return dropped
+    }
 }
 
 private enum KeyDestination {
@@ -130,6 +140,8 @@ public final class FocusInputGate {
     nonisolated static let eventMarker: Int64 = 0x53544748414E44
     /// Total events held across all transfers before the owning transfer is abandoned.
     nonisolated static let maximumBufferedEvents = 128
+    /// Transfers without typing beyond this count are dropped oldest first when another begins.
+    static let maximumActiveTransfers = 32
     // Focus may need a longer confirmation window when AX is slow. Keep input
     // buffered beyond that window, then discard it if the transfer still stalls.
     static let defaultTransferTimeoutMilliseconds = 4_000
@@ -231,13 +243,16 @@ public final class FocusInputGate {
     }
 
     public func beginTransfer() -> UInt64 {
-        let (token, adopted) = core.withLockUnchecked { state -> (UInt64, Bool) in
+        let (token, adopted, dropped) = core.withLockUnchecked { state -> (UInt64, Bool, [UInt64]) in
             if let provisional = state.provisionalToken {
                 state.provisionalToken = nil
-                return (provisional, true)
+                return (provisional, true, [])
             }
-            return (state.buffer.begin(), false)
+            let token = state.buffer.begin()
+            let dropped = state.buffer.removeOldestEmptyTransfers(keepingAtMost: Self.maximumActiveTransfers)
+            return (token, false, dropped)
         }
+        for token in dropped { deadlines.removeValue(forKey: token)?.cancel() }
         if !adopted { scheduleDeadline(token) }
         startAvailabilityWatch()
         return token
@@ -474,7 +489,8 @@ public final class FocusInputGate {
                 state.navigationKeys.insert(key)
                 // The caller only enqueues work. It must not run AX calls on the event tap.
                 // Beginning capture here closes the gap before Carbon dispatches a hotkey.
-                effects.navigationAction = action
+                // A held chord repeats focus and size steps; space and move steps run once.
+                if !isAutorepeat || action.repeatsWhileHeld { effects.navigationAction = action }
                 return (true, effects)
             }
             state.exemptKeys.insert(key)
@@ -539,6 +555,16 @@ public final class FocusInputGate {
     private func post(_ event: CGEvent, processIdentifier: Int32) {
         event.setIntegerValueField(.eventSourceUserData, value: Self.eventMarker)
         postEvent(event, processIdentifier)
+    }
+}
+
+private extension NavigationAction {
+    /// Actions a held chord may repeat. Space switches and window moves run once per press.
+    var repeatsWhileHeld: Bool {
+        switch self {
+        case .focusPrevious, .focusNext, .shrinkWidth, .growWidth, .shrinkHeight, .growHeight: true
+        default: false
+        }
     }
 }
 
