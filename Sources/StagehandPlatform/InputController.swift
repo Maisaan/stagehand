@@ -115,6 +115,12 @@ public final class InputController {
         gestures.takePendingGestureCompletion()
     }
 
+    /// Safe from any thread, for the keyboard tap's routing decision. Gesture state is
+    /// process-wide, so this does not need the controller instance.
+    nonisolated public static func hasPendingGestureCompletion() -> Bool {
+        GestureMonitor.hasPendingGestureCompletion()
+    }
+
     /// Cancel a preview without rearming its still-held contacts. The caller owns
     /// geometry cleanup; this only prevents a later release from navigating again.
     public func cancelGestureSequence() {

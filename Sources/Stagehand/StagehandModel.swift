@@ -286,6 +286,7 @@ final class StagehandModel: ObservableObject {
         refreshLaunchAtLogin()
         focusGate.onNavigationAction = { [weak self] action in self?.navigate(action) }
         focusGate.setShortcutBindings(shortcutBindings)
+        focusGate.setPendingGestureCompletionCheck { InputController.hasPendingGestureCompletion() }
         focusGate.onBeforeKeyboardEvent = { [weak self] in
             guard let self, self.isRunning, !self.isSuspended else { return }
             while let completion = self.input.takePendingGestureCompletion() {

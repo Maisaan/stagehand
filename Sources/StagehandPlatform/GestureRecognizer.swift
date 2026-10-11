@@ -49,6 +49,11 @@ struct GestureEventBuffer {
         if case .cancelled = event { activeAxis = nil }
     }
 
+    /// A release is queued and has not been claimed by delivery or by a keyboard event.
+    var hasCompletion: Bool {
+        events.contains { if case .ended = $0.event { $0.axis != nil } else { false } }
+    }
+
     mutating func drain() -> [GestureNavigationEvent] {
         let result = events.map(\.event)
         events.removeAll(keepingCapacity: true)

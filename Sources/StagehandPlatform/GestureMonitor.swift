@@ -266,6 +266,12 @@ final class GestureMonitor {
         }
     }
 
+    /// Safe from any thread. The keyboard tap uses it to hold typing that follows a release
+    /// whose main-queue delivery has not run yet.
+    nonisolated static func hasPendingGestureCompletion() -> Bool {
+        gestureCallbackState.withLock { $0.enabled && $0.pendingEvents.hasCompletion }
+    }
+
     func cancelGestureSequence() {
         if traceGestures { NSLog("[DEBUG-gesture] sequence interrupted by app") }
         gestureCallbackState.withLock { state in

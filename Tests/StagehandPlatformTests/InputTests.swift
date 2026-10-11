@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import os
 import StagehandCore
 import Testing
 @testable import StagehandPlatform
@@ -362,4 +363,52 @@ func sizeShortcutChordsResolve(key: Int, flags: CGEventFlags, action: Navigation
     gate.commitTransfer(token: token, processIdentifier: 100)
     #expect(discarded == 129)
     #expect(posted == 0)
+}
+
+/// The tap thread holds typing that follows a trackpad release whose delivery is still
+/// queued, then the release's navigation adopts that transfer on the main actor.
+@MainActor @Test func typingAfterAPendingTrackpadReleaseFollowsItsNavigation() async throws {
+    var posted: [Int32] = []
+    let gate = FocusInputGate(installsEventTap: false, frontmostProcessIdentifier: { 77 },
+                              postEvent: { _, pid in posted.append(pid) })
+    gate.start()
+    defer { gate.stop() }
+    gate.setPendingGestureCompletionCheck { true }
+    var adopted: UInt64?
+    gate.onBeforeKeyboardEvent = { adopted = gate.beginTransfer() }
+    let consumed = await Task.detached {
+        let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)!
+        return gate.receiveFromTap(type: .keyDown, event: down)
+    }.value
+    #expect(consumed)
+    try await waitUntil { adopted != nil }
+    #expect(gate.pendingEventCount == 1)
+    gate.commitTransfer(token: try #require(adopted), processIdentifier: 99)
+    #expect(posted == [99])
+
+    // Without a navigation, the typing belongs to the window that was focused when it was typed.
+    gate.onBeforeKeyboardEvent = nil
+    let consumedAgain = await Task.detached {
+        let down = CGEvent(keyboardEventSource: nil, virtualKey: 11, keyDown: true)!
+        return gate.receiveFromTap(type: .keyDown, event: down)
+    }.value
+    #expect(consumedAgain)
+    try await waitUntil { posted.count == 2 }
+    #expect(posted == [99, 77])
+    let releaseConsumed = await Task.detached {
+        let up = CGEvent(keyboardEventSource: nil, virtualKey: 11, keyDown: false)!
+        return gate.receiveFromTap(type: .keyUp, event: up)
+    }.value
+    #expect(releaseConsumed)
+    try await waitUntil { posted.count == 3 }
+    #expect(posted == [99, 77, 77])
+    #expect(gate.pendingEventCount == 0)
+}
+
+@MainActor private func waitUntil(_ condition: () -> Bool) async throws {
+    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    while !condition(), ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(condition())
 }
