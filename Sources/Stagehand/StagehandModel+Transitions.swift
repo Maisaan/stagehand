@@ -414,8 +414,7 @@ extension StagehandModel {
             }
             if let focusedID = state.focusedWindowID,
                let record = windows.first(where: { $0.id == focusedID }) {
-                let preparation = layoutStart.duration(to: .now).components
-                lastLayoutMilliseconds = Int(preparation.seconds * 1_000 + preparation.attoseconds / 1_000_000_000_000_000)
+                lastLayoutMilliseconds = layoutStart.duration(to: .now).wholeMilliseconds
                 if request == .navigation { emptySpace.hide() }
                 if slideFrom == nil {
                     let focus = await focusManagedWindow(record, token: token, request: request, operation: operation)
