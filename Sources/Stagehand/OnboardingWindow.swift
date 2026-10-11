@@ -399,8 +399,45 @@ private struct AccessibilityOnboardingPage: View {
                     .stroke(.white.opacity(0.12), lineWidth: 1)
             }
             .padding(.top, 20)
+
+            if !model.accessibilityGranted {
+                // macOS sometimes reports a fresh grant only to a new process, and a
+                // rebuild with a different signature needs the grant again. Without
+                // these the step had no way forward but the disabled Continue button.
+                VStack(spacing: 6) {
+                    HStack(spacing: 14) {
+                        Text("Still not detected?")
+                            .foregroundStyle(.white.opacity(0.66))
+                        Button("Open Accessibility Settings", action: openAccessibilitySettings)
+                        Button("Relaunch Stagehand", action: relaunchStagehand)
+                    }
+                    .buttonStyle(.link)
+                    Text("Turn Stagehand on in the list, then relaunch. A rebuild with a different signature needs the grant again.")
+                        .foregroundStyle(.white.opacity(0.5))
+                        .multilineTextAlignment(.center)
+                }
+                .font(.system(size: 12))
+                .padding(.top, 14)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func openAccessibilitySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Start a fresh instance and quit this one once it is running, so the new
+    /// process reads the Accessibility grant that this one may have missed.
+    private func relaunchStagehand() {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { application, _ in
+            guard application != nil else { return }
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
     }
 }
 
