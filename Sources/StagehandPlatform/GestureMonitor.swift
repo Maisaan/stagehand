@@ -320,6 +320,11 @@ final class GestureMonitor {
                     for event in events {
                         guard self.isRunning, self.generation == activeGeneration else { return }
                         self.onGesture?(event)
+                        // The handoff ran synchronously and began its transfer if it navigated.
+                        // Only now may the keyboard tap stop treating this release as pending.
+                        if case .ended = event {
+                            gestureCallbackState.withLock { $0.pendingEvents.completionDelivered() }
+                        }
                     }
                     if let failure, self.isRunning, self.generation == activeGeneration {
                         self.dataFailure = failure
@@ -380,7 +385,7 @@ final class GestureMonitor {
         if traceGestures { NSLog("[DEBUG-gesture] sequence interrupted by app") }
         gestureCallbackState.withLock { state in
             state.recognizer.cancelUntilLift()
-            _ = state.pendingEvents.drain()
+            state.pendingEvents.removeAll()
         }
     }
 

@@ -690,6 +690,23 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     #expect(gate.pendingEventCount == 0)
 }
 
+@Test func drainedReleasesStayPendingUntilTheirHandoffReturns() {
+    var pending = GestureEventBuffer()
+    pending.append(.began(axis: .horizontal, displacement: -0.02, mode: .plain))
+    pending.append(.ended(displacement: -0.1, velocity: -1, action: .focusNext, mode: .plain))
+    #expect(pending.hasCompletion)
+    #expect(pending.drain().count == 2)
+    // The .began may do slow preview work on main before the .ended begins its transfer.
+    #expect(pending.hasCompletion)
+    #expect(pending.completionsInFlight == 1)
+    pending.completionDelivered()
+    #expect(!pending.hasCompletion)
+    // Dropping a sequence does not count its release as work in flight.
+    pending.append(.began(axis: .horizontal, displacement: -0.02, mode: .plain))
+    pending.append(.ended(displacement: -0.1, velocity: -1, action: .focusNext, mode: .plain))
+    pending.removeAll()
+    #expect(!pending.hasCompletion)
+}
 
 /// A key that reaches the tap while a committed transfer is still being replayed goes to
 /// the same process through the main queue, after the replay, instead of passing through.

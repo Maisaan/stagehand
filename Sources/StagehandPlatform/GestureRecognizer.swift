@@ -36,6 +36,10 @@ public struct GestureNavigationCompletion: Equatable, Sendable {
 struct GestureEventBuffer {
     private var events: [(event: GestureNavigationEvent, axis: GestureAxis?)] = []
     private var activeAxis: GestureAxis?
+    /// Releases that `drain()` handed to main-actor delivery and that have not finished
+    /// their handoff yet. The keyboard tap must keep treating them as pending: a batch may
+    /// hold a `.began` whose preview does AX work before the `.ended` begins its transfer.
+    private(set) var completionsInFlight = 0
 
     mutating func append(_ event: GestureNavigationEvent) {
         if case .began(let axis, _, _) = event { activeAxis = axis }
@@ -49,15 +53,32 @@ struct GestureEventBuffer {
         if case .cancelled = event { activeAxis = nil }
     }
 
-    /// A release is queued and has not been claimed by delivery or by a keyboard event.
+    /// A release is queued, or was drained for delivery and has not finished its handoff.
     var hasCompletion: Bool {
-        events.contains { if case .ended = $0.event { $0.axis != nil } else { false } }
+        completionsInFlight > 0 || events.contains { Self.isCompletion($0) }
     }
 
+    private static func isCompletion(_ buffered: (event: GestureNavigationEvent, axis: GestureAxis?)) -> Bool {
+        if case .ended = buffered.event { buffered.axis != nil } else { false }
+    }
+
+    /// Hands every queued event to delivery. Each completion stays counted until
+    /// `completionDelivered()` is called for it.
     mutating func drain() -> [GestureNavigationEvent] {
+        completionsInFlight += events.count { if case .ended = $0.event { true } else { false } }
         let result = events.map(\.event)
         events.removeAll(keepingCapacity: true)
         return result
+    }
+
+    /// Call after delivering one `.ended` from `drain()` has returned.
+    mutating func completionDelivered() {
+        completionsInFlight = max(0, completionsInFlight - 1)
+    }
+
+    /// Drops queued events without counting their completions as delivered work.
+    mutating func removeAll() {
+        events.removeAll(keepingCapacity: true)
     }
 
     /// A keyboard event can reach the main run loop before queued gesture delivery.
