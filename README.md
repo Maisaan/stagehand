@@ -76,6 +76,8 @@ The gap accepts values from `-200` to `40` points. Negative values overlap windo
 
 The app bar appears beneath the camera housing, or at the top center on displays without a notch. Hover there or navigate to reveal it. It shows the active app name and window title. Click an app to focus it or the space number to change spaces. Choose or paste a hex color for each space; that color is used for its active-window border and the app bar. The app bar and focus border do not take keyboard focus or reserve screen space.
 
+While the app bar is visible, about 1.5 seconds after a navigation or while the pointer hovers over it, it accepts clicks, including in its shadow margin. On a display without a notch, a menu bar click in the few points directly above the bar can be swallowed until the bar fades. Click again once it has gone.
+
 ### Controls
 
 | Action | Shortcut |
