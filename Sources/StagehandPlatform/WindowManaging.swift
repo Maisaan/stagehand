@@ -21,6 +21,7 @@ public protocol WindowManaging: AnyObject {
     var lastFocusReport: WindowFocusReport? { get }
     var trackedWindowIDs: Set<String> { get }
     var hasPendingRecovery: Bool { get }
+    var pendingRecoveryWindowIDs: Set<String> { get }
 
     @discardableResult func registerOwnWindow(window: NSWindow) -> String
     func requestAccessibilityPermission()

@@ -30,6 +30,7 @@ final class FakeWindowSystem: WindowManaging {
     var focusDiagnosticsEnabled = false
     var lastFocusReport: WindowFocusReport? { nil }
     var hasPendingRecovery = false
+    var pendingRecoveryWindowIDs: Set<String> = []
     private(set) var windows: [String: Window] = [:]
     private(set) var focused: String?
     private(set) var started = false

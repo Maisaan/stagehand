@@ -1,4 +1,5 @@
 import AppKit
+import StagehandCore
 @preconcurrency import ApplicationServices
 import Darwin
 import os
@@ -1146,10 +1147,10 @@ public final class WindowSystem {
             let began = ContinuousClock.now
             let success = await nativeWindows.focus(windowID: windowID)
             if focusDiagnosticsEnabled {
-                let elapsed = began.duration(to: .now).components
+                let elapsed = began.duration(to: .now)
                 lastFocusReport = WindowFocusReport(targetPID: ProcessInfo.processInfo.processIdentifier,
                                                     outcome: success ? .focused : .timedOut,
-                                                    elapsedMilliseconds: Int(elapsed.seconds * 1_000 + elapsed.attoseconds / 1_000_000_000_000_000),
+                                                    elapsedMilliseconds: elapsed.wholeMilliseconds,
                                                     operations: [.init("nativeWindowFocus", accepted: success)],
                                                     initialObservation: nil, observations: [],
                                                     nativeObservation: nativeWindows.focusObservation(windowID: windowID))
@@ -1186,9 +1187,9 @@ public final class WindowSystem {
         )
         guard restoration.restored else {
             if focusDiagnosticsEnabled {
-                let elapsed = restoreBegan.duration(to: .now).components
+                let elapsed = restoreBegan.duration(to: .now)
                 lastFocusReport = WindowFocusReport(targetPID: tracked.record.pid, outcome: .unavailable,
-                                                    elapsedMilliseconds: Int(elapsed.seconds * 1_000 + elapsed.attoseconds / 1_000_000_000_000_000),
+                                                    elapsedMilliseconds: elapsed.wholeMilliseconds,
                                                     operations: Array(repeating: .init("restoreTarget", accepted: false),
                                                                       count: restoration.attempts),
                                                     initialObservation: nil, observations: [])
@@ -1243,8 +1244,7 @@ public final class WindowSystem {
         }
 
         var elapsedMilliseconds: Int {
-            let duration = start.duration(to: .now).components
-            return Int(duration.seconds * 1_000 + duration.attoseconds / 1_000_000_000_000_000)
+            start.duration(to: .now).wholeMilliseconds
         }
 
         func prepare() async -> [WindowFocusReport.Operation] {

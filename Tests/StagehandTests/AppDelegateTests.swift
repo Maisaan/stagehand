@@ -71,7 +71,7 @@ func quickControlsPanelTakesFocusWhenPresentedWithoutPopoverChrome() async {
 
 @MainActor
 @Test func settingsWindowControlsUseLargeWindowInset() throws {
-    let window = SettingsWindow.make(model: StagehandModel())
+    let window = SettingsWindow.make(model: testModel())
     defer { window.close() }
 
     let expectedControls: [(NSWindow.ButtonType, centerX: CGFloat, isEnabled: Bool)] = [
@@ -104,7 +104,7 @@ func quickControlsPanelTakesFocusWhenPresentedWithoutPopoverChrome() async {
 
 @MainActor
 @Test func settingsWindowFocusBorderUsesItsVisibleCornerRadius() throws {
-    let window = SettingsWindow.make(model: StagehandModel())
+    let window = SettingsWindow.make(model: testModel())
     window.orderFrontRegardless()
     defer { window.close() }
 
@@ -114,7 +114,7 @@ func quickControlsPanelTakesFocusWhenPresentedWithoutPopoverChrome() async {
 
 @MainActor
 @Test func settingsWindowContentDoesNotMoveTheWindow() {
-    let window = SettingsWindow.make(model: StagehandModel())
+    let window = SettingsWindow.make(model: testModel())
     defer { window.close() }
 
     #expect(!window.isMovableByWindowBackground)
@@ -122,7 +122,7 @@ func quickControlsPanelTakesFocusWhenPresentedWithoutPopoverChrome() async {
 
 @MainActor
 @Test func settingsWindowUsesTheDarkAppearanceAndRestoresContentOnReopen() throws {
-    let window = SettingsWindow.make(model: StagehandModel())
+    let window = SettingsWindow.make(model: testModel())
     defer { window.close() }
 
     #expect(window.appearance?.name == .darkAqua)
@@ -138,7 +138,7 @@ func quickControlsPanelTakesFocusWhenPresentedWithoutPopoverChrome() async {
 
 @MainActor
 @Test func settingsWindowReopensOnScreenAfterItsFrameLeftEveryDisplay() throws {
-    let window = SettingsWindow.make(model: StagehandModel())
+    let window = SettingsWindow.make(model: testModel())
     defer { window.close() }
     let screens = NSScreen.screens
     try #require(!screens.isEmpty)
@@ -158,7 +158,7 @@ func openingSettingsBringsTheAppToTheFrontEveryTime() async throws {
     let finder = try #require(NSRunningApplication.runningApplications(
         withBundleIdentifier: "com.apple.finder"
     ).first)
-    let delegate = AppDelegate(model: StagehandModel())
+    let delegate = AppDelegate(model: testModel())
     var settingsWindow: NSWindow?
     defer {
         settingsWindow?.close()
@@ -231,4 +231,10 @@ private func waitUntil(
     #expect(first.size == NSSize(width: 16, height: 16))
     #expect(first.isTemplate)
     #expect(PhosphorIconCache.image(for: .gear) === first)
+}
+
+@MainActor private func testModel() -> StagehandModel {
+    StagehandModel(diagnostics: DiagnosticLogger(
+        logURL: FileManager.default.temporaryDirectory.appendingPathComponent("stagehand-test-\(UUID().uuidString).log"),
+        enabled: false), persistence: .ephemeral)
 }

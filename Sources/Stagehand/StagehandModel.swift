@@ -260,9 +260,11 @@ final class StagehandModel: ObservableObject {
         self.ribbonMotion = ribbonMotion
         self.overlays = overlays
         let defaults = UserDefaults.standard
-        let shortcutBindings = ShortcutBinding.load(from: defaults)
+        let shortcutLoad = ShortcutBinding.loadReportingIssues(from: defaults)
+        let shortcutBindings = shortcutLoad.bindings
         self.shortcutBindings = shortcutBindings
-        input = injectedInput ?? InputController(shortcutBindings: shortcutBindings)
+        input = injectedInput ?? InputController(shortcutBindings: shortcutBindings,
+                                                 shortcutLoadIssues: shortcutLoad.issues)
         diagnosticLoggingEnabled = defaults.bool(forKey: PreferenceKey.diagnosticLoggingEnabled)
         self.diagnostics = diagnostics ?? DiagnosticLogger(
             enabled: defaults.bool(forKey: PreferenceKey.diagnosticLoggingEnabled)
@@ -531,7 +533,8 @@ final class StagehandModel: ObservableObject {
         let interrupted = windowSystem.recoverInterruptedSession()
         if interrupted {
             diagnostics.record("crash_recovery", details: [
-                "pending": String(windowSystem.hasPendingRecovery)
+                "pending": String(windowSystem.hasPendingRecovery),
+                "pendingIDs": windowSystem.pendingRecoveryWindowIDs.sorted().joined(separator: ",")
             ])
             warning = windowSystem.hasPendingRecovery
                 ? "Stagehand found an earlier window session but couldn't restore every window. Try Start after its apps respond or the other Stagehand instance exits."
@@ -844,9 +847,7 @@ final class StagehandModel: ObservableObject {
     }
 
     func shortcutConflict(key: UInt32, modifiers: UInt32, excluding id: String) -> ShortcutBinding? {
-        shortcutBindings.first {
-            $0.id != id && $0.isEnabled && $0.key == key && $0.modifiers == modifiers
-        }
+        ShortcutBinding.conflict(in: shortcutBindings, key: key, modifiers: modifiers, excluding: id)
     }
 
     func saveShortcutBindings() {

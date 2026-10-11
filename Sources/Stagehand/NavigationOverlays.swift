@@ -193,7 +193,7 @@ final class NavigationOverlays {
 
     /// Keep hover content current without opening the bar during background reconciliation.
     func updateNavigation(state: WorkspaceState, windows: [WindowRecord]) {
-        let recordsByID = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0) })
+        let recordsByID = Dictionary(windows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let records = state.currentSpace.windowIDs.compactMap { recordsByID[$0] }
         let space = state.activeSpaceIndex + 1
         let availableSpaceIndices = state.displayedSpaceIndices
