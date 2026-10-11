@@ -520,4 +520,52 @@ struct ModelScenarioTests {
         await harness.settle()
         #expect(harness.model.isRunning)
     }
+
+    /// Revoking Accessibility in System Settings sends no notification. The
+    /// model used to notice only when its own window became active, leaving
+    /// windows parked offscreen with no way to move them back.
+    @Test func revokingAccessibilityWhileRunningPausesAndRegrantingRecovers() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        let originals = harness.windows.windows.mapValues(\.original)
+        harness.model.accessibilityPollInterval = .milliseconds(20)
+        harness.model.startAccessibilityMonitor()
+        harness.model.start()
+        await harness.settle()
+        harness.model.navigate(.focusNext)
+        await harness.settle()
+        #expect(harness.model.isRunning)
+
+        harness.windows.isAccessibilityTrusted = false
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while harness.model.isRunning, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(!harness.model.isRunning)
+        #expect(!harness.model.accessibilityGranted)
+        #expect(harness.windows.windows.mapValues(\.frame) == originals)
+        #expect((harness.events("paused").last?["details"] as? [String: String])?["reason"] == "accessibility_revoked")
+        #expect(harness.events("accessibility_revoked").count == 1)
+        #expect(harness.model.warning == StagehandModel.accessibilityRevokedWarning)
+        #expect(harness.overlays.warnings.last == StagehandModel.accessibilityRevokedWarning)
+        #expect(harness.events("automatic_pause").isEmpty)
+
+        // Start is refused while revoked.
+        harness.model.start()
+        #expect(!harness.model.isRunning)
+        #expect((harness.events("start_failed").last?["details"] as? [String: String])?["reason"] == "accessibility_permission_missing")
+
+        harness.windows.isAccessibilityTrusted = true
+        while !harness.model.accessibilityGranted, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(harness.model.accessibilityGranted)
+        #expect(harness.events("accessibility_granted").count == 1)
+        #expect(!harness.model.isRunning)
+        #expect(harness.model.warning == nil)
+        harness.model.start()
+        await harness.settle()
+        #expect(harness.model.isRunning)
+    }
 }

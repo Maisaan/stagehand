@@ -123,6 +123,13 @@ final class StagehandModel: ObservableObject {
     var recoveryInProgress = false
     var desktopCheckTask: Task<Void, Never>?
     var sleepObserver: NSObjectProtocol?
+    /// AXIsProcessTrusted() is cheap; macOS sends no notification when the user
+    /// revokes Accessibility, and didBecomeActive only fires when Stagehand's own
+    /// windows come forward.
+    var accessibilityMonitorTask: Task<Void, Never>?
+    var accessibilityPollInterval: Duration = .seconds(2)
+    static let accessibilityRevokedWarning = "macOS revoked Stagehand's Accessibility permission, so Stagehand paused and restored your windows. Allow Stagehand in Privacy & Security > Accessibility, then press Start."
+    static let accessibilityRevokedPendingWarning = "macOS revoked Stagehand's Accessibility permission, so Stagehand paused. Some windows couldn't be moved back without it; they return once you allow Stagehand in Privacy & Security > Accessibility again."
     /// Where the ribbon lives. Tests substitute a screen; the app uses the built-in display only.
     var builtInScreenProvider: @MainActor () -> NSScreen? = StagehandModel.builtInDisplay
     var displayCheckTask: Task<Void, Never>?
@@ -374,6 +381,54 @@ final class StagehandModel: ObservableObject {
         }
         self.diagnostics.record("session_started")
         refreshPermissions()
+        startAccessibilityMonitor()
+    }
+
+    func startAccessibilityMonitor() {
+        accessibilityMonitorTask?.cancel()
+        accessibilityMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                do { try await Task.sleep(for: self.accessibilityPollInterval) } catch { return }
+                guard !Task.isCancelled else { return }
+                self.checkAccessibility()
+            }
+        }
+    }
+
+    /// One poll. A revocation while running pauses; a grant after a revocation
+    /// restores windows the pause could not move back.
+    func checkAccessibility() {
+        let trusted = windowSystem.isAccessibilityTrusted
+        guard trusted != accessibilityGranted else { return }
+        if trusted {
+            accessibilityGranted = true
+            diagnostics.record("accessibility_granted", details: ["running": String(isRunning)])
+            if !isRunning, recoverInterruptedSession() == false {
+                warning = nil
+            }
+            updateInputStatus()
+            onStateChange?()
+        } else {
+            accessibilityRevoked()
+        }
+    }
+
+    func accessibilityRevoked() {
+        let wasRunning = isRunning
+        diagnostics.record("accessibility_revoked", details: workspaceDetails())
+        // Pausing restores frames; without the permission the AX writes fail,
+        // the recovery journal keeps the original frames, and the next grant
+        // replays them.
+        if isRunning { stop(reason: "accessibility_revoked", automatic: false) }
+        accessibilityGranted = false
+        updateInputStatus()
+        if wasRunning {
+            warning = windowSystem.hasPendingRecovery
+                ? Self.accessibilityRevokedPendingWarning
+                : Self.accessibilityRevokedWarning
+        }
+        onStateChange?()
     }
 
     /// The Mac is about to sleep. A ribbon animation or a focus confirmation in
@@ -416,7 +471,12 @@ final class StagehandModel: ObservableObject {
     }
 
     func refreshPermissions() {
-        accessibilityGranted = windowSystem.isAccessibilityTrusted
+        let trusted = windowSystem.isAccessibilityTrusted
+        if isRunning, !trusted {
+            accessibilityRevoked()
+            return
+        }
+        accessibilityGranted = trusted
         if isRunning, !isSuspended { focusGate.start() }
         updateInputStatus()
     }
