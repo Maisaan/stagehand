@@ -2,7 +2,7 @@ import Foundation
 
 @MainActor
 final class DiagnosticLogger {
-    static let preferenceKey = "diagnosticLoggingEnabled"
+    static let preferenceKey = PreferenceKey.diagnosticLoggingEnabled
     private static let retentionDuration: TimeInterval = 24 * 60 * 60
     /// Pruning rewrites the whole file on the main thread. Entries may outlive
     /// the retention period by up to this interval.

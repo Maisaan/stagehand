@@ -4,6 +4,18 @@ import ServiceManagement
 import StagehandCore
 import StagehandPlatform
 
+/// UserDefaults keys owned by the model. Keep every literal here so a renamed
+/// key cannot silently split a preference between its reader and writer.
+enum PreferenceKey {
+    static let gesturesEnabled = "gesturesEnabled"
+    static let shortcutSwipesEnabled = "shortcutSwipesEnabled"
+    static let reverseShortcutSwipeDirection = "reverseShortcutSwipeDirection"
+    static let windowGap = "windowGap"
+    static let diagnosticLoggingEnabled = "diagnosticLoggingEnabled"
+    static let legacyFocusBorderColor = "focusBorderColor"
+    static let focusBorderColors = "focusBorderColors"
+}
+
 @MainActor
 final class StagehandModel: ObservableObject {
     // Written only by StagehandModel and its extensions; views treat these as read-only.
@@ -24,28 +36,28 @@ final class StagehandModel: ObservableObject {
     }
     @Published var gesturesEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(gesturesEnabled, forKey: "gesturesEnabled")
+            UserDefaults.standard.set(gesturesEnabled, forKey: PreferenceKey.gesturesEnabled)
             input.gesturesEnabled = gesturesEnabled && !isSuspended
             updateInputStatus()
         }
     }
     @Published var shortcutSwipesEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(shortcutSwipesEnabled, forKey: "shortcutSwipesEnabled")
+            UserDefaults.standard.set(shortcutSwipesEnabled, forKey: PreferenceKey.shortcutSwipesEnabled)
             input.shortcutSwipesEnabled = shortcutSwipesEnabled && !isSuspended
             updateInputStatus()
         }
     }
     @Published var reverseShortcutSwipeDirection: Bool {
         didSet {
-            UserDefaults.standard.set(reverseShortcutSwipeDirection, forKey: "reverseShortcutSwipeDirection")
+            UserDefaults.standard.set(reverseShortcutSwipeDirection, forKey: PreferenceKey.reverseShortcutSwipeDirection)
             input.reverseShortcutSwipeDirection = reverseShortcutSwipeDirection
             updateInputStatus()
         }
     }
     @Published var gap: Double {
         didSet {
-            UserDefaults.standard.set(gap, forKey: "windowGap")
+            UserDefaults.standard.set(gap, forKey: PreferenceKey.windowGap)
             if isRunning && !isSuspended { enqueue(.preferences) }
         }
     }
@@ -58,7 +70,7 @@ final class StagehandModel: ObservableObject {
     let ribbonAnimationConfiguration = RibbonAnimationConfiguration.default
     @Published var diagnosticLoggingEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(diagnosticLoggingEnabled, forKey: DiagnosticLogger.preferenceKey)
+            UserDefaults.standard.set(diagnosticLoggingEnabled, forKey: PreferenceKey.diagnosticLoggingEnabled)
             windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
             if diagnosticLoggingEnabled {
                 diagnostics.isEnabled = true
@@ -119,8 +131,6 @@ final class StagehandModel: ObservableObject {
     var isLayingOutWindows = false
     var preferencesNeedLayout = false
     var isRecordingShortcut = false
-    static let legacyFocusBorderColorPreferenceKey = "focusBorderColor"
-    static let focusBorderColorsPreferenceKey = "focusBorderColors"
 
     struct PointerInteraction {
         let windowID: String
@@ -214,21 +224,21 @@ final class StagehandModel: ObservableObject {
         let shortcutBindings = ShortcutBinding.load(from: defaults)
         self.shortcutBindings = shortcutBindings
         input = injectedInput ?? InputController(shortcutBindings: shortcutBindings)
-        diagnosticLoggingEnabled = defaults.bool(forKey: DiagnosticLogger.preferenceKey)
+        diagnosticLoggingEnabled = defaults.bool(forKey: PreferenceKey.diagnosticLoggingEnabled)
         self.diagnostics = diagnostics ?? DiagnosticLogger(
-            enabled: defaults.bool(forKey: DiagnosticLogger.preferenceKey)
+            enabled: defaults.bool(forKey: PreferenceKey.diagnosticLoggingEnabled)
         )
-        gesturesEnabled = defaults.object(forKey: "gesturesEnabled") as? Bool ?? false
-        shortcutSwipesEnabled = defaults.bool(forKey: "shortcutSwipesEnabled")
-        reverseShortcutSwipeDirection = defaults.object(forKey: "reverseShortcutSwipeDirection") as? Bool ?? true
-        gap = GapInput.clamped(defaults.object(forKey: "windowGap") as? Double ?? 8)
+        gesturesEnabled = defaults.object(forKey: PreferenceKey.gesturesEnabled) as? Bool ?? false
+        shortcutSwipesEnabled = defaults.bool(forKey: PreferenceKey.shortcutSwipesEnabled)
+        reverseShortcutSwipeDirection = defaults.object(forKey: PreferenceKey.reverseShortcutSwipeDirection) as? Bool ?? true
+        gap = GapInput.clamped(defaults.object(forKey: PreferenceKey.windowGap) as? Double ?? 8)
         let defaultBorderColor = Self.savedColor(
-            forKey: Self.legacyFocusBorderColorPreferenceKey,
+            forKey: PreferenceKey.legacyFocusBorderColor,
             in: defaults,
             alpha: BorderView.defaultColor.alphaComponent
         ) ?? BorderView.defaultColor
         focusBorderColors = Self.savedColors(
-            forKey: Self.focusBorderColorsPreferenceKey,
+            forKey: PreferenceKey.focusBorderColors,
             count: WorkspaceState.spaceCount,
             in: defaults,
             alpha: BorderView.defaultColor.alphaComponent
@@ -630,7 +640,7 @@ final class StagehandModel: ObservableObject {
             alpha: BorderView.defaultColor.alphaComponent
         ) else { return }
         focusBorderColors[index] = normalized
-        Self.saveColors(focusBorderColors, forKey: Self.focusBorderColorsPreferenceKey)
+        Self.saveColors(focusBorderColors, forKey: PreferenceKey.focusBorderColors)
         if index == state.activeSpaceIndex { overlays.setBorderColor(normalized) }
     }
 
