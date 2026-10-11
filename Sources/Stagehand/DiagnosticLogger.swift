@@ -47,7 +47,11 @@ final class DiagnosticLogger {
     private let encoder: JSONEncoder
     private var handle: FileHandle?
     private var fileSize = 0
-    private var rotations = 0
+    /// Advances on every main-actor change to the files other than an append
+    /// (rotation, clear). A background scan taken under an older value is stale.
+    private var mutations = 0
+    /// Test hook: awaited after the background scan returns, before the swap.
+    var pruneSwapDelay: (@MainActor () async -> Void)?
     private var writeSuspendedUntil: Date?
     private var nextPruneDate: Date?
     private var pruneTask: Task<Void, Never>?
@@ -108,6 +112,7 @@ final class DiagnosticLogger {
     func clear() {
         closeHandle()
         fileSize = 0
+        mutations += 1
         for url in [logURL, rotatedLogURL] where FileManager.default.fileExists(atPath: url.path) {
             do {
                 try FileManager.default.removeItem(at: url)
@@ -172,17 +177,27 @@ final class DiagnosticLogger {
     private func prune() async {
         let date = now()
         let cutoff = date.addingTimeInterval(-Self.retentionDuration)
-        let rotationsAtStart = rotations
+        let mutationsAtStart = mutations
         let url = logURL
         let rotated = rotatedLogURL
-        let scan: PruneScan? = await withCheckedContinuation { continuation in
+        let result: (scan: PruneScan?, archiveModified: Date?) = await withCheckedContinuation { continuation in
             Self.pruneQueue.async {
-                Self.removeRotatedLogIfExpired(at: rotated, cutoff: cutoff)
-                continuation.resume(returning: Self.scanRetainedEntries(at: url, cutoff: cutoff))
+                continuation.resume(returning: (
+                    Self.scanRetainedEntries(at: url, cutoff: cutoff),
+                    Self.modificationDate(of: rotated)
+                ))
             }
         }
-        // The scanned file was rotated meanwhile; the next pass sees the new one.
-        guard rotationsAtStart == rotations else { return }
+        if let pruneSwapDelay { await pruneSwapDelay() }
+        // The files were rotated or cleared meanwhile. The scan describes a file
+        // that no longer exists, and the archive may now hold fresh entries; the
+        // next pass sees the new files.
+        guard mutationsAtStart == mutations else { return }
+        let scan = result.scan
+        // Deleting the archive here, on the main actor, cannot race a rotation.
+        if let archiveModified = result.archiveModified, archiveModified < cutoff {
+            try? FileManager.default.removeItem(at: rotated)
+        }
         if let scan, scan.removedEntry {
             closeHandle()
             do {
@@ -232,7 +247,7 @@ final class DiagnosticLogger {
                 try FileManager.default.removeItem(at: rotatedLogURL)
             }
             try FileManager.default.moveItem(at: logURL, to: rotatedLogURL)
-            rotations += 1
+            mutations += 1
             fileSize = 0
         } catch {
             NSLog("Stagehand diagnostic log rotation failed: %@", error.localizedDescription)
@@ -271,10 +286,8 @@ final class DiagnosticLogger {
         return scan
     }
 
-    nonisolated private static func removeRotatedLogIfExpired(at url: URL, cutoff: Date) {
-        guard let modified = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date,
-              modified < cutoff else { return }
-        try? FileManager.default.removeItem(at: url)
+    nonisolated private static func modificationDate(of url: URL) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
     }
 
     private static func readTail(of url: URL, from offset: Int) throws -> Data? {

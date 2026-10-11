@@ -200,3 +200,107 @@ private struct LogFixture {
     logger.record("after")
     #expect(fixture.contents().contains("\"after\""))
 }
+
+/// Lets a test hold a prune between its background scan and the main-actor swap.
+@MainActor
+private final class PruneHold {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var reached = false
+
+    func open() {
+        isOpen = true
+        let resumed = waiters
+        waiters.removeAll()
+        for waiter in resumed { waiter.resume() }
+    }
+
+    func wait() async {
+        reached = true
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func waitUntilReached() async {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !reached, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+}
+
+/// clear() while a prune scan was in flight used to let the stale scan write the
+/// cleared entries back and drop new entries below its old byte offset.
+@MainActor
+@Test func clearingDuringAPruneDiscardsTheStaleScan() async throws {
+    let fixture = LogFixture()
+    defer { fixture.remove() }
+    var now = Date(timeIntervalSince1970: 1_000_000)
+    let logger = DiagnosticLogger(logURL: fixture.logURL, enabled: true, now: { now })
+    for index in 0..<20 {
+        logger.record("old\(index)")
+        now += 1
+    }
+    now += 23 * 60 * 60
+    logger.record("recent")
+    now += 2 * 60 * 60
+    let hold = PruneHold()
+    logger.pruneSwapDelay = { await hold.wait() }
+
+    let prune = Task { @MainActor in await logger.pruneExpiredEntries() }
+    await hold.waitUntilReached()
+    #expect(hold.reached)
+    logger.clear()
+    logger.record("fresh")
+    hold.open()
+    await prune.value
+
+    let lines = fixture.contents().split(separator: "\n")
+    #expect(lines.count == 1)
+    #expect(fixture.contents().contains("\"fresh\""))
+    #expect(!fixture.contents().contains("\"recent\""))
+    #expect(!fixture.contents().contains("\"old0\""))
+
+    // The next prune, with nothing in flight, still works on the new file.
+    logger.pruneSwapDelay = nil
+    now += 25 * 60 * 60
+    await logger.pruneExpiredEntries()
+    logger.record("later")
+    #expect(!fixture.contents().contains("\"fresh\""))
+    #expect(fixture.contents().contains("\"later\""))
+}
+
+/// The archive's expiry was decided and deleted off-main. A rotation on main in
+/// between replaced the archive with fresh entries, which were then deleted.
+@MainActor
+@Test func aRotationDuringAPruneKeepsTheFreshArchive() async throws {
+    let fixture = LogFixture()
+    defer { fixture.remove() }
+    var now = Date(timeIntervalSince1970: 1_000_000)
+    let logger = DiagnosticLogger(logURL: fixture.logURL, enabled: true, now: { now }, rotationSize: 300)
+    for index in 0..<6 {
+        logger.record("early\(index)")
+        now += 1
+    }
+    #expect(FileManager.default.fileExists(atPath: logger.rotatedLogURL.path))
+    try FileManager.default.setAttributes(
+        [.modificationDate: now.addingTimeInterval(-25 * 60 * 60)], ofItemAtPath: logger.rotatedLogURL.path
+    )
+    let hold = PruneHold()
+    logger.pruneSwapDelay = { await hold.wait() }
+
+    let prune = Task { @MainActor in await logger.pruneExpiredEntries() }
+    await hold.waitUntilReached()
+    // Enough records to rotate a fresh file into the archive path.
+    for index in 0..<8 {
+        logger.record("fresh\(index)")
+        now += 1
+    }
+    let archive = try String(contentsOf: logger.rotatedLogURL, encoding: .utf8)
+    #expect(archive.contains("\"fresh"))
+    hold.open()
+    await prune.value
+
+    #expect(FileManager.default.fileExists(atPath: logger.rotatedLogURL.path))
+    #expect(try String(contentsOf: logger.rotatedLogURL, encoding: .utf8) == archive)
+}
