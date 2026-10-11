@@ -327,10 +327,19 @@ public final class FocusInputGate {
     }
 
     /// Only visual-only navigation may be skipped. A transfer that owns typing
-    /// must still visit and verify its original destination.
+    /// must still visit and verify its original destination. The check and the removal
+    /// share one lock section, so a key the tap captures in between is kept, not dropped.
     public func cancelTransferIfEmpty(token: UInt64) -> Bool {
-        guard core.withLockUnchecked({ $0.buffer.isEmpty(token: token) }) else { return false }
-        cancelTransfer(token: token)
+        let removed = core.withLockUnchecked { state -> Bool in
+            guard state.buffer.isEmpty(token: token) else { return false }
+            _ = state.buffer.take(token: token)
+            state.unreserve(token)
+            state.discardDestinations(for: token)
+            return true
+        }
+        guard removed else { return false }
+        deadlines.removeValue(forKey: token)?.cancel()
+        stopAvailabilityWatchIfIdle()
         return true
     }
 

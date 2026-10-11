@@ -729,3 +729,16 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     #expect(sink.posted.map(\.key) == [0, 1, 9, 9])
 }
 
+@MainActor @Test func emptyTransferCancellationKeepsTypingCapturedMeanwhile() throws {
+    // The check and the removal share one lock section; a key captured just before the
+    // call is seen by the check, and the transfer with typing is kept for verification.
+    var posted = 0
+    let gate = FocusInputGate(postEvent: { _, _ in posted += 1 })
+    let token = gate.beginTransfer()
+    let down = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
+    #expect(gate.processKeyboardEvent(type: .keyDown, event: down))
+    #expect(!gate.cancelTransferIfEmpty(token: token))
+    #expect(gate.pendingEventCount == 1)
+    gate.commitTransfer(token: token, processIdentifier: 5)
+    #expect(posted == 1)
+}
