@@ -87,6 +87,30 @@ struct GapInput: NSViewRepresentable {
         return min(max(value, bounds.lowerBound), bounds.upperBound)
     }
 
+    /// Accepts the period and the current locale's decimal separator, so "2,5" is
+    /// 2.5 where the keyboard produces a comma. Grouping separators are rejected
+    /// rather than silently dropped.
+    nonisolated static func parse(_ text: String, locale: Locale = .autoupdatingCurrent) -> Double? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let value = Double(trimmed) ?? formatter(locale: locale).number(from: trimmed)?.doubleValue
+        guard let value, value.isFinite else { return nil }
+        return value
+    }
+
+    nonisolated static func format(_ value: Double, locale: Locale = .autoupdatingCurrent) -> String {
+        formatter(locale: locale).string(from: NSNumber(value: value)) ?? String(value)
+    }
+
+    nonisolated private static func formatter(locale: Locale) -> NumberFormatter {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.locale = locale
+        formatter.usesGroupingSeparator = false
+        formatter.maximumFractionDigits = 3
+        return formatter
+    }
+
     @Binding var value: Double
     var onCommit: (Double) -> Void
 
@@ -165,8 +189,7 @@ final class GapTextField: InsetTextField, NSTextFieldDelegate {
             let upward = commandSelector == #selector(NSResponder.moveUp(_:))
                 || commandSelector == #selector(NSResponder.moveUpAndModifySelection(_:))
             let direction: Double = upward ? 1 : -1
-            let parsed = Double(textView.string.trimmingCharacters(in: .whitespacesAndNewlines))
-            let current = parsed.flatMap { $0.isFinite ? $0 : nil } ?? committedValue
+            let current = GapInput.parse(textView.string) ?? committedValue
             commit(value: current + direction * step, editor: textView)
             return true
         case #selector(NSResponder.insertNewline(_:)):
@@ -210,7 +233,7 @@ final class GapTextField: InsetTextField, NSTextFieldDelegate {
     }
 
     private func commit(text: String, editor: NSTextView? = nil) {
-        guard let value = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)), value.isFinite else {
+        guard let value = GapInput.parse(text) else {
             displayValue(committedValue, editor: editor)
             return
         }
@@ -226,7 +249,7 @@ final class GapTextField: InsetTextField, NSTextFieldDelegate {
     }
 
     private func displayValue(_ value: Double, editor: NSTextView? = nil) {
-        let text = value == value.rounded() ? String(Int(value)) : String(value)
+        let text = GapInput.format(value)
         stringValue = text
         if let editor {
             editor.string = text
