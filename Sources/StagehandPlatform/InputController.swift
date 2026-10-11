@@ -34,6 +34,7 @@ public final class InputController {
     private var shortcutBindings: [ShortcutBinding]
     private var shortcutCaptureActive = false
     private let gestures = GestureMonitor()
+    private var wakeObserver: NSObjectProtocol?
 
     public init(shortcutBindings: [ShortcutBinding] = ShortcutBinding.load(), shortcutLoadIssues: [String] = []) {
         self.shortcutBindings = shortcutBindings
@@ -48,6 +49,7 @@ public final class InputController {
     public func start() {
         guard !isRunning else { return }
         isRunning = true
+        observeWake()
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let status = InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
             guard let event, let context else { return OSStatus(eventNotHandledErr) }
@@ -115,6 +117,8 @@ public final class InputController {
     }
 
     public func stop() {
+        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
+        wakeObserver = nil
         gestures.stop()
         for hotKey in hotKeys { UnregisterEventHotKey(hotKey) }
         hotKeys.removeAll()
@@ -129,6 +133,21 @@ public final class InputController {
 
     public func refreshGestureStatus() {
         if isRunning { updateGestures() }
+    }
+
+    /// Gestures can stop arriving after sleep. Rebuild the monitor with a fresh device.
+    private func observeWake() {
+        guard wakeObserver == nil else { return }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.isRunning else { return }
+                self.gestures.stop()
+                self.gestures.invalidateDevice()
+                self.updateGestures()
+            }
+        }
     }
 
     /// Call before routing a physical keyboard event. The caller must resolve the gesture

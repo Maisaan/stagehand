@@ -267,6 +267,15 @@ final class GestureMonitor {
         removeScrollTap()
     }
 
+    /// After sleep the framework's device handle may stop delivering frames. Forget it so
+    /// the next start creates a fresh one. The old handle is intentionally not released
+    /// (see `stop()`); one leaked reference per wake is the price of not racing the
+    /// framework's dequeue thread.
+    func invalidateDevice() {
+        guard !isRunning else { return }
+        device = nil
+    }
+
     func takePendingGestureCompletion() -> GestureNavigationCompletion? {
         guard isRunning else { return nil }
         return gestureCallbackState.withLock { state in
