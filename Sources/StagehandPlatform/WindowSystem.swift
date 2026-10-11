@@ -43,6 +43,9 @@ public enum WindowTuning {
     public static let parkedRemnantWidth: CGFloat = 64
     /// A journaled coordinate or size beyond this is treated as corrupt rather than restored.
     public static let recoveryFrameBound: CGFloat = 100_000
+    /// Cadence of the poll that writes a deferred recovery frame once its window
+    /// is no longer minimized. Runs only while such records exist, even when stopped.
+    public static let deferredRecoveryPollSeconds: Int = 5
 }
 
 private enum AccessibilityWindowNumber {
@@ -178,7 +181,10 @@ public final class WindowSystem {
     /// Records whose window was minimized when restoration was attempted and did not
     /// accept a frame write. They do not block Start; the frame is written when AX
     /// reports the window de-miniaturized, or by the next recovery pass.
-    private var deferredRecoveryWindowIDs: Set<String> = []
+    private var deferredRecoveryWindowIDs: Set<String> = [] {
+        didSet { if !deferredRecoveryWindowIDs.isEmpty { startDeferredRecoveryPoll() } }
+    }
+    private var deferredRecoveryTask: Task<Void, Never>?
     /// Windows an earlier pass could not put back. Each still has a journal record.
     public var pendingRecoveryWindowIDs: Set<String> {
         interruptedWindowIDs.filter { recoveryJournal.records[$0] != nil && !deferredRecoveryWindowIDs.contains($0) }
@@ -249,12 +255,14 @@ public final class WindowSystem {
                 try? recoveryJournal.remove(windowID: record.windowID)
                 continue
             }
-            let appElement = AXUIElementCreateApplication(record.pid)
-            guard let elements = copyAttribute(appElement, kAXWindowsAttribute).value as? [AXUIElement] else {
+            let element: AXUIElement
+            switch recoveryElement(for: record) {
+            case .found(let match):
+                element = match
+            case .unavailable:
                 foundInterruptedWindow = true
                 continue
-            }
-            guard let element = elements.first(where: { windowNumber($0) == record.windowNumber }) else {
+            case .absent:
                 // Some apps publish their AX window list late after Stagehand launches.
                 // Require a second complete inventory before treating a window as closed.
                 if missingRecoveryWindowIDs.insert(id).inserted {
@@ -285,6 +293,90 @@ public final class WindowSystem {
         interruptedWindowIDs = interruptedWindowIDs.filter { recoveryJournal.records[$0] != nil }
         deferredRecoveryWindowIDs = deferredRecoveryWindowIDs.filter { recoveryJournal.records[$0] != nil }
         return foundInterruptedWindow
+    }
+
+    enum RecoverySearch {
+        case found(AXUIElement)
+        /// The window is confirmed gone from its app's window list.
+        case absent
+        /// The app did not answer, or window identities cannot be read at all, so
+        /// absence is not established and the record must be kept.
+        case unavailable
+    }
+
+    private func recoveryElement(for record: WindowRecoveryRecord) -> RecoverySearch {
+        let appElement = AXUIElementCreateApplication(record.pid)
+        guard let elements = copyAttribute(appElement, kAXWindowsAttribute).value as? [AXUIElement] else {
+            return .unavailable
+        }
+        return Self.recoveryMatch(elements, numbers: elements.map { windowNumber($0) },
+                                  target: record.windowNumber, identityAvailable: Self.windowIdentityAvailable)
+    }
+
+    /// Without _AXUIElementGetWindow every lookup is nil, which must not read as
+    /// "every journaled window has closed".
+    nonisolated static var windowIdentityAvailable: Bool { AccessibilityWindowNumber.function != nil }
+
+    nonisolated static func recoveryMatch(_ elements: [AXUIElement], numbers: [CGWindowID?],
+                                          target: CGWindowID, identityAvailable: Bool) -> RecoverySearch {
+        guard identityAvailable else { return .unavailable }
+        guard let index = numbers.firstIndex(where: { $0 == target }) else { return .absent }
+        return .found(elements[index])
+    }
+
+    /// Journal records whose window was minimized when restoration was refused. They
+    /// are retried here independently of tracking or admission: the recovery pass
+    /// only runs before Start, the de-miniaturize route only fires for a tracked
+    /// window, and a minimized window is never admitted by a scan.
+    private func startDeferredRecoveryPoll() {
+        guard deferredRecoveryTask == nil else { return }
+        deferredRecoveryTask = Task { @MainActor [weak self] in
+            defer { self?.deferredRecoveryTask = nil }
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(WindowTuning.deferredRecoveryPollSeconds)) }
+                catch { return }
+                guard let self, !Task.isCancelled else { return }
+                self.pollDeferredRecovery()
+                if self.deferredRecoveryWindowIDs.isEmpty { return }
+            }
+        }
+    }
+
+    private func pollDeferredRecovery() {
+        guard isAccessibilityTrusted else { return }
+        for id in deferredRecoveryWindowIDs {
+            guard let record = recoveryJournal.records[id] else {
+                deferredRecoveryWindowIDs.remove(id)
+                continue
+            }
+            guard let app = NSRunningApplication(processIdentifier: record.pid), !app.isTerminated,
+                  record.matchesProcess(bundleIdentifier: app.bundleIdentifier,
+                                        pid: app.processIdentifier, launchDate: app.launchDate) else {
+                forgetRecovery(windowID: id)
+                continue
+            }
+            // A window this process is managing again is the model's to place.
+            if started, let tracked = windows[id], tracked.isAdmitted { continue }
+            let element: AXUIElement
+            if let tracked = windows[id] {
+                element = tracked.element
+            } else {
+                switch recoveryElement(for: record) {
+                case .found(let match): element = match
+                case .absent: forgetRecovery(windowID: id); continue
+                case .unavailable: continue
+                }
+            }
+            guard attribute(element, "AXFullScreen") as? Bool != true else {
+                forgetRecovery(windowID: id)
+                continue
+            }
+            if let current = readFrame(element), sameBounds(current, record.frame) ||
+                writeFrame(element, frame: record.frame) {
+                forgetRecovery(windowID: id)
+                if focusDiagnosticsEnabled { logger.notice("Recovery deferred=\(id, privacy: .public) restored=true") }
+            }
+        }
     }
 
     /// A de-miniaturized window whose recovery was deferred goes back to its
@@ -443,6 +535,7 @@ public final class WindowSystem {
             for pid in Array(observers.keys) { removeObserver(pid: pid) }
             for retry in observationRetries.values { retry.cancel() }
             applicationInventoryTask?.cancel()
+            deferredRecoveryTask?.cancel()
             let center = NSWorkspace.shared.notificationCenter
             for token in workspaceTokens { center.removeObserver(token) }
             for token in applicationTokens { NotificationCenter.default.removeObserver(token) }
@@ -1071,7 +1164,10 @@ public final class WindowSystem {
             // written behind the Dock tile. Otherwise wait for de-miniaturization.
             guard let target = tracked.originalFrame ?? tracked.parking.restoreFrame else { return .restored }
             guard moveWithOwnedWindows(windowID: id, move: { writeFrame(tracked.element, frame: target) }) else {
-                deferredRecoveryWindowIDs.insert(id)
+                if recoveryJournal.records[id] != nil {
+                    interruptedWindowIDs.insert(id)
+                    deferredRecoveryWindowIDs.insert(id)
+                }
                 return .deferred
             }
             forgetRecovery(windowID: id)
