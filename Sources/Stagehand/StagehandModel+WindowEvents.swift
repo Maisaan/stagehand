@@ -348,9 +348,9 @@ extension StagehandModel {
 
     func initialWidthFractions(for windows: [WindowRecord]) -> [String: Double] {
         guard let availableFrame, availableFrame.width.isFinite, availableFrame.width > 0 else { return [:] }
-        return Dictionary(uniqueKeysWithValues: windows.compactMap { window in
+        return Dictionary(windows.compactMap { window in
             guard window.frame.width.isFinite, window.frame.width > 0 else { return nil }
             return (window.id, Double(window.frame.width / availableFrame.width))
-        })
+        }, uniquingKeysWith: { first, _ in first })
     }
 }

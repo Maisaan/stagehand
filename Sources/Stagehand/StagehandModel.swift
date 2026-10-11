@@ -461,7 +461,7 @@ final class StagehandModel: ObservableObject {
                 }
             }
         }
-        preferredHeights = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0.frame.height) })
+        preferredHeights = Dictionary(windows.map { ($0.id, $0.frame.height) }, uniquingKeysWith: { first, _ in first })
         workspaceRestoration.reconcile(state: &state, windowIDs: windows.map(\.id),
                                        trackedWindowIDs: windowSystem.trackedWindowIDs,
                                        initialWidthFractions: initialWidthFractions(for: windows))

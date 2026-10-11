@@ -59,8 +59,8 @@ extension StagehandModel {
         start()
         await waitUntilIdle()
         guard isRunning else { return "FAIL: Stagehand did not start. Warning: \(warning ?? "none")" }
-        let originalFrames = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0.frame) })
-        let titles = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0.title) })
+        let originalFrames = Dictionary(windows.map { ($0.id, $0.frame) }, uniquingKeysWith: { first, _ in first })
+        let titles = Dictionary(windows.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
 
         // Rapid switches in both directions, reversing during transitions. Typing right
         // after a switch belongs to that switch's destination once focus is verified.

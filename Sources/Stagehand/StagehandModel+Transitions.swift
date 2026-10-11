@@ -508,7 +508,7 @@ extension StagehandModel {
             nativeDesktopChanged()
             return .interrupted
         }
-        let placementFrames = Dictionary(uniqueKeysWithValues: placements.map { ($0.windowID, $0.frame) })
+        let placementFrames = Dictionary(placements.map { ($0.windowID, $0.frame) }, uniquingKeysWith: { first, _ in first })
         switch await parkHiddenWindows(keeping: visibleIDs.union(animatedWindowIDs), layoutFrames: placementFrames) {
         case .interrupted: return .interrupted
         case .failed(let details): return failLayout("window_parking_failed", details: details)
@@ -517,10 +517,10 @@ extension StagehandModel {
         guard preferenceFocusStillMatches(request) else { return .completed }
         preferencesNeedLayout = false
         if slideFrom != nil {
-            let starts = Dictionary(uniqueKeysWithValues: sliding.compactMap { placement in
+            let starts = Dictionary(sliding.compactMap { placement in
                 windowSystem.frame(windowID: placement.windowID).map { (placement.windowID, $0) }
-            })
-            let targets = Dictionary(uniqueKeysWithValues: sliding.map { ($0.windowID, $0.frame) })
+            }, uniquingKeysWith: { first, _ in first })
+            let targets = Dictionary(sliding.map { ($0.windowID, $0.frame) }, uniquingKeysWith: { first, _ in first })
             let translate = {
                 let completed = await self.settleRibbon(
                     from: starts,
@@ -633,15 +633,15 @@ extension StagehandModel {
     func navigationFrames() -> [String: CGRect] {
         guard let availableFrame else { return [:] }
         let members = Set(state.currentSpace.windowIDs)
-        let actual = Dictionary(uniqueKeysWithValues: windows.filter { members.contains($0.id) }.compactMap { window in
+        let actual = Dictionary(windows.filter { members.contains($0.id) }.compactMap { window in
             windowSystem.frame(windowID: window.id).map { (window.id, $0) }
-        })
+        }, uniquingKeysWith: { first, _ in first })
         let placements = WindowLayout.placements(for: state, availableFrame: availableFrame, gap: gap,
                                                  observedWidths: actual.mapValues(\.width),
                                                  observedHeights: actual.mapValues(\.height))
-        var frames = Dictionary(uniqueKeysWithValues: placements.map {
+        var frames = Dictionary(placements.map {
             ($0.windowID, $0.isVisible ? actual[$0.windowID] ?? $0.frame : $0.frame)
-        })
+        }, uniquingKeysWith: { first, _ in first })
         if ribbonMotion.isRunning { frames.merge(ribbonMotion.frames) { _, moving in moving } }
         if let presentationFrames { frames.merge(presentationFrames) { _, moving in moving } }
         return frames
