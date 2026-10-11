@@ -118,9 +118,11 @@ public final class WindowSystem {
     private let recoveryJournal = WindowRecoveryJournal()
     private var interruptedWindowIDs: Set<String> = []
     private var missingRecoveryWindowIDs: Set<String> = []
-    public var hasPendingRecovery: Bool {
-        interruptedWindowIDs.contains { recoveryJournal.records[$0] != nil }
+    /// Windows an earlier pass could not put back. Each still has a journal record.
+    public var pendingRecoveryWindowIDs: Set<String> {
+        interruptedWindowIDs.filter { recoveryJournal.records[$0] != nil }
     }
+    public var hasPendingRecovery: Bool { !pendingRecoveryWindowIDs.isEmpty }
 
     public init() {
         interruptedWindowIDs = Set(recoveryJournal.records.keys)
@@ -171,8 +173,14 @@ public final class WindowSystem {
             guard let record = recoveryJournal.records[id] else { continue }
             if let owner = NSRunningApplication(processIdentifier: record.ownerPID),
                record.isOwnedByProcess(pid: owner.processIdentifier, launchDate: owner.launchDate) {
-                foundInterruptedWindow = true
-                continue
+                // Another live Stagehand owns the window, or this one is still
+                // managing it. Once this process has stopped, its own leftovers
+                // from a failed restoreAll are retried like any other record.
+                let ownRecord = record.ownerPID == ProcessInfo.processInfo.processIdentifier
+                guard ownRecord, !started else {
+                    foundInterruptedWindow = true
+                    continue
+                }
             }
             guard let app = NSRunningApplication(processIdentifier: record.pid),
                   record.matchesProcess(bundleIdentifier: app.bundleIdentifier,
@@ -201,16 +209,27 @@ public final class WindowSystem {
             let fullscreen = copyAttribute(element, "AXFullScreen")
             guard fullscreen.error != .cannotComplete else { continue }
             if minimized || fullscreen.value as? Bool == true {
-                try? recoveryJournal.remove(windowID: record.windowID)
+                forgetRecovery(windowID: record.windowID)
                 continue
             }
             if let current = readFrame(element), sameBounds(current, record.frame) ||
                 writeFrame(element, frame: record.frame) {
-                try? recoveryJournal.remove(windowID: record.windowID)
+                forgetRecovery(windowID: record.windowID)
             }
         }
         interruptedWindowIDs = interruptedWindowIDs.filter { recoveryJournal.records[$0] != nil }
         return foundInterruptedWindow
+    }
+
+    /// The window is back where it started, or macOS now owns it. Clear the record
+    /// and any tracking left from this process so the next move captures afresh.
+    private func forgetRecovery(windowID: String) {
+        try? recoveryJournal.remove(windowID: windowID)
+        interruptedWindowIDs.remove(windowID)
+        if windows[windowID] != nil {
+            windows[windowID]?.originalFrame = nil
+            windows[windowID]?.parking = WindowParking()
+        }
     }
 
     @discardableResult
@@ -862,24 +881,51 @@ public final class WindowSystem {
     }
 
     /// Call on pause/quit, before releasing tracking, to return windows to their original positions.
+    /// A window that cannot be put back keeps its journal record and is reported through
+    /// `pendingRecoveryWindowIDs`, so the model can warn and a later pass can retry.
     public func restoreAll() {
         nativeWindows.restoreAll()
-        for id in Array(windows.keys) {
-            guard let tracked = windows[id] else { continue }
-            // Entering native fullscreen hands the window back to macOS.
-            guard attribute(tracked.element, "AXFullScreen") as? Bool != true else { continue }
-            // Do not discard the original frame if unparking failed.
-            // A later recovery attempt must still know where the window started.
-            guard restore(windowID: id) else { continue }
-            if let originalFrame = tracked.originalFrame {
-                if moveWithOwnedWindows(windowID: id, move: {
-                    writeFrame(tracked.element, frame: originalFrame)
-                }) {
-                    windows[id]?.originalFrame = nil
-                    try? recoveryJournal.remove(windowID: id)
-                }
-            }
+        var failed = Set<String>()
+        for id in Array(windows.keys) where returnToOriginalFrame(windowID: id) == .failed {
+            failed.insert(id)
         }
+        // A busy app answers a later request; a bounded retry covers the common
+        // case without holding pause or quit for long.
+        for delay in [50, 100] where !failed.isEmpty {
+            Thread.sleep(forTimeInterval: Double(delay) / 1_000)
+            failed = failed.filter { returnToOriginalFrame(windowID: $0) == .failed }
+        }
+        for id in failed where recoveryJournal.records[id] != nil {
+            interruptedWindowIDs.insert(id)
+        }
+    }
+
+    private enum RestoreOutcome {
+        case restored
+        /// Nothing to do now: the window is in native fullscreen, which hands it back
+        /// to macOS. Its record stays for the next recovery pass without a warning.
+        case deferred
+        case failed
+    }
+
+    /// Unparks the window and writes the frame Stagehand found it at. On success the
+    /// window no longer needs recovery, so its record is removed.
+    private func returnToOriginalFrame(windowID id: String) -> RestoreOutcome {
+        guard let tracked = windows[id] else { return .restored }
+        guard tracked.parking.restoreFrame != nil || tracked.originalFrame != nil else { return .restored }
+        guard attribute(tracked.element, "AXFullScreen") as? Bool != true else { return .deferred }
+        // Do not discard the original frame if unparking failed.
+        // A later recovery attempt must still know where the window started.
+        guard restore(windowID: id) else { return .failed }
+        if let originalFrame = tracked.originalFrame {
+            guard moveWithOwnedWindows(windowID: id, move: {
+                writeFrame(tracked.element, frame: originalFrame)
+            }) else { return .failed }
+            windows[id]?.originalFrame = nil
+            try? recoveryJournal.remove(windowID: id)
+        }
+        interruptedWindowIDs.remove(id)
+        return .restored
     }
 
     public func focusedWindowID() -> String? {
