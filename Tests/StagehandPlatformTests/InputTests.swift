@@ -353,17 +353,49 @@ func sizeShortcutChordsResolve(key: Int, flags: CGEventFlags, action: Navigation
 
 @MainActor @Test func overflowedInputNeverReplaysToAnUnverifiedProcess() throws {
     var posted = 0
+    var discarded: [Int] = []
+    var expired: [UInt64] = []
+    let gate = FocusInputGate(postEvent: { _, _ in posted += 1 })
+    gate.onInputDiscarded = { discarded.append($0) }
+    gate.onTransferExpired = { expired.append($0) }
+    let token = gate.beginTransfer()
+    let down = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
+    let up = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false))
+    for index in 0 ..< FocusInputGate.maximumBufferedEvents {
+        #expect(gate.processKeyboardEvent(type: index.isMultiple(of: 2) ? .keyDown : .keyUp,
+                                          event: index.isMultiple(of: 2) ? down : up))
+    }
+    #expect(gate.pendingEventCount == FocusInputGate.maximumBufferedEvents)
+    #expect(gate.processKeyboardEvent(type: .keyDown, event: down))
+    // The held events and the one that did not fit are reported once, as a single count.
+    #expect(discarded == [FocusInputGate.maximumBufferedEvents + 1])
+    #expect(expired == [token])
+    #expect(gate.pendingEventCount == 0)
+    gate.commitTransfer(token: token, processIdentifier: 100)
+    #expect(posted == 0)
+}
+
+@MainActor @Test func heldKeyRepeatsAreCoalescedInsteadOfFillingTheBuffer() throws {
+    var posted = 0
     var discarded = 0
     let gate = FocusInputGate(postEvent: { _, _ in posted += 1 })
     gate.onInputDiscarded = { discarded += $0 }
     let token = gate.beginTransfer()
-    let event = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
-    event.setIntegerValueField(.keyboardEventAutorepeat, value: 1)
-    for _ in 0 ..< 129 { #expect(gate.processKeyboardEvent(type: .keyDown, event: event)) }
+    let first = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
+    #expect(gate.processKeyboardEvent(type: .keyDown, event: first))
+    let repeated = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
+    repeated.setIntegerValueField(.keyboardEventAutorepeat, value: 1)
+    for _ in 0 ..< FocusInputGate.maximumBufferedEvents + 1 {
+        #expect(gate.processKeyboardEvent(type: .keyDown, event: repeated))
+    }
+    let up = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false))
+    #expect(gate.processKeyboardEvent(type: .keyUp, event: up))
+    #expect(gate.pendingEventCount == 2)
     gate.commitTransfer(token: token, processIdentifier: 100)
-    #expect(discarded == 129)
-    #expect(posted == 0)
+    #expect(posted == 2)
+    #expect(discarded == 0)
 }
+
 
 /// The tap thread holds typing that follows a trackpad release whose delivery is still
 /// queued, then the release's navigation adopts that transfer on the main actor.

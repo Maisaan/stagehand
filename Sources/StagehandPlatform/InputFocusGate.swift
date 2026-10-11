@@ -429,6 +429,10 @@ public final class FocusInputGate {
             if type == .keyUp { state.keyDestinations.removeValue(forKey: key) }
             switch destination {
             case .pending(let token):
+                // A held key repeats until the transfer commits, which would fill the buffer
+                // in seconds. Hold the first press and its release; the repeats are not lost
+                // typing, they are the same key still down.
+                if type == .keyDown, isAutorepeat { return (true, effects) }
                 capture(event, token: token, state: &state, effects: &effects)
                 return (true, effects)
             case .delivered(let pid):
