@@ -506,7 +506,7 @@ final class StagehandModel: ObservableObject {
                                            trackedWindowIDs: windowSystem.trackedWindowIDs)
         layoutSaveTask?.cancel()
         layoutSaveTask = nil
-        layoutStore?.save(state, windows: windows)
+        saveLayout()
         ribbonMotion.cancel()
         presentationFrames = nil
         resetGestureTracking()
@@ -553,13 +553,25 @@ final class StagehandModel: ObservableObject {
     }
 
     func scheduleLayoutSave() {
-        guard let layoutStore, layoutSaveTask == nil else { return }
+        guard layoutStore != nil, layoutSaveTask == nil else { return }
         layoutSaveTask = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(1)) } catch { return }
             guard let self else { return }
             self.layoutSaveTask = nil
             guard self.isRunning else { return }
-            layoutStore.save(self.state, windows: self.windows)
+            self.saveLayout()
+        }
+    }
+
+    /// A failed save is recorded so a layout that does not come back after a
+    /// relaunch can be traced; the session itself continues.
+    func saveLayout() {
+        guard let layoutStore else { return }
+        do {
+            try layoutStore.save(state, windows: windows)
+        } catch {
+            diagnostics.record("layout_save_failed", details: ["error": error.localizedDescription])
+            NSLog("Stagehand layout save failed: %@", error.localizedDescription)
         }
     }
 
