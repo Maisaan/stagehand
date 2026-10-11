@@ -118,9 +118,13 @@ public final class WindowSystem {
     private let recoveryJournal = WindowRecoveryJournal()
     private var interruptedWindowIDs: Set<String> = []
     private var missingRecoveryWindowIDs: Set<String> = []
+    /// Records whose window was minimized when restoration was attempted and did not
+    /// accept a frame write. They do not block Start; the frame is written when AX
+    /// reports the window de-miniaturized, or by the next recovery pass.
+    private var deferredRecoveryWindowIDs: Set<String> = []
     /// Windows an earlier pass could not put back. Each still has a journal record.
     public var pendingRecoveryWindowIDs: Set<String> {
-        interruptedWindowIDs.filter { recoveryJournal.records[$0] != nil }
+        interruptedWindowIDs.filter { recoveryJournal.records[$0] != nil && !deferredRecoveryWindowIDs.contains($0) }
     }
     public var hasPendingRecovery: Bool { !pendingRecoveryWindowIDs.isEmpty }
 
@@ -208,17 +212,37 @@ public final class WindowSystem {
             guard let minimized = attribute(element, kAXMinimizedAttribute) as? Bool else { continue }
             let fullscreen = copyAttribute(element, "AXFullScreen")
             guard fullscreen.error != .cannotComplete else { continue }
-            if minimized || fullscreen.value as? Bool == true {
+            if fullscreen.value as? Bool == true {
                 forgetRecovery(windowID: record.windowID)
                 continue
             }
             if let current = readFrame(element), sameBounds(current, record.frame) ||
                 writeFrame(element, frame: record.frame) {
                 forgetRecovery(windowID: record.windowID)
+            } else if minimized {
+                // The Dock tile hides a parked position. Keep the record so the
+                // frame is written once the window is shown again.
+                deferredRecoveryWindowIDs.insert(id)
             }
         }
         interruptedWindowIDs = interruptedWindowIDs.filter { recoveryJournal.records[$0] != nil }
+        deferredRecoveryWindowIDs = deferredRecoveryWindowIDs.filter { recoveryJournal.records[$0] != nil }
         return foundInterruptedWindow
+    }
+
+    /// A de-miniaturized window whose recovery was deferred goes back to its
+    /// journaled frame before the model lays it out again.
+    private func completeDeferredRecovery(windowID id: String) {
+        guard let tracked = windows[id] else { return }
+        let deferred = deferredRecoveryWindowIDs.compactMap { recoveryJournal.records[$0] }.first {
+            $0.windowID == id || $0.pid == tracked.record.pid && $0.windowNumber == tracked.windowNumber
+        }
+        guard let deferred else { return }
+        if let current = readFrame(tracked.element), sameBounds(current, deferred.frame) ||
+            writeFrame(tracked.element, frame: deferred.frame) {
+            forgetRecovery(windowID: deferred.windowID)
+            forgetRecovery(windowID: id)
+        }
     }
 
     /// The window is back where it started, or macOS now owns it. Clear the record
@@ -226,6 +250,7 @@ public final class WindowSystem {
     private func forgetRecovery(windowID: String) {
         try? recoveryJournal.remove(windowID: windowID)
         interruptedWindowIDs.remove(windowID)
+        deferredRecoveryWindowIDs.remove(windowID)
         if windows[windowID] != nil {
             windows[windowID]?.originalFrame = nil
             windows[windowID]?.parking = WindowParking()
@@ -863,6 +888,16 @@ public final class WindowSystem {
         }
         guard let tracked = windows[windowID] else { return false }
         guard tracked.originalFrame == nil else { return true }
+        // A record for this window already on disk predates the current position,
+        // which may be a parking spot left by an earlier pass or a dropped tracking.
+        if let existing = recoveryJournal.records[windowID],
+           let app = NSRunningApplication(processIdentifier: tracked.record.pid),
+           existing.matchesProcess(bundleIdentifier: app.bundleIdentifier, pid: app.processIdentifier,
+                                   launchDate: app.launchDate),
+           existing.windowNumber == tracked.windowNumber {
+            windows[windowID]?.originalFrame = existing.frame
+            return true
+        }
         guard let frame = readFrame(tracked.element) else { return false }
         // Without an on-disk record a crash would leave the window wherever the
         // ribbon or parking put it. Refuse to move it at all in that case.
@@ -934,6 +969,17 @@ public final class WindowSystem {
         guard let tracked = windows[id] else { return .restored }
         guard tracked.parking.restoreFrame != nil || tracked.originalFrame != nil else { return .restored }
         guard attribute(tracked.element, "AXFullScreen") as? Bool != true else { return .deferred }
+        if attribute(tracked.element, kAXMinimizedAttribute) as? Bool == true {
+            // restore() never reverses a user's minimize, but the frame can often be
+            // written behind the Dock tile. Otherwise wait for de-miniaturization.
+            guard let target = tracked.originalFrame ?? tracked.parking.restoreFrame else { return .restored }
+            guard moveWithOwnedWindows(windowID: id, move: { writeFrame(tracked.element, frame: target) }) else {
+                deferredRecoveryWindowIDs.insert(id)
+                return .deferred
+            }
+            forgetRecovery(windowID: id)
+            return .restored
+        }
         // Do not discard the original frame if unparking failed.
         // A later recovery attempt must still know where the window started.
         guard restore(windowID: id) else { return .failed }
@@ -1275,6 +1321,7 @@ public final class WindowSystem {
                         owner.onWindowMiniaturized?(id)
                         return
                     case .restored:
+                        owner.completeDeferredRecovery(windowID: id)
                         owner.onWindowDeminiaturized?(id)
                         return
                     }
