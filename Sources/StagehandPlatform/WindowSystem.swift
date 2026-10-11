@@ -6,6 +6,39 @@ import Darwin
 /// would stop the app launching on a system where the symbol is gone; resolving
 /// it at first use leaves window numbers unavailable instead, and matching then
 /// falls back to element identity and geometry.
+/// Timing and geometry constants shared by the window system. Values are the
+/// ones the code has always used; they live here so a change to one is deliberate
+/// and visible rather than buried in a call site.
+public enum WindowTuning {
+    /// How long a single Accessibility request to the system-wide element may wait.
+    public static let accessibilityMessagingTimeoutSeconds: Float = 0.1
+    /// Cadence of the CGWindowList poll that notices apps and windows AX did not report.
+    public static let applicationInventoryPollSeconds: Int = 2
+    /// Delays between AXObserverAddNotification retries for an app answering
+    /// .cannotComplete; the last value repeats while the app runs.
+    public static let observationRetryDelaysMilliseconds = [100, 200, 400, 800, 1600, 3200, 5000, 10_000, 20_000, 30_000]
+    /// Waits before each further restoreAll attempt for a window that failed to restore.
+    public static let restoreRetryDelaysMilliseconds = [50, 100]
+    /// Rechecks after an app launches or activates before a usable window appears.
+    public static let launchDiscoveryDelays: [Duration] = [
+        .milliseconds(100), .milliseconds(250), .milliseconds(500),
+        .seconds(1), .seconds(2), .seconds(4), .seconds(8), .seconds(15)
+    ]
+    /// How long a native (Stagehand-owned) window may take to become key after activation.
+    public static let nativeFocusDeadlineMilliseconds = 180
+    /// Poll interval while waiting for a native window to become key.
+    public static let nativeFocusPollMilliseconds = 8
+    /// After the target app is active, how long its exact window may take to own focus
+    /// before the attempt reports a timeout.
+    public static let focusActivationDeadlineMilliseconds = 600
+    /// Upper bound on one focus attempt, including recovery of a refused activation.
+    public static let focusRecoveryDeadlineMilliseconds = 1_500
+    /// The widest strip of a parked window that may stay on the screen it was parked from.
+    public static let parkedRemnantWidth: CGFloat = 64
+    /// A journaled coordinate or size beyond this is treated as corrupt rather than restored.
+    public static let recoveryFrameBound: CGFloat = 100_000
+}
+
 private enum AccessibilityWindowNumber {
     typealias Function = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
 
@@ -148,7 +181,7 @@ public final class WindowSystem {
 
     public init() {
         interruptedWindowIDs = Set(recoveryJournal.records.keys)
-        AXUIElementSetMessagingTimeout(systemElement, 0.1)
+        AXUIElementSetMessagingTimeout(systemElement, WindowTuning.accessibilityMessagingTimeoutSeconds)
         nativeWindows.onChange = { [weak self] in
             guard let self, self.started else { return }
             self.onChange?()
@@ -987,7 +1020,7 @@ public final class WindowSystem {
         }
         // A busy app answers a later request; a bounded retry covers the common
         // case without holding pause or quit for long.
-        for delay in [50, 100] where !failed.isEmpty {
+        for delay in WindowTuning.restoreRetryDelaysMilliseconds where !failed.isEmpty {
             Thread.sleep(forTimeInterval: Double(delay) / 1_000)
             failed = failed.filter { returnToOriginalFrame(windowID: $0) == .failed }
         }
@@ -1419,7 +1452,7 @@ public final class WindowSystem {
     /// subscription actually registered. Rescanning on every failed attempt kept
     /// the whole system scanning every few seconds for one unresponsive app.
     private func scheduleObservationRetries(element: AXUIElement, pid: pid_t) {
-        let delays = [100, 200, 400, 800, 1600, 3200, 5000, 10_000, 20_000, 30_000]
+        let delays = WindowTuning.observationRetryDelaysMilliseconds
         observationRetries[pid] = Task { @MainActor [weak self] in
             var attempt = 0
             while !Task.isCancelled {
@@ -1451,7 +1484,7 @@ public final class WindowSystem {
         )
         applicationInventoryTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(2)) }
+                do { try await Task.sleep(for: .seconds(WindowTuning.applicationInventoryPollSeconds)) }
                 catch { return }
                 guard let self, self.started, !Task.isCancelled else { return }
                 if self.inventoryPaused { continue }

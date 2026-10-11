@@ -21,8 +21,9 @@ struct WindowRecoveryRecord: Codable, Equatable {
         (windowID == "\(pid):\(windowNumber)" || windowID.hasPrefix("\(pid):fallback:")) &&
         !bundleIdentifier.isEmpty &&
         frame.minX.isFinite && frame.minY.isFinite && frame.width.isFinite && frame.height.isFinite &&
-        abs(frame.minX) < 100_000 && abs(frame.minY) < 100_000 &&
-        frame.width > 0 && frame.height > 0 && frame.width < 100_000 && frame.height < 100_000
+        abs(frame.minX) < WindowTuning.recoveryFrameBound && abs(frame.minY) < WindowTuning.recoveryFrameBound &&
+        frame.width > 0 && frame.height > 0 &&
+        frame.width < WindowTuning.recoveryFrameBound && frame.height < WindowTuning.recoveryFrameBound
     }
 
     func matchesProcess(bundleIdentifier: String?, pid: Int32, launchDate: Date?) -> Bool {

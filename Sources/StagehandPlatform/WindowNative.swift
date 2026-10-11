@@ -199,11 +199,11 @@ final class NativeWindowRegistry: NSObject {
         NSApp.setAccessibilityFrontmost(true)
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
-        let deadline = ContinuousClock.now.advanced(by: .milliseconds(180))
+        let deadline = ContinuousClock.now.advanced(by: .milliseconds(WindowTuning.nativeFocusDeadlineMilliseconds))
         repeat {
             guard !Task.isCancelled else { return false }
             if NSApp.isActive && window.isKeyWindow { return true }
-            do { try await Task.sleep(for: .milliseconds(8)) } catch { return false }
+            do { try await Task.sleep(for: .milliseconds(WindowTuning.nativeFocusPollMilliseconds)) } catch { return false }
         } while ContinuousClock.now < deadline
         return false
     }

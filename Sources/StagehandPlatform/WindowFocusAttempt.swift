@@ -123,8 +123,8 @@ enum WindowFocusAttempt {
         // time without repeatedly sending AX setters, then extend only while
         // the target is active or AX itself is temporarily unavailable.
         let fastDeadline = driver.elapsedMilliseconds + 180
-        let activationDeadline = driver.elapsedMilliseconds + 600
-        let recoveryDeadline = driver.elapsedMilliseconds + 1_500
+        let activationDeadline = driver.elapsedMilliseconds + WindowTuning.focusActivationDeadlineMilliseconds
+        let recoveryDeadline = driver.elapsedMilliseconds + WindowTuning.focusRecoveryDeadlineMilliseconds
         var attempt = 0
         var outcome = WindowFocusReport.Outcome.timedOut
         var targetBecameActive = false
