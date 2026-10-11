@@ -691,4 +691,41 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
 }
 
 
+/// A key that reaches the tap while a committed transfer is still being replayed goes to
+/// the same process through the main queue, after the replay, instead of passing through.
+@MainActor @Test func typingDuringReplayFollowsTheReplayInOrder() async throws {
+    final class Sink: @unchecked Sendable {
+        var gate: FocusInputGate?
+        var posted: [(key: Int64, pid: Int32)] = []
+        var consumedDuringReplay: Bool?
+    }
+    let sink = Sink()
+    let gate = FocusInputGate(installsEventTap: false, postEvent: { event, pid in
+        sink.posted.append((event.getIntegerValueField(.keyboardEventKeycode), pid))
+        // The tap thread lands a fresh key in the middle of the replay loop.
+        if sink.posted.count == 1, let gate = sink.gate {
+            let fresh = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: true)!
+            sink.consumedDuringReplay = gate.receiveFromTap(type: .keyDown, event: fresh)
+        }
+    })
+    sink.gate = gate
+    gate.start()
+    defer { gate.stop() }
+    let token = gate.beginTransfer()
+    for key in [0, 1] as [CGKeyCode] {
+        let down = try #require(CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true))
+        #expect(gate.processKeyboardEvent(type: .keyDown, event: down))
+    }
+    gate.commitTransfer(token: token, processIdentifier: 55)
+    #expect(sink.consumedDuringReplay == true)
+    try await waitUntil { sink.posted.count == 3 }
+    #expect(sink.posted.map(\.key) == [0, 1, 9])
+    #expect(sink.posted.map(\.pid) == [55, 55, 55])
+    // Its release follows the same route; a key pressed after the replay passes through.
+    let freshUp = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: false))
+    #expect(gate.processKeyboardEvent(type: .keyUp, event: freshUp))
+    let later = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 10, keyDown: true))
+    #expect(!gate.processKeyboardEvent(type: .keyDown, event: later))
+    #expect(sink.posted.map(\.key) == [0, 1, 9, 9])
+}
 

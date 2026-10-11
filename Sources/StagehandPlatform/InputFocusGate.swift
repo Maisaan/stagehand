@@ -72,6 +72,10 @@ private struct GateState {
     /// captured after a chord belongs to that chord's navigation and not to whatever
     /// transfer happened to be newest while main was busy.
     var reservedTokens: [UInt64] = []
+    /// Set while a committed transfer is being replayed on the main actor. A fresh key that
+    /// arrives on the tap thread meanwhile is routed to the same process through the main
+    /// queue, so it cannot overtake the replay by passing through the tap.
+    var replayDestination: Int32?
     var hasPendingGestureCompletion: (@Sendable () -> Bool)?
 
     mutating func reserveTransfer() -> UInt64 {
@@ -302,9 +306,11 @@ public final class FocusInputGate {
                     state.keyDestinations[key] = .delivered(processIdentifier)
                 }
             }
+            if !events.isEmpty { state.replayDestination = processIdentifier }
             return events
         }
         for event in events { post(event, processIdentifier: processIdentifier) }
+        if !events.isEmpty { core.withLockUnchecked { $0.replayDestination = nil } }
         stopAvailabilityWatchIfIdle()
     }
 
@@ -558,6 +564,13 @@ public final class FocusInputGate {
             let reserved = state.reserveTransfer()
             effects.reservedToken = reserved
             token = reserved
+        }
+        if token == nil, let pid = state.replayDestination {
+            // Typed while a verified transfer is still being replayed to this process.
+            // Send it the same way so it lands after the replay.
+            state.keyDestinations[key] = .delivered(pid)
+            if let copy = event.copy() { effects.postings.append((copy, pid)) }
+            return (true, effects)
         }
         guard let token else { return (false, effects) }
         state.keyDestinations[key] = .pending(token)
