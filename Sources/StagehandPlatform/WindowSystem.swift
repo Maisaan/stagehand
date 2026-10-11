@@ -1386,8 +1386,12 @@ public final class WindowSystem {
         return retry
     }
 
+    /// An app that keeps answering .cannotComplete is retried for as long as it
+    /// runs, but at a widening interval, and a rescan is requested only when a
+    /// subscription actually registered. Rescanning on every failed attempt kept
+    /// the whole system scanning every few seconds for one unresponsive app.
     private func scheduleObservationRetries(element: AXUIElement, pid: pid_t) {
-        let delays = [100, 200, 400, 800, 1600, 3200, 5000]
+        let delays = [100, 200, 400, 800, 1600, 3200, 5000, 10_000, 20_000, 30_000]
         observationRetries[pid] = Task { @MainActor [weak self] in
             var attempt = 0
             while !Task.isCancelled {
@@ -1399,9 +1403,10 @@ public final class WindowSystem {
                     self.removeObserver(pid: pid)
                     return
                 }
+                let pendingBefore = self.applicationObservations[pid]?.pending
                 let retry = self.registerApplicationNotifications(element: element, pid: pid)
                 // Discover windows that appeared before registration succeeded.
-                self.onChange?()
+                if self.applicationObservations[pid]?.pending != pendingBefore { self.onChange?() }
                 if !retry { break }
                 attempt += 1
             }
