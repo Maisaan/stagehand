@@ -363,13 +363,23 @@ public final class WindowSystem {
         workspaceTokens.removeAll()
         for token in applicationTokens { NotificationCenter.default.removeObserver(token) }
         applicationTokens.removeAll()
+        for pid in Array(observers.keys) { removeObserver(pid: pid) }
         for retry in observationRetries.values { retry.cancel() }
         observationRetries.removeAll()
         applicationObservations.removeAll()
-        for observer in observers.values {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+    }
+
+    /// The observer callbacks hold an unretained pointer to this object. Every
+    /// run-loop source and notification must be gone before it is freed.
+    deinit {
+        MainActor.assumeIsolated {
+            for pid in Array(observers.keys) { removeObserver(pid: pid) }
+            for retry in observationRetries.values { retry.cancel() }
+            applicationInventoryTask?.cancel()
+            let center = NSWorkspace.shared.notificationCenter
+            for token in workspaceTokens { center.removeObserver(token) }
+            for token in applicationTokens { NotificationCenter.default.removeObserver(token) }
         }
-        observers.removeAll()
     }
 
     public func scanWindows() -> [WindowRecord] {
@@ -648,6 +658,9 @@ public final class WindowSystem {
                 if windows[id] != nil {
                     var replacedElement = false
                     if let currentElement = windows[id]?.element, !CFEqual(currentElement, element) {
+                        if let observer = observers[app.processIdentifier] {
+                            unobserveWindow(currentElement, observer: observer)
+                        }
                         windows[id]?.element = element
                         windows[id]?.observationComplete = false
                         replacedElement = true
@@ -1479,8 +1492,17 @@ public final class WindowSystem {
     private func removeObserver(pid: pid_t) {
         launchDiscovery.cancel(pid: pid)
         observationRetries.removeValue(forKey: pid)?.cancel()
-        applicationObservations.removeValue(forKey: pid)
+        let registration = applicationObservations.removeValue(forKey: pid)
         if let observer = observers.removeValue(forKey: pid) {
+            // Unsubscribe before dropping the source so a late delivery cannot
+            // reach a callback whose context no longer exists.
+            let appElement = AXUIElementCreateApplication(pid)
+            for name in registration?.registered ?? [] {
+                AXObserverRemoveNotification(observer, appElement, name as CFString)
+            }
+            for tracked in windows.values where tracked.record.pid == pid {
+                unobserveWindow(tracked.element, observer: observer)
+            }
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         }
         for id in Array(windows.keys) where windows[id]?.record.pid == pid {
@@ -1488,16 +1510,27 @@ public final class WindowSystem {
         }
     }
 
+    private static let windowNotifications = [
+        kAXUIElementDestroyedNotification, kAXMovedNotification, kAXResizedNotification,
+        kAXTitleChangedNotification, kAXWindowMiniaturizedNotification, kAXWindowDeminiaturizedNotification
+    ]
+
     private func observeWindow(_ element: AXUIElement, observer: AXObserver) -> Bool {
         let context = Unmanaged.passUnretained(self).toOpaque()
         var complete = true
-        for name in [kAXUIElementDestroyedNotification, kAXMovedNotification, kAXResizedNotification,
-                     kAXTitleChangedNotification, kAXWindowMiniaturizedNotification,
-                     kAXWindowDeminiaturizedNotification] {
+        for name in Self.windowNotifications {
             let status = AXObserverAddNotification(observer, element, name as CFString, context)
             if status != .success, status != .notificationAlreadyRegistered { complete = false }
         }
         return complete
+    }
+
+    /// Removal of a notification that was never added, or of a dead element, fails
+    /// harmlessly; the point is that no live subscription outlasts its element.
+    private func unobserveWindow(_ element: AXUIElement, observer: AXObserver) {
+        for name in Self.windowNotifications {
+            AXObserverRemoveNotification(observer, element, name as CFString)
+        }
     }
 
     nonisolated private func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
