@@ -962,11 +962,20 @@ public final class WindowSystem {
             return false
         }
         guard !Task.isCancelled else { return false }
-        guard restore(windowID: windowID) else {
-            if focusDiagnosticsEnabled { lastFocusReport = WindowFocusReport(targetPID: tracked.record.pid, outcome: .unavailable,
-                                                elapsedMilliseconds: 0,
-                                                operations: [.init("restoreTarget", accepted: false)],
-                                                initialObservation: nil, observations: []) }
+        let restoreBegan = ContinuousClock.now
+        let restoration = await Self.restoreForFocus(
+            restore: { self.restore(windowID: windowID) },
+            unavailable: { self.unavailability(windowID: windowID) != nil }
+        )
+        guard restoration.restored else {
+            if focusDiagnosticsEnabled {
+                let elapsed = restoreBegan.duration(to: .now).components
+                lastFocusReport = WindowFocusReport(targetPID: tracked.record.pid, outcome: .unavailable,
+                                                    elapsedMilliseconds: Int(elapsed.seconds * 1_000 + elapsed.attoseconds / 1_000_000_000_000_000),
+                                                    operations: Array(repeating: .init("restoreTarget", accepted: false),
+                                                                      count: restoration.attempts),
+                                                    initialObservation: nil, observations: [])
+            }
             return false
         }
         let driver = FocusDriver(system: self, tracked: tracked, app: app, recordsDiagnostics: focusDiagnosticsEnabled)
@@ -1702,6 +1711,21 @@ public final class WindowSystem {
             guard let value = AXValueCreate(.cgSize, &size) else { return false }
             return AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value) == .success
         }, setPosition: { self.writePosition(element, position: $0) })
+    }
+
+    /// A busy app can let the unparking write or its readback time out. Retry for
+    /// the same recovery window focus confirmation allows a busy target, and stop
+    /// early once the window is confirmed minimized or closed.
+    static func restoreForFocus(budgetMilliseconds: Int = 1_500, restore: () -> Bool,
+                                unavailable: () -> Bool) async -> (restored: Bool, attempts: Int) {
+        let deadline = ContinuousClock.now + .milliseconds(budgetMilliseconds)
+        var attempts = 0
+        while true {
+            attempts += 1
+            if restore() { return (true, attempts) }
+            guard !Task.isCancelled, !unavailable(), ContinuousClock.now < deadline else { return (false, attempts) }
+            do { try await Task.sleep(for: .milliseconds(40)) } catch { return (false, attempts) }
+        }
     }
 
     static func writeFrame(frame: CGRect, resizeFirst: Bool = true, readFrame: () -> CGRect?,

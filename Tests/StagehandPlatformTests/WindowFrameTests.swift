@@ -219,3 +219,30 @@ struct WindowFrameTests {
     #expect(WindowSystem.batchedAttributes(status: .attributeUnsupported, values: nil, count: 2) == nil)
     #expect(WindowSystem.batchedAttributes(status: .success, values: [position], count: 2) == nil)
 }
+
+/// A busy app timed out the single unparking attempt, so navigation paused on a window that was still open.
+@MainActor @Test func focusRestorationRetriesWhileTheAppIsBusy() async {
+    var attempts = 0
+    let restoration = await WindowSystem.restoreForFocus(restore: {
+        attempts += 1
+        return attempts == 3
+    }, unavailable: { false })
+
+    #expect(restoration.restored)
+    #expect(restoration.attempts == 3)
+}
+
+@MainActor @Test func focusRestorationStopsForAMinimizedOrClosedWindow() async {
+    let restoration = await WindowSystem.restoreForFocus(restore: { false }, unavailable: { true })
+
+    #expect(!restoration.restored)
+    #expect(restoration.attempts == 1)
+}
+
+@MainActor @Test func focusRestorationGivesUpAfterTheRecoveryWindow() async {
+    let restoration = await WindowSystem.restoreForFocus(budgetMilliseconds: 100, restore: { false },
+                                                         unavailable: { false })
+
+    #expect(!restoration.restored)
+    #expect(restoration.attempts > 1)
+}
