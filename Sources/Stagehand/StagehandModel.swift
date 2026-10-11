@@ -602,7 +602,6 @@ final class StagehandModel: ObservableObject {
         let window = windows.first { $0.id == windowID }
         diagnostics.recordWindowGeometry(
             event: event,
-            appName: window?.appName,
             bundleIdentifier: window?.bundleIdentifier,
             pid: window?.pid,
             windowID: windowID,

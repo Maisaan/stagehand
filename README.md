@@ -117,7 +117,7 @@ Keep macOS navigation gestures set to four fingers so they do not overlap with S
 
 Turn on **Diagnostic logging** in Setup to record starts, layout operations, focus checks, navigation and gesture frame transitions, suspensions, and the exact reason for every automatic pause. **Show Log in Finder** reveals `~/Library/Logs/Stagehand/stagehand.log`.
 
-The log uses one JSON object per line and retains the previous 24 hours. It excludes window titles and keyboard input. Buffered input stays in memory and is never logged or written to disk.
+The log uses one JSON object per line and retains the previous 24 hours; expired entries are removed about once an hour, including while logging is off. When the file reaches about 5 MB it is rotated to `stagehand.1.log`, and that file is removed once it has aged out. The files are created readable only by your user account. Entries identify apps by bundle identifier and process ID and windows by their Accessibility window ID. The log excludes app names, window titles, and keyboard input. Buffered input stays in memory and is never logged or written to disk.
 
 ## Development
 
