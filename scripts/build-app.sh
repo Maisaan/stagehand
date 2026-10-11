@@ -4,6 +4,21 @@ set -euo pipefail
 stagehand_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$stagehand_root"
 
+# The sources use `isolated deinit`, which needs Swift 6.2 (Xcode 26). An older
+# toolchain fails deep inside the build with an unhelpful parse error, so check first.
+stagehand_minimum_swift="6.2"
+stagehand_swift_version="$(swift --version 2>/dev/null | sed -nE 's/.*Swift version ([0-9]+(\.[0-9]+)*).*/\1/p' | head -n 1)"
+if [[ -z "$stagehand_swift_version" ]]; then
+    printf 'Could not determine the Swift version from "swift --version". Stagehand needs Swift %s or newer.\n' \
+        "$stagehand_minimum_swift" >&2
+    exit 1
+fi
+if [[ "$(printf '%s\n%s\n' "$stagehand_minimum_swift" "$stagehand_swift_version" | sort -V | head -n 1)" != "$stagehand_minimum_swift" ]]; then
+    printf 'Swift %s is too old. Stagehand needs Swift %s or newer (Xcode 26 or newer).\n' \
+        "$stagehand_swift_version" "$stagehand_minimum_swift" >&2
+    exit 1
+fi
+
 swift build -c release -Xswiftc -Osize
 stagehand_bin="$(swift build -c release -Xswiftc -Osize --show-bin-path)"
 stagehand_bundle="$stagehand_root/dist/Stagehand.app"

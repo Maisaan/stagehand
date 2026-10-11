@@ -23,11 +23,11 @@ Do not rely on Stagehand where a missed or misdirected keystroke could cause dam
 ## Requirements
 
 - macOS 14 or newer
-- Swift 6
+- Swift 6.2 or newer (Xcode 26 or newer); the sources use `isolated deinit`
 - A MacBook with one built-in display
 - Accessibility permission for the built app
 
-The current code was tested with Swift 6.3.3 and Xcode 26.6 on Apple silicon.
+The current code was tested with Swift 6.4 and Xcode 27 on Apple silicon.
 
 ## Build and install
 
