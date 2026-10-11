@@ -223,28 +223,23 @@ public final class WindowSystem {
                      NSWorkspace.didActivateApplicationNotification,
                      NSWorkspace.didUnhideApplicationNotification] {
             workspaceTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                let pid = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier ?? 0
+                let pid = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier
                 MainActor.assumeIsolated {
                     guard let self, self.started else { return }
                     if self.focusDiagnosticsEnabled {
-                        print("Discovery t=\(ProcessInfo.processInfo.systemUptime) workspace=\(name.rawValue) pid=\(pid)")
+                        print("Discovery t=\(ProcessInfo.processInfo.systemUptime) workspace=\(name.rawValue) pid=\(pid.map(String.init) ?? "nil")")
                     }
                     if name == NSWorkspace.didActivateApplicationNotification {
                         self.reportCurrentFocus()
                     }
                     if name == NSWorkspace.didTerminateApplicationNotification {
-                        self.trackedStateGeneration &+= 1
-                        self.removeObserver(pid: pid)
-                        let removedIDs = self.windows.compactMap {
-                            $0.value.record.pid == pid ? $0.key : nil
-                        }
-                        for id in removedIDs {
-                            self.windows.removeValue(forKey: id)
-                        }
-                        if !removedIDs.isEmpty { self.onApplicationTerminated?(pid) }
+                        // Without the process there is nothing to drop; pid 0 would
+                        // otherwise flow into removeObserver and the journal.
+                        guard let pid else { return }
+                        self.applicationTerminated(pid: pid)
                     }
                     if name == NSWorkspace.didLaunchApplicationNotification || name == NSWorkspace.didActivateApplicationNotification,
-                       let app = NSRunningApplication(processIdentifier: pid) {
+                       let pid, let app = NSRunningApplication(processIdentifier: pid) {
                         self.scheduleDiscovery(for: app)
                     }
                     self.onChange?()
@@ -289,6 +284,22 @@ public final class WindowSystem {
         let records = scanWindows()
         startApplicationInventory()
         return records
+    }
+
+    /// The process is gone, so its windows cannot be restored and their journal
+    /// records would only accumulate until the next launch's recovery pass.
+    private func applicationTerminated(pid: pid_t) {
+        trackedStateGeneration &+= 1
+        removeObserver(pid: pid)
+        let removedIDs = windows.compactMap { $0.value.record.pid == pid ? $0.key : nil }
+        for id in removedIDs {
+            windows.removeValue(forKey: id)
+        }
+        for record in recoveryJournal.records.values where record.pid == pid {
+            try? recoveryJournal.remove(windowID: record.windowID)
+            interruptedWindowIDs.remove(record.windowID)
+        }
+        if !removedIDs.isEmpty { onApplicationTerminated?(pid) }
     }
 
     public func stop() {
@@ -1190,6 +1201,8 @@ public final class WindowSystem {
                     switch availabilityChange {
                     case .destroyed:
                         owner.windows.removeValue(forKey: id)
+                        try? owner.recoveryJournal.remove(windowID: id)
+                        owner.interruptedWindowIDs.remove(id)
                         owner.onWindowDestroyed?(id)
                     case .minimized:
                         owner.onWindowMiniaturized?(id)
