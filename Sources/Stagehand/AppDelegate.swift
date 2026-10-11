@@ -137,6 +137,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 image.isTemplate = true
                 image.accessibilityDescription = "Stagehand"
                 button.image = image
+            } else if let symbol = NSImage(systemSymbolName: "rectangle.3.group",
+                                           accessibilityDescription: "Stagehand") {
+                // A binary run outside the bundle (.build) has no resource; a
+                // blank status item would hide the only way to pause or quit.
+                button.image = symbol
+            } else {
+                button.title = "SH"
             }
             button.imageScaling = .scaleProportionallyDown
             button.toolTip = "Stagehand"
