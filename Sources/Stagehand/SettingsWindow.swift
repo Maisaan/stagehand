@@ -23,6 +23,9 @@ enum SettingsWindow {
         window.backgroundColor = .clear
         window.isMovableByWindowBackground = false
         window.isReleasedWhenClosed = false
+        // The settings design uses white dividers, selection fills, and button tints
+        // over a dark material. Pin the appearance so Light Mode cannot wash them out.
+        window.appearance = NSAppearance(named: .darkAqua)
         // Settings belongs to Stage Manager as a utility window, but must never
         // join another app's native full-screen Space.
         window.collectionBehavior = [.auxiliary, .fullScreenNone]

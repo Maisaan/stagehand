@@ -23,6 +23,8 @@ final class QuickControlsPanel: NSPanel {
         isOpaque = false
         backgroundColor = .clear
         hasShadow = true
+        // Same dark design as Settings: white dividers and strokes need a dark material.
+        appearance = NSAppearance(named: .darkAqua)
         hidesOnDeactivate = false
         isReleasedWhenClosed = false
         level = .popUpMenu
