@@ -38,6 +38,9 @@ private let touchStateMake: UInt32 = 3
 private let touchStateTouching: UInt32 = 4
 /// Momentum scroll events that follow a lift within this window belong to the gesture.
 private let momentumSuppressionWindow: TimeInterval = 0.15
+/// Scroll events are held only while a drag is live and contact frames are still arriving.
+/// If the framework stops reporting frames mid-drag, scrolling recovers after this long.
+private let scrollSuppressionStaleInterval: TimeInterval = 0.1
 
 private typealias ContactCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, Int32, Double, Int32) -> Int32
 
@@ -74,6 +77,7 @@ private struct GestureCallbackState {
     var recognizer = NavigationGestureRecognizer()
     var suppressScroll = false
     var lastLiftTime: TimeInterval = 0
+    var lastContactFrameTime: TimeInterval = 0
     var pendingEvents = GestureEventBuffer()
     var deliveryScheduled = false
     var scheduleDelivery: (@Sendable () -> Void)?
@@ -156,8 +160,13 @@ private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
                       snapshot.count, String(describing: event), state.recognizer.cancellationReason ?? "none")
             }
         }
-        state.suppressScroll = state.recognizer.hasContactSequence
-        if wasSuppressing && !state.suppressScroll { state.lastLiftTime = ProcessInfo.processInfo.systemUptime }
+        // Only a recognized drag owns the scroll stream. Fingers that are merely resting,
+        // or a sequence that was cancelled, must not block scrolling until a zero-contact
+        // frame that may never arrive.
+        state.suppressScroll = state.recognizer.isDragging
+        let now = ProcessInfo.processInfo.systemUptime
+        if !snapshot.isEmpty { state.lastContactFrameTime = now }
+        if wasSuppressing && !state.suppressScroll { state.lastLiftTime = now }
         if let event { state.pendingEvents.append(event) }
         guard event != nil || modifierCancelled else { return nil }
         guard !state.deliveryScheduled else { return nil }
@@ -301,8 +310,9 @@ private let scrollTapCallback: CGEventTapCallBack = { _, type, event, context in
     let momentum = event.getIntegerValueField(.scrollWheelEventMomentumPhase) != 0
     let suppress = gestureCallbackState.withLock { state in
         guard state.enabled else { return false }
-        if state.suppressScroll { return true }
-        return momentum && ProcessInfo.processInfo.systemUptime - state.lastLiftTime < momentumSuppressionWindow
+        let now = ProcessInfo.processInfo.systemUptime
+        if state.suppressScroll, now - state.lastContactFrameTime < scrollSuppressionStaleInterval { return true }
+        return momentum && now - state.lastLiftTime < momentumSuppressionWindow
     }
     return suppress ? nil : Unmanaged.passUnretained(event)
 }
