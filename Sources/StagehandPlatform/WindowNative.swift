@@ -47,8 +47,17 @@ final class NativeWindowRegistry: NSObject {
 
     deinit { NotificationCenter.default.removeObserver(self) }
 
+    /// A registration whose window was deallocated can never match again, so it
+    /// would otherwise sit in the table for the life of the process.
+    private func pruneReleasedWindows() {
+        for (id, entry) in windows where entry.window == nil {
+            windows.removeValue(forKey: id)
+        }
+    }
+
     @discardableResult
     func register(window: NSWindow) -> String {
+        pruneReleasedWindows()
         if let existing = windows.values.first(where: { $0.window === window }) {
             existing.closed = false
             return existing.id
@@ -211,6 +220,7 @@ final class NativeWindowRegistry: NSObject {
     }
 
     @objc private func windowChanged(_ notification: Notification) {
+        pruneReleasedWindows()
         guard let window = notification.object as? NSWindow,
               let entry = windows.values.first(where: { $0.window === window }) else { return }
         if notification.name == NSWindow.willCloseNotification {
