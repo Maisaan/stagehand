@@ -92,7 +92,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 // Launched through LaunchServices so macOS checks Stagehand's own
                 // Accessibility grant; stdout is not attached then.
                 if let output = self.acceptanceOutputPath(in: arguments) {
-                    try? Data((report + "\n").utf8).write(to: URL(fileURLWithPath: output))
+                    do {
+                        try Data((report + "\n").utf8).write(to: URL(fileURLWithPath: output))
+                    } catch {
+                        // The runner reads only this file; a silent failure would
+                        // look like a hung or passing run.
+                        FileHandle.standardError.write(Data(
+                            "Stagehand could not write the acceptance report to \(output): \(error.localizedDescription)\n".utf8
+                        ))
+                        model.shutDown()
+                        exit(1)
+                    }
                 }
                 NSApp.terminate(nil)
             }
