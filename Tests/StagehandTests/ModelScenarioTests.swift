@@ -269,4 +269,56 @@ struct ModelScenarioTests {
         #expect(harness.model.state.spaces[2].windowIDs == layout.spaces[2].windowIDs.filter { $0 != "c" })
         #expect(harness.model.state.spaces[0].windowIDs == layout.spaces[0].windowIDs.filter { $0 != "c" })
     }
+
+    /// Windows that keep changing under the background reader used to restart
+    /// the 100 ms cycle forever. After a few stale reads one synchronous scan
+    /// completes the refresh.
+    @Test func repeatedStaleScansFallBackToASynchronousScan() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        let scansBefore = harness.windows.offMainScans
+
+        harness.windows.addWindow("new", pid: 300, frame: CGRect(x: 80, y: 60, width: 700, height: 500))
+        harness.windows.staleScansRemaining = harness.model.refreshStaleScanFallback
+        harness.windows.onChange?()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while !harness.model.state.currentSpace.windowIDs.contains("new"), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        await harness.settle()
+
+        #expect(harness.model.state.currentSpace.windowIDs.contains("new"))
+        #expect(harness.windows.offMainScans - scansBefore >= harness.model.refreshStaleScanFallback)
+        #expect(harness.events("refresh_scan_fallback").count == 1)
+        #expect(harness.events("refresh_starved").isEmpty)
+        #expect(harness.events("automatic_pause").isEmpty)
+    }
+
+    @Test func aRefreshThatStaysBlockedLogsStarvationAndStopsPolling() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        harness.model.refreshRetryLimit = 3
+        let scansBefore = harness.windows.offMainScans
+
+        // A gesture in progress blocks every refresh attempt.
+        harness.model.gestureBase = [:]
+        harness.windows.onChange?()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while harness.events("refresh_starved").isEmpty, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        try? await Task.sleep(for: .milliseconds(250))
+
+        let starved = harness.events("refresh_starved")
+        #expect(starved.count == 1)
+        #expect((starved.first?["details"] as? [String: String])?["attempts"] == "3")
+        #expect((starved.first?["details"] as? [String: String])?["gestureActive"] == "true")
+        #expect(harness.windows.offMainScans == scansBefore)
+        #expect(harness.model.isRunning)
+        harness.model.gestureBase = nil
+    }
 }

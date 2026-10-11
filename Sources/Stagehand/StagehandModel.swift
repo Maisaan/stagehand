@@ -103,6 +103,11 @@ final class StagehandModel: ObservableObject {
     var motionBackingScaleFactor: CGFloat = 1
     let emptySpace: any EmptySpacePresenting
     var refreshTask: Task<Void, Never>?
+    /// Refresh attempts (busy waits and stale scans together) before the loop
+    /// gives up and logs refresh_starved.
+    var refreshRetryLimit = 60
+    /// Stale off-main scans before one refresh falls back to a synchronous scan.
+    var refreshStaleScanFallback = 3
     let layoutStore: WorkspaceLayoutStore?
     var layoutSaveTask: Task<Void, Never>?
     /// The saved layout is applied only to the first start after launch. Later
