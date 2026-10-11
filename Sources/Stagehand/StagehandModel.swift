@@ -122,6 +122,14 @@ final class StagehandModel: ObservableObject {
     var automaticResumeAttempted = false
     var recoveryInProgress = false
     var desktopCheckTask: Task<Void, Never>?
+    /// Consecutive checks that found no Desktop identity. The first few repeat
+    /// quickly for the unlock case; after that, checks slow down and session
+    /// notifications carry the recovery.
+    var desktopCheckAttempts = 0
+    static let quickDesktopChecks = 6
+    var desktopCheckDelay: Duration {
+        desktopCheckAttempts <= Self.quickDesktopChecks ? .milliseconds(500) : .seconds(5)
+    }
     var workspaceRestoration = WorkspaceRestoration()
     var focusHistory = WindowFocusHistory()
     /// Windows that left the ribbon by minimizing. When one returns, it joins next
@@ -535,6 +543,7 @@ final class StagehandModel: ObservableObject {
         refreshTask?.cancel()
         observedFocusTask?.cancel()
         desktopCheckTask?.cancel()
+        desktopCheckAttempts = 0
         if !automatic { desktopScope.reset() }
         pointerInteraction = nil
         preferencesNeedLayout = false
@@ -840,6 +849,7 @@ final class StagehandModel: ObservableObject {
         desktopCheckTask?.cancel()
         switch desktopScope.refresh() {
         case .home:
+            desktopCheckAttempts = 0
             guard isSuspended else { return }
             isSuspended = false
             diagnostics.record("desktop_resumed", details: workspaceDetails())
@@ -877,13 +887,25 @@ final class StagehandModel: ObservableObject {
             }
             // WindowServer can report an unavailable Desktop throughout the lock
             // screen and briefly after unlock. Keep checking until it reports the
-            // bound Desktop instead of relying on one early session notification.
+            // bound Desktop instead of relying on one early session notification,
+            // but not at 500 ms forever: a long lock or a broken private API
+            // would otherwise poll indefinitely.
             if desktopScope.relation == .unknown {
+                desktopCheckAttempts += 1
+                if desktopCheckAttempts == Self.quickDesktopChecks + 1 {
+                    diagnostics.record("desktop_check_backoff", details: [
+                        "attempts": String(desktopCheckAttempts - 1),
+                        "intervalMilliseconds": String(5_000)
+                    ])
+                }
+                let delay = desktopCheckDelay
                 desktopCheckTask = Task { [weak self] in
-                    try? await Task.sleep(for: .milliseconds(500))
+                    try? await Task.sleep(for: delay)
                     guard !Task.isCancelled else { return }
                     self?.nativeDesktopChanged()
                 }
+            } else {
+                desktopCheckAttempts = 0
             }
         }
     }

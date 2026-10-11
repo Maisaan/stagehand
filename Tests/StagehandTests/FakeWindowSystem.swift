@@ -212,6 +212,11 @@ final class ImmediateFrameDriver: RibbonFrameDriving {
     func stop() {}
 }
 
+@MainActor
+final class DesktopFixture {
+    var id: UInt64? = 1
+}
+
 /// A model wired to fakes, recording diagnostics to a temporary file.
 @MainActor
 struct ModelHarness {
@@ -221,8 +226,13 @@ struct ModelHarness {
     let logURL: URL
     let postedEvents: () -> Int
 
+    /// The Desktop reported to the model; nil means WindowServer gave no identity.
+    let desktop: DesktopFixture
+
     init(windowIDs: [String], focused: String, layoutStore: WorkspaceLayoutStore? = nil,
          transferTimeoutMilliseconds: Int = 4_000) {
+        let desktop = DesktopFixture()
+        self.desktop = desktop
         let windows = FakeWindowSystem()
         let available = NSScreen.screens.first?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
         for (index, id) in windowIDs.enumerated() {
@@ -244,7 +254,7 @@ struct ModelHarness {
             windowSystem: windows,
             input: FakeInput(),
             emptySpace: FakeEmptySpace(),
-            desktopScope: DesktopScope(currentDesktopID: { 1 }),
+            desktopScope: DesktopScope(currentDesktopID: { desktop.id }),
             focusGate: gate,
             ribbonMotion: RibbonMotion(frameDriver: ImmediateFrameDriver()),
             layoutStore: layoutStore

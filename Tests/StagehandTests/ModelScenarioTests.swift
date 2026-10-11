@@ -405,4 +405,35 @@ struct ModelScenarioTests {
         #expect(harness.windows.windows.mapValues(\.frame) == originals)
         #expect(harness.model.focusGate.isAvailable)
     }
+
+    /// While WindowServer reports no Desktop (lock screen), the model rechecks
+    /// every 500 ms. That must not continue indefinitely.
+    @Test func anUnknownDesktopIsRecheckedQuicklyThenBacksOff() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+
+        harness.desktop.id = nil
+        harness.model.nativeDesktopChanged()
+        #expect(harness.model.isSuspended)
+        #expect(harness.model.desktopCheckAttempts == 1)
+        #expect(harness.model.desktopCheckDelay == .milliseconds(500))
+
+        // Drive the recheck chain without waiting on the real timers.
+        for _ in 0..<StagehandModel.quickDesktopChecks {
+            harness.model.nativeDesktopChanged()
+        }
+        #expect(harness.model.desktopCheckAttempts == StagehandModel.quickDesktopChecks + 1)
+        #expect(harness.model.desktopCheckDelay == .seconds(5))
+        #expect(harness.events("desktop_check_backoff").count == 1)
+        #expect(harness.model.isSuspended)
+
+        harness.desktop.id = 1
+        harness.model.nativeDesktopChanged()
+        await harness.settle()
+        #expect(!harness.model.isSuspended)
+        #expect(harness.model.desktopCheckAttempts == 0)
+        #expect(harness.events("desktop_resumed").count == 1)
+    }
 }
