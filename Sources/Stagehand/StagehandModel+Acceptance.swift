@@ -24,7 +24,15 @@ extension StagehandModel {
         guard NSRunningApplication.runningApplications(withBundleIdentifier: ownID).count <= 1 else {
             return "FAIL: another Stagehand is running. Quit it first so only one controller manages windows."
         }
-        diagnosticLoggingEnabled = true
+        // Log this run without persisting the preference; the published property's
+        // observer writes UserDefaults. Restored after the deferred pause below.
+        let loggingWasEnabled = diagnostics.isEnabled
+        diagnostics.isEnabled = true
+        windowSystem.focusDiagnosticsEnabled = true
+        defer {
+            diagnostics.isEnabled = loggingWasEnabled
+            windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
+        }
         let startedAt = Date().ISO8601Format(.init(includingFractionalSeconds: true))
         let reports = FileManager.default.temporaryDirectory
             .appendingPathComponent("stagehand-acceptance-\(UUID().uuidString)", isDirectory: true)

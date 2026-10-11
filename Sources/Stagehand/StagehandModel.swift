@@ -200,6 +200,15 @@ final class StagehandModel: ObservableObject {
         let motionStart: [String: CGRect]?
     }
 
+    /// Whether this model may read and write the user's saved layout.
+    enum Persistence: Equatable {
+        /// The normal app session.
+        case standard
+        /// Diagnostic and acceptance runs: they start and pause against
+        /// disposable windows and must not replace the real saved layout.
+        case ephemeral
+    }
+
     init(
         overlays: any NavigationPresenting = NavigationOverlays(),
         diagnostics: DiagnosticLogger? = nil,
@@ -209,12 +218,15 @@ final class StagehandModel: ObservableObject {
         desktopScope: DesktopScope = DesktopScope(),
         focusGate: FocusInputGate = FocusInputGate(),
         ribbonMotion: RibbonMotion = RibbonMotion(),
-        layoutStore: WorkspaceLayoutStore? = nil
+        layoutStore: WorkspaceLayoutStore? = nil,
+        persistence: Persistence = .standard
     ) {
         windowSystem = injectedWindowSystem ?? WindowSystem()
-        // An injected window system means a test or diagnostic run; it must not
-        // read or replace the user's saved layout unless given a store explicitly.
-        self.layoutStore = layoutStore ?? (injectedWindowSystem == nil ? WorkspaceLayoutStore() : nil)
+        // An injected window system means a test run and an ephemeral model a
+        // diagnostic run; neither may read or replace the user's saved layout
+        // unless given a store explicitly.
+        self.layoutStore = layoutStore
+            ?? (injectedWindowSystem == nil && persistence == .standard ? WorkspaceLayoutStore() : nil)
         emptySpace = injectedEmptySpace ?? EmptySpaceWindow()
         self.desktopScope = desktopScope
         self.focusGate = focusGate

@@ -58,7 +58,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             return
         }
-        let model = StagehandModel()
+        // Diagnostics start and pause against disposable windows. They must not
+        // save that layout over the user's, nor flip the logging preference.
+        let isDiagnosticRun = arguments.contains {
+            $0.hasPrefix("--diagnose-") || $0 == "--acceptance" || $0 == "--render-previews"
+        }
+        let model = StagehandModel(persistence: isDiagnosticRun ? .ephemeral : .standard)
         self.model = model
         if arguments.contains("--diagnose-permissions") {
             print("Accessibility: \(model.accessibilityGranted)")
