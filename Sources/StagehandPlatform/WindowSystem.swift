@@ -666,7 +666,7 @@ public final class WindowSystem {
                 if let previousID = Self.trackedWindowID(pid: app.processIdentifier, number: candidate.windowNumber,
                                                          element: candidate.element, in: identities),
                    previousID != parentID {
-                    windows.removeValue(forKey: previousID)
+                    dropTrackedWindow(id: previousID)
                 }
                 ownedWindows.append(OwnedWindow(element: candidate.element, parentID: parentID))
             }
@@ -674,18 +674,38 @@ public final class WindowSystem {
         self.ownedWindows = ownedWindows
         for id in Array(windows.keys) where !seen.contains(id) {
             guard let pid = windows[id]?.record.pid, plan.livePIDs.contains(pid) else {
-                windows.removeValue(forKey: id)
+                dropTrackedWindow(id: id)
                 continue
             }
             windows[id]?.missedScans += 1
             if windows[id]?.missedScans ?? 0 >= 2 {
-                windows.removeValue(forKey: id)
+                dropTrackedWindow(id: id)
             } else if let tracked = windows[id], tracked.isAdmitted {
                 result.append(tracked.record)
             }
         }
         if focusDiagnosticsEnabled { print("Scan admittedExternal=\(result.count) registeredNative=\(nativeWindows.records.count)") }
         return result + (managedBundleIdentifiers == nil ? nativeWindows.records : [])
+    }
+
+    /// Stops tracking a window that left the scan or became a child. A window
+    /// Stagehand has moved is put back first; if its process is gone the record is
+    /// useless, and if the write fails the record stays and the ID is reported as
+    /// pending so a later pass can retry.
+    private func dropTrackedWindow(id: String) {
+        defer { windows.removeValue(forKey: id) }
+        guard let tracked = windows[id],
+              tracked.parking.restoreFrame != nil || tracked.originalFrame != nil else { return }
+        let processAlive = NSRunningApplication(processIdentifier: tracked.record.pid).map { !$0.isTerminated } ?? false
+        guard processAlive else {
+            try? recoveryJournal.remove(windowID: id)
+            interruptedWindowIDs.remove(id)
+            return
+        }
+        if returnToOriginalFrame(windowID: id) == .failed, recoveryJournal.records[id] != nil {
+            interruptedWindowIDs.insert(id)
+            if focusDiagnosticsEnabled { print("Scan dropped=\(id) restoreFailed=true recordKept=true") }
+        }
     }
 
     public func record(windowID: String) -> WindowRecord? {
