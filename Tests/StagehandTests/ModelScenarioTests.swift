@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Testing
 import StagehandCore
 @testable import Stagehand
@@ -236,7 +237,8 @@ struct ModelScenarioTests {
     }
 
     /// Typing during a switch is held and delivered only to the verified destination.
-    @Test func bufferedTypingIsDeliveredAfterVerifiedFocus() async throws {
+    @Test(.enabled(if: !IsSecureEventInputEnabled(), "Secure Input is on, so the focus gate holds no transfers"))
+    func bufferedTypingIsDeliveredAfterVerifiedFocus() async throws {
         let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
         defer { harness.cleanUp() }
         harness.model.start()
@@ -320,5 +322,87 @@ struct ModelScenarioTests {
         #expect(harness.windows.offMainScans == scansBefore)
         #expect(harness.model.isRunning)
         harness.model.gestureBase = nil
+    }
+
+    /// README: after an automatic pause Stagehand tries to resume once after
+    /// 100 ms. The retry must happen exactly once and clear the warning when
+    /// it succeeds.
+    @Test func anAutomaticPauseResumesOnceAndClearsTheWarning() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        harness.windows.refusesFocus = ["b"]
+
+        harness.model.navigate(.focusNext)
+        await harness.settle()
+
+        #expect(harness.model.isRunning)
+        #expect(harness.events("automatic_pause").count == 1)
+        #expect(harness.events("automatic_resume_attempt").count == 1)
+        #expect(harness.events("automatic_resume_succeeded").count == 1)
+        #expect(harness.events("automatic_resume_failed").isEmpty)
+        #expect(harness.model.warning == nil)
+        #expect(harness.model.state.focusedWindowID == "a")
+        #expect(harness.model.automaticResumeTask == nil)
+    }
+
+    /// If the resume fails too, Stagehand stays paused with frames restored and
+    /// tells the user to press Start; it must not keep retrying.
+    @Test func aSecondFailureStaysPausedWithARetryWarning() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        let originals = harness.windows.windows.mapValues(\.original)
+        harness.model.start()
+        await harness.settle()
+        harness.windows.refusesFocus = ["a", "b"]
+        harness.windows.setFocus("elsewhere")
+
+        harness.model.navigate(.focusNext)
+        await harness.settle()
+        try? await Task.sleep(for: .milliseconds(300))
+
+        #expect(!harness.model.isRunning)
+        #expect(harness.events("automatic_pause").count == 2)
+        #expect(harness.events("automatic_resume_attempt").count == 1)
+        #expect(harness.events("automatic_resume_succeeded").isEmpty)
+        #expect(harness.model.warning?.hasSuffix("Press Start to retry.") == true)
+        #expect(harness.overlays.warnings.last?.hasSuffix("Press Start to retry.") == true)
+        #expect(harness.windows.windows.mapValues(\.frame) == originals)
+
+        // A manual Start resets the single-retry budget.
+        harness.windows.refusesFocus = []
+        harness.windows.setFocus("a")
+        harness.model.start()
+        await harness.settle()
+        #expect(harness.model.isRunning)
+        #expect(harness.model.warning == nil)
+    }
+
+    /// Typing captured for a switch is held for a bounded time. A destination
+    /// that stays busy past that deadline pauses with input_transfer_expired
+    /// rather than delivering the keys late or to the wrong window.
+    @Test(.enabled(if: !IsSecureEventInputEnabled(), "Secure Input is on, so the focus gate holds no transfers"))
+    func anExpiredInputTransferPausesAndRestoresFrames() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a", transferTimeoutMilliseconds: 40)
+        defer { harness.cleanUp() }
+        let originals = harness.windows.windows.mapValues(\.original)
+        harness.model.start()
+        await harness.settle()
+        harness.windows.focusDelayMilliseconds = 300
+
+        harness.model.navigate(.focusNext)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(4))
+        while harness.events("automatic_pause").isEmpty, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        await harness.settle()
+
+        let pause = harness.events("automatic_pause").first?["details"] as? [String: String]
+        #expect(pause?["reason"] == "input_transfer_expired")
+        #expect(pause?["token"] != nil)
+        #expect(harness.overlays.warnings.contains { $0.contains("couldn't finish switching windows") })
+        #expect(harness.windows.windows.mapValues(\.frame) == originals)
+        #expect(harness.model.focusGate.isAvailable)
     }
 }

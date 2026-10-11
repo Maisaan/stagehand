@@ -35,6 +35,8 @@ final class FakeWindowSystem: WindowManaging {
     private(set) var started = false
     /// Live windows that refuse focus, like an app blocked by a modal dialog.
     var refusesFocus: Set<String> = []
+    /// How long every focus takes, like a busy app letting AX requests time out.
+    var focusDelayMilliseconds = 0
 
     var trackedWindowIDs: Set<String> { Set(windows.keys) }
 
@@ -142,6 +144,9 @@ final class FakeWindowSystem: WindowManaging {
     func focusedWindowID() -> String? { focused }
 
     func focus(windowID: String) async -> Bool {
+        if focusDelayMilliseconds > 0 {
+            try? await Task.sleep(for: .milliseconds(focusDelayMilliseconds))
+        }
         guard let window = windows[windowID], !window.minimized, !refusesFocus.contains(windowID) else {
             return false
         }
@@ -216,7 +221,8 @@ struct ModelHarness {
     let logURL: URL
     let postedEvents: () -> Int
 
-    init(windowIDs: [String], focused: String, layoutStore: WorkspaceLayoutStore? = nil) {
+    init(windowIDs: [String], focused: String, layoutStore: WorkspaceLayoutStore? = nil,
+         transferTimeoutMilliseconds: Int = 4_000) {
         let windows = FakeWindowSystem()
         let available = NSScreen.screens.first?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
         for (index, id) in windowIDs.enumerated() {
@@ -229,7 +235,8 @@ struct ModelHarness {
         logURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("stagehand-model-\(UUID().uuidString).log")
         var posted = 0
-        let gate = FocusInputGate(installsEventTap: false) { _, _ in posted += 1 }
+        let gate = FocusInputGate(transferTimeoutMilliseconds: transferTimeoutMilliseconds,
+                                  installsEventTap: false) { _, _ in posted += 1 }
         let overlays = FakeOverlays()
         model = StagehandModel(
             overlays: overlays,
