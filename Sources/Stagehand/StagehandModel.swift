@@ -122,6 +122,7 @@ final class StagehandModel: ObservableObject {
     var automaticResumeAttempted = false
     var recoveryInProgress = false
     var desktopCheckTask: Task<Void, Never>?
+    var sleepObserver: NSObjectProtocol?
     /// Consecutive checks that found no Desktop identity. The first few repeat
     /// quickly for the unlock case; after that, checks slow down and session
     /// notifications carry the recovery.
@@ -360,8 +361,38 @@ final class StagehandModel: ObservableObject {
                 }
             }
         }
+        sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.systemWillSleep() }
+        }
         self.diagnostics.record("session_started")
         refreshPermissions()
+    }
+
+    /// The Mac is about to sleep. A ribbon animation or a focus confirmation in
+    /// flight would otherwise resume against stale frames after wake, or stall
+    /// until its deadline. Drop the in-flight work and roll the layout back to
+    /// the last completed transition; the wake notification already triggers a
+    /// refresh, and the cleared applied frames make that refresh lay out again
+    /// instead of reading half-moved windows as a user drag.
+    func systemWillSleep() {
+        guard isRunning else { return }
+        diagnostics.record("system_will_sleep", details: workspaceDetails())
+        guard !isSuspended else { return }
+        changes.cancel()
+        refreshTask?.cancel()
+        observedFocusTask?.cancel()
+        ribbonMotion.cancel()
+        presentationFrames = nil
+        resetGestureTracking()
+        focusGate.cancelAll()
+        workspaceRestoration.rollBack(state: &state, windowIDs: windows.map(\.id),
+                                      trackedWindowIDs: windowSystem.trackedWindowIDs)
+        pointerInteraction = nil
+        lastAppliedFrames.removeAll()
+        preferencesNeedLayout = true
+        onStateChange?()
     }
 
     var expiredTokens: Set<UInt64> = []

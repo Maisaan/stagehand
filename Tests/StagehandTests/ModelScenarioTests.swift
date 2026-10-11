@@ -436,4 +436,40 @@ struct ModelScenarioTests {
         #expect(harness.model.desktopCheckAttempts == 0)
         #expect(harness.events("desktop_resumed").count == 1)
     }
+
+    /// Sleep during a switch: the in-flight transition is dropped and rolled
+    /// back without pausing, and the wake refresh lays the ribbon out again.
+    @Test func sleepDuringASwitchDropsTheTransitionAndWakeLaysOutAgain() async {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        harness.windows.focusDelayMilliseconds = 400
+
+        harness.model.navigate(.focusNext)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !harness.model.changes.isProcessing, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        try? await Task.sleep(for: .milliseconds(50))
+        harness.model.systemWillSleep()
+
+        #expect(harness.model.isRunning)
+        #expect(!harness.model.changes.isProcessing)
+        #expect(!harness.model.ribbonMotion.isRunning)
+        #expect(harness.model.state.focusedWindowID == "a")
+        #expect(harness.model.workspaceRestoration.isInTransition == false)
+        #expect(harness.events("system_will_sleep").count == 1)
+
+        // Wake: WindowSystem reports a change, and the refresh must lay out again.
+        harness.windows.focusDelayMilliseconds = 0
+        harness.windows.onChange?()
+        await harness.settle()
+        #expect(harness.model.isRunning)
+        #expect(harness.events("automatic_pause").isEmpty)
+        #expect(harness.model.state.focusedWindowID == harness.windows.focusedWindowID())
+        #expect(harness.events("change_completed").contains {
+            ($0["details"] as? [String: String])?["operation"] == "preferences"
+        })
+    }
 }
