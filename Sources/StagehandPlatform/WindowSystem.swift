@@ -1,6 +1,11 @@
 import AppKit
 @preconcurrency import ApplicationServices
 import Darwin
+import os
+
+/// Diagnostic lines go to the unified log. Nothing here carries window titles
+/// or other user content, so every value is marked public to stay readable.
+private let logger = Logger(subsystem: "app.stagehand.Stagehand", category: "window-system")
 
 /// `_AXUIElementGetWindow` is private HIServices API. Binding it at link time
 /// would stop the app launching on a system where the symbol is gone; resolving
@@ -322,7 +327,7 @@ public final class WindowSystem {
                 MainActor.assumeIsolated {
                     guard let self, self.started else { return }
                     if self.focusDiagnosticsEnabled {
-                        print("Discovery t=\(ProcessInfo.processInfo.systemUptime) workspace=\(name.rawValue) pid=\(pid.map(String.init) ?? "nil")")
+                        logger.notice("Discovery t=\(ProcessInfo.processInfo.systemUptime, privacy: .public) workspace=\(name.rawValue, privacy: .public) pid=\(pid.map(String.init) ?? "nil", privacy: .public)")
                     }
                     if name == NSWorkspace.didActivateApplicationNotification {
                         self.reportCurrentFocus()
@@ -516,7 +521,7 @@ public final class WindowSystem {
             removeObserver(pid: pid)
         }
         if focusDiagnosticsEnabled {
-            print("Scan t=\(ProcessInfo.processInfo.systemUptime) runningApps=\(runningApps.count) eligibleApps=\(apps.count) cgVisibleWindows=\(visibleWindows.count)")
+            logger.notice("Scan t=\(ProcessInfo.processInfo.systemUptime, privacy: .public) runningApps=\(runningApps.count, privacy: .public) eligibleApps=\(apps.count, privacy: .public) cgVisibleWindows=\(visibleWindows.count, privacy: .public)")
         }
         if started {
             for app in apps {
@@ -604,7 +609,7 @@ public final class WindowSystem {
         for app in plan.apps {
             guard let read = reads[app.processIdentifier] else { continue }
             if focusDiagnosticsEnabled {
-                print("Scan pid=\(app.processIdentifier) AXWindowsStatus=\(read.windowsStatus.rawValue) count=\(read.candidates?.count ?? -1)")
+                logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) AXWindowsStatus=\(read.windowsStatus.rawValue, privacy: .public) count=\(read.candidates?.count ?? -1, privacy: .public)")
             }
             guard let candidates = read.candidates else {
                 // A temporarily busy application must not lose its space memberships.
@@ -643,29 +648,29 @@ public final class WindowSystem {
                 guard let subrole = candidate.metadata.subrole,
                       let currentFrame = candidate.metadata.frame,
                       let minimized = candidate.metadata.minimized else {
-                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=missingMetadata") }
+                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) rejected=missingMetadata") }
                     if let existing, existing.isAdmitted { result.append(existing.record) }
                     continue
                 }
                 let fullscreen = candidate.metadata.fullscreen
                 if fullscreen.error == .cannotComplete {
-                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=fullscreenReadTimeout") }
+                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) rejected=fullscreenReadTimeout") }
                     if let existing, existing.isAdmitted { result.append(existing.record) }
                     continue
                 }
                 guard subrole == kAXStandardWindowSubrole || (candidate.hostsTrackedChild && existing?.isAdmitted == true),
                       currentFrame.width > 1, currentFrame.height > 1 else {
                     if focusDiagnosticsEnabled {
-                        print("Scan pid=\(app.processIdentifier) rejected=nonstandardOrInvalidFrame window=\(candidate.windowNumber.map(String.init) ?? "nil") subrole=\(subrole) modal=\(candidate.metadata.modal) frame=\(currentFrame) tracked=\(existingID ?? "nil")")
+                        logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) rejected=nonstandardOrInvalidFrame window=\(candidate.windowNumber.map(String.init) ?? "nil", privacy: .public) subrole=\(subrole, privacy: .public) modal=\(candidate.metadata.modal, privacy: .public) frame=\(String(describing: currentFrame), privacy: .public) tracked=\(existingID ?? "nil", privacy: .public)")
                     }
                     continue
                 }
                 guard fullscreen.value as? Bool != true else {
-                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) unavailable=fullscreen") }
+                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) unavailable=fullscreen") }
                     continue
                 }
                 guard !minimized else {
-                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) unavailable=minimized") }
+                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) unavailable=minimized") }
                     continue
                 }
                 if existing?.isAdmitted != true {
@@ -682,18 +687,18 @@ public final class WindowSystem {
                     }).count
                     guard visibleMatch, candidate.windowNumber != nil || geometryMatches == 1 else {
                         if focusDiagnosticsEnabled {
-                            print("Scan pid=\(app.processIdentifier) rejected=desktopAdmission visibleMatch=\(visibleMatch) sameGeometryCount=\(geometryMatches)")
+                            logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) rejected=desktopAdmission visibleMatch=\(visibleMatch, privacy: .public) sameGeometryCount=\(geometryMatches, privacy: .public)")
                         }
                         continue
                     }
                 }
                 guard let movable = candidate.movable, movable.status == .success else {
-                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=positionSettableReadFailed") }
+                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) rejected=positionSettableReadFailed") }
                     if let existing, existing.isAdmitted { result.append(existing.record) }
                     continue
                 }
                 guard movable.value else {
-                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=notMovable") }
+                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) rejected=notMovable") }
                     continue
                 }
                 let id: String
@@ -754,7 +759,7 @@ public final class WindowSystem {
             let identities = identitySnapshot()
             if focusDiagnosticsEnabled {
                 for candidate in candidates where candidate.isChild {
-                    print("Scan pid=\(app.processIdentifier) child window=\(candidate.windowNumber.map(String.init) ?? "nil") subrole=\(candidate.metadata.subrole ?? "nil") modal=\(candidate.metadata.modal) owner=\(candidate.ownerNumber.map(String.init) ?? "nil")")
+                    logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) child window=\(candidate.windowNumber.map(String.init) ?? "nil", privacy: .public) subrole=\(candidate.metadata.subrole ?? "nil", privacy: .public) modal=\(candidate.metadata.modal, privacy: .public) owner=\(candidate.ownerNumber.map(String.init) ?? "nil", privacy: .public)")
                 }
             }
             for candidate in candidates where candidate.isChild && candidate.metadata.minimized != true {
@@ -783,7 +788,7 @@ public final class WindowSystem {
                 result.append(tracked.record)
             }
         }
-        if focusDiagnosticsEnabled { print("Scan admittedExternal=\(result.count) registeredNative=\(nativeWindows.records.count)") }
+        if focusDiagnosticsEnabled { logger.notice("Scan admittedExternal=\(result.count, privacy: .public) registeredNative=\(self.nativeWindows.records.count, privacy: .public)") }
         return result + (managedBundleIdentifiers == nil ? nativeWindows.records : [])
     }
 
@@ -803,7 +808,7 @@ public final class WindowSystem {
         }
         if returnToOriginalFrame(windowID: id) == .failed, recoveryJournal.records[id] != nil {
             interruptedWindowIDs.insert(id)
-            if focusDiagnosticsEnabled { print("Scan dropped=\(id) restoreFailed=true recordKept=true") }
+            if focusDiagnosticsEnabled { logger.notice("Scan dropped=\(id, privacy: .public) restoreFailed=true recordKept=true") }
         }
     }
 
@@ -921,13 +926,13 @@ public final class WindowSystem {
             let accepted = self.moveWithOwnedWindows(windowID: windowID) {
                 self.writePosition(tracked.element, position: position)
             }
-            if self.focusDiagnosticsEnabled { print("Parking write pid=\(tracked.record.pid) requested=\(position) accepted=\(accepted)") }
+            if self.focusDiagnosticsEnabled { logger.notice("Parking write pid=\(tracked.record.pid, privacy: .public) requested=\(String(describing: position), privacy: .public) accepted=\(accepted, privacy: .public)") }
             return accepted
         },
                                    readFrame: { self.readFrame(tracked.element) })
         windows[windowID]?.parking = parking
         if focusDiagnosticsEnabled {
-            print("Parking pid=\(tracked.record.pid) success=\(success) actual=\(String(describing: readFrame(tracked.element))) minimized=\(String(describing: attribute(tracked.element, kAXMinimizedAttribute) as? Bool)) restorePending=\(parking.restoreFrame != nil)")
+            logger.notice("Parking pid=\(tracked.record.pid, privacy: .public) success=\(success, privacy: .public) actual=\(String(describing: self.readFrame(tracked.element)), privacy: .public) minimized=\(String(describing: self.attribute(tracked.element, kAXMinimizedAttribute) as? Bool), privacy: .public) restorePending=\(parking.restoreFrame != nil, privacy: .public)")
         }
         return success
     }
@@ -949,7 +954,7 @@ public final class WindowSystem {
                                       readFrame: { self.readFrame(tracked.element) })
         windows[windowID]?.parking = parking
         if focusDiagnosticsEnabled {
-            print("Parking restore pid=\(tracked.record.pid) success=\(success) actual=\(String(describing: readFrame(tracked.element))) restorePending=\(parking.restoreFrame != nil)")
+            logger.notice("Parking restore pid=\(tracked.record.pid, privacy: .public) success=\(success, privacy: .public) actual=\(String(describing: self.readFrame(tracked.element)), privacy: .public) restorePending=\(parking.restoreFrame != nil, privacy: .public)")
         }
         return success
     }
@@ -982,13 +987,13 @@ public final class WindowSystem {
             ownerPID: ProcessInfo.processInfo.processIdentifier,
             ownerLaunchDate: NSRunningApplication.current.launchDate, frame: frame
         ) else {
-            NSLog("Stagehand refused to manage window %@: no recovery record can be written", windowID)
+            logger.error("Refused to manage window \(windowID, privacy: .public): no recovery record can be written")
             return false
         }
         do {
             try recoveryJournal.save(record)
         } catch {
-            NSLog("Stagehand window recovery save failed: %@", error.localizedDescription)
+            logger.error("Window recovery save failed for \(windowID, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return false
         }
         windows[windowID]?.originalFrame = frame
@@ -1380,7 +1385,7 @@ public final class WindowSystem {
                 if owner.focusDiagnosticsEnabled {
                     var pid: pid_t = 0
                     _ = AXUIElementGetPid(changedWindow, &pid)
-                    print("Discovery t=\(ProcessInfo.processInfo.systemUptime) AX=\(name) pid=\(pid)")
+                    logger.notice("Discovery t=\(ProcessInfo.processInfo.systemUptime, privacy: .public) AX=\(name, privacy: .public) pid=\(pid, privacy: .public)")
                 }
                 if let availabilityChange = windowAvailabilityChange(for: name),
                    let id = owner.directTrackedWindowID(matching: changedWindow) {
@@ -1440,7 +1445,7 @@ public final class WindowSystem {
         let context = Unmanaged.passUnretained(self).toOpaque()
         let retry = registration.register { name in
             let status = AXObserverAddNotification(observer, element, name as CFString, context)
-            if focusDiagnosticsEnabled { print("Discovery observe pid=\(pid) AX=\(name) status=\(status.rawValue)") }
+            if focusDiagnosticsEnabled { logger.notice("Discovery observe pid=\(pid, privacy: .public) AX=\(name, privacy: .public) status=\(status.rawValue, privacy: .public)") }
             return status
         }
         applicationObservations[pid] = registration
