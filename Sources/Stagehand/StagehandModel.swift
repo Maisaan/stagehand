@@ -300,6 +300,7 @@ final class StagehandModel: ObservableObject {
             }
         }
         focusGate.onAvailabilityChanged = { [weak self] in self?.updateInputStatus() }
+        (input as? InputController)?.navigationChordsHandledByTap = { [weak self] in self?.focusGate.isAvailable ?? false }
         focusGate.onInputDiscarded = { [weak self] count in
             self?.warning = "Stagehand couldn't confirm the new window, so it did not send \(count) buffered key \(count == 1 ? "event" : "events"). Check your last input."
             NSSound.beep()

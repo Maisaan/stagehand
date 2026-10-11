@@ -589,3 +589,12 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     }
     #expect(condition())
 }
+
+@MainActor @Test func carbonSkipsNavigationChordsWhileTheTapConsumesThem() {
+    #expect(!InputController.shouldDispatchHotKey(.focusNext, tapHandlesNavigation: true))
+    #expect(!InputController.shouldDispatchHotKey(.goToSpace(index: 2), tapHandlesNavigation: true))
+    #expect(InputController.shouldDispatchHotKey(.focusNext, tapHandlesNavigation: false))
+    // The tap passes these through on purpose, so Carbon is their only dispatcher.
+    #expect(InputController.shouldDispatchHotKey(.showSettings, tapHandlesNavigation: true))
+    #expect(InputController.shouldDispatchHotKey(.togglePause, tapHandlesNavigation: true))
+}

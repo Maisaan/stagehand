@@ -184,6 +184,8 @@ public final class FocusInputGate {
     }
 
     isolated deinit {
+        onAvailabilityChanged = nil
+        onInputDiscarded = nil
         stop()
     }
 

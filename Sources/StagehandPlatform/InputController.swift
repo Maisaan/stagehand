@@ -7,6 +7,9 @@ public final class InputController {
     public var onAction: ((NavigationAction) -> Void)?
     public var onGesture: ((GestureNavigationEvent) -> Void)?
     public var onStatusChange: (() -> Void)?
+    /// Answers whether the keyboard tap is consuming navigation chords right now. While it
+    /// is, the tap dispatches those actions itself and Carbon must not dispatch them again.
+    public var navigationChordsHandledByTap: (() -> Bool)?
     public var gesturesEnabled = false {
         didSet { if isRunning && oldValue != gesturesEnabled { updateGestures() } }
     }
@@ -37,6 +40,11 @@ public final class InputController {
         self.shortcutLoadIssues = shortcutLoadIssues
     }
 
+    isolated deinit {
+        onStatusChange = nil
+        stop()
+    }
+
     public func start() {
         guard !isRunning else { return }
         isRunning = true
@@ -49,7 +57,9 @@ public final class InputController {
             let controller = Unmanaged<InputController>.fromOpaque(context).takeUnretainedValue()
             // Carbon delivers this handler on the application event loop.
             MainActor.assumeIsolated {
-                if let action = controller.actions[identifier.id] { controller.onAction?(action) }
+                guard let action = controller.actions[identifier.id] else { return }
+                let tapHandles = controller.navigationChordsHandledByTap?() ?? false
+                if InputController.shouldDispatchHotKey(action, tapHandlesNavigation: tapHandles) { controller.onAction?(action) }
             }
             return noErr
         }, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), &eventHandler)
@@ -59,6 +69,14 @@ public final class InputController {
             return
         }
         registerHotKeys()
+    }
+
+    /// Settings and pause chords always pass through the tap, so Carbon owns them. Every
+    /// other chord is consumed by the tap whenever it is available, which is the only time
+    /// the same press could reach both paths.
+    static func shouldDispatchHotKey(_ action: NavigationAction, tapHandlesNavigation: Bool) -> Bool {
+        if action == .showSettings || action == .togglePause { return true }
+        return !tapHandlesNavigation
     }
 
     public func setShortcutBindings(_ bindings: [ShortcutBinding]) {
