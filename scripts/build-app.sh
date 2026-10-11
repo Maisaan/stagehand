@@ -21,9 +21,14 @@ strip -x "$stagehand_bundle/Contents/MacOS/Stagehand"
 
 # Accessibility permission follows the code signature. A stable identity keeps the
 # grant across rebuilds; an ad-hoc signature changes every time. Prefer an explicit
-# STAGEHAND_SIGNING_IDENTITY, then a local Apple Development certificate, then ad-hoc.
-# None of these produce a notarized distribution build.
+# STAGEHAND_SIGNING_IDENTITY, then the self-signed identity from
+# scripts/create-signing-identity.sh, then a local Apple Development certificate,
+# then ad-hoc. None of these produce a notarized distribution build.
 stagehand_signing_identity="${STAGEHAND_SIGNING_IDENTITY:-}"
+if [[ -z "$stagehand_signing_identity" ]] &&
+    security find-identity -v -p codesigning | grep -qF '"Stagehand Local Code Signing"'; then
+    stagehand_signing_identity="Stagehand Local Code Signing"
+fi
 if [[ -z "$stagehand_signing_identity" ]]; then
     stagehand_signing_identity="$(security find-identity -v -p codesigning 2>/dev/null \
         | awk -F'"' '/"Apple Development: / { print $2; exit }')"
@@ -34,5 +39,6 @@ codesign --verify --strict "$stagehand_bundle"
 printf 'Built %s\nSigned with: %s\n' "$stagehand_bundle" "$stagehand_signing_identity"
 if [[ "$stagehand_signing_identity" == "-" ]]; then
     printf 'Warning: this ad-hoc signature changes on rebuild; macOS will require Accessibility again after replacement.\n'
+    printf 'Run scripts/create-signing-identity.sh once for a stable local signature.\n'
 fi
 printf 'Open with: open "%s"\n' "$stagehand_bundle"
