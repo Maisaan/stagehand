@@ -84,12 +84,11 @@ struct QuickControlsView: View {
                         }
                         .id(model.state.activeSpaceIndex)
                         .frame(width: 104, height: TextInputMetrics.height)
-                        ForegroundColorPicker(
+                        SpaceColorPicker(
                             "Space \(model.state.activeSpaceIndex + 1) color",
-                            selection: Binding(
-                                get: { Color(nsColor: model.focusBorderColor) },
-                                set: { model.setFocusBorderColor(NSColor($0)) }
-                            )
+                            model: model,
+                            spaceIndex: model.state.activeSpaceIndex,
+                            color: model.focusBorderColor
                         )
                     }
                 }
