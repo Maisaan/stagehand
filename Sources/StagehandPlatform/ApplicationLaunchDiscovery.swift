@@ -7,8 +7,7 @@ final class ApplicationLaunchDiscovery {
     private var tasks: [Int32: Task<Void, Never>] = [:]
     private let delays: [Duration]
 
-    init(delays: [Duration] = [.milliseconds(100), .milliseconds(250), .milliseconds(500),
-                               .seconds(1), .seconds(2), .seconds(4), .seconds(8), .seconds(15)]) {
+    init(delays: [Duration] = WindowTuning.launchDiscoveryDelays) {
         self.delays = delays
     }
 

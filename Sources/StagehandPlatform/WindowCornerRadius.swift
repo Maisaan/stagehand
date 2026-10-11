@@ -36,7 +36,11 @@ public enum WindowCornerRadius {
     // ABI and ownership reference:
     // https://github.com/FelixKratz/JankyBorders/blob/main/src/windows.c
     // https://github.com/FelixKratz/JankyBorders/blob/main/src/misc/extern.h
-    // Despite its "Get" name, GetCornerRadii returns an owned reference in that implementation.
+    // JankyBorders releases the array GetCornerRadii returns, but the function's "Get"
+    // name follows the Core Foundation convention for a borrowed reference and the
+    // ownership is undocumented. Releasing a borrowed reference would crash on the
+    // next use; leaking an owned one costs a few bytes per focus change. Take it
+    // unretained, so the worst case is the leak.
     private static let nativeRadius: (CGWindowID) -> CGFloat? = {
         guard let framework = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_NOW | RTLD_LOCAL),
               let connectionSymbol = dlsym(framework, "SLSMainConnectionID"),
@@ -60,7 +64,7 @@ public enum WindowCornerRadius {
             return withExtendedLifetime(result) {
                 guard let iterator = windows(result)?.takeRetainedValue() else { return nil }
                 return withExtendedLifetime(iterator) {
-                    guard advance(iterator), let radii = corners(iterator)?.takeRetainedValue(),
+                    guard advance(iterator), let radii = corners(iterator)?.takeUnretainedValue(),
                           let values = radii as? [NSNumber] else { return nil }
                     // Zero is a valid square window, not a missing-value sentinel.
                     return validatedRadius(values)

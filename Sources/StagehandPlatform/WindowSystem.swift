@@ -1,8 +1,60 @@
 import AppKit
 @preconcurrency import ApplicationServices
+import Darwin
+import os
 
-@_silgen_name("_AXUIElementGetWindow")
-private func axWindowID(_ element: AXUIElement, _ windowID: UnsafeMutablePointer<CGWindowID>) -> AXError
+/// Diagnostic lines go to the unified log. Nothing here carries window titles
+/// or other user content, so every value is marked public to stay readable.
+private let logger = Logger(subsystem: "app.stagehand.Stagehand", category: "window-system")
+
+/// `_AXUIElementGetWindow` is private HIServices API. Binding it at link time
+/// would stop the app launching on a system where the symbol is gone; resolving
+/// it at first use leaves window numbers unavailable instead, and matching then
+/// falls back to element identity and geometry.
+/// Timing and geometry constants shared by the window system. Values are the
+/// ones the code has always used; they live here so a change to one is deliberate
+/// and visible rather than buried in a call site.
+public enum WindowTuning {
+    /// How long a single Accessibility request to the system-wide element may wait.
+    public static let accessibilityMessagingTimeoutSeconds: Float = 0.1
+    /// Cadence of the CGWindowList poll that notices apps and windows AX did not report.
+    public static let applicationInventoryPollSeconds: Int = 2
+    /// Delays between AXObserverAddNotification retries for an app answering
+    /// .cannotComplete; the last value repeats while the app runs.
+    public static let observationRetryDelaysMilliseconds = [100, 200, 400, 800, 1600, 3200, 5000, 10_000, 20_000, 30_000]
+    /// Waits before each further restoreAll attempt for a window that failed to restore.
+    public static let restoreRetryDelaysMilliseconds = [50, 100]
+    /// Rechecks after an app launches or activates before a usable window appears.
+    public static let launchDiscoveryDelays: [Duration] = [
+        .milliseconds(100), .milliseconds(250), .milliseconds(500),
+        .seconds(1), .seconds(2), .seconds(4), .seconds(8), .seconds(15)
+    ]
+    /// How long a native (Stagehand-owned) window may take to become key after activation.
+    public static let nativeFocusDeadlineMilliseconds = 180
+    /// Poll interval while waiting for a native window to become key.
+    public static let nativeFocusPollMilliseconds = 8
+    /// After the target app is active, how long its exact window may take to own focus
+    /// before the attempt reports a timeout.
+    public static let focusActivationDeadlineMilliseconds = 600
+    /// Upper bound on one focus attempt, including recovery of a refused activation.
+    public static let focusRecoveryDeadlineMilliseconds = 1_500
+    /// The widest strip of a parked window that may stay on the screen it was parked from.
+    public static let parkedRemnantWidth: CGFloat = 64
+    /// A journaled coordinate or size beyond this is treated as corrupt rather than restored.
+    public static let recoveryFrameBound: CGFloat = 100_000
+}
+
+private enum AccessibilityWindowNumber {
+    typealias Function = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
+
+    static let function: Function? = {
+        let path = "/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices"
+        // Keep this framework reference for process lifetime while the pointer is in use.
+        let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL) ?? dlopen(nil, RTLD_NOW)
+        guard let handle, let symbol = dlsym(handle, "_AXUIElementGetWindow") else { return nil }
+        return unsafeBitCast(symbol, to: Function.self)
+    }()
+}
 
 public struct WindowRecord: Identifiable, Equatable, Sendable {
     public let id: String
@@ -108,6 +160,10 @@ public final class WindowSystem {
     private var observationRetries: [pid_t: Task<Void, Never>] = [:]
     private let launchDiscovery = ApplicationLaunchDiscovery()
     private var applicationInventoryTask: Task<Void, Never>?
+    /// Set while the login session is inactive or the displays are asleep. The
+    /// inventory poll keeps its cadence but skips the CGWindowList read, which
+    /// cannot change while nothing is being drawn.
+    private var inventoryPaused = false
     private var lastApplicationInventory: ApplicationInventory?
     private var workspaceTokens: [NSObjectProtocol] = []
     private var applicationTokens: [NSObjectProtocol] = []
@@ -118,13 +174,19 @@ public final class WindowSystem {
     private let recoveryJournal = WindowRecoveryJournal()
     private var interruptedWindowIDs: Set<String> = []
     private var missingRecoveryWindowIDs: Set<String> = []
-    public var hasPendingRecovery: Bool {
-        interruptedWindowIDs.contains { recoveryJournal.records[$0] != nil }
+    /// Records whose window was minimized when restoration was attempted and did not
+    /// accept a frame write. They do not block Start; the frame is written when AX
+    /// reports the window de-miniaturized, or by the next recovery pass.
+    private var deferredRecoveryWindowIDs: Set<String> = []
+    /// Windows an earlier pass could not put back. Each still has a journal record.
+    public var pendingRecoveryWindowIDs: Set<String> {
+        interruptedWindowIDs.filter { recoveryJournal.records[$0] != nil && !deferredRecoveryWindowIDs.contains($0) }
     }
+    public var hasPendingRecovery: Bool { !pendingRecoveryWindowIDs.isEmpty }
 
     public init() {
         interruptedWindowIDs = Set(recoveryJournal.records.keys)
-        AXUIElementSetMessagingTimeout(systemElement, 0.1)
+        AXUIElementSetMessagingTimeout(systemElement, WindowTuning.accessibilityMessagingTimeoutSeconds)
         nativeWindows.onChange = { [weak self] in
             guard let self, self.started else { return }
             self.onChange?()
@@ -171,8 +233,14 @@ public final class WindowSystem {
             guard let record = recoveryJournal.records[id] else { continue }
             if let owner = NSRunningApplication(processIdentifier: record.ownerPID),
                record.isOwnedByProcess(pid: owner.processIdentifier, launchDate: owner.launchDate) {
-                foundInterruptedWindow = true
-                continue
+                // Another live Stagehand owns the window, or this one is still
+                // managing it. Once this process has stopped, its own leftovers
+                // from a failed restoreAll are retried like any other record.
+                let ownRecord = record.ownerPID == ProcessInfo.processInfo.processIdentifier
+                guard ownRecord, !started else {
+                    foundInterruptedWindow = true
+                    continue
+                }
             }
             guard let app = NSRunningApplication(processIdentifier: record.pid),
                   record.matchesProcess(bundleIdentifier: app.bundleIdentifier,
@@ -200,17 +268,49 @@ public final class WindowSystem {
             guard let minimized = attribute(element, kAXMinimizedAttribute) as? Bool else { continue }
             let fullscreen = copyAttribute(element, "AXFullScreen")
             guard fullscreen.error != .cannotComplete else { continue }
-            if minimized || fullscreen.value as? Bool == true {
-                try? recoveryJournal.remove(windowID: record.windowID)
+            if fullscreen.value as? Bool == true {
+                forgetRecovery(windowID: record.windowID)
                 continue
             }
             if let current = readFrame(element), sameBounds(current, record.frame) ||
                 writeFrame(element, frame: record.frame) {
-                try? recoveryJournal.remove(windowID: record.windowID)
+                forgetRecovery(windowID: record.windowID)
+            } else if minimized {
+                // The Dock tile hides a parked position. Keep the record so the
+                // frame is written once the window is shown again.
+                deferredRecoveryWindowIDs.insert(id)
             }
         }
         interruptedWindowIDs = interruptedWindowIDs.filter { recoveryJournal.records[$0] != nil }
+        deferredRecoveryWindowIDs = deferredRecoveryWindowIDs.filter { recoveryJournal.records[$0] != nil }
         return foundInterruptedWindow
+    }
+
+    /// A de-miniaturized window whose recovery was deferred goes back to its
+    /// journaled frame before the model lays it out again.
+    private func completeDeferredRecovery(windowID id: String) {
+        guard let tracked = windows[id] else { return }
+        let deferred = deferredRecoveryWindowIDs.compactMap { recoveryJournal.records[$0] }.first {
+            $0.windowID == id || $0.pid == tracked.record.pid && $0.windowNumber == tracked.windowNumber
+        }
+        guard let deferred else { return }
+        if let current = readFrame(tracked.element), sameBounds(current, deferred.frame) ||
+            writeFrame(tracked.element, frame: deferred.frame) {
+            forgetRecovery(windowID: deferred.windowID)
+            forgetRecovery(windowID: id)
+        }
+    }
+
+    /// The window is back where it started, or macOS now owns it. Clear the record
+    /// and any tracking left from this process so the next move captures afresh.
+    private func forgetRecovery(windowID: String) {
+        try? recoveryJournal.remove(windowID: windowID)
+        interruptedWindowIDs.remove(windowID)
+        deferredRecoveryWindowIDs.remove(windowID)
+        if windows[windowID] != nil {
+            windows[windowID]?.originalFrame = nil
+            windows[windowID]?.parking = WindowParking()
+        }
     }
 
     @discardableResult
@@ -223,28 +323,23 @@ public final class WindowSystem {
                      NSWorkspace.didActivateApplicationNotification,
                      NSWorkspace.didUnhideApplicationNotification] {
             workspaceTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                let pid = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier ?? 0
+                let pid = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier
                 MainActor.assumeIsolated {
                     guard let self, self.started else { return }
                     if self.focusDiagnosticsEnabled {
-                        print("Discovery t=\(ProcessInfo.processInfo.systemUptime) workspace=\(name.rawValue) pid=\(pid)")
+                        logger.notice("Discovery t=\(ProcessInfo.processInfo.systemUptime, privacy: .public) workspace=\(name.rawValue, privacy: .public) pid=\(pid.map(String.init) ?? "nil", privacy: .public)")
                     }
                     if name == NSWorkspace.didActivateApplicationNotification {
                         self.reportCurrentFocus()
                     }
                     if name == NSWorkspace.didTerminateApplicationNotification {
-                        self.trackedStateGeneration &+= 1
-                        self.removeObserver(pid: pid)
-                        let removedIDs = self.windows.compactMap {
-                            $0.value.record.pid == pid ? $0.key : nil
-                        }
-                        for id in removedIDs {
-                            self.windows.removeValue(forKey: id)
-                        }
-                        if !removedIDs.isEmpty { self.onApplicationTerminated?(pid) }
+                        // Without the process there is nothing to drop; pid 0 would
+                        // otherwise flow into removeObserver and the journal.
+                        guard let pid else { return }
+                        self.applicationTerminated(pid: pid)
                     }
                     if name == NSWorkspace.didLaunchApplicationNotification || name == NSWorkspace.didActivateApplicationNotification,
-                       let app = NSRunningApplication(processIdentifier: pid) {
+                       let pid, let app = NSRunningApplication(processIdentifier: pid) {
                         self.scheduleDiscovery(for: app)
                     }
                     self.onChange?()
@@ -263,14 +358,23 @@ public final class WindowSystem {
             workspaceTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self, self.started else { return }
+                    self.inventoryPaused = name == NSWorkspace.sessionDidResignActiveNotification
                     self.onNativeDesktopChange?()
                 }
             })
         }
+        workspaceTokens.append(center.addObserver(forName: NSWorkspace.screensDidSleepNotification,
+                                                   object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.started else { return }
+                self.inventoryPaused = true
+            }
+        })
         for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
             workspaceTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self, self.started else { return }
+                    self.inventoryPaused = false
                     self.onNativeDesktopChange?()
                     self.onChange?()
                 }
@@ -291,10 +395,27 @@ public final class WindowSystem {
         return records
     }
 
+    /// The process is gone, so its windows cannot be restored and their journal
+    /// records would only accumulate until the next launch's recovery pass.
+    private func applicationTerminated(pid: pid_t) {
+        trackedStateGeneration &+= 1
+        removeObserver(pid: pid)
+        let removedIDs = windows.compactMap { $0.value.record.pid == pid ? $0.key : nil }
+        for id in removedIDs {
+            windows.removeValue(forKey: id)
+        }
+        for record in recoveryJournal.records.values where record.pid == pid {
+            try? recoveryJournal.remove(windowID: record.windowID)
+            interruptedWindowIDs.remove(record.windowID)
+        }
+        if !removedIDs.isEmpty { onApplicationTerminated?(pid) }
+    }
+
     public func stop() {
         started = false
         applicationInventoryTask?.cancel()
         applicationInventoryTask = nil
+        inventoryPaused = false
         lastApplicationInventory = nil
         launchDiscovery.cancelAll()
         restoreAll()
@@ -308,13 +429,23 @@ public final class WindowSystem {
         workspaceTokens.removeAll()
         for token in applicationTokens { NotificationCenter.default.removeObserver(token) }
         applicationTokens.removeAll()
+        for pid in Array(observers.keys) { removeObserver(pid: pid) }
         for retry in observationRetries.values { retry.cancel() }
         observationRetries.removeAll()
         applicationObservations.removeAll()
-        for observer in observers.values {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+    }
+
+    /// The observer callbacks hold an unretained pointer to this object. Every
+    /// run-loop source and notification must be gone before it is freed.
+    deinit {
+        MainActor.assumeIsolated {
+            for pid in Array(observers.keys) { removeObserver(pid: pid) }
+            for retry in observationRetries.values { retry.cancel() }
+            applicationInventoryTask?.cancel()
+            let center = NSWorkspace.shared.notificationCenter
+            for token in workspaceTokens { center.removeObserver(token) }
+            for token in applicationTokens { NotificationCenter.default.removeObserver(token) }
         }
-        observers.removeAll()
     }
 
     public func scanWindows() -> [WindowRecord] {
@@ -395,7 +526,7 @@ public final class WindowSystem {
             removeObserver(pid: pid)
         }
         if focusDiagnosticsEnabled {
-            print("Scan t=\(ProcessInfo.processInfo.systemUptime) runningApps=\(runningApps.count) eligibleApps=\(apps.count) cgVisibleWindows=\(visibleWindows.count)")
+            logger.notice("Scan t=\(ProcessInfo.processInfo.systemUptime, privacy: .public) runningApps=\(runningApps.count, privacy: .public) eligibleApps=\(apps.count, privacy: .public) cgVisibleWindows=\(visibleWindows.count, privacy: .public)")
         }
         if started {
             for app in apps {
@@ -408,9 +539,10 @@ public final class WindowSystem {
     }
 
     nonisolated private static func readApplications(_ request: ScanReadRequest) -> [pid_t: ApplicationRead] {
-        Dictionary(uniqueKeysWithValues: request.pids.map {
+        // A pid listed twice must not trap mid-scan with windows parked; the last read wins.
+        Dictionary(request.pids.map {
             ($0, request.system.readApplication(pid: $0, identities: request.identities))
-        })
+        }, uniquingKeysWith: { _, last in last })
     }
 
     nonisolated private func readApplication(pid: pid_t, identities: IdentitySnapshot) -> ApplicationRead {
@@ -485,7 +617,7 @@ public final class WindowSystem {
         for app in plan.apps {
             guard let read = reads[app.processIdentifier] else { continue }
             if focusDiagnosticsEnabled {
-                print("Scan pid=\(app.processIdentifier) AXWindowsStatus=\(read.windowsStatus.rawValue) count=\(read.candidates?.count ?? -1)")
+                logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) AXWindowsStatus=\(read.windowsStatus.rawValue, privacy: .public) count=\(read.candidates?.count ?? -1, privacy: .public)")
             }
             guard let candidates = read.candidates else {
                 // A temporarily busy application must not lose its space memberships.
@@ -527,13 +659,13 @@ public final class WindowSystem {
                 guard let subrole = candidate.metadata.subrole,
                       let currentFrame = candidate.metadata.frame,
                       let minimized = candidate.metadata.minimized else {
-                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=missingMetadata") }
+                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) rejected=missingMetadata") }
                     if let existing, existing.isAdmitted { result.append(existing.record) }
                     continue
                 }
                 let fullscreen = candidate.metadata.fullscreen
                 if fullscreen.error == .cannotComplete {
-                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=fullscreenReadTimeout") }
+                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) rejected=fullscreenReadTimeout") }
                     if let existing, existing.isAdmitted { result.append(existing.record) }
                     continue
                 }
@@ -545,16 +677,16 @@ public final class WindowSystem {
                         standaloneDialog,
                       currentFrame.width > 1, currentFrame.height > 1 else {
                     if focusDiagnosticsEnabled {
-                        print("Scan pid=\(app.processIdentifier) rejected=nonstandardOrInvalidFrame window=\(candidate.windowNumber.map(String.init) ?? "nil") subrole=\(subrole) modal=\(candidate.metadata.modal) frame=\(currentFrame) tracked=\(existingID ?? "nil")")
+                        logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) rejected=nonstandardOrInvalidFrame window=\(candidate.windowNumber.map(String.init) ?? "nil", privacy: .public) subrole=\(subrole, privacy: .public) modal=\(candidate.metadata.modal, privacy: .public) frame=\(String(describing: currentFrame), privacy: .public) tracked=\(existingID ?? "nil", privacy: .public)")
                     }
                     continue
                 }
                 guard fullscreen.value as? Bool != true else {
-                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) unavailable=fullscreen") }
+                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) unavailable=fullscreen") }
                     continue
                 }
                 guard !minimized else {
-                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) unavailable=minimized") }
+                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) unavailable=minimized") }
                     continue
                 }
                 if existing?.isAdmitted != true {
@@ -572,18 +704,18 @@ public final class WindowSystem {
                     }).count
                     guard visibleMatch, candidate.windowNumber != nil || geometryMatches == 1 else {
                         if focusDiagnosticsEnabled {
-                            print("Scan pid=\(app.processIdentifier) rejected=desktopAdmission visibleMatch=\(visibleMatch) sameGeometryCount=\(geometryMatches)")
+                            logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) rejected=desktopAdmission visibleMatch=\(visibleMatch, privacy: .public) sameGeometryCount=\(geometryMatches, privacy: .public)")
                         }
                         continue
                     }
                 }
                 guard let movable = candidate.movable, movable.status == .success else {
-                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=positionSettableReadFailed") }
+                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) rejected=positionSettableReadFailed") }
                     if let existing, existing.isAdmitted { result.append(existing.record) }
                     continue
                 }
                 guard movable.value else {
-                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=notMovable") }
+                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) rejected=notMovable") }
                     continue
                 }
                 let id: String
@@ -609,6 +741,9 @@ public final class WindowSystem {
                 if windows[id] != nil {
                     var replacedElement = false
                     if let currentElement = windows[id]?.element, !CFEqual(currentElement, element) {
+                        if let observer = observers[app.processIdentifier] {
+                            unobserveWindow(currentElement, observer: observer)
+                        }
                         windows[id]?.element = element
                         windows[id]?.observationComplete = false
                         replacedElement = true
@@ -641,7 +776,7 @@ public final class WindowSystem {
             let identities = identitySnapshot()
             if focusDiagnosticsEnabled {
                 for candidate in candidates where candidate.isChild {
-                    print("Scan pid=\(app.processIdentifier) child window=\(candidate.windowNumber.map(String.init) ?? "nil") subrole=\(candidate.metadata.subrole ?? "nil") modal=\(candidate.metadata.modal) owner=\(candidate.ownerNumber.map(String.init) ?? "nil")")
+                    logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) child window=\(candidate.windowNumber.map(String.init) ?? "nil", privacy: .public) subrole=\(candidate.metadata.subrole ?? "nil", privacy: .public) modal=\(candidate.metadata.modal, privacy: .public) owner=\(candidate.ownerNumber.map(String.init) ?? "nil", privacy: .public)")
                 }
             }
             for candidate in candidates where candidate.isChild && candidate.metadata.minimized != true {
@@ -652,7 +787,7 @@ public final class WindowSystem {
                 if let previousID = Self.trackedWindowID(pid: app.processIdentifier, number: candidate.windowNumber,
                                                          element: candidate.element, in: identities),
                    previousID != parentID {
-                    windows.removeValue(forKey: previousID)
+                    dropTrackedWindow(id: previousID)
                 }
                 ownedWindows.append(OwnedWindow(element: candidate.element, parentID: parentID))
             }
@@ -660,18 +795,38 @@ public final class WindowSystem {
         self.ownedWindows = ownedWindows
         for id in Array(windows.keys) where !seen.contains(id) {
             guard let pid = windows[id]?.record.pid, plan.livePIDs.contains(pid) else {
-                windows.removeValue(forKey: id)
+                dropTrackedWindow(id: id)
                 continue
             }
             windows[id]?.missedScans += 1
             if windows[id]?.missedScans ?? 0 >= 2 {
-                windows.removeValue(forKey: id)
+                dropTrackedWindow(id: id)
             } else if let tracked = windows[id], tracked.isAdmitted {
                 result.append(tracked.record)
             }
         }
-        if focusDiagnosticsEnabled { print("Scan admittedExternal=\(result.count) registeredNative=\(nativeWindows.records.count)") }
+        if focusDiagnosticsEnabled { logger.notice("Scan admittedExternal=\(result.count, privacy: .public) registeredNative=\(self.nativeWindows.records.count, privacy: .public)") }
         return result + (managedBundleIdentifiers == nil ? nativeWindows.records : [])
+    }
+
+    /// Stops tracking a window that left the scan or became a child. A window
+    /// Stagehand has moved is put back first; if its process is gone the record is
+    /// useless, and if the write fails the record stays and the ID is reported as
+    /// pending so a later pass can retry.
+    private func dropTrackedWindow(id: String) {
+        defer { windows.removeValue(forKey: id) }
+        guard let tracked = windows[id],
+              tracked.parking.restoreFrame != nil || tracked.originalFrame != nil else { return }
+        let processAlive = NSRunningApplication(processIdentifier: tracked.record.pid).map { !$0.isTerminated } ?? false
+        guard processAlive else {
+            try? recoveryJournal.remove(windowID: id)
+            interruptedWindowIDs.remove(id)
+            return
+        }
+        if returnToOriginalFrame(windowID: id) == .failed, recoveryJournal.records[id] != nil {
+            interruptedWindowIDs.insert(id)
+            if focusDiagnosticsEnabled { logger.notice("Scan dropped=\(id, privacy: .public) restoreFailed=true recordKept=true") }
+        }
     }
 
     public func record(windowID: String) -> WindowRecord? {
@@ -788,13 +943,13 @@ public final class WindowSystem {
             let accepted = self.moveWithOwnedWindows(windowID: windowID) {
                 self.writePosition(tracked.element, position: position)
             }
-            if self.focusDiagnosticsEnabled { print("Parking write pid=\(tracked.record.pid) requested=\(position) accepted=\(accepted)") }
+            if self.focusDiagnosticsEnabled { logger.notice("Parking write pid=\(tracked.record.pid, privacy: .public) requested=\(String(describing: position), privacy: .public) accepted=\(accepted, privacy: .public)") }
             return accepted
         },
                                    readFrame: { self.readFrame(tracked.element) })
         windows[windowID]?.parking = parking
         if focusDiagnosticsEnabled {
-            print("Parking pid=\(tracked.record.pid) success=\(success) actual=\(String(describing: readFrame(tracked.element))) minimized=\(String(describing: attribute(tracked.element, kAXMinimizedAttribute) as? Bool)) restorePending=\(parking.restoreFrame != nil)")
+            logger.notice("Parking pid=\(tracked.record.pid, privacy: .public) success=\(success, privacy: .public) actual=\(String(describing: self.readFrame(tracked.element)), privacy: .public) minimized=\(String(describing: self.attribute(tracked.element, kAXMinimizedAttribute) as? Bool), privacy: .public) restorePending=\(parking.restoreFrame != nil, privacy: .public)")
         }
         return success
     }
@@ -816,7 +971,7 @@ public final class WindowSystem {
                                       readFrame: { self.readFrame(tracked.element) })
         windows[windowID]?.parking = parking
         if focusDiagnosticsEnabled {
-            print("Parking restore pid=\(tracked.record.pid) success=\(success) actual=\(String(describing: readFrame(tracked.element))) restorePending=\(parking.restoreFrame != nil)")
+            logger.notice("Parking restore pid=\(tracked.record.pid, privacy: .public) success=\(success, privacy: .public) actual=\(String(describing: self.readFrame(tracked.element)), privacy: .public) restorePending=\(parking.restoreFrame != nil, privacy: .public)")
         }
         return success
     }
@@ -829,48 +984,110 @@ public final class WindowSystem {
         }
         guard let tracked = windows[windowID] else { return false }
         guard tracked.originalFrame == nil else { return true }
-        guard let frame = readFrame(tracked.element) else { return false }
-        if let number = tracked.windowNumber,
+        // A record for this window already on disk predates the current position,
+        // which may be a parking spot left by an earlier pass or a dropped tracking.
+        if let existing = recoveryJournal.records[windowID],
            let app = NSRunningApplication(processIdentifier: tracked.record.pid),
-           let launchDate = app.launchDate,
-           let ownerLaunchDate = NSRunningApplication.current.launchDate,
-           !tracked.record.bundleIdentifier.isEmpty {
-            let record = WindowRecoveryRecord(
-                windowID: windowID, bundleIdentifier: tracked.record.bundleIdentifier,
-                pid: tracked.record.pid, launchDate: launchDate,
-                ownerPID: ProcessInfo.processInfo.processIdentifier, ownerLaunchDate: ownerLaunchDate,
-                windowNumber: number, frame: frame
-            )
-            do {
-                try recoveryJournal.save(record)
-            } catch {
-                NSLog("Stagehand window recovery save failed: %@", error.localizedDescription)
-                return false
-            }
+           existing.matchesProcess(bundleIdentifier: app.bundleIdentifier, pid: app.processIdentifier,
+                                   launchDate: app.launchDate),
+           existing.windowNumber == tracked.windowNumber {
+            windows[windowID]?.originalFrame = existing.frame
+            return true
+        }
+        guard let frame = readFrame(tracked.element) else { return false }
+        // Without an on-disk record a crash would leave the window wherever the
+        // ribbon or parking put it. Refuse to move it at all in that case.
+        guard let record = Self.recoveryRecord(
+            windowID: windowID, bundleIdentifier: tracked.record.bundleIdentifier, pid: tracked.record.pid,
+            windowNumber: tracked.windowNumber,
+            launchDate: NSRunningApplication(processIdentifier: tracked.record.pid)?.launchDate,
+            ownerPID: ProcessInfo.processInfo.processIdentifier,
+            ownerLaunchDate: NSRunningApplication.current.launchDate, frame: frame
+        ) else {
+            logger.error("Refused to manage window \(windowID, privacy: .public): no recovery record can be written")
+            return false
+        }
+        do {
+            try recoveryJournal.save(record)
+        } catch {
+            logger.error("Window recovery save failed for \(windowID, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return false
         }
         windows[windowID]?.originalFrame = frame
         return true
     }
 
+    /// The journal entry that lets a later process put the window back. Nil when
+    /// any identity is missing, which means the window must not be moved.
+    nonisolated static func recoveryRecord(
+        windowID: String, bundleIdentifier: String, pid: pid_t, windowNumber: CGWindowID?,
+        launchDate: Date?, ownerPID: pid_t, ownerLaunchDate: Date?, frame: CGRect
+    ) -> WindowRecoveryRecord? {
+        guard let windowNumber, let launchDate, let ownerLaunchDate, !bundleIdentifier.isEmpty else { return nil }
+        let record = WindowRecoveryRecord(
+            windowID: windowID, bundleIdentifier: bundleIdentifier, pid: pid, launchDate: launchDate,
+            ownerPID: ownerPID, ownerLaunchDate: ownerLaunchDate, windowNumber: windowNumber, frame: frame
+        )
+        return record.isValid ? record : nil
+    }
+
     /// Call on pause/quit, before releasing tracking, to return windows to their original positions.
+    /// A window that cannot be put back keeps its journal record and is reported through
+    /// `pendingRecoveryWindowIDs`, so the model can warn and a later pass can retry.
     public func restoreAll() {
         nativeWindows.restoreAll()
-        for id in Array(windows.keys) {
-            guard let tracked = windows[id] else { continue }
-            // Entering native fullscreen hands the window back to macOS.
-            guard attribute(tracked.element, "AXFullScreen") as? Bool != true else { continue }
-            // Do not discard the original frame if unparking failed.
-            // A later recovery attempt must still know where the window started.
-            guard restore(windowID: id) else { continue }
-            if let originalFrame = tracked.originalFrame {
-                if moveWithOwnedWindows(windowID: id, move: {
-                    writeFrame(tracked.element, frame: originalFrame)
-                }) {
-                    windows[id]?.originalFrame = nil
-                    try? recoveryJournal.remove(windowID: id)
-                }
-            }
+        var failed = Set<String>()
+        for id in Array(windows.keys) where returnToOriginalFrame(windowID: id) == .failed {
+            failed.insert(id)
         }
+        // A busy app answers a later request; a bounded retry covers the common
+        // case without holding pause or quit for long.
+        for delay in WindowTuning.restoreRetryDelaysMilliseconds where !failed.isEmpty {
+            Thread.sleep(forTimeInterval: Double(delay) / 1_000)
+            failed = failed.filter { returnToOriginalFrame(windowID: $0) == .failed }
+        }
+        for id in failed where recoveryJournal.records[id] != nil {
+            interruptedWindowIDs.insert(id)
+        }
+    }
+
+    private enum RestoreOutcome {
+        case restored
+        /// Nothing to do now: the window is in native fullscreen, which hands it back
+        /// to macOS. Its record stays for the next recovery pass without a warning.
+        case deferred
+        case failed
+    }
+
+    /// Unparks the window and writes the frame Stagehand found it at. On success the
+    /// window no longer needs recovery, so its record is removed.
+    private func returnToOriginalFrame(windowID id: String) -> RestoreOutcome {
+        guard let tracked = windows[id] else { return .restored }
+        guard tracked.parking.restoreFrame != nil || tracked.originalFrame != nil else { return .restored }
+        guard attribute(tracked.element, "AXFullScreen") as? Bool != true else { return .deferred }
+        if attribute(tracked.element, kAXMinimizedAttribute) as? Bool == true {
+            // restore() never reverses a user's minimize, but the frame can often be
+            // written behind the Dock tile. Otherwise wait for de-miniaturization.
+            guard let target = tracked.originalFrame ?? tracked.parking.restoreFrame else { return .restored }
+            guard moveWithOwnedWindows(windowID: id, move: { writeFrame(tracked.element, frame: target) }) else {
+                deferredRecoveryWindowIDs.insert(id)
+                return .deferred
+            }
+            forgetRecovery(windowID: id)
+            return .restored
+        }
+        // Do not discard the original frame if unparking failed.
+        // A later recovery attempt must still know where the window started.
+        guard restore(windowID: id) else { return .failed }
+        if let originalFrame = tracked.originalFrame {
+            guard moveWithOwnedWindows(windowID: id, move: {
+                writeFrame(tracked.element, frame: originalFrame)
+            }) else { return .failed }
+            windows[id]?.originalFrame = nil
+            try? recoveryJournal.remove(windowID: id)
+        }
+        interruptedWindowIDs.remove(id)
+        return .restored
     }
 
     public func focusedWindowID() -> String? {
@@ -1194,7 +1411,7 @@ public final class WindowSystem {
                 if owner.focusDiagnosticsEnabled {
                     var pid: pid_t = 0
                     _ = AXUIElementGetPid(changedWindow, &pid)
-                    print("Discovery t=\(ProcessInfo.processInfo.systemUptime) AX=\(name) pid=\(pid)")
+                    logger.notice("Discovery t=\(ProcessInfo.processInfo.systemUptime, privacy: .public) AX=\(name, privacy: .public) pid=\(pid, privacy: .public)")
                 }
                 if let availabilityChange = windowAvailabilityChange(for: name),
                    let id = owner.directTrackedWindowID(matching: changedWindow) {
@@ -1202,11 +1419,14 @@ public final class WindowSystem {
                     switch availabilityChange {
                     case .destroyed:
                         owner.windows.removeValue(forKey: id)
+                        try? owner.recoveryJournal.remove(windowID: id)
+                        owner.interruptedWindowIDs.remove(id)
                         owner.onWindowDestroyed?(id)
                     case .minimized:
                         owner.onWindowMiniaturized?(id)
                         return
                     case .restored:
+                        owner.completeDeferredRecovery(windowID: id)
                         owner.onWindowDeminiaturized?(id)
                         return
                     }
@@ -1251,15 +1471,19 @@ public final class WindowSystem {
         let context = Unmanaged.passUnretained(self).toOpaque()
         let retry = registration.register { name in
             let status = AXObserverAddNotification(observer, element, name as CFString, context)
-            if focusDiagnosticsEnabled { print("Discovery observe pid=\(pid) AX=\(name) status=\(status.rawValue)") }
+            if focusDiagnosticsEnabled { logger.notice("Discovery observe pid=\(pid, privacy: .public) AX=\(name, privacy: .public) status=\(status.rawValue, privacy: .public)") }
             return status
         }
         applicationObservations[pid] = registration
         return retry
     }
 
+    /// An app that keeps answering .cannotComplete is retried for as long as it
+    /// runs, but at a widening interval, and a rescan is requested only when a
+    /// subscription actually registered. Rescanning on every failed attempt kept
+    /// the whole system scanning every few seconds for one unresponsive app.
     private func scheduleObservationRetries(element: AXUIElement, pid: pid_t) {
-        let delays = [100, 200, 400, 800, 1600, 3200, 5000]
+        let delays = WindowTuning.observationRetryDelaysMilliseconds
         observationRetries[pid] = Task { @MainActor [weak self] in
             var attempt = 0
             while !Task.isCancelled {
@@ -1271,9 +1495,10 @@ public final class WindowSystem {
                     self.removeObserver(pid: pid)
                     return
                 }
+                let pendingBefore = self.applicationObservations[pid]?.pending
                 let retry = self.registerApplicationNotifications(element: element, pid: pid)
                 // Discover windows that appeared before registration succeeded.
-                self.onChange?()
+                if self.applicationObservations[pid]?.pending != pendingBefore { self.onChange?() }
                 if !retry { break }
                 attempt += 1
             }
@@ -1290,9 +1515,10 @@ public final class WindowSystem {
         )
         applicationInventoryTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(2)) }
+                do { try await Task.sleep(for: .seconds(WindowTuning.applicationInventoryPollSeconds)) }
                 catch { return }
                 guard let self, self.started, !Task.isCancelled else { return }
+                if self.inventoryPaused { continue }
                 let visibleWindows = self.onScreenWindows()
                 let applications = NSWorkspace.shared.runningApplications
                 let visiblePIDs = Set(visibleWindows.map(\.pid))
@@ -1364,8 +1590,17 @@ public final class WindowSystem {
     private func removeObserver(pid: pid_t) {
         launchDiscovery.cancel(pid: pid)
         observationRetries.removeValue(forKey: pid)?.cancel()
-        applicationObservations.removeValue(forKey: pid)
+        let registration = applicationObservations.removeValue(forKey: pid)
         if let observer = observers.removeValue(forKey: pid) {
+            // Unsubscribe before dropping the source so a late delivery cannot
+            // reach a callback whose context no longer exists.
+            let appElement = AXUIElementCreateApplication(pid)
+            for name in registration?.registered ?? [] {
+                AXObserverRemoveNotification(observer, appElement, name as CFString)
+            }
+            for tracked in windows.values where tracked.record.pid == pid {
+                unobserveWindow(tracked.element, observer: observer)
+            }
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         }
         for id in Array(windows.keys) where windows[id]?.record.pid == pid {
@@ -1373,16 +1608,27 @@ public final class WindowSystem {
         }
     }
 
+    private static let windowNotifications = [
+        kAXUIElementDestroyedNotification, kAXMovedNotification, kAXResizedNotification,
+        kAXTitleChangedNotification, kAXWindowMiniaturizedNotification, kAXWindowDeminiaturizedNotification
+    ]
+
     private func observeWindow(_ element: AXUIElement, observer: AXObserver) -> Bool {
         let context = Unmanaged.passUnretained(self).toOpaque()
         var complete = true
-        for name in [kAXUIElementDestroyedNotification, kAXMovedNotification, kAXResizedNotification,
-                     kAXTitleChangedNotification, kAXWindowMiniaturizedNotification,
-                     kAXWindowDeminiaturizedNotification] {
+        for name in Self.windowNotifications {
             let status = AXObserverAddNotification(observer, element, name as CFString, context)
             if status != .success, status != .notificationAlreadyRegistered { complete = false }
         }
         return complete
+    }
+
+    /// Removal of a notification that was never added, or of a dead element, fails
+    /// harmlessly; the point is that no live subscription outlasts its element.
+    private func unobserveWindow(_ element: AXUIElement, observer: AXObserver) {
+        for name in Self.windowNotifications {
+            AXObserverRemoveNotification(observer, element, name as CFString)
+        }
     }
 
     nonisolated private func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
@@ -1415,6 +1661,7 @@ public final class WindowSystem {
     }
 
     nonisolated private func windowNumber(_ element: AXUIElement) -> CGWindowID? {
+        guard let axWindowID = AccessibilityWindowNumber.function else { return nil }
         var identifier = CGWindowID(0)
         return axWindowID(element, &identifier) == .success && identifier != 0 ? identifier : nil
     }
