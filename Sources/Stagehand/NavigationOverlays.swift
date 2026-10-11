@@ -220,7 +220,7 @@ final class NavigationOverlays {
     }
 
     private func updateHoverFrame() {
-        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        guard let screen = NSScreen.managedDisplay else { return }
         let geometry = NavigationHUDGeometry.layout(
             screenFrame: screen.frame, visibleFrame: screen.visibleFrame,
             safeAreaTop: screen.safeAreaInsets.top,
@@ -249,7 +249,7 @@ final class NavigationOverlays {
     }
 
     private func presentHUD(dismissAfter: Duration) {
-        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        guard let screen = NSScreen.managedDisplay else { return }
         let hud = hudPanel()
         hud.ignoresMouseEvents = hudModel.warning != nil
         guard let container = hud.contentView as? HUDContainerView else { return }
@@ -486,6 +486,19 @@ final class HUDContainerView: NSView {
 private final class NavigationHostingView<Content: View>: NSHostingView<Content> {
     // The HUD receives the first click while the managed app remains the key application.
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+extension NSScreen {
+    /// The display Stagehand manages. NSScreen.main follows the key window, which
+    /// moves the app bar and Quick Controls to whichever screen last had focus;
+    /// the built-in panel is the only display this version arranges.
+    static var managedDisplay: NSScreen? {
+        screens.first { screen in
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+            else { return false }
+            return CGDisplayIsBuiltin(number.uint32Value) != 0
+        } ?? screens.first
+    }
 }
 
 final class OverlayPanel: NSPanel {
