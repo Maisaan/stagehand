@@ -54,9 +54,17 @@ final class FakeWindowSystem: WindowManaging {
         if focused == id { focused = nil }
     }
 
-    func restoreFromDock(_ id: String) {
+    func minimize(_ id: String) {
+        minimizeSilently(id)
+        onWindowMiniaturized?(id)
+    }
+
+    /// macOS focuses a window it restores from the Dock. Without the notification,
+    /// only the next scan finds the window, possibly before focus is reported.
+    func restoreFromDock(_ id: String, notify: Bool = true, focus: Bool = false) {
         windows[id]?.minimized = false
-        onWindowDeminiaturized?(id)
+        if focus { focused = id }
+        if notify { onWindowDeminiaturized?(id) } else { onChange?() }
     }
 
     func close(_ id: String) {

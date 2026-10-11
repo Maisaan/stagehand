@@ -69,12 +69,14 @@ extension StagehandModel {
     /// A minimized window keeps its focus history so it can return to its membership.
     @discardableResult
     func windowMiniaturized(windowID: String) -> Bool {
-        removeFromRibbon(forgetFocus: false, event: "window_unavailable", remove: {
+        let removed = removeFromRibbon(forgetFocus: false, event: "window_unavailable", remove: {
             removeUnavailableWindow(
                 windowID: windowID, windows: &windows, state: &state,
                 restoration: &workspaceRestoration, trackedWindowIDs: windowSystem.trackedWindowIDs
             ) ? [windowID] : []
         }, details: { _ in ["windowID": windowID, "reason": "minimized"] })
+        if removed { minimizedWindowIDs.insert(windowID) }
+        return removed
     }
 
     /// Applies a removal immediately and animates the remaining ribbon closed.
@@ -133,14 +135,39 @@ extension StagehandModel {
             trackedWindowIDs: windowSystem.trackedWindowIDs,
             initialWidthFractions: initialWidthFractions(for: [window])
         ) else { return }
-        if state.currentSpace.windowIDs.contains(windowID) {
-            state.focus(windowID: windowID)
-        } else if let spaceIndex = state.spaces.firstIndex(where: { $0.windowIDs.contains(windowID) }) {
-            state.focus(windowID: windowID, inSpace: spaceIndex)
+        if !placeRestoredWindows() {
+            // Minimized while paused: it returns to its saved slot.
+            if state.currentSpace.windowIDs.contains(windowID) {
+                state.focus(windowID: windowID)
+            } else if let spaceIndex = state.spaces.firstIndex(where: { $0.windowIDs.contains(windowID) }) {
+                state.focus(windowID: windowID, inSpace: spaceIndex)
+            }
         }
         diagnostics.record("window_available", details: ["windowID": windowID, "reason": "restored"])
         enqueue(.refresh)
         onStateChange?()
+    }
+
+    /// Puts windows that returned from the Dock directly after the focused window
+    /// of their space and focuses them. Returns whether any window was placed.
+    @discardableResult
+    func placeRestoredWindows() -> Bool {
+        minimizedWindowIDs.formIntersection(windowSystem.trackedWindowIDs)
+        var placed = false
+        for windowID in minimizedWindowIDs where windows.contains(where: { $0.id == windowID }) {
+            minimizedWindowIDs.remove(windowID)
+            let spaceIndex = state.currentSpace.windowIDs.contains(windowID)
+                ? state.activeSpaceIndex
+                : state.spaces.firstIndex { $0.windowIDs.contains(windowID) }
+            guard let spaceIndex, state.placeAfterFocused(windowID: windowID, inSpace: spaceIndex) else { continue }
+            placed = true
+            diagnostics.record("restored_window_placed", details: [
+                "windowID": windowID,
+                "space": String(spaceIndex + 1),
+                "index": String(state.spaces[spaceIndex].windowIDs.firstIndex(of: windowID) ?? -1)
+            ])
+        }
+        return placed
     }
 
     func finishRemovingWindows(_ removedIDs: Set<String>, focusedWindowID: String?) {
@@ -217,7 +244,9 @@ extension StagehandModel {
                                        trackedWindowIDs: windowSystem.trackedWindowIDs,
                                        initialWidthFractions: initialWidthFractions(for: current))
         let observedFocusedWindowID = windowSystem.focusedWindowID()
-        if oldState.activeSpaceIndex == state.activeSpaceIndex,
+        // A window restored from the Dock takes focus even if macOS has not reported it yet.
+        let placedRestoredWindow = placeRestoredWindows()
+        if !placedRestoredWindow, oldState.activeSpaceIndex == state.activeSpaceIndex,
            let focused = observedFocusedWindowID,
            current.contains(where: { $0.id == focused }) {
             // External app activation follows an existing membership; shared windows stay in this space.
@@ -304,7 +333,8 @@ extension StagehandModel {
             if !removedFromCurrentSpace.isEmpty {
                 enqueue(.windowRemoval, transitionFrom: oldState, motionStart: motionStart)
             } else {
-                enqueue(preferencesNeedLayout ? .preferences : .refresh)
+                // Preferences layouts follow the old system focus; a restored window must win.
+                enqueue(preferencesNeedLayout && !placedRestoredWindow ? .preferences : .refresh)
             }
         } else if preferencesNeedLayout,
                   LayoutRequestPolicy.preferences.prepare(state: state, focusedWindowID: observedFocusedWindowID) != nil {

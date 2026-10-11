@@ -92,6 +92,60 @@ struct ModelScenarioTests {
         #expect(harness.model.state.currentSpace.windowIDs == order)
     }
 
+    /// Five windows, the second focused: a window reopened from the Dock or a
+    /// newly opened app joins third and takes focus, instead of its old slot.
+    @Test(arguments: ["notification", "scanBeforeFocus", "scanAfterFocus"])
+    func aWindowRestoredFromTheDockJoinsAfterTheFocusedWindow(path: String) async {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c", "d", "e"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        harness.model.navigate(.focusNext)
+        await harness.settle()
+        let order = harness.model.state.currentSpace.windowIDs
+        let focused = order[1]
+        #expect(harness.model.state.focusedWindowID == focused)
+        let restored = order[4]
+        harness.windows.minimize(restored)
+        await harness.settle()
+        #expect(harness.model.state.focusedWindowID == focused)
+
+        harness.windows.restoreFromDock(restored, notify: path == "notification",
+                                        focus: path != "scanBeforeFocus")
+        await harness.settle()
+
+        #expect(harness.model.state.currentSpace.windowIDs == [order[0], focused, restored, order[2], order[3]])
+        #expect(harness.model.state.focusedWindowID == restored)
+        #expect(harness.windows.focusedWindowID() == restored)
+        #expect(harness.events("automatic_pause").isEmpty)
+    }
+
+    @Test(arguments: [true, false])
+    func aNewlyOpenedAppJoinsAfterTheFocusedWindow(focusedAtScan: Bool) async {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c", "d", "e"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        harness.model.navigate(.focusNext)
+        await harness.settle()
+        let order = harness.model.state.currentSpace.windowIDs
+
+        harness.windows.addWindow("new", pid: 300, frame: CGRect(x: 80, y: 60, width: 700, height: 500))
+        if focusedAtScan { harness.windows.setFocus("new") }
+        harness.windows.onChange?()
+        await harness.settle()
+        if !focusedAtScan {
+            // The app activates after its window was discovered.
+            harness.windows.setFocus("new")
+            harness.windows.onFocusedWindowChange?("new")
+            await harness.settle()
+        }
+
+        #expect(harness.model.state.currentSpace.windowIDs == [order[0], order[1], "new"] + order[2...])
+        #expect(harness.model.state.focusedWindowID == "new")
+        #expect(harness.windows.focusedWindowID() == "new")
+    }
+
     /// The dangerous opposite: a live window that refuses focus must still pause
     /// and restore every window, rather than being skipped.
     @Test func aLiveWindowThatRefusesFocusStillPausesAndRestoresFrames() async {

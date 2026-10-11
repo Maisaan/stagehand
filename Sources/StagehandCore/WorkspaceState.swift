@@ -189,6 +189,21 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         return true
     }
 
+    /// Moves a member directly after the space's focused window, then focuses it
+    /// there, as macOS does when the user reopens a window.
+    @discardableResult
+    public mutating func placeAfterFocused(windowID: String, inSpace index: Int) -> Bool {
+        guard spaces.indices.contains(index), spaces[index].windowIDs.contains(windowID) else { return false }
+        if let anchor = spaces[index].focusedWindowID, anchor != windowID {
+            spaces[index].windowIDs.removeAll { $0 == windowID }
+            let anchorIndex = spaces[index].windowIDs.firstIndex(of: anchor) ?? spaces[index].windowIDs.endIndex - 1
+            spaces[index].windowIDs.insert(windowID, at: anchorIndex + 1)
+        }
+        activeSpaceIndex = index
+        spaces[index].focusedWindowID = windowID
+        return true
+    }
+
     /// Uses the final index in the current space and preserves focus and per-space widths.
     @discardableResult
     public mutating func reorderWindow(windowID: String, to index: Int) -> Bool {

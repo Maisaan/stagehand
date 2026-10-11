@@ -107,6 +107,9 @@ final class StagehandModel: ObservableObject {
     var desktopCheckTask: Task<Void, Never>?
     var workspaceRestoration = WorkspaceRestoration()
     var focusHistory = WindowFocusHistory()
+    /// Windows that left the ribbon by minimizing. When one returns, it joins next
+    /// to the focused window instead of its old slot.
+    var minimizedWindowIDs: Set<String> = []
     var lastLayoutMilliseconds = 0
     var lastFocusTokenExpired = false
     var pointerInteraction: PointerInteraction?
@@ -452,6 +455,8 @@ final class StagehandModel: ObservableObject {
         workspaceRestoration.reconcile(state: &state, windowIDs: windows.map(\.id),
                                        trackedWindowIDs: windowSystem.trackedWindowIDs,
                                        initialWidthFractions: initialWidthFractions(for: windows))
+        // Windows restored while paused keep their saved slots on resume.
+        minimizedWindowIDs.subtract(windows.map(\.id))
         if let focused = windowSystem.focusedWindowID() {
             state.focus(windowID: focused)
             focusHistory.record(windowID: focused)
