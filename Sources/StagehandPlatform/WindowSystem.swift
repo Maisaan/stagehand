@@ -414,9 +414,10 @@ public final class WindowSystem {
     }
 
     nonisolated private static func readApplications(_ request: ScanReadRequest) -> [pid_t: ApplicationRead] {
-        Dictionary(uniqueKeysWithValues: request.pids.map {
+        // A pid listed twice must not trap mid-scan with windows parked; the last read wins.
+        Dictionary(request.pids.map {
             ($0, request.system.readApplication(pid: $0, identities: request.identities))
-        })
+        }, uniquingKeysWith: { _, last in last })
     }
 
     nonisolated private func readApplication(pid: pid_t, identities: IdentitySnapshot) -> ApplicationRead {
