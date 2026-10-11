@@ -153,3 +153,5 @@ The executable also provides `--diagnose-focus`, `--diagnose-start`, `--diagnose
 ## License
 
 Stagehand is licensed under the [MIT License](LICENSE).
+
+The interface icons are [Phosphor Icons](https://phosphoricons.com), used under the MIT License; see [Sources/Stagehand/Resources/Phosphor/LICENSE](Sources/Stagehand/Resources/Phosphor/LICENSE).
