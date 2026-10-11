@@ -15,6 +15,20 @@ struct WorkspaceLayoutStore {
         var version: Int
         var state: WorkspaceState
         var processLaunchDates: [String: Date]
+
+        init(version: Int, state: WorkspaceState, processLaunchDates: [String: Date]) {
+            self.version = version
+            self.state = state
+            self.processLaunchDates = processLaunchDates
+        }
+
+        /// Files written before the version field existed are version 1.
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
+            state = try container.decode(WorkspaceState.self, forKey: .state)
+            processLaunchDates = try container.decode([String: Date].self, forKey: .processLaunchDates)
+        }
     }
 
     static var defaultURL: URL {
