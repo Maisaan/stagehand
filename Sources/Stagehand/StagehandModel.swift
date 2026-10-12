@@ -330,6 +330,12 @@ final class StagehandModel: ObservableObject {
             // refreshed by the coalesced reconciliation after the resize settles.
             self.updateFocusBorder(windowID: id, frame: frame, refreshShape: false)
         }
+        windowSystem.onAccessoryActivation = { [weak self] pid in
+            guard let self, self.isRunning, !self.isSuspended, let focused = self.focusedWindow,
+                  let anchor = self.windowSystem.frame(windowID: focused.id),
+                  let bounds = self.availableFrame else { return }
+            self.windowSystem.centerCompanionPanel(pid: pid, over: anchor, within: bounds)
+        }
         windowSystem.onNativeDesktopChange = { [weak self] in
             self?.nativeDesktopChanged()
         }

@@ -118,6 +118,7 @@ public final class WindowSystem {
     public var onWindowDeminiaturized: ((String) -> Void)?
     public var onNativeDesktopChange: (() -> Void)?
     public var onScreenParametersChange: (() -> Void)?
+    public var onAccessoryActivation: ((pid_t) -> Void)?
     public var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
     public var focusDiagnosticsEnabled = false
     /// Restricts management to these apps, excluding Stagehand's own windows. The
@@ -424,6 +425,11 @@ public final class WindowSystem {
                     }
                     if name == NSWorkspace.didActivateApplicationNotification {
                         self.reportCurrentFocus()
+                        if let pid, pid != ProcessInfo.processInfo.processIdentifier,
+                           let app = NSRunningApplication(processIdentifier: pid),
+                           Self.isSystemAgent(app), !self.windows.values.contains(where: { $0.record.pid == pid }) {
+                            self.onAccessoryActivation?(pid)
+                        }
                     }
                     if name == NSWorkspace.didTerminateApplicationNotification {
                         // Without the process there is nothing to drop; pid 0 would
@@ -1221,6 +1227,99 @@ public final class WindowSystem {
         return .restored
     }
 
+    /// Accessibility calls to other processes run here so a busy app blocks
+    /// neither ribbon motion nor the event taps.
+    nonisolated static let accessibilityQueue = DispatchQueue(label: "app.stagehand.focus-accessibility", qos: .userInteractive)
+
+    /// A panel from a process with no Dock presence, such as the system's
+    /// authentication prompt, is placed by macOS at the screen's center. The
+    /// ribbon keeps its focused window at the left, so the panel lands beside
+    /// it. Move the panel over the window the user is working in; its key
+    /// status is left to macOS. Only a macOS agent's panel above the modal
+    /// level is moved: a launcher or a menu bar utility also activates without
+    /// a Dock tile, and its window stays. Its AX subrole is no help, since the
+    /// authentication panel reports a standard window. Runs on its own queue
+    /// so a slow process never delays focus work.
+    public func centerCompanionPanel(pid: pid_t, over anchor: CGRect, within bounds: CGRect) {
+        let appElement = AXUIElementCreateApplication(pid)
+        let diagnostics = focusDiagnosticsEnabled
+        Self.companionQueue.async { [self] in
+            // The panel can be created a moment after its process activates.
+            for attempt in 0..<2 {
+                let focused = copyAttribute(appElement, kAXFocusedWindowAttribute)
+                if focused.error == .cannotComplete || focused.error == .apiDisabled {
+                    if diagnostics { logger.notice("Companion panel pid=\(pid, privacy: .public) unavailable status=\(focused.error.rawValue, privacy: .public)") }
+                    return
+                }
+                guard let value = focused.value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
+                    if attempt == 0 { usleep(50_000); continue }
+                    if diagnostics { logger.notice("Companion panel pid=\(pid, privacy: .public) none status=\(focused.error.rawValue, privacy: .public)") }
+                    return
+                }
+                let panel = unsafeDowncast(value, to: AXUIElement.self)
+                guard let frame = readFrame(panel), frame.width > 1, frame.height > 1 else {
+                    if diagnostics { logger.notice("Companion panel pid=\(pid, privacy: .public) no frame") }
+                    return
+                }
+                // WindowServer lists the panel a moment after its process activates.
+                var level = Self.windowLevel(pid: pid, frame: frame)
+                if level == nil { usleep(50_000); level = Self.windowLevel(pid: pid, frame: frame) }
+                guard Self.isCompanionPanel(level: level) else {
+                    if diagnostics { logger.notice("Companion panel pid=\(pid, privacy: .public) skipped level=\(level.map(String.init) ?? "nil", privacy: .public) frame=\(String(describing: frame), privacy: .public)") }
+                    return
+                }
+                let origin = Self.companionPanelOrigin(size: frame.size, over: anchor, within: bounds)
+                var point = origin
+                var status = AXError.success
+                if !Self.samePosition(origin, frame.origin), let position = AXValueCreate(.cgPoint, &point) {
+                    status = AXUIElementSetAttributeValue(panel, kAXPositionAttribute as CFString, position)
+                }
+                if diagnostics {
+                    logger.notice("Companion panel pid=\(pid, privacy: .public) level=\(level ?? -1, privacy: .public) from=\(String(describing: frame.origin), privacy: .public) to=\(String(describing: origin), privacy: .public) status=\(status.rawValue, privacy: .public)")
+                }
+                return
+            }
+        }
+    }
+
+    nonisolated private static let companionQueue = DispatchQueue(label: "app.stagehand.companion-panel", qos: .userInteractive)
+
+    /// A macOS agent with no Dock tile: authentication, Gatekeeper, alerts,
+    /// permission prompts. Its panels serve whatever the user is working in.
+    nonisolated static func isSystemAgent(_ app: NSRunningApplication) -> Bool {
+        app.activationPolicy != .regular && app.bundleURL?.path.hasPrefix("/System/") == true
+    }
+
+    /// WindowServer draws an agent's prompt above ordinary and modal windows;
+    /// the authentication panel sits at level 1000. A window at or below the
+    /// modal level is the agent's own interface and stays where it is.
+    nonisolated static func isCompanionPanel(level: Int?) -> Bool {
+        guard let level else { return false }
+        return level > Int(CGWindowLevelForKey(.modalPanelWindow))
+    }
+
+    /// The WindowServer level of the process's on-screen window at `frame`.
+    /// The private window-number lookup answers nil for an agent's secure
+    /// panel, so the match is by owner and bounds.
+    nonisolated private static func windowLevel(pid: pid_t, frame: CGRect) -> Int? {
+        guard let info = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] else { return nil }
+        for window in info where (window[kCGWindowOwnerPID as String] as? Int32) == pid {
+            guard let boundsInfo = window[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsInfo),
+                  abs(bounds.minX - frame.minX) <= 1, abs(bounds.minY - frame.minY) <= 1,
+                  abs(bounds.width - frame.width) <= 1, abs(bounds.height - frame.height) <= 1 else { continue }
+            return window[kCGWindowLayer as String] as? Int
+        }
+        return nil
+    }
+
+    /// The origin that centers a panel of `size` on `anchor` without leaving `bounds`.
+    nonisolated static func companionPanelOrigin(size: CGSize, over anchor: CGRect, within bounds: CGRect) -> CGPoint {
+        let x = min(max(anchor.midX - size.width / 2, bounds.minX), max(bounds.minX, bounds.maxX - size.width))
+        let y = min(max(anchor.midY - size.height / 2, bounds.minY), max(bounds.minY, bounds.maxY - size.height))
+        return CGPoint(x: x.rounded(), y: y.rounded())
+    }
+
     public func focusedWindowID() -> String? {
         if NSApp?.isActive == true { return nativeWindows.focusedWindowID }
         let result = copyAttribute(systemElement, kAXFocusedApplicationAttribute)
@@ -1527,7 +1626,7 @@ public final class WindowSystem {
 
         func wait(milliseconds: Int) async throws { try await Task.sleep(for: .milliseconds(milliseconds)) }
 
-        private static let queue = DispatchQueue(label: "app.stagehand.focus-accessibility", qos: .userInteractive)
+        private static var queue: DispatchQueue { WindowSystem.accessibilityQueue }
 
         private static func accessibility<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
             await withCheckedContinuation { continuation in

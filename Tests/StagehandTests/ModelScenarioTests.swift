@@ -396,13 +396,17 @@ struct ModelScenarioTests {
         while harness.events("automatic_pause").isEmpty, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(10))
         }
+        // The pause restores every frame. The automatic resume 100 ms later may
+        // succeed, because the still-focused window needs no activation, and lay
+        // the ribbon out again; read the frames before that.
+        let framesAtPause = harness.windows.windows.mapValues(\.frame)
         await harness.settle()
 
         let pause = harness.events("automatic_pause").first?["details"] as? [String: String]
         #expect(pause?["reason"] == "input_transfer_expired")
         #expect(pause?["token"] != nil)
         #expect(harness.overlays.warnings.contains { $0.contains("couldn't finish switching windows") })
-        #expect(harness.windows.windows.mapValues(\.frame) == originals)
+        #expect(framesAtPause == originals)
         #expect(harness.model.focusGate.isAvailable)
     }
 

@@ -25,6 +25,11 @@ final class FakeWindowSystem: WindowManaging {
     var onWindowDeminiaturized: ((String) -> Void)?
     var onNativeDesktopChange: (() -> Void)?
     var onScreenParametersChange: (() -> Void)?
+    var onAccessoryActivation: ((pid_t) -> Void)?
+    var companionPanelRequests: [(pid: pid_t, anchor: CGRect, bounds: CGRect)] = []
+    func centerCompanionPanel(pid: pid_t, over anchor: CGRect, within bounds: CGRect) {
+        companionPanelRequests.append((pid, anchor, bounds))
+    }
 
     var isAccessibilityTrusted = true
     var focusDiagnosticsEnabled = false

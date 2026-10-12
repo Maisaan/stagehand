@@ -15,6 +15,9 @@ public protocol WindowManaging: AnyObject {
     var onWindowDeminiaturized: ((String) -> Void)? { get set }
     var onNativeDesktopChange: (() -> Void)? { get set }
     var onScreenParametersChange: (() -> Void)? { get set }
+    /// A process without a Dock presence became active, usually to present a
+    /// panel on behalf of the focused window.
+    var onAccessoryActivation: ((pid_t) -> Void)? { get set }
 
     var isAccessibilityTrusted: Bool { get }
     var focusDiagnosticsEnabled: Bool { get set }
@@ -44,6 +47,8 @@ public protocol WindowManaging: AnyObject {
 
     func focusedWindowID() -> String?
     func focus(windowID: String) async -> Bool
+    /// Centers the accessory process's frontmost panel over `anchor`, kept inside `bounds`.
+    func centerCompanionPanel(pid: pid_t, over anchor: CGRect, within bounds: CGRect)
 }
 
 extension WindowSystem: WindowManaging {}

@@ -34,9 +34,16 @@ enum LayoutRequestPolicy: Equatable {
         windowID: String,
         currentFocus: () -> String?,
         activate: () async -> Bool,
-        unavailability: () -> WindowUnavailability? = { nil }
+        unavailability: () -> WindowUnavailability? = { nil },
+        isParked: () -> Bool = { false }
     ) async -> FocusConfirmation {
         guard self == .navigation else { return currentFocus() == windowID ? .focused : .failed }
+        // A visible window that already holds focus needs no activation.
+        // Re-activating its app costs AX round trips on every refresh and takes
+        // key status away from a panel another process has just presented for
+        // it, such as a system authentication prompt. A window still parked
+        // goes through activation, whose restore retries bring it back.
+        if !isParked(), currentFocus() == windowID { return .focused }
         if await activate() || currentFocus() == windowID { return .focused }
         return unavailability().map(FocusConfirmation.unavailable) ?? .failed
     }

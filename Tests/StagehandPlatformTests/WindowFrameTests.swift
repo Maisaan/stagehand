@@ -246,3 +246,26 @@ struct WindowFrameTests {
     #expect(!restoration.restored)
     #expect(restoration.attempts > 1)
 }
+
+@Test func companionPanelCentersOnItsAnchorAndStaysOnScreen() {
+    let bounds = CGRect(x: 0, y: 39, width: 1800, height: 1130)
+    // A 1024-wide focused window at the ribbon's left edge; the panel lands on its center.
+    let anchor = CGRect(x: 0, y: 204, width: 1024, height: 800)
+    #expect(WindowSystem.companionPanelOrigin(size: CGSize(width: 550, height: 440), over: anchor, within: bounds)
+            == CGPoint(x: 237, y: 384))
+    // A panel wider than the remaining room is kept inside the bounds.
+    let edge = CGRect(x: 1500, y: 39, width: 300, height: 1130)
+    #expect(WindowSystem.companionPanelOrigin(size: CGSize(width: 550, height: 440), over: edge, within: bounds)
+            == CGPoint(x: 1250, y: 384))
+    // A panel taller than the bounds pins to the top.
+    #expect(WindowSystem.companionPanelOrigin(size: CGSize(width: 100, height: 2000), over: anchor, within: bounds).y == 39)
+}
+
+@Test func onlyPanelsAboveTheModalLevelCountAsCompanionPanels() {
+    // The authentication panel draws at 1000; a launcher's panel at the modal level stays.
+    #expect(WindowSystem.isCompanionPanel(level: 1000))
+    #expect(WindowSystem.isCompanionPanel(level: Int(CGWindowLevelForKey(.modalPanelWindow)) + 1))
+    #expect(!WindowSystem.isCompanionPanel(level: Int(CGWindowLevelForKey(.modalPanelWindow))))
+    #expect(!WindowSystem.isCompanionPanel(level: 0))
+    #expect(!WindowSystem.isCompanionPanel(level: nil))
+}
