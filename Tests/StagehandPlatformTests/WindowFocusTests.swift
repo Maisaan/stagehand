@@ -293,3 +293,16 @@ private func missingGlobalReading(
         #expect(report.outcome == .timedOut)
     }
 }
+
+@Test func failedMinimizedReadIsUnknownNotMinimized() {
+    // A busy app (Chrome right after closing a sibling window) answers with
+    // cannotComplete. Treating that as minimized paused Stagehand on 2026-10-12.
+    #expect(WindowSystem.availability(minimizedStatus: .success, minimized: false) == .available)
+    #expect(WindowSystem.availability(minimizedStatus: .success, minimized: nil) == .available)
+    #expect(WindowSystem.availability(minimizedStatus: .success, minimized: true) == .minimized)
+    #expect(WindowSystem.availability(minimizedStatus: .invalidUIElement, minimized: nil) == .closed)
+    #expect(WindowSystem.availability(minimizedStatus: .cannotComplete, minimized: nil) == .unknown)
+    #expect(WindowSystem.availability(minimizedStatus: .noValue, minimized: nil) == .unknown)
+    #expect(WindowSystem.availability(minimizedStatus: .attributeUnsupported, minimized: nil) == .unknown)
+    #expect(WindowSystem.availability(minimizedStatus: .apiDisabled, minimized: nil) == .unknown)
+}

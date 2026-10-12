@@ -971,8 +971,27 @@ public final class WindowSystem {
               let app = NSRunningApplication(processIdentifier: tracked.record.pid),
               !app.isTerminated else { return .closed }
         let minimized = copyAttribute(tracked.element, kAXMinimizedAttribute)
-        if minimized.error == .invalidUIElement { return .closed }
-        return minimized.value as? Bool == true ? .minimized : nil
+        switch Self.availability(minimizedStatus: minimized.error, minimized: minimized.value as? Bool) {
+        case .closed: return .closed
+        case .minimized: return .minimized
+        case .available, .unknown: return nil
+        }
+    }
+
+    enum TargetAvailability: Equatable, Sendable {
+        case available, minimized, closed, unknown
+    }
+
+    /// Interprets one read of kAXMinimized. Only a successful read reports a
+    /// state, and a destroyed element is closed. Any other error, including
+    /// cannotComplete from an app that is busy, is unknown: callers must not
+    /// treat it as minimized, because that turns a transient stall into a pause.
+    nonisolated static func availability(minimizedStatus: AXError, minimized: Bool?) -> TargetAvailability {
+        switch minimizedStatus {
+        case .success: return minimized == true ? .minimized : .available
+        case .invalidUIElement: return .closed
+        default: return .unknown
+        }
     }
 
     public func isParked(windowID: String) -> Bool {
@@ -989,7 +1008,7 @@ public final class WindowSystem {
               let tracked = windows[windowID] else { return false }
         guard captureOriginalFrame(windowID: windowID) else { return false }
         if tracked.parking.restoreFrame != nil {
-            guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else { return false }
+            guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool != true else { return false }
             var parking = tracked.parking
             let success = parking.restore(to: frame, setFrame: { requested in
                 self.moveWithOwnedWindows(windowID: windowID) {
@@ -1013,7 +1032,7 @@ public final class WindowSystem {
         guard let tracked = windows[windowID] else { return false }
         // AX can move a parked window back onscreen after our last frame read.
         // Check its physical position on every parking request.
-        guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else { return false }
+        guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool != true else { return false }
         guard let currentFrame = readFrame(tracked.element) else { return false }
         guard captureOriginalFrame(windowID: windowID) else { return false }
         let screens = NSScreen.screens
@@ -1055,7 +1074,7 @@ public final class WindowSystem {
         guard let tracked = windows[windowID] else { return false }
         guard tracked.parking.restoreFrame != nil else { return true }
         // A user-minimized window remains theirs; Stagehand never reverses that action.
-        guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else { return false }
+        guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool != true else { return false }
         var parking = tracked.parking
         let success = parking.restore(setFrame: { requested in
             self.moveWithOwnedWindows(windowID: windowID) {
@@ -1262,13 +1281,21 @@ public final class WindowSystem {
                                                 initialObservation: nil, observations: []) }
             return false
         }
-        guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool == false else {
+        // Only a confirmed minimize or a destroyed element stops the focus here, so
+        // the caller's unavailability check drops the window without pausing. A
+        // busy app answers this read with cannotComplete, as Chrome does for its
+        // remaining windows just after one closes; that is not a minimized window,
+        // and the attempt below already waits for the app to answer.
+        let minimizedRead = copyAttribute(tracked.element, kAXMinimizedAttribute)
+        let availability = Self.availability(minimizedStatus: minimizedRead.error,
+                                             minimized: minimizedRead.value as? Bool)
+        guard availability == .available || availability == .unknown else {
             if focusDiagnosticsEnabled {
                 lastFocusReport = WindowFocusReport(
                     targetPID: tracked.record.pid,
                     outcome: .unavailable,
                     elapsedMilliseconds: 0,
-                    operations: [.init("targetMinimized", accepted: false)],
+                    operations: [.init(availability == .closed ? "targetClosed" : "targetMinimized", accepted: false)],
                     initialObservation: nil,
                     observations: []
                 )
