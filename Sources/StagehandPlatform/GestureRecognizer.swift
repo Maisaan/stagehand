@@ -36,6 +36,10 @@ public struct GestureNavigationCompletion: Equatable, Sendable {
 struct GestureEventBuffer {
     private var events: [(event: GestureNavigationEvent, axis: GestureAxis?)] = []
     private var activeAxis: GestureAxis?
+    /// Releases that `drain()` handed to main-actor delivery and that have not finished
+    /// their handoff yet. The keyboard tap must keep treating them as pending: a batch may
+    /// hold a `.began` whose preview does AX work before the `.ended` begins its transfer.
+    private(set) var completionsInFlight = 0
 
     mutating func append(_ event: GestureNavigationEvent) {
         if case .began(let axis, _, _) = event { activeAxis = axis }
@@ -49,10 +53,32 @@ struct GestureEventBuffer {
         if case .cancelled = event { activeAxis = nil }
     }
 
+    /// A release is queued, or was drained for delivery and has not finished its handoff.
+    var hasCompletion: Bool {
+        completionsInFlight > 0 || events.contains { Self.isCompletion($0) }
+    }
+
+    private static func isCompletion(_ buffered: (event: GestureNavigationEvent, axis: GestureAxis?)) -> Bool {
+        if case .ended = buffered.event { buffered.axis != nil } else { false }
+    }
+
+    /// Hands every queued event to delivery. Each completion stays counted until
+    /// `completionDelivered()` is called for it.
     mutating func drain() -> [GestureNavigationEvent] {
+        completionsInFlight += events.count { if case .ended = $0.event { true } else { false } }
         let result = events.map(\.event)
         events.removeAll(keepingCapacity: true)
         return result
+    }
+
+    /// Call after delivering one `.ended` from `drain()` has returned.
+    mutating func completionDelivered() {
+        completionsInFlight = max(0, completionsInFlight - 1)
+    }
+
+    /// Drops queued events without counting their completions as delivered work.
+    mutating func removeAll() {
+        events.removeAll(keepingCapacity: true)
     }
 
     /// A keyboard event can reach the main run loop before queued gesture delivery.
@@ -78,6 +104,29 @@ struct GestureEventBuffer {
 
 /// One drag per contact sequence. Wait for all fingers to lift before accepting another.
 struct NavigationGestureRecognizer: Sendable {
+    /// Contacts must land inside this normalized band; edge touches are usually a palm.
+    static let landingCoordinateBounds = 0.015...0.985
+    /// Normalized range accepted once a sequence has an origin.
+    static let trackedCoordinateBounds = 0.0...1.0
+    /// Maximum per-finger deviation from the mean movement before fingers are treated as incoherent.
+    static let coherenceTolerance = 0.035
+    /// Mean movement needed before an axis is chosen.
+    static let axisLockDistance = 0.012
+    /// One axis must dominate the other by this ratio to lock.
+    static let axisLockRatio = 1.35
+    /// A diagonal beyond this distance without a dominant axis is cancelled.
+    static let ambiguousDiagonalDistance = 0.12
+    /// Release velocity uses samples newer than this window, keeping one older sample.
+    static let velocitySampleWindow: TimeInterval = 0.08
+    static let maximumVelocitySamples = 12
+    /// Velocity is zero when the last sample is older than this at release.
+    static let velocityStaleInterval: TimeInterval = 0.1
+    /// A flick commits with this displacement and velocity in the same direction.
+    static let flickDisplacement = 0.02
+    static let flickVelocity = 0.45
+    /// A slow drag commits at this displacement.
+    static let commitDisplacement = 0.075
+
     let fingerCount: Int
     private var origin: [GestureContact] = []
     private var lastContacts: [GestureContact] = []
@@ -113,7 +162,7 @@ struct NavigationGestureRecognizer: Sendable {
             // an origin. An added contact after recognition starts still cancels it.
             return origin.isEmpty ? nil : cancel(reason: "extra-contact")
         }
-        let coordinateBounds = origin.isEmpty ? 0.015...0.985 : 0.0...1.0
+        let coordinateBounds = origin.isEmpty ? Self.landingCoordinateBounds : Self.trackedCoordinateBounds
         for (index, contact) in contacts.enumerated() {
             guard contact.x.isFinite, contact.y.isFinite,
                   coordinateBounds.contains(contact.x), coordinateBounds.contains(contact.y),
@@ -136,7 +185,7 @@ struct NavigationGestureRecognizer: Sendable {
                 guard deltas.count == contacts.count else { return cancel(reason: "missing-lift-history") }
                 let dx = deltas.reduce(0) { $0 + $1.x } / Double(deltas.count)
                 let dy = deltas.reduce(0) { $0 + $1.y } / Double(deltas.count)
-                guard deltas.allSatisfy({ abs($0.x - dx) < 0.035 && abs($0.y - dy) < 0.035 }) else { return cancel(reason: "incoherent-lift") }
+                guard deltas.allSatisfy({ abs($0.x - dx) < Self.coherenceTolerance && abs($0.y - dy) < Self.coherenceTolerance }) else { return cancel(reason: "incoherent-lift") }
                 record(displacement: previousDisplacement + (axis == .horizontal ? dx : dy), timestamp: timestamp)
             }
             return finish(timestamp: timestamp)
@@ -164,7 +213,8 @@ struct NavigationGestureRecognizer: Sendable {
         // during a long swipe and must not cancel an already-visible interaction.
         if axis == nil,
            !zip(ordered, origin).allSatisfy({
-               abs(($0.0.x - $0.1.x) - dx) < 0.035 && abs(($0.0.y - $0.1.y) - dy) < 0.035
+               abs(($0.0.x - $0.1.x) - dx) < Self.coherenceTolerance
+                   && abs(($0.0.y - $0.1.y) - dy) < Self.coherenceTolerance
            }) {
             return cancel(reason: "incoherent-movement")
         }
@@ -177,13 +227,13 @@ struct NavigationGestureRecognizer: Sendable {
             guard displacement != previousDisplacement else { return nil }
             return .changed(displacement: displacement, velocity: velocity(at: timestamp))
         }
-        guard max(x, y) >= 0.012 else { return nil }
+        guard max(x, y) >= Self.axisLockDistance else { return nil }
         let lockedAxis: GestureAxis
-        if x >= y * 1.35 { lockedAxis = .horizontal }
-        else if y >= x * 1.35 { lockedAxis = .vertical }
+        if x >= y * Self.axisLockRatio { lockedAxis = .horizontal }
+        else if y >= x * Self.axisLockRatio { lockedAxis = .vertical }
         else {
             // A long diagonal is ambiguous. Do not unexpectedly choose an axis.
-            return max(x, y) >= 0.12 ? cancel(reason: "ambiguous-diagonal") : nil
+            return max(x, y) >= Self.ambiguousDiagonalDistance ? cancel(reason: "ambiguous-diagonal") : nil
         }
         axis = lockedAxis
         let displacement = lockedAxis == .horizontal ? dx : dy
@@ -197,16 +247,17 @@ struct NavigationGestureRecognizer: Sendable {
     }
 
     private mutating func record(displacement: Double, timestamp: TimeInterval) {
-        // Keep at most 12 recent samples and one preceding sample for a stable release velocity.
+        // Keep the recent sample window and one preceding sample for a stable release velocity.
         samples.append((timestamp, displacement))
-        while samples.count > 2 && (samples[1].time < timestamp - 0.08 || samples.count > 12) {
+        while samples.count > 2
+            && (samples[1].time < timestamp - Self.velocitySampleWindow || samples.count > Self.maximumVelocitySamples) {
             samples.removeFirst()
         }
     }
 
     private func velocity(at timestamp: TimeInterval) -> Double {
         guard let first = samples.first, let last = samples.last,
-              timestamp - last.time <= 0.1, last.time > first.time else { return 0 }
+              timestamp - last.time <= Self.velocityStaleInterval, last.time > first.time else { return 0 }
         return (last.displacement - first.displacement) / (last.time - first.time)
     }
 
@@ -215,8 +266,9 @@ struct NavigationGestureRecognizer: Sendable {
         finished = true
         guard let axis, let displacement = samples.last?.displacement else { return nil }
         let velocity = velocity(at: timestamp)
-        let flick = abs(displacement) >= 0.02 && abs(velocity) >= 0.45 && displacement * velocity > 0
-        let committed = abs(displacement) >= 0.075 || flick
+        let flick = abs(displacement) >= Self.flickDisplacement && abs(velocity) >= Self.flickVelocity
+            && displacement * velocity > 0
+        let committed = abs(displacement) >= Self.commitDisplacement || flick
         let action: NavigationAction?
         if !committed { action = nil }
         else if axis == .horizontal { action = displacement < 0 ? .focusNext : .focusPrevious }

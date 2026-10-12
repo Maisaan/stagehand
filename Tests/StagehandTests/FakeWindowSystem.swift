@@ -30,11 +30,14 @@ final class FakeWindowSystem: WindowManaging {
     var focusDiagnosticsEnabled = false
     var lastFocusReport: WindowFocusReport? { nil }
     var hasPendingRecovery = false
+    var pendingRecoveryWindowIDs: Set<String> = []
     private(set) var windows: [String: Window] = [:]
     private(set) var focused: String?
     private(set) var started = false
     /// Live windows that refuse focus, like an app blocked by a modal dialog.
     var refusesFocus: Set<String> = []
+    /// How long every focus takes, like a busy app letting AX requests time out.
+    var focusDelayMilliseconds = 0
 
     var trackedWindowIDs: Set<String> { Set(windows.keys) }
 
@@ -142,6 +145,9 @@ final class FakeWindowSystem: WindowManaging {
     func focusedWindowID() -> String? { focused }
 
     func focus(windowID: String) async -> Bool {
+        if focusDelayMilliseconds > 0 {
+            try? await Task.sleep(for: .milliseconds(focusDelayMilliseconds))
+        }
         guard let window = windows[windowID], !window.minimized, !refusesFocus.contains(windowID) else {
             return false
         }
@@ -207,6 +213,11 @@ final class ImmediateFrameDriver: RibbonFrameDriving {
     func stop() {}
 }
 
+@MainActor
+final class DesktopFixture {
+    var id: UInt64? = 1
+}
+
 /// A model wired to fakes, recording diagnostics to a temporary file.
 @MainActor
 struct ModelHarness {
@@ -216,7 +227,13 @@ struct ModelHarness {
     let logURL: URL
     let postedEvents: () -> Int
 
-    init(windowIDs: [String], focused: String, layoutStore: WorkspaceLayoutStore? = nil) {
+    /// The Desktop reported to the model; nil means WindowServer gave no identity.
+    let desktop: DesktopFixture
+
+    init(windowIDs: [String], focused: String, layoutStore: WorkspaceLayoutStore? = nil,
+         transferTimeoutMilliseconds: Int = 4_000) {
+        let desktop = DesktopFixture()
+        self.desktop = desktop
         let windows = FakeWindowSystem()
         let available = NSScreen.screens.first?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
         for (index, id) in windowIDs.enumerated() {
@@ -229,7 +246,8 @@ struct ModelHarness {
         logURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("stagehand-model-\(UUID().uuidString).log")
         var posted = 0
-        let gate = FocusInputGate(installsEventTap: false) { _, _ in posted += 1 }
+        let gate = FocusInputGate(transferTimeoutMilliseconds: transferTimeoutMilliseconds,
+                                  installsEventTap: false) { _, _ in posted += 1 }
         let overlays = FakeOverlays()
         model = StagehandModel(
             overlays: overlays,
@@ -237,11 +255,13 @@ struct ModelHarness {
             windowSystem: windows,
             input: FakeInput(),
             emptySpace: FakeEmptySpace(),
-            desktopScope: DesktopScope(currentDesktopID: { 1 }),
+            desktopScope: DesktopScope(currentDesktopID: { desktop.id }),
             focusGate: gate,
             ribbonMotion: RibbonMotion(frameDriver: ImmediateFrameDriver()),
             layoutStore: layoutStore
         )
+        // Tests lay out on the first screen; a desktop Mac has no built-in display.
+        model.builtInScreenProvider = { NSScreen.screens.first }
         self.windows = windows
         self.overlays = overlays
         postedEvents = { posted }

@@ -24,7 +24,15 @@ extension StagehandModel {
         guard NSRunningApplication.runningApplications(withBundleIdentifier: ownID).count <= 1 else {
             return "FAIL: another Stagehand is running. Quit it first so only one controller manages windows."
         }
-        diagnosticLoggingEnabled = true
+        // Log this run without persisting the preference; the published property's
+        // observer writes UserDefaults. Restored after the deferred pause below.
+        let loggingWasEnabled = diagnostics.isEnabled
+        diagnostics.isEnabled = true
+        windowSystem.focusDiagnosticsEnabled = true
+        defer {
+            diagnostics.isEnabled = loggingWasEnabled
+            windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
+        }
         let startedAt = Date().ISO8601Format(.init(includingFractionalSeconds: true))
         let reports = FileManager.default.temporaryDirectory
             .appendingPathComponent("stagehand-acceptance-\(UUID().uuidString)", isDirectory: true)
@@ -59,8 +67,8 @@ extension StagehandModel {
         start()
         await waitUntilIdle()
         guard isRunning else { return "FAIL: Stagehand did not start. Warning: \(warning ?? "none")" }
-        let originalFrames = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0.frame) })
-        let titles = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0.title) })
+        let originalFrames = Dictionary(windows.map { ($0.id, $0.frame) }, uniquingKeysWith: { first, _ in first })
+        let titles = Dictionary(windows.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
 
         // Rapid switches in both directions, reversing during transitions. Typing right
         // after a switch belongs to that switch's destination once focus is verified.

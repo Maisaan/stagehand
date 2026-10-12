@@ -35,6 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var onboardingWindow: NSWindow?
     private var model: StagehandModel?
     private var activationObserver: NSObjectProtocol?
+    /// Held for the process lifetime so a second Stagehand cannot manage the same windows.
+    private var instanceLock: InstanceLock?
 
     override init() {
         super.init()
@@ -47,6 +49,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let arguments = ProcessInfo.processInfo.arguments
+        // Diagnostics start and pause against disposable windows. They must not
+        // save that layout over the user's, nor flip the logging preference.
+        let isDiagnosticRun = arguments.contains {
+            $0.hasPrefix("--diagnose-") || $0 == "--acceptance" || $0 == "--render-previews"
+        }
+        if let refusal = claimSingleInstance() {
+            refuseToLaunch(refusal, arguments: arguments, diagnostic: isDiagnosticRun)
+            return
+        }
         // Diagnostics need the same completed AppKit launch as normal operation.
         // A main-actor Task created before NSApplication.run can execute earlier.
         if let index = arguments.firstIndex(of: "--diagnose-focus") ?? arguments.firstIndex(of: "--diagnose-parking"),
@@ -58,7 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             return
         }
-        let model = StagehandModel()
+        let model = StagehandModel(persistence: isDiagnosticRun ? .ephemeral : .standard)
         self.model = model
         if arguments.contains("--diagnose-permissions") {
             print("Accessibility: \(model.accessibilityGranted)")
@@ -80,10 +91,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 print(report)
                 // Launched through LaunchServices so macOS checks Stagehand's own
                 // Accessibility grant; stdout is not attached then.
-                if let output = arguments.firstIndex(of: "--acceptance-output").flatMap({
-                    arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil
-                }) {
-                    try? Data((report + "\n").utf8).write(to: URL(fileURLWithPath: output))
+                if let output = self.acceptanceOutputPath(in: arguments) {
+                    do {
+                        try Data((report + "\n").utf8).write(to: URL(fileURLWithPath: output))
+                    } catch {
+                        // The runner reads only this file; a silent failure would
+                        // look like a hung or passing run.
+                        FileHandle.standardError.write(Data(
+                            "Stagehand could not write the acceptance report to \(output): \(error.localizedDescription)\n".utf8
+                        ))
+                        model.shutDown()
+                        exit(1)
+                    }
                 }
                 NSApp.terminate(nil)
             }
@@ -118,6 +137,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 image.isTemplate = true
                 image.accessibilityDescription = "Stagehand"
                 button.image = image
+            } else if let symbol = NSImage(systemSymbolName: "rectangle.3.group",
+                                           accessibilityDescription: "Stagehand") {
+                // A binary run outside the bundle (.build) has no resource; a
+                // blank status item would hide the only way to pause or quit.
+                button.image = symbol
+            } else {
+                button.title = "SH"
             }
             button.imageScaling = .scaleProportionallyDown
             button.toolTip = "Stagehand"
@@ -139,6 +165,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             openOnboarding()
         } else if model.accessibilityGranted && !interrupted {
             model.start()
+        }
+    }
+
+    /// Nil when this process may manage windows; otherwise the reason it may not.
+    /// Two controllers would park and restore each other's windows. The running
+    /// application check covers installed copies; the file lock also covers a
+    /// binary run from .build, and the kernel drops it if the holder crashes.
+    private func claimSingleInstance() -> String? {
+        let pid = ProcessInfo.processInfo.processIdentifier
+        if let bundleID = Bundle.main.bundleIdentifier,
+           let other = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+               .first(where: { $0.processIdentifier != pid && !$0.isTerminated }) {
+            return "Another Stagehand (process \(other.processIdentifier)) is already running. Quit it first."
+        }
+        do {
+            instanceLock = try InstanceLock()
+            return nil
+        } catch InstanceLock.Failure.held {
+            let holder = (try? String(contentsOf: InstanceLock.defaultURL, encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+            return "Another Stagehand process (\(holder)) holds \(InstanceLock.defaultURL.path). Quit it first."
+        } catch {
+            // An unwritable Application Support folder should not block the app.
+            NSLog("Stagehand could not take its instance lock: %@", error.localizedDescription)
+            return nil
+        }
+    }
+
+    private func refuseToLaunch(_ reason: String, arguments: [String], diagnostic: Bool) {
+        NSLog("%@", reason)
+        if diagnostic {
+            let message = "FAIL: \(reason) No windows were changed."
+            print(message)
+            if let output = acceptanceOutputPath(in: arguments) {
+                try? Data((message + "\n").utf8).write(to: URL(fileURLWithPath: output))
+            }
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "Stagehand is already running"
+            alert.informativeText = reason
+            alert.addButton(withTitle: "Quit")
+            NSApp.activate()
+            alert.runModal()
+        }
+        NSApp.terminate(nil)
+    }
+
+    private func acceptanceOutputPath(in arguments: [String]) -> String? {
+        arguments.firstIndex(of: "--acceptance-output").flatMap {
+            arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil
         }
     }
 

@@ -115,7 +115,8 @@ struct WindowParking {
     }
 
     private static func atSide(_ frame: CGRect, bounds: CGRect) -> Bool {
-        frame.minX >= bounds.maxX - 64 || frame.maxX <= bounds.minX + 64
+        frame.minX >= bounds.maxX - WindowTuning.parkedRemnantWidth ||
+            frame.maxX <= bounds.minX + WindowTuning.parkedRemnantWidth
     }
 
     private static func acceptablyParked(_ frame: CGRect, bounds: CGRect, displays: [CGRect]) -> Bool {
@@ -126,7 +127,7 @@ struct WindowParking {
             return false
         }
         let remnant = frame.intersection(bounds)
-        return remnant.isNull || remnant.width <= 64
+        return remnant.isNull || remnant.width <= WindowTuning.parkedRemnantWidth
     }
 
     private static func overlapArea(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {

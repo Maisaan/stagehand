@@ -23,11 +23,11 @@ Do not rely on Stagehand where a missed or misdirected keystroke could cause dam
 ## Requirements
 
 - macOS 14 or newer
-- Swift 6
+- Swift 6.2 or newer (Xcode 26 or newer); the sources use `isolated deinit`
 - A MacBook with one built-in display
 - Accessibility permission for the built app
 
-The current code was tested with Swift 6.3.3 and Xcode 26.6 on Apple silicon.
+The current code was tested with Swift 6.4 and Xcode 27 on Apple silicon.
 
 ## Build and install
 
@@ -76,6 +76,8 @@ The gap accepts values from `-200` to `40` points. Negative values overlap windo
 
 The app bar appears beneath the camera housing, or at the top center on displays without a notch. Hover there or navigate to reveal it. It shows the active app name and window title. Click an app to focus it or the space number to change spaces. Choose or paste a hex color for each space; that color is used for its active-window border and the app bar. The app bar and focus border do not take keyboard focus or reserve screen space.
 
+While the app bar is visible, about 1.5 seconds after a navigation or while the pointer hovers over it, it accepts clicks, including in its shadow margin. On a display without a notch, a menu bar click in the few points directly above the bar can be swallowed until the bar fades. Click again once it has gone.
+
 ### Controls
 
 | Action | Shortcut |
@@ -117,7 +119,7 @@ Keep macOS navigation gestures set to four fingers so they do not overlap with S
 
 Turn on **Diagnostic logging** in Setup to record starts, layout operations, focus checks, navigation and gesture frame transitions, suspensions, and the exact reason for every automatic pause. **Show Log in Finder** reveals `~/Library/Logs/Stagehand/stagehand.log`.
 
-The log uses one JSON object per line and retains the previous 24 hours. It excludes window titles and keyboard input. Buffered input stays in memory and is never logged or written to disk.
+The log uses one JSON object per line and retains the previous 24 hours; expired entries are removed about once an hour, including while logging is off. When the file reaches about 5 MB it is rotated to `stagehand.1.log`, and that file is removed once it has aged out. The files are created readable only by your user account. Entries identify apps by bundle identifier and process ID and windows by their Accessibility window ID. The log excludes app names, window titles, and keyboard input. Buffered input stays in memory and is never logged or written to disk.
 
 ## Development
 
@@ -153,3 +155,5 @@ The executable also provides `--diagnose-focus`, `--diagnose-start`, `--diagnose
 ## License
 
 Stagehand is licensed under the [MIT License](LICENSE).
+
+The interface icons are [Phosphor Icons](https://phosphoricons.com), used under the MIT License; see [Sources/Stagehand/Resources/Phosphor/LICENSE](Sources/Stagehand/Resources/Phosphor/LICENSE).

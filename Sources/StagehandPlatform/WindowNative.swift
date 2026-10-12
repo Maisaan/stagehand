@@ -47,8 +47,17 @@ final class NativeWindowRegistry: NSObject {
 
     deinit { NotificationCenter.default.removeObserver(self) }
 
+    /// A registration whose window was deallocated can never match again, so it
+    /// would otherwise sit in the table for the life of the process.
+    private func pruneReleasedWindows() {
+        for (id, entry) in windows where entry.window == nil {
+            windows.removeValue(forKey: id)
+        }
+    }
+
     @discardableResult
     func register(window: NSWindow) -> String {
+        pruneReleasedWindows()
         if let existing = windows.values.first(where: { $0.window === window }) {
             existing.closed = false
             return existing.id
@@ -190,11 +199,11 @@ final class NativeWindowRegistry: NSObject {
         NSApp.setAccessibilityFrontmost(true)
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
-        let deadline = ContinuousClock.now.advanced(by: .milliseconds(180))
+        let deadline = ContinuousClock.now.advanced(by: .milliseconds(WindowTuning.nativeFocusDeadlineMilliseconds))
         repeat {
             guard !Task.isCancelled else { return false }
             if NSApp.isActive && window.isKeyWindow { return true }
-            do { try await Task.sleep(for: .milliseconds(8)) } catch { return false }
+            do { try await Task.sleep(for: .milliseconds(WindowTuning.nativeFocusPollMilliseconds)) } catch { return false }
         } while ContinuousClock.now < deadline
         return false
     }
@@ -211,6 +220,7 @@ final class NativeWindowRegistry: NSObject {
     }
 
     @objc private func windowChanged(_ notification: Notification) {
+        pruneReleasedWindows()
         guard let window = notification.object as? NSWindow,
               let entry = windows.values.first(where: { $0.window === window }) else { return }
         if notification.name == NSWindow.willCloseNotification {

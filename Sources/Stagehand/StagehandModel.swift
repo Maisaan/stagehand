@@ -4,6 +4,18 @@ import ServiceManagement
 import StagehandCore
 import StagehandPlatform
 
+/// UserDefaults keys owned by the model. Keep every literal here so a renamed
+/// key cannot silently split a preference between its reader and writer.
+enum PreferenceKey {
+    static let gesturesEnabled = "gesturesEnabled"
+    static let shortcutSwipesEnabled = "shortcutSwipesEnabled"
+    static let reverseShortcutSwipeDirection = "reverseShortcutSwipeDirection"
+    static let windowGap = "windowGap"
+    static let diagnosticLoggingEnabled = "diagnosticLoggingEnabled"
+    static let legacyFocusBorderColor = "focusBorderColor"
+    static let focusBorderColors = "focusBorderColors"
+}
+
 @MainActor
 final class StagehandModel: ObservableObject {
     // Written only by StagehandModel and its extensions; views treat these as read-only.
@@ -24,28 +36,28 @@ final class StagehandModel: ObservableObject {
     }
     @Published var gesturesEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(gesturesEnabled, forKey: "gesturesEnabled")
+            UserDefaults.standard.set(gesturesEnabled, forKey: PreferenceKey.gesturesEnabled)
             input.gesturesEnabled = gesturesEnabled && !isSuspended
             updateInputStatus()
         }
     }
     @Published var shortcutSwipesEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(shortcutSwipesEnabled, forKey: "shortcutSwipesEnabled")
+            UserDefaults.standard.set(shortcutSwipesEnabled, forKey: PreferenceKey.shortcutSwipesEnabled)
             input.shortcutSwipesEnabled = shortcutSwipesEnabled && !isSuspended
             updateInputStatus()
         }
     }
     @Published var reverseShortcutSwipeDirection: Bool {
         didSet {
-            UserDefaults.standard.set(reverseShortcutSwipeDirection, forKey: "reverseShortcutSwipeDirection")
+            UserDefaults.standard.set(reverseShortcutSwipeDirection, forKey: PreferenceKey.reverseShortcutSwipeDirection)
             input.reverseShortcutSwipeDirection = reverseShortcutSwipeDirection
             updateInputStatus()
         }
     }
     @Published var gap: Double {
         didSet {
-            UserDefaults.standard.set(gap, forKey: "windowGap")
+            UserDefaults.standard.set(gap, forKey: PreferenceKey.windowGap)
             if isRunning && !isSuspended { enqueue(.preferences) }
         }
     }
@@ -58,7 +70,7 @@ final class StagehandModel: ObservableObject {
     let ribbonAnimationConfiguration = RibbonAnimationConfiguration.default
     @Published var diagnosticLoggingEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(diagnosticLoggingEnabled, forKey: DiagnosticLogger.preferenceKey)
+            UserDefaults.standard.set(diagnosticLoggingEnabled, forKey: PreferenceKey.diagnosticLoggingEnabled)
             windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
             if diagnosticLoggingEnabled {
                 diagnostics.isEnabled = true
@@ -91,6 +103,11 @@ final class StagehandModel: ObservableObject {
     var motionBackingScaleFactor: CGFloat = 1
     let emptySpace: any EmptySpacePresenting
     var refreshTask: Task<Void, Never>?
+    /// Refresh attempts (busy waits and stale scans together) before the loop
+    /// gives up and logs refresh_starved.
+    var refreshRetryLimit = 60
+    /// Stale off-main scans before one refresh falls back to a synchronous scan.
+    var refreshStaleScanFallback = 3
     let layoutStore: WorkspaceLayoutStore?
     var layoutSaveTask: Task<Void, Never>?
     /// The saved layout is applied only to the first start after launch. Later
@@ -105,6 +122,28 @@ final class StagehandModel: ObservableObject {
     var automaticResumeAttempted = false
     var recoveryInProgress = false
     var desktopCheckTask: Task<Void, Never>?
+    var sleepObserver: NSObjectProtocol?
+    /// AXIsProcessTrusted() is cheap; macOS sends no notification when the user
+    /// revokes Accessibility, and didBecomeActive only fires when Stagehand's own
+    /// windows come forward.
+    var accessibilityMonitorTask: Task<Void, Never>?
+    var accessibilityPollInterval: Duration = .seconds(2)
+    static let accessibilityRevokedWarning = "macOS revoked Stagehand's Accessibility permission, so Stagehand paused and restored your windows. Allow Stagehand in Privacy & Security > Accessibility, then press Start."
+    static let accessibilityRevokedPendingWarning = "macOS revoked Stagehand's Accessibility permission, so Stagehand paused. Some windows couldn't be moved back without it; they return once you allow Stagehand in Privacy & Security > Accessibility again."
+    /// Where the ribbon lives. Tests substitute a screen; the app uses the built-in display only.
+    var builtInScreenProvider: @MainActor () -> NSScreen? = StagehandModel.builtInDisplay
+    var displayCheckTask: Task<Void, Never>?
+    /// Display sets change in steps (clamshell, wake, a cable). Wait this long
+    /// after the built-in display disappears before pausing on it.
+    var displayCheckDelay: Duration = .seconds(1)
+    /// Consecutive checks that found no Desktop identity. The first few repeat
+    /// quickly for the unlock case; after that, checks slow down and session
+    /// notifications carry the recovery.
+    var desktopCheckAttempts = 0
+    static let quickDesktopChecks = 6
+    var desktopCheckDelay: Duration {
+        desktopCheckAttempts <= Self.quickDesktopChecks ? .milliseconds(500) : .seconds(5)
+    }
     var workspaceRestoration = WorkspaceRestoration()
     var focusHistory = WindowFocusHistory()
     /// Windows that left the ribbon by minimizing. When one returns, it joins next
@@ -119,8 +158,6 @@ final class StagehandModel: ObservableObject {
     var isLayingOutWindows = false
     var preferencesNeedLayout = false
     var isRecordingShortcut = false
-    static let legacyFocusBorderColorPreferenceKey = "focusBorderColor"
-    static let focusBorderColorsPreferenceKey = "focusBorderColors"
 
     struct PointerInteraction {
         let windowID: String
@@ -190,6 +227,15 @@ final class StagehandModel: ObservableObject {
         let motionStart: [String: CGRect]?
     }
 
+    /// Whether this model may read and write the user's saved layout.
+    enum Persistence: Equatable {
+        /// The normal app session.
+        case standard
+        /// Diagnostic and acceptance runs: they start and pause against
+        /// disposable windows and must not replace the real saved layout.
+        case ephemeral
+    }
+
     init(
         overlays: any NavigationPresenting = NavigationOverlays(),
         diagnostics: DiagnosticLogger? = nil,
@@ -199,36 +245,41 @@ final class StagehandModel: ObservableObject {
         desktopScope: DesktopScope = DesktopScope(),
         focusGate: FocusInputGate = FocusInputGate(),
         ribbonMotion: RibbonMotion = RibbonMotion(),
-        layoutStore: WorkspaceLayoutStore? = nil
+        layoutStore: WorkspaceLayoutStore? = nil,
+        persistence: Persistence = .standard
     ) {
         windowSystem = injectedWindowSystem ?? WindowSystem()
-        // An injected window system means a test or diagnostic run; it must not
-        // read or replace the user's saved layout unless given a store explicitly.
-        self.layoutStore = layoutStore ?? (injectedWindowSystem == nil ? WorkspaceLayoutStore() : nil)
+        // An injected window system means a test run and an ephemeral model a
+        // diagnostic run; neither may read or replace the user's saved layout
+        // unless given a store explicitly.
+        self.layoutStore = layoutStore
+            ?? (injectedWindowSystem == nil && persistence == .standard ? WorkspaceLayoutStore() : nil)
         emptySpace = injectedEmptySpace ?? EmptySpaceWindow()
         self.desktopScope = desktopScope
         self.focusGate = focusGate
         self.ribbonMotion = ribbonMotion
         self.overlays = overlays
         let defaults = UserDefaults.standard
-        let shortcutBindings = ShortcutBinding.load(from: defaults)
+        let shortcutLoad = ShortcutBinding.loadReportingIssues(from: defaults)
+        let shortcutBindings = shortcutLoad.bindings
         self.shortcutBindings = shortcutBindings
-        input = injectedInput ?? InputController(shortcutBindings: shortcutBindings)
-        diagnosticLoggingEnabled = defaults.bool(forKey: DiagnosticLogger.preferenceKey)
+        input = injectedInput ?? InputController(shortcutBindings: shortcutBindings,
+                                                 shortcutLoadIssues: shortcutLoad.issues)
+        diagnosticLoggingEnabled = defaults.bool(forKey: PreferenceKey.diagnosticLoggingEnabled)
         self.diagnostics = diagnostics ?? DiagnosticLogger(
-            enabled: defaults.bool(forKey: DiagnosticLogger.preferenceKey)
+            enabled: defaults.bool(forKey: PreferenceKey.diagnosticLoggingEnabled)
         )
-        gesturesEnabled = defaults.object(forKey: "gesturesEnabled") as? Bool ?? false
-        shortcutSwipesEnabled = defaults.bool(forKey: "shortcutSwipesEnabled")
-        reverseShortcutSwipeDirection = defaults.object(forKey: "reverseShortcutSwipeDirection") as? Bool ?? true
-        gap = GapInput.clamped(defaults.object(forKey: "windowGap") as? Double ?? 8)
+        gesturesEnabled = defaults.object(forKey: PreferenceKey.gesturesEnabled) as? Bool ?? false
+        shortcutSwipesEnabled = defaults.bool(forKey: PreferenceKey.shortcutSwipesEnabled)
+        reverseShortcutSwipeDirection = defaults.object(forKey: PreferenceKey.reverseShortcutSwipeDirection) as? Bool ?? true
+        gap = GapInput.clamped(defaults.object(forKey: PreferenceKey.windowGap) as? Double ?? 8)
         let defaultBorderColor = Self.savedColor(
-            forKey: Self.legacyFocusBorderColorPreferenceKey,
+            forKey: PreferenceKey.legacyFocusBorderColor,
             in: defaults,
             alpha: BorderView.defaultColor.alphaComponent
         ) ?? BorderView.defaultColor
         focusBorderColors = Self.savedColors(
-            forKey: Self.focusBorderColorsPreferenceKey,
+            forKey: PreferenceKey.focusBorderColors,
             count: WorkspaceState.spaceCount,
             in: defaults,
             alpha: BorderView.defaultColor.alphaComponent
@@ -286,9 +337,13 @@ final class StagehandModel: ObservableObject {
             self?.screenParametersChanged()
         }
         windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
+        ribbonMotion.onStall = { [weak self] in
+            self?.diagnostics.record("ribbon_animation_stalled")
+        }
         refreshLaunchAtLogin()
         focusGate.onNavigationAction = { [weak self] action in self?.navigate(action) }
         focusGate.setShortcutBindings(shortcutBindings)
+        focusGate.setPendingGestureCompletionCheck { InputController.hasPendingGestureCompletion() }
         focusGate.onBeforeKeyboardEvent = { [weak self] in
             guard let self, self.isRunning, !self.isSuspended else { return }
             while let completion = self.input.takePendingGestureCompletion() {
@@ -302,6 +357,7 @@ final class StagehandModel: ObservableObject {
             }
         }
         focusGate.onAvailabilityChanged = { [weak self] in self?.updateInputStatus() }
+        (input as? InputController)?.navigationChordsHandledByTap = { [weak self] in self?.focusGate.isAvailable ?? false }
         focusGate.onInputDiscarded = { [weak self] count in
             self?.warning = "Stagehand couldn't confirm the new window, so it did not send \(count) buffered key \(count == 1 ? "event" : "events"). Check your last input."
             NSSound.beep()
@@ -322,8 +378,86 @@ final class StagehandModel: ObservableObject {
                 }
             }
         }
+        sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.systemWillSleep() }
+        }
         self.diagnostics.record("session_started")
         refreshPermissions()
+        startAccessibilityMonitor()
+    }
+
+    func startAccessibilityMonitor() {
+        accessibilityMonitorTask?.cancel()
+        accessibilityMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                do { try await Task.sleep(for: self.accessibilityPollInterval) } catch { return }
+                guard !Task.isCancelled else { return }
+                self.checkAccessibility()
+            }
+        }
+    }
+
+    /// One poll. A revocation while running pauses; a grant after a revocation
+    /// restores windows the pause could not move back.
+    func checkAccessibility() {
+        let trusted = windowSystem.isAccessibilityTrusted
+        guard trusted != accessibilityGranted else { return }
+        if trusted {
+            accessibilityGranted = true
+            diagnostics.record("accessibility_granted", details: ["running": String(isRunning)])
+            if !isRunning, recoverInterruptedSession() == false {
+                warning = nil
+            }
+            updateInputStatus()
+            onStateChange?()
+        } else {
+            accessibilityRevoked()
+        }
+    }
+
+    func accessibilityRevoked() {
+        let wasRunning = isRunning
+        diagnostics.record("accessibility_revoked", details: workspaceDetails())
+        // Pausing restores frames; without the permission the AX writes fail,
+        // the recovery journal keeps the original frames, and the next grant
+        // replays them.
+        if isRunning { stop(reason: "accessibility_revoked", automatic: false) }
+        accessibilityGranted = false
+        updateInputStatus()
+        if wasRunning {
+            warning = windowSystem.hasPendingRecovery
+                ? Self.accessibilityRevokedPendingWarning
+                : Self.accessibilityRevokedWarning
+        }
+        onStateChange?()
+    }
+
+    /// The Mac is about to sleep. A ribbon animation or a focus confirmation in
+    /// flight would otherwise resume against stale frames after wake, or stall
+    /// until its deadline. Drop the in-flight work and roll the layout back to
+    /// the last completed transition; the wake notification already triggers a
+    /// refresh, and the cleared applied frames make that refresh lay out again
+    /// instead of reading half-moved windows as a user drag.
+    func systemWillSleep() {
+        guard isRunning else { return }
+        diagnostics.record("system_will_sleep", details: workspaceDetails())
+        guard !isSuspended else { return }
+        changes.cancel()
+        refreshTask?.cancel()
+        observedFocusTask?.cancel()
+        ribbonMotion.cancel()
+        presentationFrames = nil
+        resetGestureTracking()
+        focusGate.cancelAll()
+        workspaceRestoration.rollBack(state: &state, windowIDs: windows.map(\.id),
+                                      trackedWindowIDs: windowSystem.trackedWindowIDs)
+        pointerInteraction = nil
+        lastAppliedFrames.removeAll()
+        preferencesNeedLayout = true
+        onStateChange?()
     }
 
     var expiredTokens: Set<UInt64> = []
@@ -341,7 +475,12 @@ final class StagehandModel: ObservableObject {
     }
 
     func refreshPermissions() {
-        accessibilityGranted = windowSystem.isAccessibilityTrusted
+        let trusted = windowSystem.isAccessibilityTrusted
+        if isRunning, !trusted {
+            accessibilityRevoked()
+            return
+        }
+        accessibilityGranted = trusted
         if isRunning, !isSuspended { focusGate.start() }
         updateInputStatus()
     }
@@ -394,7 +533,8 @@ final class StagehandModel: ObservableObject {
         let interrupted = windowSystem.recoverInterruptedSession()
         if interrupted {
             diagnostics.record("crash_recovery", details: [
-                "pending": String(windowSystem.hasPendingRecovery)
+                "pending": String(windowSystem.hasPendingRecovery),
+                "pendingIDs": windowSystem.pendingRecoveryWindowIDs.sorted().joined(separator: ",")
             ])
             warning = windowSystem.hasPendingRecovery
                 ? "Stagehand found an earlier window session but couldn't restore every window. Try Start after its apps respond or the other Stagehand instance exits."
@@ -426,6 +566,13 @@ final class StagehandModel: ObservableObject {
             warning = "Stagehand couldn't restore every window from its interrupted session. Try Start again when their apps respond."
             return
         }
+        guard builtInScreen != nil else {
+            diagnostics.record("start_failed", details: [
+                "reason": "built_in_display_unavailable", "screenCount": String(NSScreen.screens.count)
+            ])
+            warning = "Stagehand manages only the built-in display, and none is available right now. Open the lid or disconnect from clamshell mode, then start it again."
+            return
+        }
         guard desktopScope.bindToCurrentDesktop() else {
             diagnostics.record("start_failed", details: ["reason": "desktop_unavailable"])
             warning = "Stagehand couldn't identify the current macOS Desktop, so it left your windows unchanged."
@@ -451,7 +598,7 @@ final class StagehandModel: ObservableObject {
                 }
             }
         }
-        preferredHeights = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0.frame.height) })
+        preferredHeights = Dictionary(windows.map { ($0.id, $0.frame.height) }, uniquingKeysWith: { first, _ in first })
         workspaceRestoration.reconcile(state: &state, windowIDs: windows.map(\.id),
                                        trackedWindowIDs: windowSystem.trackedWindowIDs,
                                        initialWidthFractions: initialWidthFractions(for: windows))
@@ -496,7 +643,7 @@ final class StagehandModel: ObservableObject {
                                            trackedWindowIDs: windowSystem.trackedWindowIDs)
         layoutSaveTask?.cancel()
         layoutSaveTask = nil
-        layoutStore?.save(state, windows: windows)
+        saveLayout()
         ribbonMotion.cancel()
         presentationFrames = nil
         resetGestureTracking()
@@ -505,6 +652,9 @@ final class StagehandModel: ObservableObject {
         refreshTask?.cancel()
         observedFocusTask?.cancel()
         desktopCheckTask?.cancel()
+        desktopCheckAttempts = 0
+        displayCheckTask?.cancel()
+        displayCheckTask = nil
         if !automatic { desktopScope.reset() }
         pointerInteraction = nil
         preferencesNeedLayout = false
@@ -543,13 +693,25 @@ final class StagehandModel: ObservableObject {
     }
 
     func scheduleLayoutSave() {
-        guard let layoutStore, layoutSaveTask == nil else { return }
+        guard layoutStore != nil, layoutSaveTask == nil else { return }
         layoutSaveTask = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(1)) } catch { return }
             guard let self else { return }
             self.layoutSaveTask = nil
             guard self.isRunning else { return }
-            layoutStore.save(self.state, windows: self.windows)
+            self.saveLayout()
+        }
+    }
+
+    /// A failed save is recorded so a layout that does not come back after a
+    /// relaunch can be traced; the session itself continues.
+    func saveLayout() {
+        guard let layoutStore else { return }
+        do {
+            try layoutStore.save(state, windows: windows)
+        } catch {
+            diagnostics.record("layout_save_failed", details: ["error": error.localizedDescription])
+            NSLog("Stagehand layout save failed: %@", error.localizedDescription)
         }
     }
 
@@ -592,7 +754,6 @@ final class StagehandModel: ObservableObject {
         let window = windows.first { $0.id == windowID }
         diagnostics.recordWindowGeometry(
             event: event,
-            appName: window?.appName,
             bundleIdentifier: window?.bundleIdentifier,
             pid: window?.pid,
             windowID: windowID,
@@ -630,7 +791,7 @@ final class StagehandModel: ObservableObject {
             alpha: BorderView.defaultColor.alphaComponent
         ) else { return }
         focusBorderColors[index] = normalized
-        Self.saveColors(focusBorderColors, forKey: Self.focusBorderColorsPreferenceKey)
+        Self.saveColors(focusBorderColors, forKey: PreferenceKey.focusBorderColors)
         if index == state.activeSpaceIndex { overlays.setBorderColor(normalized) }
     }
 
@@ -651,11 +812,11 @@ final class StagehandModel: ObservableObject {
 
     func setShortcut(id: String, key: UInt32, modifiers: UInt32, keyLabel: String) -> String? {
         guard let index = shortcutBindings.firstIndex(where: { $0.id == id }) else { return nil }
-        guard modifiers & ShortcutBinding.supportedModifiers != 0 else {
-            return "Add Control, Option, Shift, Command, or Caps Lock to the shortcut."
+        if let issue = ShortcutBinding.validationIssue(key: key, modifiers: modifiers, keyLabel: keyLabel) {
+            return issue
         }
         if shortcutBindings[index].isEnabled,
-           let conflict = shortcutConflict(key: key, modifiers: modifiers, excluding: id) {
+           let conflict = ShortcutBinding.conflict(in: shortcutBindings, key: key, modifiers: modifiers, excluding: id) {
             return "That shortcut is already assigned to \(conflict.title)."
         }
         shortcutBindings[index].key = key
@@ -686,9 +847,7 @@ final class StagehandModel: ObservableObject {
     }
 
     func shortcutConflict(key: UInt32, modifiers: UInt32, excluding id: String) -> ShortcutBinding? {
-        shortcutBindings.first {
-            $0.id != id && $0.isEnabled && $0.key == key && $0.modifiers == modifiers
-        }
+        ShortcutBinding.conflict(in: shortcutBindings, key: key, modifiers: modifiers, excluding: id)
     }
 
     func saveShortcutBindings() {
@@ -799,6 +958,7 @@ final class StagehandModel: ObservableObject {
         desktopCheckTask?.cancel()
         switch desktopScope.refresh() {
         case .home:
+            desktopCheckAttempts = 0
             guard isSuspended else { return }
             isSuspended = false
             diagnostics.record("desktop_resumed", details: workspaceDetails())
@@ -836,22 +996,52 @@ final class StagehandModel: ObservableObject {
             }
             // WindowServer can report an unavailable Desktop throughout the lock
             // screen and briefly after unlock. Keep checking until it reports the
-            // bound Desktop instead of relying on one early session notification.
+            // bound Desktop instead of relying on one early session notification,
+            // but not at 500 ms forever: a long lock or a broken private API
+            // would otherwise poll indefinitely.
             if desktopScope.relation == .unknown {
+                desktopCheckAttempts += 1
+                if desktopCheckAttempts == Self.quickDesktopChecks + 1 {
+                    diagnostics.record("desktop_check_backoff", details: [
+                        "attempts": String(desktopCheckAttempts - 1),
+                        "intervalMilliseconds": String(5_000)
+                    ])
+                }
+                let delay = desktopCheckDelay
                 desktopCheckTask = Task { [weak self] in
-                    try? await Task.sleep(for: .milliseconds(500))
+                    try? await Task.sleep(for: delay)
                     guard !Task.isCancelled else { return }
                     self?.nativeDesktopChanged()
                 }
+            } else {
+                desktopCheckAttempts = 0
             }
         }
     }
 
     func screenParametersChanged() {
         guard isRunning, !isSuspended else { return }
-        diagnostics.record("screen_parameters_changed")
+        let hasBuiltInDisplay = builtInScreen != nil
+        diagnostics.record("screen_parameters_changed", details: [
+            "builtInDisplay": String(hasBuiltInDisplay),
+            "screenCount": String(NSScreen.screens.count)
+        ])
         ribbonMotion.cancel()
         focusBorder.reset()
+        displayCheckTask?.cancel()
+        guard hasBuiltInDisplay else {
+            // Lid closed or clamshell: there is no frame to lay out in. Give the
+            // reconfiguration a moment to finish, then pause and restore rather
+            // than manage whatever display macOS moved the windows to.
+            let delay = displayCheckDelay
+            displayCheckTask = Task { [weak self] in
+                do { try await Task.sleep(for: delay) } catch { return }
+                guard !Task.isCancelled, let self else { return }
+                self.displayCheckTask = nil
+                self.pauseIfBuiltInDisplayMissing()
+            }
+            return
+        }
         enqueue(.preferences)
     }
 }

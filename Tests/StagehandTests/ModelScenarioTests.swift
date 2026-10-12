@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Testing
 import StagehandCore
 @testable import Stagehand
@@ -236,7 +237,8 @@ struct ModelScenarioTests {
     }
 
     /// Typing during a switch is held and delivered only to the verified destination.
-    @Test func bufferedTypingIsDeliveredAfterVerifiedFocus() async throws {
+    @Test(.enabled(if: !IsSecureEventInputEnabled(), "Secure Input is on, so the focus gate holds no transfers"))
+    func bufferedTypingIsDeliveredAfterVerifiedFocus() async throws {
         let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
         defer { harness.cleanUp() }
         harness.model.start()
@@ -268,5 +270,302 @@ struct ModelScenarioTests {
 
         #expect(harness.model.state.spaces[2].windowIDs == layout.spaces[2].windowIDs.filter { $0 != "c" })
         #expect(harness.model.state.spaces[0].windowIDs == layout.spaces[0].windowIDs.filter { $0 != "c" })
+    }
+
+    /// Windows that keep changing under the background reader used to restart
+    /// the 100 ms cycle forever. After a few stale reads one synchronous scan
+    /// completes the refresh.
+    @Test func repeatedStaleScansFallBackToASynchronousScan() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        let scansBefore = harness.windows.offMainScans
+
+        harness.windows.addWindow("new", pid: 300, frame: CGRect(x: 80, y: 60, width: 700, height: 500))
+        harness.windows.staleScansRemaining = harness.model.refreshStaleScanFallback
+        harness.windows.onChange?()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while !harness.model.state.currentSpace.windowIDs.contains("new"), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        await harness.settle()
+
+        #expect(harness.model.state.currentSpace.windowIDs.contains("new"))
+        #expect(harness.windows.offMainScans - scansBefore >= harness.model.refreshStaleScanFallback)
+        #expect(harness.events("refresh_scan_fallback").count == 1)
+        #expect(harness.events("refresh_starved").isEmpty)
+        #expect(harness.events("automatic_pause").isEmpty)
+    }
+
+    @Test func aRefreshThatStaysBlockedLogsStarvationAndStopsPolling() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        harness.model.refreshRetryLimit = 3
+        let scansBefore = harness.windows.offMainScans
+
+        // A gesture in progress blocks every refresh attempt.
+        harness.model.gestureBase = [:]
+        harness.windows.onChange?()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while harness.events("refresh_starved").isEmpty, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        try? await Task.sleep(for: .milliseconds(250))
+
+        let starved = harness.events("refresh_starved")
+        #expect(starved.count == 1)
+        #expect((starved.first?["details"] as? [String: String])?["attempts"] == "3")
+        #expect((starved.first?["details"] as? [String: String])?["gestureActive"] == "true")
+        #expect(harness.windows.offMainScans == scansBefore)
+        #expect(harness.model.isRunning)
+        harness.model.gestureBase = nil
+    }
+
+    /// README: after an automatic pause Stagehand tries to resume once after
+    /// 100 ms. The retry must happen exactly once and clear the warning when
+    /// it succeeds.
+    @Test func anAutomaticPauseResumesOnceAndClearsTheWarning() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        harness.windows.refusesFocus = ["b"]
+
+        harness.model.navigate(.focusNext)
+        await harness.settle()
+
+        #expect(harness.model.isRunning)
+        #expect(harness.events("automatic_pause").count == 1)
+        #expect(harness.events("automatic_resume_attempt").count == 1)
+        #expect(harness.events("automatic_resume_succeeded").count == 1)
+        #expect(harness.events("automatic_resume_failed").isEmpty)
+        #expect(harness.model.warning == nil)
+        #expect(harness.model.state.focusedWindowID == "a")
+        #expect(harness.model.automaticResumeTask == nil)
+    }
+
+    /// If the resume fails too, Stagehand stays paused with frames restored and
+    /// tells the user to press Start; it must not keep retrying.
+    @Test func aSecondFailureStaysPausedWithARetryWarning() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        let originals = harness.windows.windows.mapValues(\.original)
+        harness.model.start()
+        await harness.settle()
+        harness.windows.refusesFocus = ["a", "b"]
+        harness.windows.setFocus("elsewhere")
+
+        harness.model.navigate(.focusNext)
+        await harness.settle()
+        try? await Task.sleep(for: .milliseconds(300))
+
+        #expect(!harness.model.isRunning)
+        #expect(harness.events("automatic_pause").count == 2)
+        #expect(harness.events("automatic_resume_attempt").count == 1)
+        #expect(harness.events("automatic_resume_succeeded").isEmpty)
+        #expect(harness.model.warning?.hasSuffix("Press Start to retry.") == true)
+        #expect(harness.overlays.warnings.last?.hasSuffix("Press Start to retry.") == true)
+        #expect(harness.windows.windows.mapValues(\.frame) == originals)
+
+        // A manual Start resets the single-retry budget.
+        harness.windows.refusesFocus = []
+        harness.windows.setFocus("a")
+        harness.model.start()
+        await harness.settle()
+        #expect(harness.model.isRunning)
+        #expect(harness.model.warning == nil)
+    }
+
+    /// Typing captured for a switch is held for a bounded time. A destination
+    /// that stays busy past that deadline pauses with input_transfer_expired
+    /// rather than delivering the keys late or to the wrong window.
+    @Test(.enabled(if: !IsSecureEventInputEnabled(), "Secure Input is on, so the focus gate holds no transfers"))
+    func anExpiredInputTransferPausesAndRestoresFrames() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a", transferTimeoutMilliseconds: 40)
+        defer { harness.cleanUp() }
+        let originals = harness.windows.windows.mapValues(\.original)
+        harness.model.start()
+        await harness.settle()
+        harness.windows.focusDelayMilliseconds = 300
+
+        harness.model.navigate(.focusNext)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(4))
+        while harness.events("automatic_pause").isEmpty, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        await harness.settle()
+
+        let pause = harness.events("automatic_pause").first?["details"] as? [String: String]
+        #expect(pause?["reason"] == "input_transfer_expired")
+        #expect(pause?["token"] != nil)
+        #expect(harness.overlays.warnings.contains { $0.contains("couldn't finish switching windows") })
+        #expect(harness.windows.windows.mapValues(\.frame) == originals)
+        #expect(harness.model.focusGate.isAvailable)
+    }
+
+    /// While WindowServer reports no Desktop (lock screen), the model rechecks
+    /// every 500 ms. That must not continue indefinitely.
+    @Test func anUnknownDesktopIsRecheckedQuicklyThenBacksOff() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+
+        harness.desktop.id = nil
+        harness.model.nativeDesktopChanged()
+        #expect(harness.model.isSuspended)
+        #expect(harness.model.desktopCheckAttempts == 1)
+        #expect(harness.model.desktopCheckDelay == .milliseconds(500))
+
+        // Drive the recheck chain without waiting on the real timers.
+        for _ in 0..<StagehandModel.quickDesktopChecks {
+            harness.model.nativeDesktopChanged()
+        }
+        #expect(harness.model.desktopCheckAttempts == StagehandModel.quickDesktopChecks + 1)
+        #expect(harness.model.desktopCheckDelay == .seconds(5))
+        #expect(harness.events("desktop_check_backoff").count == 1)
+        #expect(harness.model.isSuspended)
+
+        harness.desktop.id = 1
+        harness.model.nativeDesktopChanged()
+        await harness.settle()
+        #expect(!harness.model.isSuspended)
+        #expect(harness.model.desktopCheckAttempts == 0)
+        #expect(harness.events("desktop_resumed").count == 1)
+    }
+
+    /// Sleep during a switch: the in-flight transition is dropped and rolled
+    /// back without pausing, and the wake refresh lays the ribbon out again.
+    @Test func sleepDuringASwitchDropsTheTransitionAndWakeLaysOutAgain() async {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        harness.windows.focusDelayMilliseconds = 400
+
+        harness.model.navigate(.focusNext)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !harness.model.changes.isProcessing, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        try? await Task.sleep(for: .milliseconds(50))
+        harness.model.systemWillSleep()
+
+        #expect(harness.model.isRunning)
+        #expect(!harness.model.changes.isProcessing)
+        #expect(!harness.model.ribbonMotion.isRunning)
+        #expect(harness.model.state.focusedWindowID == "a")
+        #expect(harness.model.workspaceRestoration.isInTransition == false)
+        #expect(harness.events("system_will_sleep").count == 1)
+
+        // Wake: WindowSystem reports a change, and the refresh must lay out again.
+        harness.windows.focusDelayMilliseconds = 0
+        harness.windows.onChange?()
+        await harness.settle()
+        #expect(harness.model.isRunning)
+        #expect(harness.events("automatic_pause").isEmpty)
+        #expect(harness.model.state.focusedWindowID == harness.windows.focusedWindowID())
+        #expect(harness.events("change_completed").contains {
+            ($0["details"] as? [String: String])?["operation"] == "preferences"
+        })
+    }
+
+    /// README: one built-in display only. With the lid closed on an external
+    /// display, Stagehand used to fall back to NSScreen.main and manage that
+    /// display. Now it pauses once the display change settles, and refuses to
+    /// start without the built-in display.
+    @Test func losingTheBuiltInDisplayPausesAndRestoresAfterTheChangeSettles() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        let originals = harness.windows.windows.mapValues(\.original)
+        harness.model.displayCheckDelay = .milliseconds(60)
+        harness.model.start()
+        await harness.settle()
+        harness.model.navigate(.focusNext)
+        await harness.settle()
+        #expect(harness.windows.windows.mapValues(\.frame) != originals)
+
+        // A transient change that comes back within the delay does not pause.
+        harness.model.builtInScreenProvider = { nil }
+        harness.model.screenParametersChanged()
+        harness.model.builtInScreenProvider = { NSScreen.screens.first }
+        harness.model.screenParametersChanged()
+        try? await Task.sleep(for: .milliseconds(150))
+        await harness.settle()
+        #expect(harness.model.isRunning)
+
+        harness.model.builtInScreenProvider = { nil }
+        harness.model.screenParametersChanged()
+        #expect(harness.model.isRunning)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while harness.model.isRunning, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(!harness.model.isRunning)
+        #expect(harness.windows.windows.mapValues(\.frame) == originals)
+        #expect((harness.events("paused").last?["details"] as? [String: String])?["reason"] == "built_in_display_unavailable")
+        #expect(harness.model.warning == StagehandModel.missingDisplayWarning)
+        #expect(harness.events("automatic_pause").isEmpty)
+
+        harness.model.start()
+        #expect(!harness.model.isRunning)
+        #expect((harness.events("start_failed").last?["details"] as? [String: String])?["reason"] == "built_in_display_unavailable")
+
+        harness.model.builtInScreenProvider = { NSScreen.screens.first }
+        harness.model.start()
+        await harness.settle()
+        #expect(harness.model.isRunning)
+    }
+
+    /// Revoking Accessibility in System Settings sends no notification. The
+    /// model used to notice only when its own window became active, leaving
+    /// windows parked offscreen with no way to move them back.
+    @Test func revokingAccessibilityWhileRunningPausesAndRegrantingRecovers() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        let originals = harness.windows.windows.mapValues(\.original)
+        harness.model.accessibilityPollInterval = .milliseconds(20)
+        harness.model.startAccessibilityMonitor()
+        harness.model.start()
+        await harness.settle()
+        harness.model.navigate(.focusNext)
+        await harness.settle()
+        #expect(harness.model.isRunning)
+
+        harness.windows.isAccessibilityTrusted = false
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while harness.model.isRunning, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(!harness.model.isRunning)
+        #expect(!harness.model.accessibilityGranted)
+        #expect(harness.windows.windows.mapValues(\.frame) == originals)
+        #expect((harness.events("paused").last?["details"] as? [String: String])?["reason"] == "accessibility_revoked")
+        #expect(harness.events("accessibility_revoked").count == 1)
+        #expect(harness.model.warning == StagehandModel.accessibilityRevokedWarning)
+        #expect(harness.overlays.warnings.last == StagehandModel.accessibilityRevokedWarning)
+        #expect(harness.events("automatic_pause").isEmpty)
+
+        // Start is refused while revoked.
+        harness.model.start()
+        #expect(!harness.model.isRunning)
+        #expect((harness.events("start_failed").last?["details"] as? [String: String])?["reason"] == "accessibility_permission_missing")
+
+        harness.windows.isAccessibilityTrusted = true
+        while !harness.model.accessibilityGranted, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(harness.model.accessibilityGranted)
+        #expect(harness.events("accessibility_granted").count == 1)
+        #expect(!harness.model.isRunning)
+        #expect(harness.model.warning == nil)
+        harness.model.start()
+        await harness.settle()
+        #expect(harness.model.isRunning)
     }
 }

@@ -247,11 +247,30 @@ extension StagehandModel {
         return true
     }
 
-    var builtInScreen: NSScreen? {
+    /// The built-in display, or nil when the lid is closed or the Mac has none.
+    /// Stagehand manages only that display (README), so there is no fallback to
+    /// an external one.
+    static func builtInDisplay() -> NSScreen? {
         NSScreen.screens.first { screen in
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return false }
             return CGDisplayIsBuiltin(number.uint32Value) != 0
-        } ?? NSScreen.main
+        }
+    }
+
+    var builtInScreen: NSScreen? { builtInScreenProvider() }
+
+    static let missingDisplayWarning = "Stagehand paused because the built-in display is unavailable. It manages only the built-in display, so it restored your windows. Press Start once the display is back."
+
+    /// Pauses if the built-in display is still missing after display changes settled.
+    func pauseIfBuiltInDisplayMissing() {
+        guard isRunning, !isSuspended else { return }
+        guard builtInScreen == nil else {
+            enqueue(.preferences)
+            return
+        }
+        stop(reason: "built_in_display_unavailable", automatic: false,
+             details: ["screenCount": String(NSScreen.screens.count)])
+        warning = Self.missingDisplayWarning
     }
 
     var availableFrame: CGRect? {
@@ -414,8 +433,7 @@ extension StagehandModel {
             }
             if let focusedID = state.focusedWindowID,
                let record = windows.first(where: { $0.id == focusedID }) {
-                let preparation = layoutStart.duration(to: .now).components
-                lastLayoutMilliseconds = Int(preparation.seconds * 1_000 + preparation.attoseconds / 1_000_000_000_000_000)
+                lastLayoutMilliseconds = layoutStart.duration(to: .now).wholeMilliseconds
                 if request == .navigation { emptySpace.hide() }
                 if slideFrom == nil {
                     let focus = await focusManagedWindow(record, token: token, request: request, operation: operation)
@@ -508,7 +526,7 @@ extension StagehandModel {
             nativeDesktopChanged()
             return .interrupted
         }
-        let placementFrames = Dictionary(uniqueKeysWithValues: placements.map { ($0.windowID, $0.frame) })
+        let placementFrames = Dictionary(placements.map { ($0.windowID, $0.frame) }, uniquingKeysWith: { first, _ in first })
         switch await parkHiddenWindows(keeping: visibleIDs.union(animatedWindowIDs), layoutFrames: placementFrames) {
         case .interrupted: return .interrupted
         case .failed(let details): return failLayout("window_parking_failed", details: details)
@@ -517,10 +535,10 @@ extension StagehandModel {
         guard preferenceFocusStillMatches(request) else { return .completed }
         preferencesNeedLayout = false
         if slideFrom != nil {
-            let starts = Dictionary(uniqueKeysWithValues: sliding.compactMap { placement in
+            let starts = Dictionary(sliding.compactMap { placement in
                 windowSystem.frame(windowID: placement.windowID).map { (placement.windowID, $0) }
-            })
-            let targets = Dictionary(uniqueKeysWithValues: sliding.map { ($0.windowID, $0.frame) })
+            }, uniquingKeysWith: { first, _ in first })
+            let targets = Dictionary(sliding.map { ($0.windowID, $0.frame) }, uniquingKeysWith: { first, _ in first })
             let translate = {
                 let completed = await self.settleRibbon(
                     from: starts,
@@ -633,15 +651,15 @@ extension StagehandModel {
     func navigationFrames() -> [String: CGRect] {
         guard let availableFrame else { return [:] }
         let members = Set(state.currentSpace.windowIDs)
-        let actual = Dictionary(uniqueKeysWithValues: windows.filter { members.contains($0.id) }.compactMap { window in
+        let actual = Dictionary(windows.filter { members.contains($0.id) }.compactMap { window in
             windowSystem.frame(windowID: window.id).map { (window.id, $0) }
-        })
+        }, uniquingKeysWith: { first, _ in first })
         let placements = WindowLayout.placements(for: state, availableFrame: availableFrame, gap: gap,
                                                  observedWidths: actual.mapValues(\.width),
                                                  observedHeights: actual.mapValues(\.height))
-        var frames = Dictionary(uniqueKeysWithValues: placements.map {
+        var frames = Dictionary(placements.map {
             ($0.windowID, $0.isVisible ? actual[$0.windowID] ?? $0.frame : $0.frame)
-        })
+        }, uniquingKeysWith: { first, _ in first })
         if ribbonMotion.isRunning { frames.merge(ribbonMotion.frames) { _, moving in moving } }
         if let presentationFrames { frames.merge(presentationFrames) { _, moving in moving } }
         return frames

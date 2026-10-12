@@ -23,6 +23,9 @@ enum SettingsWindow {
         window.backgroundColor = .clear
         window.isMovableByWindowBackground = false
         window.isReleasedWhenClosed = false
+        // The settings design uses white dividers, selection fills, and button tints
+        // over a dark material. Pin the appearance so Light Mode cannot wash them out.
+        window.appearance = NSAppearance(named: .darkAqua)
         // Settings belongs to Stage Manager as a utility window, but must never
         // join another app's native full-screen Space.
         window.collectionBehavior = [.auxiliary, .fullScreenNone]
@@ -44,6 +47,8 @@ private final class SettingsPanelWindow: NSWindow, FocusBorderCornerRadiusProvid
     private static let hiddenScale: CGFloat = 0.96
     private var transitionGeneration: UInt64 = 0
     private var isDismissing = false
+    private var isTransitioning = false
+    private var dormantContentView: NSView?
     var focusBorderCornerRadius: CGFloat { SettingsWindow.cornerRadius }
 
     override func makeKeyAndOrderFront(_ sender: Any?) {
@@ -52,7 +57,13 @@ private final class SettingsPanelWindow: NSWindow, FocusBorderCornerRadiusProvid
         let shouldAnimate = NSApp.currentEvent?.type != .keyDown
         transitionGeneration &+= 1
         isDismissing = false
+        restoreContentViewIfNeeded()
 
+        // A display change or a resolution switch while the window was closed can
+        // leave its last frame outside every screen. Bring it back before showing.
+        if !wasVisible, !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(frame) }) {
+            center()
+        }
         if shouldAnimate, !wasVisible { setHiddenAppearance() }
         else if !shouldAnimate { setVisibleAppearance() }
         super.makeKeyAndOrderFront(sender)
@@ -77,8 +88,38 @@ private final class SettingsPanelWindow: NSWindow, FocusBorderCornerRadiusProvid
         }
     }
 
+    override func orderFront(_ sender: Any?) {
+        restoreContentViewIfNeeded()
+        super.orderFront(sender)
+    }
+
+    override func orderFrontRegardless() {
+        restoreContentViewIfNeeded()
+        super.orderFrontRegardless()
+    }
+
+    private func restoreContentViewIfNeeded() {
+        guard let dormantContentView else { return }
+        contentView = dormantContentView
+        self.dormantContentView = nil
+        alignWindowControls()
+    }
+
+    override func close() {
+        super.close()
+        // The window stays allocated for reopening, and a hosting view that is
+        // still in a window re-renders on every model change even while hidden.
+        // Detach it so hidden Settings cost nothing; its SwiftUI state, such as
+        // the selected page, survives for the next open.
+        guard let contentView else { return }
+        dormantContentView = contentView
+        self.contentView = nil
+    }
+
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
-        frameRect
+        // The open and close animation must not be nudged mid-flight. Otherwise keep
+        // AppKit's constraint so the window cannot be placed off screen.
+        isTransitioning ? frameRect : super.constrainFrameRect(frameRect, to: screen)
     }
 
     override func setFrame(_ frameRect: NSRect, display flag: Bool) {
@@ -152,9 +193,15 @@ private final class SettingsPanelWindow: NSWindow, FocusBorderCornerRadiusProvid
         let duration = reduceMotion ? Self.reducedMotionDuration : Self.transitionDuration
 
         layer.removeAllAnimations()
+        isTransitioning = true
+        let generation = transitionGeneration
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        CATransaction.setCompletionBlock(completion)
+        CATransaction.setCompletionBlock { [weak self] in
+            // A newer transition may already be running; only it may clear the flag.
+            if let self, self.transitionGeneration == generation { self.isTransitioning = false }
+            completion?()
+        }
         layer.opacity = targetOpacity
         layer.transform = targetTransform
 

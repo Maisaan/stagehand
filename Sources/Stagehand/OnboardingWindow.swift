@@ -399,8 +399,72 @@ private struct AccessibilityOnboardingPage: View {
                     .stroke(.white.opacity(0.12), lineWidth: 1)
             }
             .padding(.top, 20)
+
+            if !model.accessibilityGranted {
+                // macOS sometimes reports a fresh grant only to a new process, and a
+                // rebuild with a different signature needs the grant again. Without
+                // these the step had no way forward but the disabled Continue button.
+                VStack(spacing: 6) {
+                    HStack(spacing: 14) {
+                        Text("Still not detected?")
+                            .foregroundStyle(.white.opacity(0.66))
+                        Button("Open Accessibility Settings", action: openAccessibilitySettings)
+                        Button("Relaunch Stagehand", action: relaunchStagehand)
+                    }
+                    .buttonStyle(.link)
+                    Text("Turn Stagehand on in the list, then relaunch. A rebuild with a different signature needs the grant again.")
+                        .foregroundStyle(.white.opacity(0.5))
+                        .multilineTextAlignment(.center)
+                }
+                .font(.system(size: 12))
+                .padding(.top, 14)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func openAccessibilitySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func relaunchStagehand() {
+        OnboardingRelaunch.relaunch()
+    }
+}
+
+/// Quits this instance and starts a new one from the same bundle, so the new
+/// process reads the Accessibility grant that this one may have missed.
+///
+/// Stagehand allows one running instance: AppDelegate.claimSingleInstance holds a
+/// file lock and refuses a second launch while the first is alive. Opening the
+/// replacement before quitting therefore produced the "another instance" alert
+/// and then no Stagehand at all. A detached shell waits for this PID to exit and
+/// only then asks LaunchServices to open the bundle.
+enum OnboardingRelaunch {
+    /// The script the helper runs. Single quotes in the path are closed, escaped,
+    /// and reopened so `sh` sees one literal argument.
+    static func script(pid: pid_t, bundlePath: String) -> String {
+        let quoted = "'" + bundlePath.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        return "while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done; open -n \(quoted)"
+    }
+
+    @MainActor
+    static func relaunch() {
+        let helper = Process()
+        helper.executableURL = URL(fileURLWithPath: "/bin/sh")
+        helper.arguments = ["-c", script(pid: ProcessInfo.processInfo.processIdentifier, bundlePath: Bundle.main.bundlePath)]
+        helper.standardInput = FileHandle.nullDevice
+        helper.standardOutput = FileHandle.nullDevice
+        helper.standardError = FileHandle.nullDevice
+        do {
+            try helper.run()
+        } catch {
+            NSLog("Stagehand could not start its relaunch helper: %@", String(describing: error))
+            return
+        }
+        NSApp.terminate(nil)
     }
 }
 

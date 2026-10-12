@@ -77,13 +77,20 @@ extension StagehandModel {
             resolvedAction = recognizerAction
         }
         if diagnostics.isEnabled {
-            diagnostics.record("gesture_motion_resolved", details: [
-                "displacement": String(displacement),
-                "focusedWindowID": state.focusedWindowID ?? "none",
-                "observedFocusedWindowID": windowSystem.focusedWindowID() ?? "none",
-                "resolvedAction": resolvedAction.map { String(describing: $0) } ?? "none",
-                "velocity": String(velocity)
-            ])
+            // This runs on the path that routes a keyboard event after a trackpad release.
+            // Reading the observed focus is an Accessibility call, so record it afterwards
+            // rather than making the key wait on it.
+            let logicalFocus = state.focusedWindowID ?? "none"
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.diagnostics.record("gesture_motion_resolved", details: [
+                    "displacement": String(displacement),
+                    "focusedWindowID": logicalFocus,
+                    "observedFocusedWindowID": self.windowSystem.focusedWindowID() ?? "none",
+                    "resolvedAction": resolvedAction.map { String(describing: $0) } ?? "none",
+                    "velocity": String(velocity)
+                ])
+            }
         }
         gestureAxis = nil
         if mode == .shortcut {

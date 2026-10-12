@@ -11,19 +11,41 @@ extension StagehandModel {
         overlays.updateNavigation(state: state, windows: windows)
     }
 
+    /// Delay before retrying a refresh. Waits for a busy worker stay short; a
+    /// stale background scan backs off exponentially from 100 ms to 2 s.
+    static func refreshRetryDelay(staleScans: Int) -> Duration {
+        guard staleScans > 0 else { return .milliseconds(100) }
+        return .milliseconds(min(2_000, 100 << min(staleScans, 10)))
+    }
+
     func scheduleRefresh(immediately: Bool = false) {
         guard isRunning, !isSuspended else { return }
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
-            var firstAttempt = true
+            var attempts = 0
+            var staleScans = 0
+            var delay: Duration = immediately ? .zero : .milliseconds(100)
             while !Task.isCancelled {
                 do {
-                    if immediately && firstAttempt { await Task.yield() }
-                    else { try await Task.sleep(for: .milliseconds(100)) }
+                    if delay == .zero { await Task.yield() }
+                    else { try await Task.sleep(for: delay) }
                 }
                 catch { return }
-                firstAttempt = false
                 guard !Task.isCancelled, let self, self.isRunning, !self.isSuspended else { return }
+                attempts += 1
+                guard attempts <= self.refreshRetryLimit else {
+                    // Something has kept the ribbon busy or unreadable for the whole
+                    // budget. Stop polling; the next window change schedules again.
+                    self.diagnostics.record("refresh_starved", details: [
+                        "attempts": String(attempts - 1),
+                        "staleScans": String(staleScans),
+                        "workerActive": String(self.changes.isProcessing),
+                        "motionRunning": String(self.ribbonMotion.isRunning),
+                        "gestureActive": String(self.gestureBase != nil)
+                    ])
+                    return
+                }
+                delay = Self.refreshRetryDelay(staleScans: staleScans)
                 guard !self.changes.isProcessing, !self.ribbonMotion.isRunning,
                       self.gestureBase == nil, !self.isLayingOutWindows else { continue }
                 // Scanning on another Desktop could admit its windows.
@@ -31,9 +53,22 @@ extension StagehandModel {
                     self.nativeDesktopChanged()
                     return
                 }
-                // Read windows off the main thread. Windows changed during the read
-                // (closed, minimized, another scan) make it stale; try again.
-                guard let current = await self.windowSystem.scanWindowsOffMain() else { continue }
+                let current: [WindowRecord]
+                if staleScans >= self.refreshStaleScanFallback {
+                    // Windows keep changing under the background reader. One
+                    // synchronous scan cannot be invalidated the same way.
+                    self.diagnostics.record("refresh_scan_fallback", details: ["staleScans": String(staleScans)])
+                    current = self.windowSystem.scanWindows()
+                } else {
+                    // Read windows off the main thread. Windows changed during the read
+                    // (closed, minimized, another scan) make it stale; try again.
+                    guard let scanned = await self.windowSystem.scanWindowsOffMain() else {
+                        staleScans += 1
+                        delay = Self.refreshRetryDelay(staleScans: staleScans)
+                        continue
+                    }
+                    current = scanned
+                }
                 guard !Task.isCancelled, self.isRunning, !self.isSuspended else { return }
                 guard !self.changes.isProcessing, !self.ribbonMotion.isRunning,
                       self.gestureBase == nil, !self.isLayingOutWindows else { continue }
@@ -348,9 +383,9 @@ extension StagehandModel {
 
     func initialWidthFractions(for windows: [WindowRecord]) -> [String: Double] {
         guard let availableFrame, availableFrame.width.isFinite, availableFrame.width > 0 else { return [:] }
-        return Dictionary(uniqueKeysWithValues: windows.compactMap { window in
+        return Dictionary(windows.compactMap { window in
             guard window.frame.width.isFinite, window.frame.width > 0 else { return nil }
             return (window.id, Double(window.frame.width / availableFrame.width))
-        })
+        }, uniquingKeysWith: { first, _ in first })
     }
 }
