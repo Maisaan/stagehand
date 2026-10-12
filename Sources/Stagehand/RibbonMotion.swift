@@ -80,7 +80,7 @@ extension RibbonAnimationCurve {
 
 struct RibbonAnimationConfiguration: Equatable {
     static let `default` = Self(
-        duration: 0.3,
+        duration: 0.24,
         curve: .easeOut,
         tracking: 5,
         commitProgress: 0.4,
