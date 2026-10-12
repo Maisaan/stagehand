@@ -258,14 +258,67 @@ struct WindowParkingTests {
 
     @Test func directLayoutRestoreWritesOnlyTheNewTargetAndAcceptsApplicationConstraints() {
         var parking = makeParkedWindow()
-        let requested = CGRect(x: 1770, y: 60, width: 1000, height: 1000)
-        let constrained = CGRect(x: 1760, y: 39, width: 723, height: 1130)
+        let requested = CGRect(x: 1100, y: 60, width: 1000, height: 1000)
+        let constrained = CGRect(x: 1077, y: 39, width: 723, height: 1130)
         var writes: [CGRect] = []
         let success = parking.restore(to: requested, setFrame: { writes.append($0); return true }, readFrame: { constrained })
         #expect(success)
         #expect(writes == [requested])
         #expect(parking.restoreFrame == nil)
         #expect(!parking.isParked)
+    }
+
+    /// 2026-10-12T02:53:42Z: a gesture preview asked Finder for a frame near the right
+    /// edge; Finder kept 40 points visible (x=1760). Restoration cleared the saved frame,
+    /// the next parking pass adopted x=1760 as the frame to return to, and at
+    /// 02:58:24Z "Parking restore" succeeded without moving the window.
+    @Test func layoutRestoreThatLeavesTheWindowAtTheParkingSideKeepsTheSavedFrame() {
+        var parking = makeParkedWindow()
+        let requested = CGRect(x: 1770, y: 80, width: 900, height: 700)
+        let clamped = CGRect(x: 1760, y: 80, width: 900, height: 700)
+        var actual = parkedAtRight
+        let moved = parking.restore(to: requested, setFrame: { _ in actual = clamped; return true }, readFrame: { actual })
+        #expect(moved)
+        #expect(parking.restoreFrame == original)
+        #expect(!parking.isParked)
+
+        var writes = 0
+        let reparked = parking.park(frame: actual, bounds: display, displays: [display],
+                                    setPosition: { _ in writes += 1; return true }, readFrame: { actual })
+        #expect(reparked)
+        #expect(writes == 0)
+        #expect(parking.restoreFrame == original)
+
+        let restored = parking.restore(setFrame: { actual = $0; return true }, readFrame: { actual })
+        #expect(restored)
+        #expect(actual.origin == original.origin)
+        #expect(parking.restoreFrame == nil)
+    }
+
+    @Test func parkingAWindowFoundAtTheSideReturnsItOnscreenRatherThanToTheSide() {
+        var parking = WindowParking()
+        var actual = CGRect(x: 1760, y: 39, width: 920, height: 1130)
+        var writes = 0
+        let parked = parking.park(frame: actual, bounds: display, displays: [display], preferredSide: .right,
+                                  setPosition: { _ in writes += 1; return true }, readFrame: { actual })
+        #expect(parked)
+        #expect(writes == 0)
+        #expect(parking.isParked)
+        #expect(parking.restoreFrame == CGRect(x: 880, y: 39, width: 920, height: 1130))
+
+        let restored = parking.restore(setFrame: { actual = $0; return true }, readFrame: { actual })
+        #expect(restored)
+        #expect(actual.minX == 880)
+        #expect(parking.restoreFrame == nil)
+    }
+
+    @Test func aScreenWideWindowFoundAtTheSideReturnsToTheLeadingEdge() {
+        var parking = WindowParking()
+        let actual = CGRect(x: 1760, y: 39, width: 1800, height: 1130)
+        let parked = parking.park(frame: actual, bounds: display, displays: [display],
+                                  setPosition: { _ in true }, readFrame: { actual })
+        #expect(parked)
+        #expect(parking.restoreFrame == CGRect(x: 0, y: 39, width: 1800, height: 1130))
     }
 
     @Test func layoutRestoreRejectsAStaleParkingPositionEvenWhenTheSetterReportsSuccess() {
@@ -278,8 +331,8 @@ struct WindowParkingTests {
 
     @Test func layoutRestoreAcceptsObservedMovementWhenTheSizeWriteWasRefused() {
         var parking = makeParkedWindow()
-        let requested = CGRect(x: 1770, y: 60, width: 1000, height: 1000)
-        let constrained = CGRect(x: 1760, y: 39, width: 723, height: 1130)
+        let requested = CGRect(x: 1100, y: 60, width: 1000, height: 1000)
+        let constrained = CGRect(x: 1077, y: 39, width: 723, height: 1130)
         let success = parking.restore(to: requested, setFrame: { _ in false }, readFrame: { constrained })
         #expect(success)
         #expect(parking.restoreFrame == nil)

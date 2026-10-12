@@ -27,7 +27,12 @@ struct WindowParking {
             }
             isParked = false
         } else {
-            restoreFrame = frame
+            // A window found at the side (left there by an earlier Stagehand run, or
+            // moved there by the user) has no known original frame. Return it to the
+            // nearest onscreen position rather than remembering the parked one, which
+            // would make a later restore a no-op that leaves it at the edge.
+            restoreFrame = Self.acceptablyParked(frame, bounds: bounds, displays: displays)
+                ? Self.onscreen(frame, within: bounds) : frame
         }
         parkingBounds = bounds
         if Self.acceptablyParked(frame, bounds: bounds, displays: displays) {
@@ -96,6 +101,14 @@ struct WindowParking {
             guard let parkingBounds, actual.intersects(parkingBounds) else { return false }
             if let parkedFrame, Self.samePosition(actual, parkedFrame),
                !Self.samePosition(actual, target) { return false }
+            // A target near the edge (a gesture preview, or a request the app clamps
+            // to its keep-onscreen margin) can leave the window at the parking side.
+            // It moved as asked, but it is not back; keep the saved frame so the next
+            // parking pass does not adopt the side position as the place to return to.
+            if Self.atParkingSide(actual, bounds: parkingBounds) {
+                parkedFrame = actual
+                return true
+            }
         } else {
             guard Self.samePosition(actual, target) else { return false }
         }
@@ -118,15 +131,30 @@ struct WindowParking {
         frame.minX >= bounds.maxX - 64 || frame.maxX <= bounds.minX + 64
     }
 
+    /// The window sits at a side of its bounds with at most a parking remnant visible.
+    private static func atParkingSide(_ frame: CGRect, bounds: CGRect) -> Bool {
+        guard atSide(frame, bounds: bounds) else { return false }
+        let remnant = frame.intersection(bounds)
+        return remnant.isNull || remnant.width <= 64
+    }
+
     private static func acceptablyParked(_ frame: CGRect, bounds: CGRect, displays: [CGRect]) -> Bool {
         guard let containingDisplay = displays.max(by: {
             overlapArea($0, bounds) < overlapArea($1, bounds)
-        }), atSide(frame, bounds: bounds),
+        }), atParkingSide(frame, bounds: bounds),
               displays.filter({ $0 != containingDisplay }).allSatisfy({ !$0.intersects(frame) }) else {
             return false
         }
-        let remnant = frame.intersection(bounds)
-        return remnant.isNull || remnant.width <= 64
+        return true
+    }
+
+    /// The nearest position inside `bounds` on the parking axis; Y is preserved.
+    private static func onscreen(_ frame: CGRect, within bounds: CGRect) -> CGRect {
+        var restored = frame
+        restored.origin.x = frame.width >= bounds.width
+            ? bounds.minX
+            : min(max(frame.minX, bounds.minX), bounds.maxX - frame.width)
+        return restored
     }
 
     private static func overlapArea(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {

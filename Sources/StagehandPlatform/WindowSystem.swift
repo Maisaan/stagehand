@@ -345,6 +345,9 @@ public final class WindowSystem {
     /// whose reads predate the change must not apply them, or it could restore a
     /// window that was just closed or minimized.
     private var trackedStateGeneration = 0
+    /// Windows each app lists without the metadata a scan needs, as last reported.
+    /// Finder lists one such window permanently; report it once, not every scan.
+    private var reportedMissingMetadata: [pid_t: Set<String>] = [:]
 
     private struct ScanPlan: @unchecked Sendable {
         let apps: [NSRunningApplication]
@@ -470,6 +473,7 @@ public final class WindowSystem {
 
     private func applyScan(_ plan: ScanPlan, reads: [pid_t: ApplicationRead]) -> [WindowRecord] {
         trackedStateGeneration &+= 1
+        reportedMissingMetadata = reportedMissingMetadata.filter { plan.livePIDs.contains($0.key) }
         let visibleWindows = plan.visibleWindows
         var seen = Set<String>()
         var result: [WindowRecord] = []
@@ -491,6 +495,17 @@ public final class WindowSystem {
                 })
                 continue
             }
+            let missingMetadata = Set(candidates.filter { !$0.isChild }.compactMap { candidate -> String? in
+                guard let missing = candidate.metadata.missing else { return nil }
+                return "window=\(candidate.windowNumber.map(String.init) ?? "nil") " +
+                    "title=\(candidate.metadata.title.map { "\"\($0)\"" } ?? "nil") missing: \(missing)"
+            })
+            if focusDiagnosticsEnabled {
+                for description in missingMetadata.subtracting(reportedMissingMetadata[app.processIdentifier] ?? []) {
+                    print("Scan pid=\(app.processIdentifier) rejected=missingMetadata \(description)")
+                }
+            }
+            reportedMissingMetadata[app.processIdentifier] = missingMetadata
             for candidate in candidates where !candidate.isChild {
                 let element = candidate.element
                 let identityMatch = windows.first {
@@ -516,7 +531,7 @@ public final class WindowSystem {
                 guard let subrole = candidate.metadata.subrole,
                       let currentFrame = candidate.metadata.frame,
                       let minimized = candidate.metadata.minimized else {
-                    if focusDiagnosticsEnabled { print("Scan pid=\(app.processIdentifier) rejected=missingMetadata") }
+                    // Reported above, once per change, with the window number and errors.
                     if let existing, existing.isAdmitted { result.append(existing.record) }
                     continue
                 }
@@ -1524,6 +1539,21 @@ public final class WindowSystem {
         let title: String?
         /// AXWindow and AXParent, the places an attached sheet or dialog names its owner.
         let ownerCandidates: [AXUIElement?]
+        /// Which of subrole, frame, and minimized the app did not supply, with the
+        /// Accessibility error for each; nil when all three are present.
+        let missing: String?
+
+        static func missingDescription(subrole: (value: CFTypeRef?, error: AXError),
+                                       position: (value: CFTypeRef?, error: AXError),
+                                       size: (value: CFTypeRef?, error: AXError),
+                                       minimized: (value: CFTypeRef?, error: AXError)) -> String? {
+            var missing: [String] = []
+            if subrole.value as? String == nil { missing.append("subrole=\(subrole.error.rawValue)") }
+            if WindowSystem.point(position.value) == nil { missing.append("position=\(position.error.rawValue)") }
+            if WindowSystem.size(size.value) == nil { missing.append("size=\(size.error.rawValue)") }
+            if minimized.value as? Bool == nil { missing.append("minimized=\(minimized.error.rawValue)") }
+            return missing.isEmpty ? nil : missing.joined(separator: " ")
+        }
     }
 
     /// Everything a scan needs from one window, in a single round trip when the app
@@ -1532,14 +1562,21 @@ public final class WindowSystem {
         let names = [kAXPositionAttribute, kAXSizeAttribute, kAXSubroleAttribute, kAXMinimizedAttribute,
                      kAXModalAttribute, "AXFullScreen", kAXTitleAttribute, kAXWindowAttribute, kAXParentAttribute]
         guard let values = copyAttributes(element, names) else {
+            let subrole = copyAttribute(element, kAXSubroleAttribute)
+            let position = copyAttribute(element, kAXPositionAttribute)
+            let size = copyAttribute(element, kAXSizeAttribute)
+            let minimized = copyAttribute(element, kAXMinimizedAttribute)
             return ScanMetadata(
                 frame: readFrame(element),
-                subrole: attribute(element, kAXSubroleAttribute) as? String,
-                minimized: attribute(element, kAXMinimizedAttribute) as? Bool,
+                subrole: subrole.value as? String,
+                minimized: minimized.value as? Bool,
                 modal: attribute(element, kAXModalAttribute) as? Bool == true,
                 fullscreen: copyAttribute(element, "AXFullScreen"),
                 title: attribute(element, kAXTitleAttribute) as? String,
-                ownerCandidates: [kAXWindowAttribute, kAXParentAttribute].map { elementAttribute(element, $0) }
+                ownerCandidates: [kAXWindowAttribute, kAXParentAttribute].map { elementAttribute(element, $0) },
+                missing: ScanMetadata.missingDescription(subrole: subrole, position: position,
+                                                         size: size, minimized: minimized)
+                    .map { "unbatched " + $0 }
             )
         }
         let frame = Self.point(values[0].value).flatMap { position in
@@ -1555,7 +1592,9 @@ public final class WindowSystem {
             ownerCandidates: values[7...8].map { value in
                 value.value.flatMap { CFGetTypeID($0) == AXUIElementGetTypeID()
                     ? unsafeDowncast($0, to: AXUIElement.self) : nil }
-            }
+            },
+            missing: ScanMetadata.missingDescription(subrole: values[2], position: values[0],
+                                                     size: values[1], minimized: values[3])
         )
     }
 
