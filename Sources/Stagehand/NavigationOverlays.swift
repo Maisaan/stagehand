@@ -621,7 +621,8 @@ final class NavigationHUDModel: ObservableObject {
     var focusedWindowLabel: String {
         guard let window = windows.first(where: { $0.id == focusedID }) else { return "No windows" }
         let title = Self.displayTitle(for: window)
-        return title.isEmpty ? window.appName : "\(window.appName) - \(title)"
+        let repeatsAppName = title.caseInsensitiveCompare(window.appName) == .orderedSame
+        return title.isEmpty || repeatsAppName ? window.appName : "\(window.appName) - \(title)"
     }
     private static let workspaceTitledEditors: Set<String> = [
         "com.todesktop.230313mzl4w4u92", // Cursor
