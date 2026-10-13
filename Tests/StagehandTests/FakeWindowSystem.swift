@@ -140,8 +140,11 @@ final class FakeWindowSystem: WindowManaging {
         return true
     }
 
-    func park(windowID: String, preferredSide: WindowParkingSide?) -> Bool {
+    var parkRemnantWidths: [String: CGFloat] = [:]
+
+    func park(windowID: String, preferredSide: WindowParkingSide?, remnantWidth: CGFloat) -> Bool {
         guard let window = windows[windowID], !window.minimized else { return false }
+        parkRemnantWidths[windowID] = remnantWidth
         if window.restoreFrame == nil { windows[windowID]?.restoreFrame = window.frame }
         windows[windowID]?.frame.origin.x = preferredSide == .left ? -window.frame.width + 1 : 100_000
         return true

@@ -26,6 +26,46 @@ struct ModelScenarioTests {
         #expect(harness.events("automatic_pause").isEmpty)
     }
 
+    /// The preset shortcut steps through the presets saved in settings, and a listed
+    /// app's windows are parked with the wider allowance while others keep the default.
+    @Test func widthPresetsAndParkedEdgeAllowanceComeFromSettings() async {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
+        defer { harness.cleanUp() }
+        let savedPresets = harness.model.widthPresets
+        let savedApps = harness.model.wideParkedEdgeBundleIdentifiers
+        let savedWidth = harness.model.wideParkedEdgeWidth
+        defer {
+            harness.model.widthPresets = savedPresets
+            harness.model.wideParkedEdgeBundleIdentifiers = savedApps
+            harness.model.wideParkedEdgeWidth = savedWidth
+        }
+        harness.model.widthPresets = [1.0, 0.4, .nan, 0.4]
+        harness.model.wideParkedEdgeBundleIdentifiers = ["test.app101", "", "test.app101"]
+        harness.model.wideParkedEdgeWidth = 1_000
+        #expect(harness.model.widthPresets == [0.4, 1.0])
+        #expect(harness.model.wideParkedEdgeBundleIdentifiers == ["test.app101"])
+        #expect(harness.model.wideParkedEdgeWidth == Double(WindowTuning.maximumParkedRemnantWidth))
+        harness.model.start()
+        await harness.settle()
+        // The harness windows open at 60% of the available width.
+        #expect(harness.model.state.currentSpace.widthFraction(for: "a") == 0.6)
+
+        harness.model.navigate(.nextWidthPreset)
+        await harness.settle()
+        #expect(harness.model.state.currentSpace.widthFraction(for: "a") == 1)
+        // A full-width window hides both neighbors. b belongs to the listed app.
+        #expect(harness.windows.parkRemnantWidths["b"] == WindowTuning.maximumParkedRemnantWidth)
+        #expect(harness.windows.parkRemnantWidths["c"] == WindowTuning.parkedRemnantWidth)
+
+        harness.model.navigate(.nextWidthPreset)
+        await harness.settle()
+        #expect(harness.model.state.currentSpace.widthFraction(for: "a") == 0.4)
+        harness.model.navigate(.previousWidthPreset)
+        await harness.settle()
+        #expect(harness.model.state.currentSpace.widthFraction(for: "a") == 1)
+        #expect(harness.events("automatic_pause").isEmpty)
+    }
+
     /// Quitting and relaunching Stagehand while apps keep running must return
     /// windows to their spaces and order.
     @Test func relaunchRestoresTheSavedLayoutOfStillRunningWindows() async {

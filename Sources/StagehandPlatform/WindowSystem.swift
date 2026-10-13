@@ -41,6 +41,8 @@ public enum WindowTuning {
     public static let focusRecoveryDeadlineMilliseconds = 1_500
     /// The widest strip of a parked window that may stay on the screen it was parked from.
     public static let parkedRemnantWidth: CGFloat = 64
+    /// The widest strip a user may allow for an app that clamps its windows onscreen.
+    public static let maximumParkedRemnantWidth: CGFloat = 600
     /// A journaled coordinate or size beyond this is treated as corrupt rather than restored.
     public static let recoveryFrameBound: CGFloat = 100_000
     /// Cadence of the poll that writes a deferred recovery frame once its window
@@ -240,7 +242,8 @@ public final class WindowSystem {
         for id in interruptedWindowIDs {
             guard let record = recoveryJournal.records[id] else { continue }
             if let owner = NSRunningApplication(processIdentifier: record.ownerPID),
-               record.isOwnedByProcess(pid: owner.processIdentifier, launchDate: owner.launchDate) {
+               record.isOwnedByProcess(pid: owner.processIdentifier,
+                                       launchDate: ProcessLaunchDate.launchDate(for: owner)) {
                 // Another live Stagehand owns the window, or this one is still
                 // managing it. Once this process has stopped, its own leftovers
                 // from a failed restoreAll are retried like any other record.
@@ -252,7 +255,8 @@ public final class WindowSystem {
             }
             guard let app = NSRunningApplication(processIdentifier: record.pid),
                   record.matchesProcess(bundleIdentifier: app.bundleIdentifier,
-                                        pid: app.processIdentifier, launchDate: app.launchDate) else {
+                                        pid: app.processIdentifier,
+                                        launchDate: ProcessLaunchDate.launchDate(for: app)) else {
                 try? recoveryJournal.remove(windowID: record.windowID)
                 continue
             }
@@ -352,7 +356,8 @@ public final class WindowSystem {
             }
             guard let app = NSRunningApplication(processIdentifier: record.pid), !app.isTerminated,
                   record.matchesProcess(bundleIdentifier: app.bundleIdentifier,
-                                        pid: app.processIdentifier, launchDate: app.launchDate) else {
+                                        pid: app.processIdentifier,
+                                        launchDate: ProcessLaunchDate.launchDate(for: app)) else {
                 forgetRecovery(windowID: id)
                 continue
             }
@@ -1048,7 +1053,8 @@ public final class WindowSystem {
     /// Parks just this window, preserving other windows belonging to the same app.
     /// A thin side remnant avoids macOS's fully-offscreen clamp without changing Y.
     @discardableResult
-    public func park(windowID: String, preferredSide: WindowParkingSide? = nil) -> Bool {
+    public func park(windowID: String, preferredSide: WindowParkingSide? = nil,
+                     remnantWidth: CGFloat = WindowTuning.parkedRemnantWidth) -> Bool {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.park(windowID: windowID) }
         guard let tracked = windows[windowID] else { return false }
         // AX can move a parked window back onscreen after our last frame read.
@@ -1072,7 +1078,7 @@ public final class WindowSystem {
                             width: visible.width, height: visible.height)
         var parking = tracked.parking
         let success = parking.park(frame: currentFrame, bounds: bounds, displays: displays,
-                                   preferredSide: preferredSide,
+                                   preferredSide: preferredSide, remnantWidth: remnantWidth,
                                    setPosition: { position in
             let accepted = self.moveWithOwnedWindows(windowID: windowID) {
                 self.writePosition(tracked.element, position: position)
@@ -1083,7 +1089,7 @@ public final class WindowSystem {
                                    readFrame: { self.readFrame(tracked.element) })
         windows[windowID]?.parking = parking
         if focusDiagnosticsEnabled {
-            logger.notice("Parking pid=\(tracked.record.pid, privacy: .public) success=\(success, privacy: .public) actual=\(String(describing: self.readFrame(tracked.element)), privacy: .public) minimized=\(String(describing: self.attribute(tracked.element, kAXMinimizedAttribute) as? Bool), privacy: .public) restorePending=\(parking.restoreFrame != nil, privacy: .public)")
+            logger.notice("Parking pid=\(tracked.record.pid, privacy: .public) success=\(success, privacy: .public) remnantWidth=\(remnantWidth, privacy: .public) actual=\(String(describing: self.readFrame(tracked.element)), privacy: .public) minimized=\(String(describing: self.attribute(tracked.element, kAXMinimizedAttribute) as? Bool), privacy: .public) restorePending=\(parking.restoreFrame != nil, privacy: .public)")
         }
         return success
     }
@@ -1123,7 +1129,7 @@ public final class WindowSystem {
         if let existing = recoveryJournal.records[windowID],
            let app = NSRunningApplication(processIdentifier: tracked.record.pid),
            existing.matchesProcess(bundleIdentifier: app.bundleIdentifier, pid: app.processIdentifier,
-                                   launchDate: app.launchDate),
+                                   launchDate: ProcessLaunchDate.launchDate(for: app)),
            existing.windowNumber == tracked.windowNumber {
             windows[windowID]?.originalFrame = existing.frame
             return true
@@ -1134,9 +1140,9 @@ public final class WindowSystem {
         guard let record = Self.recoveryRecord(
             windowID: windowID, bundleIdentifier: tracked.record.bundleIdentifier, pid: tracked.record.pid,
             windowNumber: tracked.windowNumber,
-            launchDate: NSRunningApplication(processIdentifier: tracked.record.pid)?.launchDate,
+            launchDate: ProcessLaunchDate.launchDate(pid: tracked.record.pid),
             ownerPID: ProcessInfo.processInfo.processIdentifier,
-            ownerLaunchDate: NSRunningApplication.current.launchDate, frame: frame
+            ownerLaunchDate: ProcessLaunchDate.launchDate(for: .current), frame: frame
         ) else {
             logger.error("Refused to manage window \(windowID, privacy: .public): no recovery record can be written")
             return false

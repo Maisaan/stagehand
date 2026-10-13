@@ -37,10 +37,114 @@ private let maximumContactsPerFrame: Int32 = 32
 private let touchStateMake: UInt32 = 3
 private let touchStateTouching: UInt32 = 4
 /// Momentum scroll events that follow a lift within this window belong to the gesture.
-private let momentumSuppressionWindow: TimeInterval = 0.15
-/// Scroll events are held only while a drag is live and contact frames are still arriving.
-/// If the framework stops reporting frames mid-drag, scrolling recovers after this long.
-private let scrollSuppressionStaleInterval: TimeInterval = 0.1
+let momentumSuppressionWindow: TimeInterval = 0.15
+/// Events are withheld only while contact frames are still arriving. If the framework
+/// stops reporting frames mid-sequence, scrolling recovers after this long.
+let inputSuppressionStaleInterval: TimeInterval = 0.1
+
+/// Which app-bound events a three-finger sequence withholds from the app under the pointer.
+enum SuppressibleInputEvent: Equatable, Sendable {
+    /// Raw `CGScrollPhase` and `CGMomentumScrollPhase` values of a scroll wheel event.
+    case scroll(phase: Int64, momentumPhase: Int64)
+    /// Touch, swipe, and begin/end gesture events derived from the same contacts.
+    case gesture
+
+    static let live = SuppressibleInputEvent.scroll(phase: 2, momentumPhase: 0)
+    static let liveBegan = SuppressibleInputEvent.scroll(phase: 1, momentumPhase: 0)
+    static let momentumBegan = SuppressibleInputEvent.scroll(phase: 0, momentumPhase: 1)
+    static let momentum = SuppressibleInputEvent.scroll(phase: 0, momentumPhase: 2)
+    static let momentumEnded = SuppressibleInputEvent.scroll(phase: 0, momentumPhase: 3)
+}
+
+/// Decides which app-bound input a trackpad contact sequence owns.
+///
+/// WindowServer derives two event families from the same fingers: scroll wheel events and
+/// gesture events carrying the touches. Apps build their own swipes on either (a browser's
+/// back/forward arms on the first scroll deltas, then follows the touches), so Stagehand must
+/// withhold both, and must do so for the whole sequence. Owning a sequence from its first
+/// frame with enough fingers, until every finger lifts, means an app never sees a scroll
+/// stream that starts mid-sequence or a swipe whose beginning was withheld. After the lift,
+/// the sequence's terminal touch event and its momentum scroll are still withheld: the
+/// terminal event carries the final finger positions an app's swipe would commit on, and
+/// momentum would scroll content under a ribbon that already moved.
+///
+/// The cost is that any third contact during a two-finger scroll, a resting thumb or a palm
+/// the hardware accepted, holds that scroll until all fingers lift.
+struct GestureInputOwnership: Equatable, Sendable {
+    /// Momentum from an owned lift stays withheld until its end phase, or until the
+    /// stream has been silent this long and must belong to something else.
+    static let momentumInactivityInterval: TimeInterval = 0.5
+
+    private(set) var ownsSequence = false
+    private(set) var lastContactFrameTime: TimeInterval = 0
+    private(set) var lastLiftTime: TimeInterval = 0
+    /// True from an owned lift until new contacts land. The lifted sequence's last gesture
+    /// event may arrive after the zero-contact frame and still belongs to it.
+    private(set) var liftTailPending = false
+    /// True from an owned lift until the app starts its own live scroll. Momentum may only
+    /// be claimed while this holds; a later two-finger flick's momentum is the app's even
+    /// when it begins within the window after the owned lift.
+    private(set) var momentumEligible = false
+    private(set) var ownsMomentum = false
+    private var lastMomentumTime: TimeInterval = 0
+
+    /// Record one accepted contact frame. `eligible` is false when the sequence was
+    /// handed to the app on landing (a shortcut swipe without its modifiers, for one).
+    mutating func observe(contactCount: Int, fingerCount: Int, eligible: Bool, now: TimeInterval) {
+        if contactCount == 0 {
+            if ownsSequence {
+                lastLiftTime = now
+                liftTailPending = true
+                momentumEligible = true
+            }
+            ownsSequence = false
+            return
+        }
+        lastContactFrameTime = now
+        liftTailPending = false
+        if !ownsSequence, eligible, contactCount >= fingerCount { ownsSequence = true }
+    }
+
+    /// Decide one app-bound event. Mutating: momentum ownership follows the stream's phases.
+    mutating func suppress(_ event: SuppressibleInputEvent, now: TimeInterval) -> Bool {
+        let framesFresh = now - lastContactFrameTime < inputSuppressionStaleInterval
+        switch event {
+        case .gesture:
+            return (ownsSequence && framesFresh)
+                || (liftTailPending && now - lastLiftTime < inputSuppressionStaleInterval)
+        case .scroll(let phase, let momentumPhase):
+            if ownsSequence, framesFresh { return true }
+            guard momentumPhase != 0 else {
+                // A new live scroll ends any momentum claim, and the momentum that follows
+                // it belongs to the app even if it begins soon after the owned lift.
+                if phase == 1 || phase == 128 {
+                    ownsMomentum = false
+                    momentumEligible = false
+                }
+                return false
+            }
+            if ownsMomentum, now - lastMomentumTime > Self.momentumInactivityInterval { ownsMomentum = false }
+            if !ownsMomentum, momentumEligible, now - lastLiftTime < momentumSuppressionWindow {
+                ownsMomentum = true
+            }
+            guard ownsMomentum else { return false }
+            lastMomentumTime = now
+            if momentumPhase == 3 { ownsMomentum = false }
+            return true
+        }
+    }
+}
+
+/// Event types the input tap filters: scroll wheel plus the gesture family AppKit turns
+/// into `touches*WithEvent`, `swipe(with:)`, and begin/end gesture. Core Graphics has no
+/// public names for the gesture types; the raw values are `NSEvent.EventType`'s.
+let suppressibleEventTypeMask: CGEventMask = [
+    CGEventType.scrollWheel.rawValue,
+    UInt32(NSEvent.EventType.beginGesture.rawValue),
+    UInt32(NSEvent.EventType.endGesture.rawValue),
+    UInt32(NSEvent.EventType.gesture.rawValue),
+    UInt32(NSEvent.EventType.swipe.rawValue)
+].reduce(0) { $0 | (CGEventMask(1) << CGEventMask($1)) }
 
 /// Rejects contact frames that cannot have come from a working trackpad. The private
 /// framework has no contract; after a macOS update it may report garbage with the right
@@ -108,7 +212,7 @@ func gestureShortcutAction(
     return ShortcutBinding.action(forKey: key, modifiers: modifiers, in: bindings)
 }
 
-private struct GestureCallbackState {
+struct GestureCallbackState {
     var enabled = false
     var unmodifiedEnabled = false
     var shortcutEnabled = false
@@ -118,9 +222,7 @@ private struct GestureCallbackState {
     var shortcutAxis: GestureAxis?
     var ignoredUntilLift = false
     var recognizer = NavigationGestureRecognizer()
-    var suppressScroll = false
-    var lastLiftTime: TimeInterval = 0
-    var lastContactFrameTime: TimeInterval = 0
+    var ownership = GestureInputOwnership()
     var frameValidator = GestureFrameValidator()
     /// Set once corrupt frames exhaust the validator; delivered to the monitor on main.
     var failure: String?
@@ -130,7 +232,7 @@ private struct GestureCallbackState {
 }
 
 private let gestureCallbackState = OSAllocatedUnfairLock(initialState: GestureCallbackState())
-private let traceGestures = ProcessInfo.processInfo.arguments.contains("--trace-gestures")
+let traceGestures = ProcessInfo.processInfo.arguments.contains("--trace-gestures")
 
 private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
     guard count >= 0, count <= maximumContactsPerFrame, count == 0 || raw != nil else { return 0 }
@@ -153,60 +255,85 @@ private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
     let snapshot = contacts
     let frameTouches = touches
     let flags = CGEventSource.flagsState(.combinedSessionState)
-    let delivery = gestureCallbackState.withLock { state -> (@Sendable () -> Void)? in
-        guard state.enabled else { return nil }
-        guard state.frameValidator.accept(timestamp: timestamp, touches: frameTouches) else {
+    let now = ProcessInfo.processInfo.systemUptime
+    let delivery = gestureCallbackState.withLock { state in
+        state.process(contacts: snapshot, touches: frameTouches, rawCount: count, flags: flags,
+                      timestamp: timestamp, now: now)
+    }
+    delivery?()
+    return 0
+}
+
+extension GestureCallbackState {
+    /// Handle one contact frame. Returns the delivery closure to run outside the lock when
+    /// main-actor delivery needs scheduling. `now` is the uptime the input tap compares against.
+    mutating func process(contacts snapshot: [GestureContact], touches frameTouches: [GestureFrameValidator.Touch],
+                          rawCount count: Int32, flags: CGEventFlags, timestamp: Double,
+                          now: TimeInterval) -> (@Sendable () -> Void)? {
+        guard enabled else { return nil }
+        guard frameValidator.accept(timestamp: timestamp, touches: frameTouches) else {
             // Drop the frame and any gesture it was part of. Enough corrupt frames in a
             // row mean the private data layout no longer matches; stop trusting it.
-            let wasDragging = state.recognizer.isDragging
-            state.recognizer.cancelUntilLift()
-            state.suppressScroll = false
-            if wasDragging { state.pendingEvents.append(.cancelled) }
-            if state.frameValidator.isExhausted {
-                state.enabled = false
-                state.failure = "Trackpad data from this version of macOS looks invalid, so gestures are off until Stagehand relaunches. Keyboard shortcuts still work."
+            // Ownership is left alone: the fingers are still down, and a stream of rejected
+            // frames stops refreshing it, so the stale check releases the app's input.
+            let wasDragging = recognizer.isDragging
+            recognizer.cancelUntilLift()
+            if wasDragging { pendingEvents.append(.cancelled) }
+            if frameValidator.isExhausted {
+                enabled = false
+                failure = "Trackpad data from this version of macOS looks invalid, so gestures are off until Stagehand relaunches. Keyboard shortcuts still work."
             }
             if traceGestures {
-                NSLog("[DEBUG-gesture] rejected frame t=%.3f raw=%d bad=%d", timestamp, count, state.frameValidator.badFrames)
+                NSLog("[DEBUG-gesture] rejected frame t=%.3f raw=%d bad=%d", timestamp, count, frameValidator.badFrames)
             }
-            guard wasDragging || state.failure != nil, !state.deliveryScheduled else { return nil }
-            state.deliveryScheduled = true
-            return state.scheduleDelivery
+            guard wasDragging || failure != nil, !deliveryScheduled else { return nil }
+            deliveryScheduled = true
+            return scheduleDelivery
         }
-        if state.ignoredUntilLift {
-            if snapshot.isEmpty { state.ignoredUntilLift = false }
+        if ignoredUntilLift {
+            if snapshot.isEmpty { ignoredUntilLift = false }
+            ownership.observe(contactCount: snapshot.count, fingerCount: recognizer.fingerCount,
+                              eligible: false, now: now)
             return nil
         }
         let modifiers = ShortcutBinding.carbonModifiers(for: flags)
-        if !state.recognizer.hasContactSequence && snapshot.count >= state.recognizer.fingerCount {
-            state.shortcutModifiers = state.shortcutEnabled
-                ? shortcutGestureModifiers(for: flags, bindings: state.shortcutBindings) : nil
-            if state.shortcutModifiers == nil && !state.unmodifiedEnabled {
-                state.ignoredUntilLift = true
+        if !recognizer.hasContactSequence && snapshot.count >= recognizer.fingerCount {
+            shortcutModifiers = shortcutEnabled
+                ? shortcutGestureModifiers(for: flags, bindings: shortcutBindings) : nil
+            if shortcutModifiers == nil && !unmodifiedEnabled {
+                ignoredUntilLift = true
+                ownership.observe(contactCount: snapshot.count, fingerCount: recognizer.fingerCount,
+                                  eligible: false, now: now)
                 return nil
             }
         }
-        let modifiersChanged = state.shortcutModifiers.map { $0 != modifiers } ?? false
-        let modifierCancelled = state.recognizer.isDragging && modifiersChanged
-        if state.recognizer.hasContactSequence && modifiersChanged {
-            state.recognizer.cancelUntilLift()
-            if modifierCancelled { state.pendingEvents.append(.cancelled) }
+        // Own the app-bound input from the first frame with enough fingers, before the
+        // recognizer has an origin or an axis. Deciding later lets an app arm its own swipe
+        // on the first scroll deltas and touches. Ownership lasts until every finger lifts
+        // even if the recognizer cancels, so the app never receives the tail of a sequence
+        // whose beginning it did not see.
+        ownership.observe(contactCount: snapshot.count, fingerCount: recognizer.fingerCount,
+                          eligible: true, now: now)
+        let modifiersChanged = shortcutModifiers.map { $0 != modifiers } ?? false
+        let modifierCancelled = recognizer.isDragging && modifiersChanged
+        if recognizer.hasContactSequence && modifiersChanged {
+            recognizer.cancelUntilLift()
+            if modifierCancelled { pendingEvents.append(.cancelled) }
         }
-        let wasSuppressing = state.suppressScroll
-        var event = state.recognizer.update(contacts: snapshot, timestamp: timestamp)
-        if let shortcutModifiers = state.shortcutModifiers {
+        var event = recognizer.update(contacts: snapshot, timestamp: timestamp)
+        if let shortcutModifiers {
             switch event {
             case .began(let axis, let displacement, _):
-                state.shortcutAxis = axis
+                shortcutAxis = axis
                 // A shortcut swipe acts on release like its arrow key. The plain gesture's
                 // live ribbon preview follows a different direction and must not run here.
                 event = .began(axis: axis, displacement: displacement, mode: .shortcut)
             case .ended(let displacement, let velocity, let action, _):
                 let shortcutAction = action.flatMap { _ in
-                    state.shortcutAxis.flatMap {
+                    shortcutAxis.flatMap {
                         gestureShortcutAction(axis: $0, displacement: displacement,
-                                              modifiers: shortcutModifiers, bindings: state.shortcutBindings,
-                                              reverseDirection: state.reverseShortcutDirection)
+                                              modifiers: shortcutModifiers, bindings: shortcutBindings,
+                                              reverseDirection: reverseShortcutDirection)
                     }
                 }
                 event = .ended(displacement: displacement, velocity: velocity,
@@ -215,36 +342,27 @@ private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
             }
         }
         if case .ended = event {
-            state.shortcutModifiers = nil
-            state.shortcutAxis = nil
+            shortcutModifiers = nil
+            shortcutAxis = nil
         }
         if case .cancelled = event {
-            state.shortcutModifiers = nil
-            state.shortcutAxis = nil
+            shortcutModifiers = nil
+            shortcutAxis = nil
         }
         if traceGestures, let event {
             switch event {
             case .changed: break
             default:
                 NSLog("[DEBUG-gesture] contact t=%.3f raw=%d active=%d event=%@ reason=%@", timestamp, count,
-                      snapshot.count, String(describing: event), state.recognizer.cancellationReason ?? "none")
+                      snapshot.count, String(describing: event), recognizer.cancellationReason ?? "none")
             }
         }
-        // Only a recognized drag owns the scroll stream. Fingers that are merely resting,
-        // or a sequence that was cancelled, must not block scrolling until a zero-contact
-        // frame that may never arrive.
-        state.suppressScroll = state.recognizer.isDragging
-        let now = ProcessInfo.processInfo.systemUptime
-        if !snapshot.isEmpty { state.lastContactFrameTime = now }
-        if wasSuppressing && !state.suppressScroll { state.lastLiftTime = now }
-        if let event { state.pendingEvents.append(event) }
+        if let event { pendingEvents.append(event) }
         guard event != nil || modifierCancelled else { return nil }
-        guard !state.deliveryScheduled else { return nil }
-        state.deliveryScheduled = true
-        return state.scheduleDelivery
+        guard !deliveryScheduled else { return nil }
+        deliveryScheduled = true
+        return scheduleDelivery
     }
-    delivery?()
-    return 0
 }
 
 @MainActor
@@ -262,7 +380,7 @@ final class GestureMonitor {
     private var device: UnsafeMutableRawPointer?
     private var unregister: (@convention(c) (UnsafeMutableRawPointer, ContactCallback) -> Void)?
     private var stopDevice: (@convention(c) (UnsafeMutableRawPointer) -> Void)?
-    private var scrollTap: ScrollTapThread?
+    private var scrollTap: InputTapThread?
     private var generation: UInt64 = 0
 
     func start(fingerCount: Int = 4, unmodifiedEnabled: Bool, shortcutEnabled: Bool,
@@ -390,7 +508,7 @@ final class GestureMonitor {
     }
 
     private func installScrollTap() -> Bool {
-        let scrollTap = ScrollTapThread()
+        let scrollTap = InputTapThread()
         guard scrollTap.start() else { return false }
         self.scrollTap = scrollTap
         return true
@@ -402,25 +520,26 @@ final class GestureMonitor {
     }
 }
 
-private let scrollTapCallback: CGEventTapCallBack = { _, type, event, context in
+private let inputTapCallback: CGEventTapCallBack = { _, type, event, context in
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        if let context { Unmanaged<ScrollTapThread>.fromOpaque(context).takeUnretainedValue().reenable() }
+        if let context { Unmanaged<InputTapThread>.fromOpaque(context).takeUnretainedValue().reenable() }
         return Unmanaged.passUnretained(event)
     }
-    let momentum = event.getIntegerValueField(.scrollWheelEventMomentumPhase) != 0
+    let kind: SuppressibleInputEvent = type == .scrollWheel
+        ? .scroll(phase: event.getIntegerValueField(.scrollWheelEventScrollPhase),
+                  momentumPhase: event.getIntegerValueField(.scrollWheelEventMomentumPhase))
+        : .gesture
+    let now = ProcessInfo.processInfo.systemUptime
     let suppress = gestureCallbackState.withLock { state in
-        guard state.enabled else { return false }
-        let now = ProcessInfo.processInfo.systemUptime
-        if state.suppressScroll, now - state.lastContactFrameTime < scrollSuppressionStaleInterval { return true }
-        return momentum && now - state.lastLiftTime < momentumSuppressionWindow
+        state.enabled && state.ownership.suppress(kind, now: now)
     }
     return suppress ? nil : Unmanaged.passUnretained(event)
 }
 
-/// Hosts the scroll tap on its own run loop. The tap filters every scroll event on
-/// the system, so it must not wait behind Accessibility calls on the main thread.
-/// Its callback only reads `gestureCallbackState`, which is lock-protected.
-private final class ScrollTapThread: @unchecked Sendable {
+/// Hosts the input tap on its own run loop. The tap filters every scroll and gesture
+/// event on the system, so it must not wait behind Accessibility calls on the main
+/// thread. Its callback only reads `gestureCallbackState`, which is lock-protected.
+private final class InputTapThread: @unchecked Sendable {
     // Written on the tap thread before `ready` is signaled, then only read.
     private var tap: CFMachPort?
     private var runLoop: CFRunLoop?
@@ -430,10 +549,9 @@ private final class ScrollTapThread: @unchecked Sendable {
         // The thread retains this object until its run loop exits after `stop()`.
         let thread = Thread { [self] in
             let context = Unmanaged.passUnretained(self).toOpaque()
-            let mask = CGEventMask(1) << CGEventType.scrollWheel.rawValue
             guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
-                                              options: .defaultTap, eventsOfInterest: mask,
-                                              callback: scrollTapCallback, userInfo: context) else {
+                                              options: .defaultTap, eventsOfInterest: suppressibleEventTypeMask,
+                                              callback: inputTapCallback, userInfo: context) else {
                 ready.signal()
                 return
             }
@@ -448,7 +566,7 @@ private final class ScrollTapThread: @unchecked Sendable {
             while CFMachPortIsValid(tap),
                   CFRunLoopRunInMode(.defaultMode, 1e10, false) != .stopped {}
         }
-        thread.name = "Stagehand scroll tap"
+        thread.name = "Stagehand input tap"
         thread.qualityOfService = .userInteractive
         thread.start()
         ready.wait()

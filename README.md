@@ -89,11 +89,12 @@ While the app bar is visible, about 1.5 seconds after a navigation or while the 
 | Share window with space | Control + Option + Shift + number |
 | Move window and follow | Control + Option + Command + number |
 | Shrink or grow width | Control + Option + - or + |
+| Next or previous width preset | Control + Option + 0, or Shift + 0 |
 | Shrink or grow height | Control + Option + Command + - or + |
 | Pause and restore | Control + Option + Escape |
 | Open settings | Control + Option + comma |
 
-Navigation stops at each end and does not wrap. Width shortcuts stop at the 25% and 100% limits.
+Navigation stops at each end and does not wrap. Width shortcuts stop at the 25% and 100% limits. The preset shortcuts step the active window through the widths listed in Settings > Layout (50%, 75%, and 100% by default) and wrap at the ends.
 These are the defaults. The Controls settings let you turn off, record, or reset each binding, including bindings that use Caps Lock as a modifier.
 
 ### Trackpad gestures
@@ -110,7 +111,7 @@ Keep macOS navigation gestures set to four fingers so they do not overlap with S
 
 - Stagehand briefly buffers typing during a window switch and sends it to the confirmed destination. macOS does not report whether a posted key event reached a specific window, so this is not a proven zero-loss input system. Failed or expired transfers withhold input and show a warning. Secure Input or a disabled event tap can bypass the protection.
 - Pause and Quit restore the window frames captured at Start. Crash recovery restores windows whose Accessibility window ID and original frame were saved before the exit. It cannot safely identify windows after their app relaunches or if macOS does not provide a window ID.
-- Stagehand parks off-ribbon windows just beyond the left or right display edge instead of minimizing them. Apps that clamp window positions may leave part of an edge visible. If Stagehand cannot confirm parking, it restores the windows and pauses.
+- Stagehand parks off-ribbon windows just beyond the left or right display edge instead of minimizing them. Apps that clamp window positions may leave part of an edge visible. If Stagehand cannot confirm parking, it restores the windows and pauses. For an app that keeps more than 64 points of every window on screen, list it under Settings > Layout > Parked edge; its windows may then stay visible up to the width set there, behind the active window, instead of pausing Stagehand.
 - Stagehand manages only the native macOS Desktop where you press Start. It suspends input and layout work on other Desktops. If Desktop identity is temporarily unavailable, Stagehand keeps checking and resumes only after confirming the starting Desktop.
 - Desktop tracking uses a read-only private system API. Gesture support loads Apple's private `MultitouchSupport` framework. Either can break after a macOS update. This build is not intended for App Store distribution.
 - This version intentionally supports one built-in display. It ignores minimized and native-fullscreen windows. Multiple-display and native-fullscreen workflows are not supported.

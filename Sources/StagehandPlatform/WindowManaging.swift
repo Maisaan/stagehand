@@ -43,7 +43,9 @@ public protocol WindowManaging: AnyObject {
     func unavailability(windowID: String) -> WindowUnavailability?
     @discardableResult func setPosition(windowID: String, position: CGPoint) -> Bool
     @discardableResult func setFrame(windowID: String, frame: CGRect) -> Bool
-    @discardableResult func park(windowID: String, preferredSide: WindowParkingSide?) -> Bool
+    /// `remnantWidth` is the widest strip that may stay visible at the side for
+    /// parking to count as confirmed; `WindowTuning.parkedRemnantWidth` by default.
+    @discardableResult func park(windowID: String, preferredSide: WindowParkingSide?, remnantWidth: CGFloat) -> Bool
 
     func focusedWindowID() -> String?
     func focus(windowID: String) async -> Bool
@@ -72,3 +74,10 @@ public protocol InputControlling: AnyObject {
 }
 
 extension InputController: InputControlling {}
+
+public extension WindowManaging {
+    @discardableResult
+    func park(windowID: String, preferredSide: WindowParkingSide? = nil) -> Bool {
+        park(windowID: windowID, preferredSide: preferredSide, remnantWidth: WindowTuning.parkedRemnantWidth)
+    }
+}

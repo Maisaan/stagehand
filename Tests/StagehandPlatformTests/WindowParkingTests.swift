@@ -34,6 +34,61 @@ struct WindowParkingTests {
         #expect(parking.isParked)
     }
 
+    /// Models an app that keeps 200 points of every window on screen. The default
+    /// limit refuses it and rolls back; a wider allowance parks it where it stops.
+    @Test func aWiderRemnantAllowanceAcceptsAClampThatTheDefaultRefuses() {
+        var actual = original
+        // Keeps 200 points of the window on the display at either side.
+        let clampedSetter: (CGPoint) -> Bool = { position in
+            actual.origin = CGPoint(x: min(max(position.x, 200 - actual.width), 1600), y: position.y)
+            return true
+        }
+        var refused = WindowParking()
+        let defaultResult = refused.park(frame: original, bounds: display, displays: [display], preferredSide: .right,
+                                         setPosition: clampedSetter, readFrame: { actual })
+        #expect(!defaultResult)
+        #expect(!refused.isParked)
+        #expect(refused.restoreFrame == nil)
+        #expect(actual.origin == original.origin)
+
+        var allowed = WindowParking()
+        actual = original
+        let allowedResult = allowed.park(frame: original, bounds: display, displays: [display], preferredSide: .right,
+                                         remnantWidth: 240, setPosition: clampedSetter, readFrame: { actual })
+        #expect(allowedResult)
+        #expect(allowed.isParked)
+        #expect(actual.origin == CGPoint(x: 1600, y: original.minY))
+        #expect(allowed.restoreFrame == original)
+
+        // Re-parking judges the window by the same allowance, without another write.
+        var writes = 0
+        let reparked = allowed.park(frame: actual, bounds: display, displays: [display], preferredSide: .right,
+                                    remnantWidth: 240, setPosition: { _ in writes += 1; return true }, readFrame: { actual })
+        #expect(reparked)
+        #expect(writes == 0)
+
+        let restored = allowed.restore(setFrame: { actual = $0; return true }, readFrame: { actual })
+        #expect(restored)
+        #expect(actual == original)
+        #expect(allowed.restoreFrame == nil)
+    }
+
+    @Test func theRemnantAllowanceIsCappedSoAMostlyVisibleWindowIsNeverParked() {
+        #expect(WindowParking.clampedRemnantWidth(10) == WindowTuning.parkedRemnantWidth)
+        #expect(WindowParking.clampedRemnantWidth(.nan) == WindowTuning.parkedRemnantWidth)
+        #expect(WindowParking.clampedRemnantWidth(10_000) == WindowTuning.maximumParkedRemnantWidth)
+        var parking = WindowParking()
+        var actual = original
+        let result = parking.park(frame: original, bounds: display, displays: [display], preferredSide: .right,
+                                  remnantWidth: 10_000, setPosition: { position in
+            // Keeps 800 points visible at either side, more than any allowance.
+            actual.origin = CGPoint(x: min(max(position.x, -100), 1000), y: position.y)
+            return true
+        }, readFrame: { actual })
+        #expect(!result)
+        #expect(!parking.isParked)
+    }
+
     @Test func acceptsAWindowAlreadyClampedAtTheDisplayEdge() {
         var parking = WindowParking()
         let clamped = CGRect(x: 1760, y: 39, width: 723, height: 1130)

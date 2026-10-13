@@ -41,7 +41,7 @@ struct WorkspaceLayoutStore {
     let launchDate: (Int32) -> Date?
 
     init(url: URL = WorkspaceLayoutStore.defaultURL,
-         launchDate: @escaping (Int32) -> Date? = { NSRunningApplication(processIdentifier: $0)?.launchDate }) {
+         launchDate: @escaping (Int32) -> Date? = { ProcessLaunchDate.launchDate(pid: $0) }) {
         self.url = url
         self.launchDate = launchDate
     }

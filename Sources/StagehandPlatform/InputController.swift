@@ -204,7 +204,12 @@ public final class InputController {
             let values = domains.compactMap { domain -> Int? in
                 (CFPreferencesCopyAppValue(key as CFString, domain as CFString) as? NSNumber)?.intValue
             }
-            if values.contains(where: { $0 != 0 }) {
+            // Horizontal: 1 is "Swipe between pages" with three fingers, 2 is "Swipe between
+            // full-screen applications". Vertical: nonzero is Mission Control / App Expose.
+            // These values are observed, not documented.
+            if direction == "horizontal", values.contains(1) {
+                result.append("macOS already uses a three-finger horizontal swipe to move between pages. Set Swipe between pages to two fingers or off in System Settings > Trackpad > More Gestures.")
+            } else if values.contains(where: { $0 != 0 }) {
                 result.append("macOS already uses a three-finger \(direction) gesture. Set it to four fingers in System Settings > Trackpad > More Gestures.")
             } else if values.isEmpty {
                 result.append("Check System Settings > Trackpad > More Gestures for a three-finger \(direction) conflict. macOS did not report this setting.")

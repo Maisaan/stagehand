@@ -12,14 +12,22 @@ struct WindowParking {
     private(set) var isParked = false
     private var parkingBounds: CGRect?
     private var parkedFrame: CGRect?
+    /// The widest visible strip accepted at the last parking request. Restoration
+    /// judges "still at the side" by the same width.
+    private var remnantWidth = WindowTuning.parkedRemnantWidth
 
+    /// `remnantWidth` widens the strip that may stay visible, for an app that
+    /// clamps its windows onscreen. It is capped so a window can never count as
+    /// parked while most of it is still showing.
     mutating func park(frame: CGRect, bounds: CGRect, displays: [CGRect], preferredSide: WindowParkingSide? = nil,
+                       remnantWidth requestedRemnantWidth: CGFloat = WindowTuning.parkedRemnantWidth,
                        setPosition: (CGPoint) -> Bool, readFrame: () -> CGRect?) -> Bool {
         guard Self.valid(frame), Self.valid(bounds), !displays.isEmpty, displays.allSatisfy(Self.valid) else { return false }
+        remnantWidth = Self.clampedRemnantWidth(requestedRemnantWidth)
         let isReparking = restoreFrame != nil
         if isReparking {
             if let actual = readFrame(), Self.valid(actual),
-               Self.acceptablyParked(actual, bounds: bounds, displays: displays) {
+               acceptablyParked(actual, bounds: bounds, displays: displays) {
                 isParked = true
                 parkingBounds = bounds
                 parkedFrame = actual
@@ -31,11 +39,11 @@ struct WindowParking {
             // moved there by the user) has no known original frame. Return it to the
             // nearest onscreen position rather than remembering the parked one, which
             // would make a later restore a no-op that leaves it at the edge.
-            restoreFrame = Self.acceptablyParked(frame, bounds: bounds, displays: displays)
+            restoreFrame = acceptablyParked(frame, bounds: bounds, displays: displays)
                 ? Self.onscreen(frame, within: bounds) : frame
         }
         parkingBounds = bounds
-        if Self.acceptablyParked(frame, bounds: bounds, displays: displays) {
+        if acceptablyParked(frame, bounds: bounds, displays: displays) {
             isParked = true
             parkedFrame = frame
             return true
@@ -58,7 +66,7 @@ struct WindowParking {
             guard let actual = readFrame(), Self.valid(actual),
                   abs(actual.width - frame.width) <= 1, abs(actual.height - frame.height) <= 1,
                   displays.filter({ $0 != containingDisplay }).allSatisfy({ !$0.intersects(actual) }) else { continue }
-            if Self.acceptablyParked(actual, bounds: bounds, displays: displays) {
+            if acceptablyParked(actual, bounds: bounds, displays: displays) {
                 isParked = true
                 parkedFrame = actual
                 return true
@@ -105,7 +113,7 @@ struct WindowParking {
             // to its keep-onscreen margin) can leave the window at the parking side.
             // It moved as asked, but it is not back; keep the saved frame so the next
             // parking pass does not adopt the side position as the place to return to.
-            if Self.atParkingSide(actual, bounds: parkingBounds) {
+            if atParkingSide(actual, bounds: parkingBounds) {
                 parkedFrame = actual
                 return true
             }
@@ -127,21 +135,25 @@ struct WindowParking {
         valid(lhs) && abs(lhs.minX - rhs.minX) <= 1 && abs(lhs.minY - rhs.minY) <= 1
     }
 
-    private static func atSide(_ frame: CGRect, bounds: CGRect) -> Bool {
-        frame.minX >= bounds.maxX - WindowTuning.parkedRemnantWidth ||
-            frame.maxX <= bounds.minX + WindowTuning.parkedRemnantWidth
+    static func clampedRemnantWidth(_ width: CGFloat) -> CGFloat {
+        guard width.isFinite else { return WindowTuning.parkedRemnantWidth }
+        return min(max(width, WindowTuning.parkedRemnantWidth), WindowTuning.maximumParkedRemnantWidth)
+    }
+
+    private func atSide(_ frame: CGRect, bounds: CGRect) -> Bool {
+        frame.minX >= bounds.maxX - remnantWidth || frame.maxX <= bounds.minX + remnantWidth
     }
 
     /// The window sits at a side of its bounds with at most a parking remnant visible.
-    private static func atParkingSide(_ frame: CGRect, bounds: CGRect) -> Bool {
+    private func atParkingSide(_ frame: CGRect, bounds: CGRect) -> Bool {
         guard atSide(frame, bounds: bounds) else { return false }
         let remnant = frame.intersection(bounds)
-        return remnant.isNull || remnant.width <= WindowTuning.parkedRemnantWidth
+        return remnant.isNull || remnant.width <= remnantWidth
     }
 
-    private static func acceptablyParked(_ frame: CGRect, bounds: CGRect, displays: [CGRect]) -> Bool {
+    private func acceptablyParked(_ frame: CGRect, bounds: CGRect, displays: [CGRect]) -> Bool {
         guard let containingDisplay = displays.max(by: {
-            overlapArea($0, bounds) < overlapArea($1, bounds)
+            Self.overlapArea($0, bounds) < Self.overlapArea($1, bounds)
         }), atParkingSide(frame, bounds: bounds),
               displays.filter({ $0 != containingDisplay }).allSatisfy({ !$0.intersects(frame) }) else {
             return false

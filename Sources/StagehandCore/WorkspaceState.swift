@@ -14,6 +14,9 @@ public enum NavigationAction: Equatable, Sendable {
     case shareToSpace(index: Int)
     case shrinkWidth
     case growWidth
+    /// Steps the focused window's width through the saved presets, wrapping at the ends.
+    case nextWidthPreset
+    case previousWidthPreset
     case shrinkHeight
     case growHeight
     case togglePause
@@ -24,6 +27,16 @@ public struct SpaceState: Codable, Equatable, Sendable {
     public static let minimumWidthFraction = 0.25
     public static let maximumWidthFraction = 1.0
     public static let defaultWidthFraction = 0.95
+    public static let defaultWidthPresets: [Double] = [0.5, 0.75, 1.0]
+
+    /// Presets as the preset shortcuts use them: within the supported width range,
+    /// rounded to whole percent, without duplicates, ascending. An empty or
+    /// unusable list falls back to the defaults.
+    public static func normalizedWidthPresets(_ presets: [Double]) -> [Double] {
+        let usable = presets.filter(\.isFinite).map { clampedWidth($0) }
+        let normalized = Array(Set(usable.map { ($0 * 100).rounded() / 100 })).sorted()
+        return normalized.isEmpty ? defaultWidthPresets : normalized
+    }
 
     public fileprivate(set) var windowIDs: [String]
     public fileprivate(set) var focusedWindowID: String?
@@ -274,7 +287,8 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     }
 
     @discardableResult
-    public mutating func apply(_ action: NavigationAction) -> Bool {
+    public mutating func apply(_ action: NavigationAction,
+                               widthPresets: [Double] = SpaceState.defaultWidthPresets) -> Bool {
         switch action {
         case .focusPrevious: return navigateWindow(by: -1, reorder: false)
         case .focusNext: return navigateWindow(by: 1, reorder: false)
@@ -302,6 +316,15 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
             let adjustment = action == .growWidth ? 0.05 : -0.05
             let width = (currentSpace.widthFraction(for: windowID) * 100 + adjustment * 100).rounded() / 100
             return setWidthFraction(width, for: windowID)
+        case .nextWidthPreset, .previousWidthPreset:
+            guard let windowID = focusedWindowID else { return false }
+            let presets = SpaceState.normalizedWidthPresets(widthPresets)
+            let current = currentSpace.widthFraction(for: windowID)
+            // Half a percent of slack so a width set by a drag lands on the nearest step.
+            let target = action == .nextWidthPreset
+                ? presets.first { $0 > current + 0.005 } ?? presets[0]
+                : presets.last { $0 < current - 0.005 } ?? presets[presets.count - 1]
+            return setWidthFraction(target, for: windowID)
         case .shrinkHeight, .growHeight:
             return false
         case .togglePause:

@@ -350,3 +350,47 @@ import Testing
     #expect(state.activeSpaceIndex == 1)
     #expect(state.focusedWindowID == "one")
 }
+
+@Test func widthPresetShortcutsStepThroughThePresetsAndWrap() {
+    var state = WorkspaceState()
+    state.reconcile(windowIDs: ["a"])
+    #expect(state.currentSpace.widthFraction(for: "a") == 0.95)
+    #expect(state.apply(.nextWidthPreset) == true)
+    #expect(state.currentSpace.widthFraction(for: "a") == 1)
+    #expect(state.apply(.nextWidthPreset) == true)
+    #expect(state.currentSpace.widthFraction(for: "a") == 0.5)
+    #expect(state.apply(.nextWidthPreset) == true)
+    #expect(state.currentSpace.widthFraction(for: "a") == 0.75)
+    #expect(state.apply(.previousWidthPreset) == true)
+    #expect(state.currentSpace.widthFraction(for: "a") == 0.5)
+    #expect(state.apply(.previousWidthPreset) == true)
+    #expect(state.currentSpace.widthFraction(for: "a") == 1)
+}
+
+@Test func widthPresetShortcutsUseTheSuppliedPresetsAndIgnoreUnusableValues() {
+    var state = WorkspaceState()
+    state.reconcile(windowIDs: ["a"])
+    let presets = [0.6, .nan, 0.4, 2.0, 0.6]
+    #expect(SpaceState.normalizedWidthPresets(presets) == [0.4, 0.6, 1.0])
+    #expect(state.apply(.nextWidthPreset, widthPresets: presets) == true)
+    #expect(state.currentSpace.widthFraction(for: "a") == 1)
+    #expect(state.apply(.nextWidthPreset, widthPresets: presets) == true)
+    #expect(state.currentSpace.widthFraction(for: "a") == 0.4)
+    #expect(state.apply(.previousWidthPreset, widthPresets: presets) == true)
+    #expect(state.currentSpace.widthFraction(for: "a") == 1)
+    // A width within half a percent of a preset counts as that preset.
+    state.setWidthFraction(0.604, for: "a")
+    #expect(state.apply(.nextWidthPreset, widthPresets: presets) == true)
+    #expect(state.currentSpace.widthFraction(for: "a") == 1)
+    #expect(SpaceState.normalizedWidthPresets([]) == SpaceState.defaultWidthPresets)
+    #expect(SpaceState.normalizedWidthPresets([.infinity]) == SpaceState.defaultWidthPresets)
+}
+
+@Test func widthPresetShortcutsDoNothingWithoutAFocusedWindowOrWithASinglePresetAlreadyApplied() {
+    var state = WorkspaceState()
+    #expect(state.apply(.nextWidthPreset) == false)
+    state.reconcile(windowIDs: ["a"])
+    state.setWidthFraction(0.5, for: "a")
+    #expect(state.apply(.nextWidthPreset, widthPresets: [0.5]) == false)
+    #expect(state.apply(.previousWidthPreset, widthPresets: [0.5]) == false)
+}

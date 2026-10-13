@@ -124,7 +124,7 @@ extension StagehandModel {
             return adjustFocusedWindowHeight(growing: action == .growHeight)
         case .action(let action):
             let sourceSpaceIndex = state.activeSpaceIndex
-            guard state.apply(action) else { return false }
+            guard state.apply(action, widthPresets: widthPresets) else { return false }
             if action == .moveWindowUpSpace {
                 workspaceRestoration.compactEmptySpace(state: &state, at: sourceSpaceIndex)
             }
@@ -293,6 +293,7 @@ extension StagehandModel {
             "pid": String(window.pid),
             "windowID": window.id,
             "preferredSide": preferredSide == .left ? "left" : preferredSide == .right ? "right" : "none",
+            "remnantWidth": String(Double(parkedRemnantWidth(forBundleIdentifier: window.bundleIdentifier))),
             "parked": String(windowSystem.isParked(windowID: window.id))
         ]
         if let frame = windowSystem.observedFrame(windowID: window.id) {
@@ -681,9 +682,10 @@ extension StagehandModel {
             let parkingSide = bounds.flatMap {
                 preferredParkingSide(for: layoutFrames[window.id], relativeTo: $0)
             }
+            let remnantWidth = parkedRemnantWidth(forBundleIdentifier: window.bundleIdentifier)
             let parking = await parkWindow(
                 windowID: window.id,
-                park: { windowSystem.park(windowID: $0, preferredSide: parkingSide) },
+                park: { windowSystem.park(windowID: $0, preferredSide: parkingSide, remnantWidth: remnantWidth) },
                 observedFrame: { windowSystem.observedFrame(windowID: $0) },
                 unavailability: { windowSystem.unavailability(windowID: $0) },
                 canRetry: { self.isRunning && !self.isSuspended && self.desktopScope.refresh() == .home }
@@ -698,6 +700,8 @@ extension StagehandModel {
                 dropUnavailableWindow(window.id, reason: reason, detectedBy: "parking")
             case .failed:
                 warning = "Stagehand couldn't move \(window.appName) out of this space. It paused and restored your windows."
+                    + (remnantWidth > WindowTuning.parkedRemnantWidth ? ""
+                       : " If \(window.appName) keeps its windows on screen, allow it a wider parked edge in Settings > Layout.")
                 return .failed(details: parkingFailureDetails(window: window, preferredSide: parkingSide))
             case .parked, .deferred:
                 break

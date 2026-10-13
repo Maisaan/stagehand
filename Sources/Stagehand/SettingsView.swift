@@ -273,7 +273,7 @@ struct SettingsView: View {
                             .accessibilityLabel("Gesture navigation help")
                             .help("Gesture navigation help")
                             .popover(isPresented: $showingGestureHelp, arrowEdge: .bottom) {
-                                Text("Three-finger swipes move between windows and spaces. Set macOS trackpad gestures to four fingers to avoid conflicts.")
+                                Text("Three-finger swipes move between windows and spaces. Set macOS trackpad gestures to four fingers, and Swipe between pages to two fingers or off, to avoid conflicts.")
                                     .frame(width: 280, alignment: .leading)
                                     .padding(12)
                             }
@@ -390,6 +390,12 @@ struct SettingsView: View {
                     }
                     .padding(14)
                 }
+
+                WidthPresetsCard(model: model)
+            }
+
+            SettingsSection("Parked edge") {
+                ParkedEdgeCard(model: model)
             }
 
             SettingsSection("Spaces") {

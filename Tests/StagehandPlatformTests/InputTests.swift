@@ -137,6 +137,184 @@ private func contacts(count: Int = 3, dx: Double = 0, dy: Double = 0) -> [Gestur
     #expect(!recognizer.hasContactSequence)
 }
 
+private func suppressed(_ ownership: inout GestureInputOwnership, _ event: SuppressibleInputEvent,
+                        now: TimeInterval) -> Bool {
+    ownership.suppress(event, now: now)
+}
+
+@Test func inputOwnershipStartsOnLandingAndLastsUntilEveryFingerLifts() {
+    var ownership = GestureInputOwnership()
+    #expect(!suppressed(&ownership, .liveBegan, now: 1))
+    ownership.observe(contactCount: 2, fingerCount: 3, eligible: true, now: 1)
+    #expect(!suppressed(&ownership, .live, now: 1.001))
+    #expect(!suppressed(&ownership, .gesture, now: 1.001))
+    // The third finger lands: both event families are withheld before any movement.
+    ownership.observe(contactCount: 3, fingerCount: 3, eligible: true, now: 1.01)
+    #expect(suppressed(&ownership, .liveBegan, now: 1.011))
+    #expect(suppressed(&ownership, .gesture, now: 1.011))
+    // A finger lifting early (the recognizer would cancel) does not hand the rest of the
+    // sequence to the app.
+    ownership.observe(contactCount: 2, fingerCount: 3, eligible: true, now: 1.05)
+    #expect(suppressed(&ownership, .live, now: 1.051))
+    #expect(suppressed(&ownership, .gesture, now: 1.051))
+    // Everything lifts. The sequence's terminal touch event, which may arrive after the
+    // zero-contact frame, is still withheld; live scrolling resumes.
+    ownership.observe(contactCount: 0, fingerCount: 3, eligible: true, now: 1.1)
+    #expect(suppressed(&ownership, .gesture, now: 1.101))
+    #expect(!suppressed(&ownership, .liveBegan, now: 1.102))
+    #expect(!suppressed(&ownership, .live, now: 1.103))
+    // New contacts end the tail: their touches reach the app.
+    ownership.observe(contactCount: 2, fingerCount: 3, eligible: true, now: 1.12)
+    #expect(!suppressed(&ownership, .gesture, now: 1.121))
+}
+
+@Test func inputOwnershipKeepsMomentumFromAnOwnedLiftUntilItEnds() {
+    var ownership = GestureInputOwnership()
+    ownership.observe(contactCount: 3, fingerCount: 3, eligible: true, now: 1)
+    ownership.observe(contactCount: 0, fingerCount: 3, eligible: true, now: 1.1)
+    #expect(suppressed(&ownership, .momentumBegan, now: 1.15))
+    // A long momentum tail outlasts the window after the lift and is still withheld.
+    var time = 1.15
+    while time < 1.1 + momentumSuppressionWindow + 0.5 {
+        time += 0.016
+        #expect(suppressed(&ownership, .momentum, now: time))
+    }
+    #expect(suppressed(&ownership, .momentumEnded, now: time + 0.016))
+    // After the end phase the next momentum stream is the app's.
+    #expect(!suppressed(&ownership, .momentumBegan, now: time + 0.5))
+    #expect(!suppressed(&ownership, .momentum, now: time + 0.52))
+}
+
+@Test func inputOwnershipMomentumClaimEndsWithANewScrollOrSilence() {
+    var ownership = GestureInputOwnership()
+    ownership.observe(contactCount: 3, fingerCount: 3, eligible: true, now: 1)
+    ownership.observe(contactCount: 0, fingerCount: 3, eligible: true, now: 1.1)
+    #expect(suppressed(&ownership, .momentumBegan, now: 1.12))
+    #expect(suppressed(&ownership, .momentum, now: 1.14))
+    // A new two-finger scroll begins: its stream, momentum included, is the app's.
+    #expect(!suppressed(&ownership, .liveBegan, now: 1.3))
+    #expect(!suppressed(&ownership, .momentumBegan, now: 1.4))
+    // Momentum that went silent for longer than the inactivity interval is a new stream.
+    ownership.observe(contactCount: 3, fingerCount: 3, eligible: true, now: 2)
+    ownership.observe(contactCount: 0, fingerCount: 3, eligible: true, now: 2.1)
+    #expect(suppressed(&ownership, .momentumBegan, now: 2.12))
+    #expect(!suppressed(&ownership, .momentum, now: 2.12 + GestureInputOwnership.momentumInactivityInterval + 0.01))
+    // A lift with no momentum within the window claims nothing later.
+    ownership.observe(contactCount: 3, fingerCount: 3, eligible: true, now: 3)
+    ownership.observe(contactCount: 0, fingerCount: 3, eligible: true, now: 3.1)
+    #expect(!suppressed(&ownership, .momentumBegan, now: 3.1 + momentumSuppressionWindow + 0.01))
+}
+
+@Test func inputOwnershipLeavesARapidFollowingFlickItsMomentum() {
+    for beginPhase: Int64 in [1, 128] {
+        var ownership = GestureInputOwnership()
+        ownership.observe(contactCount: 3, fingerCount: 3, eligible: true, now: 10)
+        ownership.observe(contactCount: 0, fingerCount: 3, eligible: true, now: 10.1)
+        #expect(suppressed(&ownership, .momentumBegan, now: 10.11))
+        // Two fingers land and flick within the window after the owned lift.
+        ownership.observe(contactCount: 2, fingerCount: 3, eligible: true, now: 10.12)
+        #expect(!suppressed(&ownership, .scroll(phase: beginPhase, momentumPhase: 0), now: 10.13))
+        #expect(!suppressed(&ownership, .live, now: 10.15))
+        ownership.observe(contactCount: 0, fingerCount: 3, eligible: true, now: 10.2)
+        #expect(!suppressed(&ownership, .momentumBegan, now: 10.21), "phase \(beginPhase)")
+        #expect(!suppressed(&ownership, .momentum, now: 10.4), "phase \(beginPhase)")
+    }
+}
+
+@Test func inputOwnershipSkipsSequencesHandedToTheAppAndStaleFrames() {
+    var ownership = GestureInputOwnership()
+    // A shortcut swipe landing without its modifiers belongs to the app for the whole sequence.
+    ownership.observe(contactCount: 3, fingerCount: 3, eligible: false, now: 1)
+    #expect(!suppressed(&ownership, .liveBegan, now: 1.001))
+    ownership.observe(contactCount: 3, fingerCount: 3, eligible: false, now: 1.02)
+    #expect(!suppressed(&ownership, .gesture, now: 1.021))
+    ownership.observe(contactCount: 0, fingerCount: 3, eligible: false, now: 1.04)
+    #expect(!suppressed(&ownership, .gesture, now: 1.041))
+    #expect(!suppressed(&ownership, .momentumBegan, now: 1.05))
+    // Four fingers are at least three: macOS owns the swipe, and the app gets no scroll.
+    ownership.observe(contactCount: 4, fingerCount: 3, eligible: true, now: 2)
+    #expect(suppressed(&ownership, .live, now: 2.001))
+    // If frames stop arriving, the app's input recovers after the stale interval.
+    #expect(suppressed(&ownership, .live, now: 2 + inputSuppressionStaleInterval - 0.01))
+    #expect(!suppressed(&ownership, .live, now: 2 + inputSuppressionStaleInterval + 0.01))
+    #expect(!suppressed(&ownership, .gesture, now: 2 + inputSuppressionStaleInterval + 0.01))
+}
+
+private func touches(_ contacts: [GestureContact], frame: Int32) -> [GestureFrameValidator.Touch] {
+    contacts.map { .init(frame: frame, state: 4, x: Float($0.x), y: Float($0.y), isTouching: true) }
+}
+
+private func enabledCallbackState(unmodified: Bool = true, shortcut: Bool = false) -> GestureCallbackState {
+    var state = GestureCallbackState()
+    state.enabled = true
+    state.recognizer = NavigationGestureRecognizer(fingerCount: 3)
+    state.unmodifiedEnabled = unmodified
+    state.shortcutEnabled = shortcut
+    state.shortcutBindings = ShortcutBinding.defaults
+    return state
+}
+
+@Test func contactFrameProcessingOwnsInputOnLandingAndReleasesOnLift() {
+    var state = enabledCallbackState()
+    var frame: Int32 = 1
+    func feed(_ contacts: [GestureContact], at time: Double) {
+        _ = state.process(contacts: contacts, touches: touches(contacts, frame: frame), rawCount: Int32(contacts.count),
+                          flags: [], timestamp: time, now: time)
+        frame += 1
+    }
+    feed(contacts(count: 2), at: 1)
+    #expect(!suppressed(&state.ownership, .liveBegan, now: 1.001))
+    feed(contacts(), at: 1.01)
+    #expect(suppressed(&state.ownership, .liveBegan, now: 1.011))
+    #expect(!state.recognizer.isDragging)
+    // Movement that the recognizer rejects as incoherent keeps the sequence owned.
+    var moved = contacts(dx: -0.12)
+    moved[0].x += 0.16
+    moved[2].x -= 0.16
+    feed(moved, at: 1.3)
+    #expect(state.recognizer.cancellationReason == "incoherent-movement")
+    #expect(suppressed(&state.ownership, .live, now: 1.301))
+    #expect(suppressed(&state.ownership, .gesture, now: 1.301))
+    // A corrupt frame (timestamp going backwards) is dropped without releasing ownership.
+    feed(contacts(dx: -0.13), at: 1.2)
+    #expect(suppressed(&state.ownership, .live, now: 1.302))
+    feed([], at: 1.4)
+    #expect(!suppressed(&state.ownership, .live, now: 1.401))
+    #expect(suppressed(&state.ownership, .gesture, now: 1.401))
+    #expect(suppressed(&state.ownership, .momentumBegan, now: 1.42))
+}
+
+@Test func contactFrameProcessingLeavesShortcutSwipesWithoutModifiersToTheApp() {
+    var state = enabledCallbackState(unmodified: false, shortcut: true)
+    let landed = contacts()
+    _ = state.process(contacts: landed, touches: touches(landed, frame: 1), rawCount: 3,
+                      flags: [], timestamp: 1, now: 1)
+    #expect(state.ignoredUntilLift)
+    #expect(!suppressed(&state.ownership, .liveBegan, now: 1.001))
+    #expect(!suppressed(&state.ownership, .gesture, now: 1.001))
+    let moved = contacts(dx: -0.1)
+    _ = state.process(contacts: moved, touches: touches(moved, frame: 2), rawCount: 3,
+                      flags: [], timestamp: 1.1, now: 1.1)
+    #expect(!suppressed(&state.ownership, .live, now: 1.101))
+    _ = state.process(contacts: [], touches: [], rawCount: 0, flags: [], timestamp: 1.2, now: 1.2)
+    #expect(!state.ignoredUntilLift)
+    #expect(!suppressed(&state.ownership, .momentumBegan, now: 1.21))
+    // With the bound modifiers held, the same landing is owned.
+    _ = state.process(contacts: landed, touches: touches(landed, frame: 3), rawCount: 3,
+                      flags: [.maskControl, .maskAlternate], timestamp: 2, now: 2)
+    #expect(suppressed(&state.ownership, .liveBegan, now: 2.001))
+}
+
+@Test func inputTapMaskCoversScrollAndTheGestureFamily() {
+    for type: UInt32 in [CGEventType.scrollWheel.rawValue, 19, 20, 29, 31] {
+        #expect(suppressibleEventTypeMask & (CGEventMask(1) << CGEventMask(type)) != 0, "type \(type)")
+    }
+    for type: UInt32 in [CGEventType.keyDown.rawValue, CGEventType.leftMouseDown.rawValue,
+                         CGEventType.leftMouseDragged.rawValue, CGEventType.mouseMoved.rawValue] {
+        #expect(suppressibleEventTypeMask & (CGEventMask(1) << CGEventMask(type)) == 0, "type \(type)")
+    }
+}
+
 @Test func gestureRejectsIncoherentMovementBeforeAxisLock() {
     var recognizer = NavigationGestureRecognizer(fingerCount: 3)
     _ = recognizer.update(contacts: contacts(), timestamp: 0)
@@ -203,6 +381,8 @@ private func contacts(count: Int = 3, dx: Double = 0, dy: Double = 0) -> [Gestur
     (kVK_ANSI_Equal, CGEventFlags([.maskControl, .maskAlternate, .maskShift]), .growWidth),
     (kVK_ANSI_Minus, CGEventFlags([.maskControl, .maskAlternate, .maskCommand]), .shrinkHeight),
     (kVK_ANSI_Equal, CGEventFlags([.maskControl, .maskAlternate, .maskCommand, .maskShift]), .growHeight),
+    (kVK_ANSI_0, CGEventFlags([.maskControl, .maskAlternate]), .nextWidthPreset),
+    (kVK_ANSI_0, CGEventFlags([.maskControl, .maskAlternate, .maskShift]), .previousWidthPreset),
 ])
 func sizeShortcutChordsResolve(key: Int, flags: CGEventFlags, action: NavigationAction) throws {
     let event = try #require(CGEvent(

@@ -14,6 +14,9 @@ enum PreferenceKey {
     static let diagnosticLoggingEnabled = "diagnosticLoggingEnabled"
     static let legacyFocusBorderColor = "focusBorderColor"
     static let focusBorderColors = "focusBorderColors"
+    static let widthPresets = "widthPresets"
+    static let wideParkedEdgeBundleIdentifiers = "wideParkedEdgeBundleIdentifiers"
+    static let wideParkedEdgeWidth = "wideParkedEdgeWidth"
 }
 
 @MainActor
@@ -61,8 +64,50 @@ final class StagehandModel: ObservableObject {
             if isRunning && !isSuspended { enqueue(.preferences) }
         }
     }
+    /// Width fractions the preset shortcuts step through; see `SpaceState.normalizedWidthPresets`.
+    @Published var widthPresets: [Double] {
+        didSet {
+            // Observers re-enter on assignment for a wrapped property; normalize once.
+            let normalized = SpaceState.normalizedWidthPresets(widthPresets)
+            if normalized != widthPresets { widthPresets = normalized; return }
+            UserDefaults.standard.set(widthPresets, forKey: PreferenceKey.widthPresets)
+        }
+    }
+    /// Apps whose parked windows may keep a strip up to `wideParkedEdgeWidth` visible
+    /// instead of failing the layout. For apps that clamp their windows onscreen.
+    @Published var wideParkedEdgeBundleIdentifiers: [String] {
+        didSet {
+            var seen = Set<String>()
+            let normalized = wideParkedEdgeBundleIdentifiers.filter { !$0.isEmpty && seen.insert($0).inserted }
+            if normalized != wideParkedEdgeBundleIdentifiers { wideParkedEdgeBundleIdentifiers = normalized; return }
+            UserDefaults.standard.set(wideParkedEdgeBundleIdentifiers,
+                                      forKey: PreferenceKey.wideParkedEdgeBundleIdentifiers)
+        }
+    }
+    @Published var wideParkedEdgeWidth: Double {
+        didSet {
+            let clamped = Self.clampedWideParkedEdgeWidth(wideParkedEdgeWidth)
+            if clamped != wideParkedEdgeWidth { wideParkedEdgeWidth = clamped; return }
+            UserDefaults.standard.set(wideParkedEdgeWidth, forKey: PreferenceKey.wideParkedEdgeWidth)
+        }
+    }
     @Published private(set) var focusBorderColors: [NSColor]
     @Published private(set) var shortcutBindings: [ShortcutBinding]
+
+    static let wideParkedEdgeWidthBounds: ClosedRange<Double> =
+        Double(WindowTuning.parkedRemnantWidth)...Double(WindowTuning.maximumParkedRemnantWidth)
+    static let defaultWideParkedEdgeWidth: Double = 240
+
+    static func clampedWideParkedEdgeWidth(_ value: Double) -> Double {
+        guard value.isFinite else { return defaultWideParkedEdgeWidth }
+        return min(max(value.rounded(), wideParkedEdgeWidthBounds.lowerBound), wideParkedEdgeWidthBounds.upperBound)
+    }
+
+    /// The visible strip parking may leave for a window of this app.
+    func parkedRemnantWidth(forBundleIdentifier bundleIdentifier: String) -> CGFloat {
+        wideParkedEdgeBundleIdentifiers.contains(bundleIdentifier)
+            ? CGFloat(wideParkedEdgeWidth) : WindowTuning.parkedRemnantWidth
+    }
 
     var focusBorderColor: NSColor {
         focusBorderColor(forSpace: state.activeSpaceIndex)
@@ -273,6 +318,13 @@ final class StagehandModel: ObservableObject {
         shortcutSwipesEnabled = defaults.bool(forKey: PreferenceKey.shortcutSwipesEnabled)
         reverseShortcutSwipeDirection = defaults.object(forKey: PreferenceKey.reverseShortcutSwipeDirection) as? Bool ?? true
         gap = GapInput.clamped(defaults.object(forKey: PreferenceKey.windowGap) as? Double ?? 8)
+        widthPresets = SpaceState.normalizedWidthPresets(
+            defaults.array(forKey: PreferenceKey.widthPresets) as? [Double] ?? SpaceState.defaultWidthPresets
+        )
+        wideParkedEdgeBundleIdentifiers = defaults.stringArray(forKey: PreferenceKey.wideParkedEdgeBundleIdentifiers) ?? []
+        wideParkedEdgeWidth = Self.clampedWideParkedEdgeWidth(
+            defaults.object(forKey: PreferenceKey.wideParkedEdgeWidth) as? Double ?? Self.defaultWideParkedEdgeWidth
+        )
         let defaultBorderColor = Self.savedColor(
             forKey: PreferenceKey.legacyFocusBorderColor,
             in: defaults,
