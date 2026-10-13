@@ -620,7 +620,20 @@ final class NavigationHUDModel: ObservableObject {
     var displayedItemCount: Int { showingSpaces ? availableSpaceIndices.count : windows.count }
     var focusedWindowLabel: String {
         guard let window = windows.first(where: { $0.id == focusedID }) else { return "No windows" }
-        return window.title.isEmpty ? window.appName : "\(window.appName): \(window.title)"
+        let title = Self.displayTitle(for: window)
+        return title.isEmpty ? window.appName : "\(window.appName) - \(title)"
+    }
+    private static let workspaceTitledEditors: Set<String> = [
+        "com.todesktop.230313mzl4w4u92", // Cursor
+        "com.microsoft.VSCode",
+        "com.microsoft.VSCodeInsiders",
+        "com.exafunction.windsurf",
+    ]
+    /// VS Code-family editors title windows "file — workspace"; keep only the workspace.
+    static func displayTitle(for window: WindowRecord) -> String {
+        guard workspaceTitledEditors.contains(window.bundleIdentifier),
+              let workspace = window.title.components(separatedBy: " — ").last else { return window.title }
+        return workspace
     }
     var dropDescription: String? {
         guard let dropTargetID,
