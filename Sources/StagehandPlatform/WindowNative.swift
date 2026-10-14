@@ -211,7 +211,7 @@ final class NativeWindowRegistry: NSObject {
     func focusObservation(windowID: String) -> WindowFocusReport.NativeObservation {
         WindowFocusReport.NativeObservation(applicationActive: NSApp?.isActive == true,
                                              windowKey: windows[windowID]?.window?.isKeyWindow == true,
-                                             frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+                                             frontmostPID: NSWorkspace.shared.frontmostApplication?.resolvedProcessIdentifier)
     }
 
     private func accessibilityFrame(_ frame: CGRect) -> CGRect {

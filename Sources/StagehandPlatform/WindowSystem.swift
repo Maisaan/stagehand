@@ -242,7 +242,7 @@ public final class WindowSystem {
         for id in interruptedWindowIDs {
             guard let record = recoveryJournal.records[id] else { continue }
             if let owner = NSRunningApplication(processIdentifier: record.ownerPID),
-               record.isOwnedByProcess(pid: owner.processIdentifier,
+               record.isOwnedByProcess(pid: owner.resolvedProcessIdentifier,
                                        launchDate: ProcessLaunchDate.launchDate(for: owner)) {
                 // Another live Stagehand owns the window, or this one is still
                 // managing it. Once this process has stopped, its own leftovers
@@ -255,7 +255,7 @@ public final class WindowSystem {
             }
             guard let app = NSRunningApplication(processIdentifier: record.pid),
                   record.matchesProcess(bundleIdentifier: app.bundleIdentifier,
-                                        pid: app.processIdentifier,
+                                        pid: app.resolvedProcessIdentifier,
                                         launchDate: ProcessLaunchDate.launchDate(for: app)) else {
                 try? recoveryJournal.remove(windowID: record.windowID)
                 continue
@@ -356,7 +356,7 @@ public final class WindowSystem {
             }
             guard let app = NSRunningApplication(processIdentifier: record.pid), !app.isTerminated,
                   record.matchesProcess(bundleIdentifier: app.bundleIdentifier,
-                                        pid: app.processIdentifier,
+                                        pid: app.resolvedProcessIdentifier,
                                         launchDate: ProcessLaunchDate.launchDate(for: app)) else {
                 forgetRecovery(windowID: id)
                 continue
@@ -422,7 +422,8 @@ public final class WindowSystem {
                      NSWorkspace.didActivateApplicationNotification,
                      NSWorkspace.didUnhideApplicationNotification] {
             workspaceTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                let pid = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier
+                let pid = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)
+                    .map(\.resolvedProcessIdentifier).flatMap { $0 > 0 ? $0 : nil }
                 MainActor.assumeIsolated {
                     guard let self, self.started else { return }
                     if self.focusDiagnosticsEnabled {
@@ -629,7 +630,7 @@ public final class WindowSystem {
         let accessoryPIDs = Set(visibleWindows.filter { !$0.isModalPanel }.map(\.pid))
             .union(windows.values.map(\.record.pid))
         let apps = eligibleApplications(from: runningApps, accessoryPIDs: accessoryPIDs)
-        let livePIDs = Set(apps.map(\.processIdentifier))
+        let livePIDs = Set(apps.map(\.resolvedProcessIdentifier))
         for pid in Array(observers.keys) where !livePIDs.contains(pid) {
             removeObserver(pid: pid)
         }
@@ -638,11 +639,11 @@ public final class WindowSystem {
         }
         if started {
             for app in apps {
-                observeApplication(AXUIElementCreateApplication(app.processIdentifier), pid: app.processIdentifier)
+                observeApplication(AXUIElementCreateApplication(app.resolvedProcessIdentifier), pid: app.resolvedProcessIdentifier)
             }
         }
         return ScanPlan(apps: apps, livePIDs: livePIDs, visibleWindows: visibleWindows,
-                        reads: ScanReadRequest(system: self, pids: apps.map(\.processIdentifier),
+                        reads: ScanReadRequest(system: self, pids: apps.map(\.resolvedProcessIdentifier),
                                                identities: identitySnapshot()))
     }
 
@@ -724,19 +725,20 @@ public final class WindowSystem {
         var result: [WindowRecord] = []
         var ownedWindows: [OwnedWindow] = []
         for app in plan.apps {
-            guard let read = reads[app.processIdentifier] else { continue }
+            let appPID = app.resolvedProcessIdentifier
+            guard let read = reads[appPID] else { continue }
             if focusDiagnosticsEnabled {
-                logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) AXWindowsStatus=\(read.windowsStatus.rawValue, privacy: .public) count=\(read.candidates?.count ?? -1, privacy: .public)")
+                logger.notice("Scan pid=\(appPID, privacy: .public) AXWindowsStatus=\(read.windowsStatus.rawValue, privacy: .public) count=\(read.candidates?.count ?? -1, privacy: .public)")
             }
             guard let candidates = read.candidates else {
                 // A temporarily busy application must not lose its space memberships.
-                for tracked in windows.values where tracked.record.pid == app.processIdentifier {
+                for tracked in windows.values where tracked.record.pid == appPID {
                     seen.insert(tracked.record.id)
                     if tracked.isAdmitted { result.append(tracked.record) }
                 }
                 ownedWindows.append(contentsOf: self.ownedWindows.filter {
                     var pid: pid_t = 0
-                    return AXUIElementGetPid($0.element, &pid) == .success && pid == app.processIdentifier
+                    return AXUIElementGetPid($0.element, &pid) == .success && pid == appPID
                 })
                 continue
             }
@@ -749,15 +751,15 @@ public final class WindowSystem {
                     "title=\(candidate.metadata.title.map { "\"\($0)\"" } ?? "nil") missing: \(missing)"
             })
             if focusDiagnosticsEnabled {
-                for description in missingMetadata.subtracting(reportedMissingMetadata[app.processIdentifier] ?? []) {
-                    logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) rejected=missingMetadata \(description, privacy: .public)")
+                for description in missingMetadata.subtracting(reportedMissingMetadata[appPID] ?? []) {
+                    logger.notice("Scan pid=\(appPID, privacy: .public) rejected=missingMetadata \(description, privacy: .public)")
                 }
             }
-            reportedMissingMetadata[app.processIdentifier] = missingMetadata
+            reportedMissingMetadata[appPID] = missingMetadata
             for candidate in candidates where !candidate.isChild {
                 let element = candidate.element
                 let identityMatch = windows.first {
-                    guard $0.value.record.pid == app.processIdentifier else { return false }
+                    guard $0.value.record.pid == appPID else { return false }
                     if let candidateNumber = candidate.windowNumber,
                        let trackedNumber = $0.value.windowNumber {
                         return candidateNumber == trackedNumber
@@ -766,7 +768,7 @@ public final class WindowSystem {
                 }?.key
                 let geometryMatches = candidate.metadata.frame.map { frame in
                     windows.filter {
-                        $0.value.record.pid == app.processIdentifier &&
+                        $0.value.record.pid == appPID &&
                         (candidate.windowNumber == nil || $0.value.windowNumber == nil) &&
                         sameBounds($0.value.record.frame, frame)
                     }.map(\.key)
@@ -785,7 +787,7 @@ public final class WindowSystem {
                 }
                 let fullscreen = candidate.metadata.fullscreen
                 if fullscreen.error == .cannotComplete {
-                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) rejected=fullscreenReadTimeout") }
+                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(appPID, privacy: .public) rejected=fullscreenReadTimeout") }
                     if let existing, existing.isAdmitted { result.append(existing.record) }
                     continue
                 }
@@ -797,16 +799,16 @@ public final class WindowSystem {
                         standaloneDialog,
                       currentFrame.width > 1, currentFrame.height > 1 else {
                     if focusDiagnosticsEnabled {
-                        logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) rejected=nonstandardOrInvalidFrame window=\(candidate.windowNumber.map(String.init) ?? "nil", privacy: .public) subrole=\(subrole, privacy: .public) modal=\(candidate.metadata.modal, privacy: .public) frame=\(String(describing: currentFrame), privacy: .public) tracked=\(existingID ?? "nil", privacy: .public)")
+                        logger.notice("Scan pid=\(appPID, privacy: .public) rejected=nonstandardOrInvalidFrame window=\(candidate.windowNumber.map(String.init) ?? "nil", privacy: .public) subrole=\(subrole, privacy: .public) modal=\(candidate.metadata.modal, privacy: .public) frame=\(String(describing: currentFrame), privacy: .public) tracked=\(existingID ?? "nil", privacy: .public)")
                     }
                     continue
                 }
                 guard fullscreen.value as? Bool != true else {
-                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) unavailable=fullscreen") }
+                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(appPID, privacy: .public) unavailable=fullscreen") }
                     continue
                 }
                 guard !minimized else {
-                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) unavailable=minimized") }
+                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(appPID, privacy: .public) unavailable=minimized") }
                     continue
                 }
                 if existing?.isAdmitted != true {
@@ -814,7 +816,7 @@ public final class WindowSystem {
                     // Reject ambiguous geometry rather than accidentally admitting a
                     // same-sized window belonging to another native macOS Desktop.
                     let visibleMatch = visibleWindows.contains { visible in
-                        guard visible.pid == app.processIdentifier,
+                        guard visible.pid == appPID,
                               !visible.isModalPanel || standaloneDialog else { return false }
                         return candidate.windowNumber.map { $0 == visible.windowNumber }
                             ?? sameBounds(visible.frame, currentFrame)
@@ -824,28 +826,28 @@ public final class WindowSystem {
                     }).count
                     guard visibleMatch, candidate.windowNumber != nil || geometryMatches == 1 else {
                         if focusDiagnosticsEnabled {
-                            logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) rejected=desktopAdmission visibleMatch=\(visibleMatch, privacy: .public) sameGeometryCount=\(geometryMatches, privacy: .public)")
+                            logger.notice("Scan pid=\(appPID, privacy: .public) rejected=desktopAdmission visibleMatch=\(visibleMatch, privacy: .public) sameGeometryCount=\(geometryMatches, privacy: .public)")
                         }
                         continue
                     }
                 }
                 guard let movable = candidate.movable, movable.status == .success else {
-                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) rejected=positionSettableReadFailed") }
+                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(appPID, privacy: .public) rejected=positionSettableReadFailed") }
                     if let existing, existing.isAdmitted { result.append(existing.record) }
                     continue
                 }
                 guard movable.value else {
-                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) rejected=notMovable") }
+                    if focusDiagnosticsEnabled { logger.notice("Scan pid=\(appPID, privacy: .public) rejected=notMovable") }
                     continue
                 }
                 let id: String
                 if let existingID {
                     id = existingID
                 } else if let windowNumber = candidate.windowNumber {
-                    id = "\(app.processIdentifier):\(windowNumber)"
+                    id = "\(appPID):\(windowNumber)"
                 } else {
                     nextFallbackID += 1
-                    id = "\(app.processIdentifier):fallback:\(nextFallbackID)"
+                    id = "\(appPID):fallback:\(nextFallbackID)"
                 }
                 let resizable = candidate.resizable
                 let record = WindowRecord(
@@ -853,7 +855,7 @@ public final class WindowSystem {
                     appName: app.localizedName ?? "Unknown app",
                     title: candidate.metadata.title ?? existing?.record.title ?? "",
                     bundleIdentifier: app.bundleIdentifier ?? "",
-                    pid: app.processIdentifier,
+                    pid: appPID,
                     frame: windows[id]?.logicalFrame ?? currentFrame,
                     isResizable: resizable?.status == .success ? resizable?.value == true
                         : existing?.record.isResizable ?? false
@@ -861,7 +863,7 @@ public final class WindowSystem {
                 if windows[id] != nil {
                     var replacedElement = false
                     if let currentElement = windows[id]?.element, !CFEqual(currentElement, element) {
-                        if let observer = observers[app.processIdentifier] {
+                        if let observer = observers[appPID] {
                             unobserveWindow(currentElement, observer: observer)
                         }
                         windows[id]?.element = element
@@ -874,7 +876,7 @@ public final class WindowSystem {
                     windows[id]?.record = record
                     windows[id]?.isAdmitted = true
                     windows[id]?.missedScans = 0
-                    if let observer = observers[app.processIdentifier],
+                    if let observer = observers[appPID],
                        replacedElement || windows[id]?.observationComplete == false {
                         windows[id]?.observationComplete = observeWindow(element, observer: observer)
                     }
@@ -884,7 +886,7 @@ public final class WindowSystem {
                         windowNumber: candidate.windowNumber,
                         record: record
                     )
-                    if let observer = observers[app.processIdentifier] {
+                    if let observer = observers[appPID] {
                         windows[id]?.observationComplete = observeWindow(element, observer: observer)
                     }
                 }
@@ -896,7 +898,7 @@ public final class WindowSystem {
             let identities = identitySnapshot()
             if focusDiagnosticsEnabled {
                 for candidate in candidates where candidate.isChild {
-                    logger.notice("Scan pid=\(app.processIdentifier, privacy: .public) child window=\(candidate.windowNumber.map(String.init) ?? "nil", privacy: .public) subrole=\(candidate.metadata.subrole ?? "nil", privacy: .public) modal=\(candidate.metadata.modal, privacy: .public) owner=\(candidate.ownerNumber.map(String.init) ?? "nil", privacy: .public)")
+                    logger.notice("Scan pid=\(appPID, privacy: .public) child window=\(candidate.windowNumber.map(String.init) ?? "nil", privacy: .public) subrole=\(candidate.metadata.subrole ?? "nil", privacy: .public) modal=\(candidate.metadata.modal, privacy: .public) owner=\(candidate.ownerNumber.map(String.init) ?? "nil", privacy: .public)")
                 }
             }
             for candidate in candidates where candidate.isChild && candidate.metadata.minimized != true {
@@ -904,7 +906,7 @@ public final class WindowSystem {
                       let parentID = Self.trackedWindowID(pid: ownerPID, number: candidate.ownerNumber,
                                                           element: owner, in: identities),
                       windows[parentID]?.isAdmitted == true else { continue }
-                if let previousID = Self.trackedWindowID(pid: app.processIdentifier, number: candidate.windowNumber,
+                if let previousID = Self.trackedWindowID(pid: appPID, number: candidate.windowNumber,
                                                          element: candidate.element, in: identities),
                    previousID != parentID {
                     dropTrackedWindow(id: previousID)
@@ -1128,7 +1130,7 @@ public final class WindowSystem {
         // which may be a parking spot left by an earlier pass or a dropped tracking.
         if let existing = recoveryJournal.records[windowID],
            let app = NSRunningApplication(processIdentifier: tracked.record.pid),
-           existing.matchesProcess(bundleIdentifier: app.bundleIdentifier, pid: app.processIdentifier,
+           existing.matchesProcess(bundleIdentifier: app.bundleIdentifier, pid: app.resolvedProcessIdentifier,
                                    launchDate: ProcessLaunchDate.launchDate(for: app)),
            existing.windowNumber == tracked.windowNumber {
             windows[windowID]?.originalFrame = existing.frame
@@ -1337,8 +1339,8 @@ public final class WindowSystem {
                reportedPID == ProcessInfo.processInfo.processIdentifier,
                let frontmost = NSWorkspace.shared.frontmostApplication,
                frontmost.isActive,
-               frontmost.processIdentifier != reportedPID {
-                focusedApp = AXUIElementCreateApplication(frontmost.processIdentifier)
+               frontmost.resolvedProcessIdentifier != reportedPID {
+                focusedApp = AXUIElementCreateApplication(frontmost.resolvedProcessIdentifier)
             } else {
                 focusedApp = reportedApp
             }
@@ -1346,7 +1348,7 @@ public final class WindowSystem {
                   let frontmost = NSWorkspace.shared.frontmostApplication, frontmost.isActive {
             // Match focus()'s narrow fallback. A remembered window in a background
             // app is not evidence of keyboard focus.
-            focusedApp = AXUIElementCreateApplication(frontmost.processIdentifier)
+            focusedApp = AXUIElementCreateApplication(frontmost.resolvedProcessIdentifier)
         } else {
             return nil
         }
@@ -1369,7 +1371,7 @@ public final class WindowSystem {
         // Resolve actual focus and independently reject background remembered windows.
         guard let tracked = windows[id], tracked.isAdmitted,
               let frontmost = NSWorkspace.shared.frontmostApplication,
-              frontmost.isActive, frontmost.processIdentifier == tracked.record.pid else { return }
+              frontmost.isActive, frontmost.resolvedProcessIdentifier == tracked.record.pid else { return }
         onFocusedWindowChange?(id)
     }
 
@@ -1569,7 +1571,7 @@ public final class WindowSystem {
             // then AX reads cannot confirm it, and they wait while the app is busy.
             guard app.isActive else {
                 return WindowFocusReport.Observation(
-                    frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                    frontmostPID: NSWorkspace.shared.frontmostApplication?.resolvedProcessIdentifier,
                     focusedApplicationPID: nil,
                     focusedApplicationStatus: nil,
                     focusedWindowStatus: nil,
@@ -1619,7 +1621,7 @@ public final class WindowSystem {
                 return result
             }
             return WindowFocusReport.Observation(
-                frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                frontmostPID: NSWorkspace.shared.frontmostApplication?.resolvedProcessIdentifier,
                 focusedApplicationPID: focus.focusedPID,
                 focusedApplicationStatus: focus.applicationStatus,
                 focusedWindowStatus: focus.windowStatus,
@@ -1770,7 +1772,7 @@ public final class WindowSystem {
                     from: applications,
                     accessoryPIDs: visiblePIDs
                 )
-                where self.observers[app.processIdentifier] == nil {
+                where self.observers[app.resolvedProcessIdentifier] == nil {
                     scheduled = self.scheduleDiscovery(for: app) || scheduled
                 }
                 let inventory = self.applicationInventory(
@@ -1793,7 +1795,7 @@ public final class WindowSystem {
             applicationPIDs: Set(eligibleApplications(
                 from: applications,
                 accessoryPIDs: visiblePIDs
-            ).map(\.processIdentifier)),
+            ).map(\.resolvedProcessIdentifier)),
             visibleWindows: Set(visibleWindows.map {
                 VisibleWindowIdentity(pid: $0.pid, windowNumber: $0.windowNumber)
             })
@@ -1802,7 +1804,7 @@ public final class WindowSystem {
 
     @discardableResult
     private func scheduleDiscovery(for app: NSRunningApplication) -> Bool {
-        let pid = app.processIdentifier
+        let pid = app.resolvedProcessIdentifier
         guard !app.isTerminated, pid != ProcessInfo.processInfo.processIdentifier,
               !windows.values.contains(where: { $0.record.pid == pid && $0.isAdmitted }) else { return false }
         return launchDiscovery.schedule(pid: pid) { [weak self] in
@@ -1821,11 +1823,12 @@ public final class WindowSystem {
         accessoryPIDs: Set<pid_t>
     ) -> [NSRunningApplication] {
         applications.filter { app in
-            app.processIdentifier != ProcessInfo.processInfo.processIdentifier &&
+            let pid = app.resolvedProcessIdentifier
+            return pid > 0 && pid != ProcessInfo.processInfo.processIdentifier &&
             managedBundleIdentifiers.map { allowed in app.bundleIdentifier.map(allowed.contains) ?? false } ?? true &&
             canManageWindows(
                 for: app.activationPolicy,
-                hasVisibleOrTrackedWindow: accessoryPIDs.contains(app.processIdentifier)
+                hasVisibleOrTrackedWindow: accessoryPIDs.contains(pid)
             ) && !app.isTerminated
         }
     }

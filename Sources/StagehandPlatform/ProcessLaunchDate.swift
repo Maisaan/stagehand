@@ -6,7 +6,7 @@ import Darwin
 /// apps, Finder among them, so the kernel's process start time stands in.
 public enum ProcessLaunchDate {
     public static func launchDate(for app: NSRunningApplication) -> Date? {
-        app.launchDate ?? kernelStartDate(pid: app.processIdentifier)
+        app.launchDate ?? kernelStartDate(pid: app.resolvedProcessIdentifier)
     }
 
     public static func launchDate(pid: pid_t) -> Date? {

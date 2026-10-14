@@ -185,7 +185,7 @@ public final class FocusInputGate {
         transferTimeoutMilliseconds = Self.defaultTransferTimeoutMilliseconds
         postEvent = { event, pid in event.postToPid(pid) }
         secureInputEnabled = { IsSecureEventInputEnabled() }
-        frontmostProcessIdentifier = { NSWorkspace.shared.frontmostApplication?.processIdentifier }
+        frontmostProcessIdentifier = { NSWorkspace.shared.frontmostApplication?.resolvedProcessIdentifier }
         installsEventTap = true
     }
 
