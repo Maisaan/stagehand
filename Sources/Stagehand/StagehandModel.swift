@@ -168,6 +168,7 @@ final class StagehandModel: ObservableObject {
     var recoveryInProgress = false
     var desktopCheckTask: Task<Void, Never>?
     var sleepObserver: NSObjectProtocol?
+    var unlockObserver: NSObjectProtocol?
     /// AXIsProcessTrusted() is cheap; macOS sends no notification when the user
     /// revokes Accessibility, and didBecomeActive only fires when Stagehand's own
     /// windows come forward.
@@ -186,8 +187,13 @@ final class StagehandModel: ObservableObject {
     /// notifications carry the recovery.
     var desktopCheckAttempts = 0
     static let quickDesktopChecks = 6
+    /// Checks left at the unlock interval. Unlocking posts a notification, but
+    /// WindowServer can keep reporting the lock for a moment after it.
+    var unlockDesktopChecks = 0
+    static let unlockDesktopCheckCount = 40
     var desktopCheckDelay: Duration {
-        desktopCheckAttempts <= Self.quickDesktopChecks ? .milliseconds(500) : .seconds(5)
+        if unlockDesktopChecks > 0 { return .milliseconds(50) }
+        return desktopCheckAttempts <= Self.quickDesktopChecks ? .milliseconds(500) : .seconds(5)
     }
     var workspaceRestoration = WorkspaceRestoration()
     var focusHistory = WindowFocusHistory()
@@ -448,6 +454,13 @@ final class StagehandModel: ObservableObject {
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.systemWillSleep() }
+        }
+        // Unlocking the screen posts no NSWorkspace notification. Without this, a
+        // long lock leaves resume to the 5 s backoff check.
+        unlockObserver = DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.screenUnlocked() }
         }
         self.diagnostics.record("session_started")
         refreshPermissions()
@@ -1019,12 +1032,20 @@ final class StagehandModel: ObservableObject {
         inputIssues = issues.filter { seen.insert($0).inserted }
     }
 
+    func screenUnlocked() {
+        guard isRunning, isSuspended else { return }
+        desktopCheckAttempts = 0
+        unlockDesktopChecks = Self.unlockDesktopCheckCount
+        nativeDesktopChanged()
+    }
+
     func nativeDesktopChanged() {
         guard isRunning else { return }
         desktopCheckTask?.cancel()
         switch desktopScope.refresh() {
         case .home:
             desktopCheckAttempts = 0
+            unlockDesktopChecks = 0
             guard isSuspended else { return }
             isSuspended = false
             diagnostics.record("desktop_resumed", details: workspaceDetails())
@@ -1067,6 +1088,7 @@ final class StagehandModel: ObservableObject {
             // would otherwise poll indefinitely.
             if desktopScope.relation == .unknown {
                 desktopCheckAttempts += 1
+                if unlockDesktopChecks > 0 { unlockDesktopChecks -= 1 }
                 if desktopCheckAttempts == Self.quickDesktopChecks + 1 {
                     diagnostics.record("desktop_check_backoff", details: [
                         "attempts": String(desktopCheckAttempts - 1),
@@ -1081,6 +1103,7 @@ final class StagehandModel: ObservableObject {
                 }
             } else {
                 desktopCheckAttempts = 0
+                unlockDesktopChecks = 0
             }
         }
     }

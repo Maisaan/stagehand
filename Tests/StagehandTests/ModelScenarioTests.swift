@@ -481,6 +481,43 @@ struct ModelScenarioTests {
         #expect(harness.events("desktop_resumed").count == 1)
     }
 
+    /// Unlocking after a long lock rechecks at once and then every 50 ms for a
+    /// short while, instead of waiting for the 5 s backoff check.
+    @Test func unlockingRechecksTheDesktopImmediatelyAndQuickly() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+
+        harness.desktop.id = nil
+        for _ in 0...StagehandModel.quickDesktopChecks {
+            harness.model.nativeDesktopChanged()
+        }
+        #expect(harness.model.desktopCheckDelay == .seconds(5))
+
+        // WindowServer still reports the lock when the unlock notification arrives.
+        harness.model.screenUnlocked()
+        #expect(harness.model.isSuspended)
+        #expect(harness.model.desktopCheckDelay == .milliseconds(50))
+
+        harness.desktop.id = 1
+        harness.model.nativeDesktopChanged()
+        await harness.settle()
+        #expect(!harness.model.isSuspended)
+        #expect(harness.model.unlockDesktopChecks == 0)
+        #expect(harness.events("desktop_resumed").count == 1)
+
+        // A long lock that outlasts the unlock checks falls back to the backoff.
+        harness.desktop.id = nil
+        harness.model.nativeDesktopChanged()
+        harness.model.screenUnlocked()
+        for _ in 0..<StagehandModel.unlockDesktopCheckCount {
+            harness.model.nativeDesktopChanged()
+        }
+        #expect(harness.model.unlockDesktopChecks == 0)
+        #expect(harness.model.desktopCheckDelay == .seconds(5))
+    }
+
     /// Sleep during a switch: the in-flight transition is dropped and rolled
     /// back without pausing, and the wake refresh lays the ribbon out again.
     @Test func sleepDuringASwitchDropsTheTransitionAndWakeLaysOutAgain() async {
