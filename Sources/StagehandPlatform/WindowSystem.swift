@@ -163,6 +163,14 @@ public final class WindowSystem {
     private var windows: [String: TrackedWindow] = [:]
     private var ownedWindows: [OwnedWindow] = []
     private var observers: [pid_t: AXObserver] = [:]
+    private var focusReportInFlight = false
+    private var focusReportPending = false
+    /// Answers whether an observed focus change would be used now. Reads nobody
+    /// would use, such as during Stagehand's own navigation, are skipped.
+    public var wantsObservedFocus: (() -> Bool)?
+    /// Answers whether a moved or resized window's new frame would be used now.
+    /// Each frame read is three AX round trips to an app that may be busy.
+    public var wantsFrameChange: ((String) -> Bool)?
     private var applicationObservations: [pid_t: ApplicationObservation] = [:]
     private var observationRetries: [pid_t: Task<Void, Never>] = [:]
     private let launchDiscovery = ApplicationLaunchDiscovery()
@@ -1330,39 +1338,98 @@ public final class WindowSystem {
 
     public func focusedWindowID() -> String? {
         if NSApp?.isActive == true { return nativeWindows.focusedWindowID }
+        return resolveFocus(readFocus(systemElement: systemElement, frontmostPID: Self.activeFrontmostPID(),
+                                      in: identitySnapshot()))
+    }
+
+    private enum FocusRead: Sendable {
+        case none
+        case own
+        case external(String?)
+    }
+
+    private func resolveFocus(_ read: FocusRead) -> String? {
+        switch read {
+        case .none: nil
+        case .own: nativeWindows.focusedWindowID
+        case .external(let id): id
+        }
+    }
+
+    private static func activeFrontmostPID() -> pid_t? {
+        guard let frontmost = NSWorkspace.shared.frontmostApplication, frontmost.isActive else { return nil }
+        return frontmost.resolvedProcessIdentifier
+    }
+
+    /// The AX part of focusedWindowID(). It waits on the focused app, so it may run off the main thread.
+    nonisolated private func readFocus(systemElement: AXUIElement, frontmostPID: pid_t?,
+                                       in snapshot: IdentitySnapshot) -> FocusRead {
+        let ownPID = ProcessInfo.processInfo.processIdentifier
         let result = copyAttribute(systemElement, kAXFocusedApplicationAttribute)
         let focusedApp: AXUIElement
         if let value = result.value, CFGetTypeID(value) == AXUIElementGetTypeID() {
             let reportedApp = unsafeDowncast(value, to: AXUIElement.self)
             var reportedPID: pid_t = 0
             if AXUIElementGetPid(reportedApp, &reportedPID) == .success,
-               reportedPID == ProcessInfo.processInfo.processIdentifier,
-               let frontmost = NSWorkspace.shared.frontmostApplication,
-               frontmost.isActive,
-               frontmost.resolvedProcessIdentifier != reportedPID {
-                focusedApp = AXUIElementCreateApplication(frontmost.resolvedProcessIdentifier)
+               reportedPID == ownPID, let frontmostPID, frontmostPID != reportedPID {
+                focusedApp = AXUIElementCreateApplication(frontmostPID)
             } else {
                 focusedApp = reportedApp
             }
-        } else if result.error == .noValue,
-                  let frontmost = NSWorkspace.shared.frontmostApplication, frontmost.isActive {
+        } else if result.error == .noValue, let frontmostPID {
             // Match focus()'s narrow fallback. A remembered window in a background
             // app is not evidence of keyboard focus.
-            focusedApp = AXUIElementCreateApplication(frontmost.resolvedProcessIdentifier)
+            focusedApp = AXUIElementCreateApplication(frontmostPID)
         } else {
-            return nil
+            return .none
         }
         var focusedPID: pid_t = 0
-        if AXUIElementGetPid(focusedApp, &focusedPID) == .success,
-           focusedPID == ProcessInfo.processInfo.processIdentifier {
-            return nativeWindows.focusedWindowID
-        }
-        guard let focusedWindow = elementAttribute(focusedApp, kAXFocusedWindowAttribute) else { return nil }
-        return trackedWindowID(matching: focusedWindow)
+        if AXUIElementGetPid(focusedApp, &focusedPID) == .success, focusedPID == ownPID { return .own }
+        guard let focusedWindow = elementAttribute(focusedApp, kAXFocusedWindowAttribute) else { return .none }
+        return .external(trackedWindowID(matching: focusedWindow, in: snapshot))
     }
 
+    /// Reports focus changes macOS made, such as a click or Command-Tab. The newly
+    /// active app answers AX only once its run loop is free, which can take hundreds
+    /// of milliseconds, so the read runs off the main thread where the input taps
+    /// live. Notifications arriving during a read coalesce into one more read.
     private func reportCurrentFocus() {
-        guard onFocusedWindowChange != nil, let id = focusedWindowID() else { return }
+        guard onFocusedWindowChange != nil, wantsObservedFocus?() ?? true else { return }
+        if NSApp?.isActive == true {
+            if let id = nativeWindows.focusedWindowID { onFocusedWindowChange?(id) }
+            return
+        }
+        guard !focusReportInFlight else {
+            focusReportPending = true
+            return
+        }
+        focusReportInFlight = true
+        let request = FocusReadRequest(system: self, systemElement: systemElement,
+                                       frontmostPID: Self.activeFrontmostPID(), snapshot: identitySnapshot())
+        Self.focusObservationQueue.async {
+            let read = request.system.readFocus(systemElement: request.systemElement,
+                                                frontmostPID: request.frontmostPID, in: request.snapshot)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { request.system.deliverFocusReport(read) }
+            }
+        }
+    }
+
+    private struct FocusReadRequest: @unchecked Sendable {
+        let system: WindowSystem
+        let systemElement: AXUIElement
+        let frontmostPID: pid_t?
+        let snapshot: IdentitySnapshot
+    }
+
+    private func deliverFocusReport(_ read: FocusRead) {
+        focusReportInFlight = false
+        if focusReportPending {
+            focusReportPending = false
+            reportCurrentFocus()
+            return
+        }
+        guard started, wantsObservedFocus?() ?? true, let id = resolveFocus(read) else { return }
         if nativeWindows.contains(windowID: id) {
             onFocusedWindowChange?(id)
             return
@@ -1374,6 +1441,10 @@ public final class WindowSystem {
               frontmost.isActive, frontmost.resolvedProcessIdentifier == tracked.record.pid else { return }
         onFocusedWindowChange?(id)
     }
+
+    /// Separate from accessibilityQueue so a slow observation never delays a focus request.
+    nonisolated private static let focusObservationQueue = DispatchQueue(label: "app.stagehand.focus-observation",
+                                                                         qos: .userInitiated)
 
     /// Returns success only after the target application and its exact window own focus.
     /// Callers must not report a successful transition before this confirmation.
@@ -1692,6 +1763,7 @@ public final class WindowSystem {
                 if owner.onFrameChange != nil,
                    name == kAXMovedNotification || name == kAXResizedNotification,
                    let id = owner.directTrackedWindowID(matching: changedWindow),
+                   owner.wantsFrameChange?(id) ?? true,
                    let frame = owner.readFrame(changedWindow) {
                     owner.onFrameChange?(id, frame)
                 }

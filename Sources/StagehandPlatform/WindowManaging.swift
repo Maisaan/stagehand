@@ -8,6 +8,10 @@ public protocol WindowManaging: AnyObject {
     var onChange: (() -> Void)? { get set }
     var onFrameChange: ((String, CGRect) -> Void)? { get set }
     var onFocusedWindowChange: ((String) -> Void)? { get set }
+    /// Whether an observed focus change would be used now; unused AX reads are skipped.
+    var wantsObservedFocus: (() -> Bool)? { get set }
+    /// Whether a moved or resized window's frame would be used now; unused AX reads are skipped.
+    var wantsFrameChange: ((String) -> Bool)? { get set }
     var onTitleChange: ((String, String) -> Void)? { get set }
     var onApplicationTerminated: ((pid_t) -> Void)? { get set }
     var onWindowDestroyed: ((String) -> Void)? { get set }
