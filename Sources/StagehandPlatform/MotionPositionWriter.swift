@@ -9,6 +9,7 @@ import Foundation
 /// is busy are dropped.
 final class MotionPositionWriter: @unchecked Sendable {
     private struct Pending {
+        let windowID: String
         let element: AXUIElement
         let position: CGPoint
     }
@@ -18,10 +19,43 @@ final class MotionPositionWriter: @unchecked Sendable {
     /// Apps with a drain queued or running.
     private var draining: Set<pid_t> = []
     private var queues: [pid_t: DispatchQueue] = [:]
+    /// Per-animation counts for diagnostics: positions requested, AX writes sent, slowest write.
+    private var requested = 0
+    private var sent = 0
+    private var slowestWrite: Double = 0
+    /// When each window last moved, and the longest it went without moving. A
+    /// long gap is a visible freeze of that window mid-motion.
+    private var lastSent: [String: Double] = [:]
+    private var largestGap: [String: Double] = [:]
+
+    func resetStatistics() {
+        lock.withLock {
+            requested = 0
+            sent = 0
+            slowestWrite = 0
+            lastSent = [:]
+            largestGap = [:]
+        }
+    }
+
+    struct Statistics {
+        let requested: Int
+        let sent: Int
+        let slowestMilliseconds: Int
+        let largestGapMilliseconds: [String: Int]
+    }
+
+    var statistics: Statistics {
+        lock.withLock {
+            Statistics(requested: requested, sent: sent, slowestMilliseconds: Int(slowestWrite * 1_000),
+                       largestGapMilliseconds: largestGap.mapValues { Int($0 * 1_000) })
+        }
+    }
 
     func write(windowID: String, pid: pid_t, element: AXUIElement, position: CGPoint) {
         let queue: DispatchQueue? = lock.withLock {
-            pending[pid, default: [:]][windowID] = Pending(element: element, position: position)
+            requested += 1
+            pending[pid, default: [:]][windowID] = Pending(windowID: windowID, element: element, position: position)
             guard draining.insert(pid).inserted else { return nil }
             return queueLocked(pid: pid)
         }
@@ -74,7 +108,17 @@ final class MotionPositionWriter: @unchecked Sendable {
             for item in batch {
                 var position = item.position
                 guard let value = AXValueCreate(.cgPoint, &position) else { continue }
+                let began = CFAbsoluteTimeGetCurrent()
                 AXUIElementSetAttributeValue(item.element, kAXPositionAttribute as CFString, value)
+                let finished = CFAbsoluteTimeGetCurrent()
+                lock.withLock {
+                    sent += 1
+                    slowestWrite = max(slowestWrite, finished - began)
+                    if let previous = lastSent[item.windowID] {
+                        largestGap[item.windowID] = max(largestGap[item.windowID] ?? 0, finished - previous)
+                    }
+                    lastSent[item.windowID] = finished
+                }
             }
         }
     }

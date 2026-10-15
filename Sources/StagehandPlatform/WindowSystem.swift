@@ -1007,6 +1007,19 @@ public final class WindowSystem {
         await motionWriter.flush()
     }
 
+    /// Since the last reset: positions requested, AX writes sent, the slowest write,
+    /// and the longest any window, and `focusedWindowID`, went without moving.
+    public func motionWriteStatistics(reset: Bool, focusedWindowID: String?) -> [String: String] {
+        let statistics = motionWriter.statistics
+        if reset { motionWriter.resetStatistics() }
+        return ["motionPositionsRequested": String(statistics.requested),
+                "motionWritesSent": String(statistics.sent),
+                "slowestMotionWriteMilliseconds": String(statistics.slowestMilliseconds),
+                "largestMotionGapMilliseconds": String(statistics.largestGapMilliseconds.values.max() ?? 0),
+                "focusedMotionGapMilliseconds": String(focusedWindowID.flatMap {
+                    statistics.largestGapMilliseconds[$0] } ?? 0)]
+    }
+
     public func frame(windowID: String) -> CGRect? {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.frame(windowID: windowID) }
         guard let tracked = windows[windowID] else { return nil }

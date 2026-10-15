@@ -590,15 +590,25 @@ extension StagehandModel {
                     self.focusBorder.hide()
                 }
             }
-            let outcome = await runConcurrentNavigation(
-                revealBorderFirst: !focusAlongsideSlide,
-                translate: translate,
-                cancelTranslation: { self.ribbonMotion.cancel() },
-                focus: focus,
-                focusConfirmed: focusConfirmed,
-                commitInput: commitInput,
-                revealBorder: revealBorder
-            )
+            let outcome = if focusAlongsideSlide {
+                await runConcurrentNavigation(
+                    revealBorderFirst: false,
+                    translate: translate,
+                    cancelTranslation: { self.ribbonMotion.cancel() },
+                    focus: focus,
+                    focusConfirmed: focusConfirmed,
+                    commitInput: commitInput,
+                    revealBorder: revealBorder
+                )
+            } else {
+                await runMotionFirstNavigation(
+                    translate: translate,
+                    focus: focus,
+                    focusConfirmed: focusConfirmed,
+                    commitInput: commitInput,
+                    revealBorder: revealBorder
+                )
+            }
             switch outcome {
             case .superseded: return .completed
             case .failed: return focusOutcome == .completed ? .interrupted : focusOutcome
@@ -742,6 +752,7 @@ extension StagehandModel {
         }
         var animationConfiguration = ribbonAnimationConfiguration
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { animationConfiguration.duration = 0 }
+        _ = windowSystem.motionWriteStatistics(reset: true, focusedWindowID: nil)
         if diagnostics.isEnabled {
             diagnostics.record("ribbon_animation_started", details: [
                 "curve": animationConfiguration.curve.diagnosticDescription,
@@ -800,13 +811,13 @@ extension StagehandModel {
         }
         if diagnostics.isEnabled {
             let elapsedMilliseconds = Int(((ProcessInfo.processInfo.systemUptime - animationStart) * 1_000).rounded())
-            diagnostics.record("ribbon_animation_completed", details: [
+            diagnostics.record("ribbon_animation_completed", details: windowSystem.motionWriteStatistics(reset: false, focusedWindowID: state.focusedWindowID).merging([
                 "elapsedMilliseconds": String(elapsedMilliseconds),
                 "focusedWindowID": state.focusedWindowID ?? "none",
                 "observedFocusedWindowID": windowSystem.focusedWindowID() ?? "none",
                 "operation": operation,
                 "windowCount": String(to.count)
-            ])
+            ]) { _, new in new })
         }
         switch await parkHiddenWindows(keeping: visibleIDs, layoutFrames: to) {
         case .interrupted: return false

@@ -64,6 +64,8 @@ extension StagehandModel {
         var settled: Double = 0
         var frameWork: [Double] = []
         var droppedFrames = 0
+        var focusedGap: Double?
+        var largestGap: Double?
     }
 
     func runBenchmark(probeURL: URL, busy: Bool, switches: Int = 24) async -> String {
@@ -172,6 +174,11 @@ extension StagehandModel {
             navigate(forward ? .focusNext : .focusPrevious)
             await benchmarkWaitUntilIdle()
             current?.settled = (CACurrentMediaTime() - switchBegan) * 1_000
+            if current?.motion != nil {
+                let motion = windowSystem.motionWriteStatistics(reset: false, focusedWindowID: state.focusedWindowID)
+                current?.focusedGap = motion["focusedMotionGapMilliseconds"].flatMap(Double.init)
+                current?.largestGap = motion["largestMotionGapMilliseconds"].flatMap(Double.init)
+            }
             if let current { timings.append(current) }
             current = nil
             try? await Task.sleep(for: .milliseconds(busy ? 300 : 150))
@@ -190,6 +197,9 @@ extension StagehandModel {
         let dropped = timings.map(\.droppedFrames).reduce(0, +)
         lines.append("  frame work per tick: " + Self.percentiles(work, digits: 2)
             + ", dropped frames \(dropped) of \(work.count + dropped)")
+        lines.append("  longest freeze of the destination window mid-motion: "
+            + Self.percentiles(timings.compactMap(\.focusedGap)))
+        lines.append("  longest freeze of any moving window: " + Self.percentiles(timings.compactMap(\.largestGap)))
         lines.append("  main thread: " + Self.stallSummary(sequentialStalls))
         lines.append("  stalls by phase: " + blockedByPhase.sorted { $0.value > $1.value }
             .map { "\($0.key) \(Int($0.value))" }.joined(separator: ", "))

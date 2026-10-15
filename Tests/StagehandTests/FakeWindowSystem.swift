@@ -141,6 +141,8 @@ final class FakeWindowSystem: WindowManaging {
 
     func finishMotionWrites() async {}
 
+    func motionWriteStatistics(reset: Bool, focusedWindowID: String?) -> [String: String] { [:] }
+
     func setFrame(windowID: String, frame: CGRect) -> Bool {
         guard let window = windows[windowID], !window.minimized else { return false }
         windows[windowID]?.restoreFrame = nil
@@ -211,16 +213,22 @@ final class FakeOverlays: NavigationPresenting {
     var canRevealNavigation: (() -> Bool)?
     private(set) var warnings: [String] = []
     private(set) var borderFrame: CGRect?
+    /// Each time the border appeared (true) or disappeared (false).
+    var borderVisibility: [Bool] = []
 
     func setBorderColor(_ color: NSColor) {}
     func updateBorder(frame: CGRect, visible: Bool, cornerRadius: CGFloat?,
                       focusChanged: Bool, raiseBorder: Bool) {
+        if visible != (borderFrame != nil) { borderVisibility.append(visible) }
         borderFrame = visible ? frame : nil
     }
     func showNavigation(state: WorkspaceState, windows: [WindowRecord]) {}
     func updateNavigation(state: WorkspaceState, windows: [WindowRecord]) {}
     func showWarning(_ message: String) { warnings.append(message) }
-    func hide() { borderFrame = nil }
+    func hide() {
+        if borderFrame != nil { borderVisibility.append(false) }
+        borderFrame = nil
+    }
 }
 
 /// Finishes every ribbon animation immediately, as with Reduce Motion.

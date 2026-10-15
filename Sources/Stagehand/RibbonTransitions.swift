@@ -105,11 +105,35 @@ enum NavigationTransitionOutcome: Equatable {
     case failed
 }
 
-/// Starts the ribbon motion and the focus request together, so the windows move
-/// as soon as the user acts instead of after a slow app finishes activating.
-/// Input is committed only once focus is confirmed. A failed focus cancels the
-/// motion. Navigation shows the border on its destination from the start, so it
-/// travels with the window; a removal reveals it only after the motion.
+/// Moves the ribbon first and requests focus as the motion ends. An app that is
+/// activating is busy and answers each window move late, so moving its window
+/// while it activates freezes the window the user is watching mid-slide. Typing
+/// stays buffered until focus is confirmed. A motion superseded by a newer
+/// navigation with no typing skips activating its destination altogether.
+@MainActor
+func runMotionFirstNavigation(
+    translate: () async -> RibbonTranslationOutcome,
+    focus: () async -> Bool,
+    focusConfirmed: () -> Void,
+    commitInput: () -> Void,
+    revealBorder: () -> Void
+) async -> NavigationTransitionOutcome {
+    revealBorder()
+    switch await translate() {
+    case .superseded: return .superseded
+    case .failed: return .failed
+    case .readyForFocus: break
+    }
+    guard await focus() else { return .failed }
+    commitInput()
+    focusConfirmed()
+    return .completed
+}
+
+/// Starts the ribbon motion and the focus request together, for a window removal:
+/// the focus moves to a window already on screen. Input is committed only once
+/// focus is confirmed. A failed focus cancels the motion. `revealBorderFirst`
+/// shows the border on the destination from the start.
 @MainActor
 func runConcurrentNavigation(
     revealBorderFirst: Bool,
