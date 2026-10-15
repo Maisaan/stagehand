@@ -481,6 +481,28 @@ struct ModelScenarioTests {
         #expect(harness.events("desktop_resumed").count == 1)
     }
 
+    /// Returning from the lock screen lays out once; the border appears once
+    /// instead of showing, hiding for the layout, and showing again.
+    @Test func resumingShowsTheBorderOnceAfterOneLayout() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+
+        harness.desktop.id = nil
+        harness.model.nativeDesktopChanged()
+        #expect(harness.model.isSuspended)
+        let refreshesBefore = harness.events("change_queued").count
+        harness.overlays.borderVisibility = []
+
+        harness.desktop.id = 1
+        harness.model.nativeDesktopChanged()
+        await harness.settle()
+        #expect(!harness.model.isSuspended)
+        #expect(harness.events("change_queued").count == refreshesBefore + 1)
+        #expect(harness.overlays.borderVisibility == [true])
+    }
+
     /// Unlocking after a long lock rechecks at once and then every 50 ms for a
     /// short while, instead of waiting for the 5 s backoff check.
     @Test func unlockingRechecksTheDesktopImmediatelyAndQuickly() async {

@@ -262,16 +262,18 @@ extension StagehandModel {
         }
     }
 
-    func refreshWindows() {
+    func refreshWindows(forceLayout: Bool = false) {
         guard desktopScope.refresh() == .home else {
             nativeDesktopChanged()
             return
         }
-        applyRefresh(windowSystem.scanWindows())
+        applyRefresh(windowSystem.scanWindows(), forceLayout: forceLayout)
     }
 
     /// Reconciles the workspace with a completed scan.
-    func applyRefresh(_ current: [WindowRecord]) {
+    /// `forceLayout` lays the ribbon out even when nothing changed, as after
+    /// returning to the Desktop, instead of only redrawing the border.
+    func applyRefresh(_ current: [WindowRecord], forceLayout: Bool = false) {
         let motionStart = navigationFrames()
         let oldState = state
         windows = current
@@ -362,7 +364,7 @@ extension StagehandModel {
                 }
             }
         }
-        if oldState != state || needsLayout {
+        if oldState != state || needsLayout || (forceLayout && !changes.isProcessing) {
             let removedFromCurrentSpace = Set(oldState.currentSpace.windowIDs)
                 .subtracting(current.map(\.id))
             if !removedFromCurrentSpace.isEmpty {

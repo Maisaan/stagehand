@@ -1054,8 +1054,9 @@ final class StagehandModel: ObservableObject {
             focusGate.start()
             input.start()
             // Reconcile only after returning to the bound Desktop; away windows never enter state.
-            refreshWindows()
-            if !changes.isProcessing { enqueue(.refresh) }
+            // One layout after returning: the Desktop may have changed while away. A
+            // second, separate reveal of the border before it would flash it.
+            refreshWindows(forceLayout: true)
             onStateChange?()
         case .away, .unknown:
             if !isSuspended {
