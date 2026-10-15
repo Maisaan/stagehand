@@ -73,7 +73,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             return
         }
+        let modelBegan = Date()
         let model = StagehandModel(persistence: isDiagnosticRun ? .ephemeral : .standard)
+        modelInitMilliseconds = Int(Date().timeIntervalSince(modelBegan) * 1_000)
         self.model = model
         if arguments.contains("--diagnose-permissions") {
             print("Accessibility: \(model.accessibilityGranted)")

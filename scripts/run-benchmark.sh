@@ -5,7 +5,8 @@ set -euo pipefail
 # keep hands off the keyboard and trackpad. Runs responsive probes, then busy probes
 # that load their main thread like Chrome or an Electron app.
 # STAGEHAND_APP selects the build (default dist/Stagehand.app). BENCHMARK_MODES
-# limits the modes, e.g. BENCHMARK_MODES=busy.
+# limits the modes, e.g. BENCHMARK_MODES=busy. A -quiet suffix (busy-quiet)
+# turns diagnostic logging off to measure its cost.
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app="${STAGEHAND_APP:-$root/dist/Stagehand.app}"
 if pgrep -f "Stagehand.app/Contents/MacOS/Stagehand" >/dev/null; then
@@ -16,7 +17,8 @@ fi
 for mode in ${BENCHMARK_MODES:-responsive busy}; do
     report="$(mktemp -t stagehand-benchmark)"
     extra=()
-    [[ "$mode" == busy ]] && extra=(--busy)
+    [[ "$mode" == busy* ]] && extra=(--busy)
+    [[ "$mode" == *-quiet ]] && extra+=(--no-diagnostics)
     open -W -n "$app" --args --benchmark "$root/dist/AcceptanceProbe.app" ${extra[@]+"${extra[@]}"} --acceptance-output "$report" &
     open_pid=$!
     deadline=$((SECONDS + 240))

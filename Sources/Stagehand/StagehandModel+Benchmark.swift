@@ -6,6 +6,8 @@ import StagehandPlatform
 
 /// Time from the kernel's process start to applicationDidFinishLaunching.
 @MainActor var launchFinishedMilliseconds: Int?
+/// Time to construct the model in applicationDidFinishLaunching.
+@MainActor var modelInitMilliseconds: Int?
 
 /// Posts a block to the main thread every 4 ms from a background thread and
 /// records how long each waited. The keyboard tap, gestures, and ribbon frames
@@ -72,8 +74,9 @@ extension StagehandModel {
             return "FAIL: Accessibility permission is missing for this build."
         }
         let loggingWasEnabled = diagnostics.isEnabled
-        diagnostics.isEnabled = true
-        windowSystem.focusDiagnosticsEnabled = true
+        let logging = !ProcessInfo.processInfo.arguments.contains("--no-diagnostics")
+        diagnostics.isEnabled = logging
+        windowSystem.focusDiagnosticsEnabled = logging
         let reports = FileManager.default.temporaryDirectory
             .appendingPathComponent("stagehand-benchmark-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
@@ -107,9 +110,18 @@ extension StagehandModel {
         }
         guard system.scanWindows().count == 4 else { return "FAIL: the probe windows did not appear." }
         try? await Task.sleep(for: .milliseconds(400))
+        var scans: [Double] = []
+        for _ in 0..<9 {
+            let began = CACurrentMediaTime()
+            _ = system.scanWindows()
+            scans.append((CACurrentMediaTime() - began) * 1_000)
+        }
 
-        var lines = ["Benchmark (\(busy ? "busy" : "responsive") probes, 4 windows, \(switches) switches)"]
+        var lines = ["Benchmark (\(busy ? "busy" : "responsive") probes, 4 windows, \(switches) switches"
+            + (logging ? ")" : ", diagnostic logging off)")]
         if let launchFinishedMilliseconds { lines.append("Launch to didFinishLaunching: \(launchFinishedMilliseconds) ms") }
+        if let modelInitMilliseconds { lines.append("Model init: \(modelInitMilliseconds) ms") }
+        lines.append("Window scan (3 apps): " + Self.percentiles(scans, digits: 1))
         let monitor = MainThreadLatencyMonitor()
 
         // Startup: Start through the first settled layout.
