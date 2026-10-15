@@ -79,8 +79,13 @@ final class DiagnosticLogger {
     /// Benchmark hook: sees each event name with its uptime, logged or not.
     var eventObserver: ((String) -> Void)?
 
+    /// The latest event and when it was recorded (system uptime), logged or not.
+    /// A main_thread_stall names it as the phase that blocked.
+    private(set) var lastEvent: (name: String, uptime: TimeInterval)?
+
     func record(_ event: String, details: @autoclosure () -> [String: String] = [:]) {
         eventObserver?(event)
+        if event != "main_thread_stall" { lastEvent = (event, ProcessInfo.processInfo.systemUptime) }
         guard isEnabled else { return }
         let timestamp = now()
         if let writeSuspendedUntil, timestamp < writeSuspendedUntil { return }

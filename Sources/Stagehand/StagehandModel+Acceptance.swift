@@ -34,6 +34,9 @@ extension StagehandModel {
             windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
         }
         let startedAt = Date().ISO8601Format(.init(includingFractionalSeconds: true))
+        // Marks the probe-driven run so scripts/analyze-log.py can leave it out of real usage.
+        diagnostics.record("diagnostic_run_began", details: ["kind": "acceptance"])
+        defer { diagnostics.record("diagnostic_run_ended", details: ["kind": "acceptance"]) }
         let reports = FileManager.default.temporaryDirectory
             .appendingPathComponent("stagehand-acceptance-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)

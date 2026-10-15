@@ -79,12 +79,15 @@ extension StagehandModel {
         let logging = !ProcessInfo.processInfo.arguments.contains("--no-diagnostics")
         diagnostics.isEnabled = logging
         windowSystem.focusDiagnosticsEnabled = logging
+        // Marks the probe-driven run so scripts/analyze-log.py can leave it out of real usage.
+        diagnostics.record("diagnostic_run_began", details: ["kind": "benchmark"])
         let reports = FileManager.default.temporaryDirectory
             .appendingPathComponent("stagehand-benchmark-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
         var probes: [NSRunningApplication] = []
         let previousApp = NSWorkspace.shared.frontmostApplication
         defer {
+            diagnostics.record("diagnostic_run_ended", details: ["kind": "benchmark"])
             diagnostics.eventObserver = nil
             ribbonMotion.onFrameTiming = nil
             pause()

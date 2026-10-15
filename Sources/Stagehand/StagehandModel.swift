@@ -117,6 +117,7 @@ final class StagehandModel: ObservableObject {
         didSet {
             UserDefaults.standard.set(diagnosticLoggingEnabled, forKey: PreferenceKey.diagnosticLoggingEnabled)
             windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
+            mainThreadWatchdog?.setEnabled(diagnosticLoggingEnabled)
             if diagnosticLoggingEnabled {
                 diagnostics.isEnabled = true
                 diagnostics.record("logging_enabled")
@@ -169,6 +170,9 @@ final class StagehandModel: ObservableObject {
     var desktopCheckTask: Task<Void, Never>?
     var sleepObserver: NSObjectProtocol?
     var unlockObserver: NSObjectProtocol?
+    var lockObserver: NSObjectProtocol?
+    /// Logs main-thread stalls while diagnostic logging is on (the app session only).
+    var mainThreadWatchdog: MainThreadWatchdog?
     /// AXIsProcessTrusted() is cheap; macOS sends no notification when the user
     /// revokes Accessibility, and didBecomeActive only fires when Stagehand's own
     /// windows come forward.
@@ -409,6 +413,23 @@ final class StagehandModel: ObservableObject {
             self?.screenParametersChanged()
         }
         windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
+        if persistence == .standard, injectedWindowSystem == nil {
+            mainThreadWatchdog = MainThreadWatchdog { [weak self] waited in
+                guard let self else { return }
+                let last = self.diagnostics.lastEvent
+                self.diagnostics.record("main_thread_stall", details: [
+                    "waitedMilliseconds": String(waited),
+                    "lastEvent": last?.name ?? "none",
+                    "lastEventAgeMilliseconds": last.map {
+                        String(Int((ProcessInfo.processInfo.systemUptime - $0.uptime) * 1_000))
+                    } ?? "none",
+                    "running": String(self.isRunning),
+                    "ribbonMoving": String(self.ribbonMotion.isRunning),
+                    "changeRunning": String(self.changes.isProcessing)
+                ])
+            }
+            mainThreadWatchdog?.setEnabled(diagnosticLoggingEnabled)
+        }
         ribbonMotion.onStall = { [weak self] in
             self?.diagnostics.record("ribbon_animation_stalled")
         }
@@ -461,6 +482,15 @@ final class StagehandModel: ObservableObject {
             forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.screenUnlocked() }
+        }
+        lockObserver = DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.diagnostics.record("screen_locked", details: [
+                    "running": String(self?.isRunning ?? false)
+                ])
+            }
         }
         self.diagnostics.record("session_started")
         refreshPermissions()
@@ -1033,6 +1063,9 @@ final class StagehandModel: ObservableObject {
     }
 
     func screenUnlocked() {
+        diagnostics.record("screen_unlocked", details: [
+            "running": String(isRunning), "suspended": String(isSuspended)
+        ])
         guard isRunning, isSuspended else { return }
         desktopCheckAttempts = 0
         unlockDesktopChecks = Self.unlockDesktopCheckCount

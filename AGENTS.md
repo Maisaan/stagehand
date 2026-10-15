@@ -8,3 +8,8 @@ For cleanup or refactoring that touches focus, window ordering, parking, gesture
 4. Record the baseline, after-change result, and commands in the commit message or handoff. A synthetic test alone does not verify macOS Accessibility behavior. If the live check cannot be run, say so and leave the cleanup uncommitted until it is checked, unless the user explicitly directs otherwise.
 
 The short focus and navigation procedure is at the top of [live acceptance](docs/ACCEPTANCE.md).
+
+# Performance work
+
+Measure before and after with `scripts/run-benchmark.sh` (busy probes show most real slowness) and check real usage with `scripts/analyze-log.py`. The tools, metrics, how Stagehand spends time, and known traps are in [performance and debugging](docs/PERFORMANCE.md).
+
