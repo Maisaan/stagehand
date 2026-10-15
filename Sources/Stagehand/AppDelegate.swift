@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import StagehandCore
+import StagehandPlatform
 
 enum StatusItemClick: Equatable {
     case showControls
@@ -48,11 +49,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let started = ProcessLaunchDate.launchDate(pid: getpid()) {
+            launchFinishedMilliseconds = Int(Date().timeIntervalSince(started) * 1_000)
+        }
         let arguments = ProcessInfo.processInfo.arguments
         // Diagnostics start and pause against disposable windows. They must not
         // save that layout over the user's, nor flip the logging preference.
         let isDiagnosticRun = arguments.contains {
-            $0.hasPrefix("--diagnose-") || $0 == "--acceptance" || $0 == "--render-previews"
+            $0.hasPrefix("--diagnose-") || $0 == "--acceptance" || $0 == "--benchmark" || $0 == "--render-previews"
         }
         if let refusal = claimSingleInstance() {
             refuseToLaunch(refusal, arguments: arguments, diagnostic: isDiagnosticRun)
@@ -103,6 +107,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         model.shutDown()
                         exit(1)
                     }
+                }
+                NSApp.terminate(nil)
+            }
+            return
+        }
+        if let index = arguments.firstIndex(of: "--benchmark"), arguments.indices.contains(index + 1) {
+            Task { @MainActor in
+                let report = await model.runBenchmark(probeURL: URL(fileURLWithPath: arguments[index + 1]),
+                                                      busy: arguments.contains("--busy"))
+                print(report)
+                if let output = self.acceptanceOutputPath(in: arguments) {
+                    try? Data((report + "\n").utf8).write(to: URL(fileURLWithPath: output))
                 }
                 NSApp.terminate(nil)
             }

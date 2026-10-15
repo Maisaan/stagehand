@@ -76,7 +76,11 @@ final class DiagnosticLogger {
         }
     }
 
+    /// Benchmark hook: sees each event name with its uptime, logged or not.
+    var eventObserver: ((String) -> Void)?
+
     func record(_ event: String, details: @autoclosure () -> [String: String] = [:]) {
+        eventObserver?(event)
         guard isEnabled else { return }
         let timestamp = now()
         if let writeSuspendedUntil, timestamp < writeSuspendedUntil { return }

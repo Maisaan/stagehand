@@ -203,6 +203,8 @@ final class RibbonMotion {
     var watchdogGrace: Duration = .seconds(1)
     /// Called before a stalled animation is cancelled.
     var onStall: (() -> Void)?
+    /// Benchmark hook: each display tick's timestamp and main-thread seconds spent in it.
+    var onFrameTiming: ((_ timestamp: TimeInterval, _ work: TimeInterval) -> Void)?
 
     init(frameDriver: RibbonFrameDriving = SystemRibbonFrameDriver(),
          currentTime: @escaping () -> TimeInterval = CACurrentMediaTime) {
@@ -427,7 +429,11 @@ final class RibbonMotion {
 
     private func startFrameDriver() -> Bool {
         frameDriver.start { [weak self] timestamp in
-            self?.advance(to: timestamp)
+            guard let self else { return }
+            guard let onFrameTiming = self.onFrameTiming else { return self.advance(to: timestamp) }
+            let began = CACurrentMediaTime()
+            self.advance(to: timestamp)
+            onFrameTiming(began, CACurrentMediaTime() - began)
         }
     }
 
