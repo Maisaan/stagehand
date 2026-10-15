@@ -105,29 +105,14 @@ enum NavigationTransitionOutcome: Equatable {
     case failed
 }
 
+/// Starts the ribbon motion and the focus request together, so the windows move
+/// as soon as the user acts instead of after a slow app finishes activating.
+/// Input is committed only once focus is confirmed. A failed focus cancels the
+/// motion. Navigation shows the border on its destination from the start, so it
+/// travels with the window; a removal reveals it only after the motion.
 @MainActor
-func runFocusFirstNavigation(
-    translate: () async -> RibbonTranslationOutcome,
-    focus: () async -> Bool,
-    focusConfirmed: () -> Void,
-    commitInput: () -> Void,
-    revealBorder: () -> Void
-) async -> NavigationTransitionOutcome {
-    revealBorder()
-    guard await focus() else { return .failed }
-    // A verified destination can receive input while the ribbon finishes moving.
-    commitInput()
-    focusConfirmed()
-    switch await translate() {
-    case .superseded: return .superseded
-    case .failed: return .failed
-    case .readyForFocus: break
-    }
-    return .completed
-}
-
-@MainActor
-func runConcurrentRemovalNavigation(
+func runConcurrentNavigation(
+    revealBorderFirst: Bool,
     translate: @escaping () async -> RibbonTranslationOutcome,
     cancelTranslation: () -> Void,
     focus: () async -> Bool,
@@ -135,6 +120,7 @@ func runConcurrentRemovalNavigation(
     commitInput: () -> Void,
     revealBorder: () -> Void
 ) async -> NavigationTransitionOutcome {
+    if revealBorderFirst { revealBorder() }
     let translation = Task { @MainActor in await translate() }
     await Task.yield()
     let focused = await focus()
@@ -143,6 +129,7 @@ func runConcurrentRemovalNavigation(
         _ = await translation.value
         return .failed
     }
+    // A verified destination can receive input while the ribbon finishes moving.
     commitInput()
     focusConfirmed()
     let translationOutcome = await translation.value
@@ -151,7 +138,7 @@ func runConcurrentRemovalNavigation(
     case .failed: return .failed
     case .readyForFocus: break
     }
-    revealBorder()
+    if !revealBorderFirst { revealBorder() }
     return .completed
 }
 

@@ -10,8 +10,8 @@ public protocol WindowManaging: AnyObject {
     var onFocusedWindowChange: ((String) -> Void)? { get set }
     /// Whether an observed focus change would be used now; unused AX reads are skipped.
     var wantsObservedFocus: (() -> Bool)? { get set }
-    /// Whether a moved or resized window's frame would be used now; unused AX reads are skipped.
-    var wantsFrameChange: ((String) -> Bool)? { get set }
+    /// Whether moved or resized windows' frames would be used now; unused AX reads are skipped.
+    var wantsFrameChange: (() -> Bool)? { get set }
     var onTitleChange: ((String, String) -> Void)? { get set }
     var onApplicationTerminated: ((pid_t) -> Void)? { get set }
     var onWindowDestroyed: ((String) -> Void)? { get set }
@@ -46,6 +46,9 @@ public protocol WindowManaging: AnyObject {
     func isParked(windowID: String) -> Bool
     func unavailability(windowID: String) -> WindowUnavailability?
     @discardableResult func setPosition(windowID: String, position: CGPoint) -> Bool
+    /// Ribbon motion: moves without waiting for the app; finishMotionWrites() waits for the last write.
+    @discardableResult func setMotionPosition(windowID: String, position: CGPoint) -> Bool
+    func finishMotionWrites() async
     @discardableResult func setFrame(windowID: String, frame: CGRect) -> Bool
     /// `remnantWidth` is the widest strip that may stay visible at the side for
     /// parking to count as confirmed; `WindowTuning.parkedRemnantWidth` by default.

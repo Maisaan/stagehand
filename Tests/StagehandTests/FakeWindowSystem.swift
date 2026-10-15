@@ -19,7 +19,7 @@ final class FakeWindowSystem: WindowManaging {
     var onFrameChange: ((String, CGRect) -> Void)?
     var onFocusedWindowChange: ((String) -> Void)?
     var wantsObservedFocus: (() -> Bool)?
-    var wantsFrameChange: ((String) -> Bool)?
+    var wantsFrameChange: (() -> Bool)?
     var onTitleChange: ((String, String) -> Void)?
     var onApplicationTerminated: ((pid_t) -> Void)?
     var onWindowDestroyed: ((String) -> Void)?
@@ -134,6 +134,12 @@ final class FakeWindowSystem: WindowManaging {
         windows[windowID]?.frame.origin = position
         return true
     }
+
+    func setMotionPosition(windowID: String, position: CGPoint) -> Bool {
+        setPosition(windowID: windowID, position: position)
+    }
+
+    func finishMotionWrites() async {}
 
     func setFrame(windowID: String, frame: CGRect) -> Bool {
         guard let window = windows[windowID], !window.minimized else { return false }

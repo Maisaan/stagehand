@@ -570,19 +570,6 @@ extension StagehandModel {
                 )
                 guard focusOutcome == .completed else { return false }
                 destinationPID = record.pid
-                guard !focusAlongsideSlide else { return true }
-                // The newly active app may still be busy. Each frame read is a
-                // blocking AX round trip, so read once and again only after a write.
-                var frame = self.windowSystem.frame(windowID: focusedID)
-                if let target = placements.first(where: { $0.windowID == focusedID })?.frame,
-                   let actual = frame, !framesMatch(observed: actual, target: target) {
-                    _ = self.windowSystem.setFrame(windowID: focusedID, frame: target)
-                    frame = self.windowSystem.frame(windowID: focusedID)
-                    self.lastAppliedFrames[focusedID] = frame
-                }
-                if let frame {
-                    self.updateFocusBorder(windowID: focusedID, frame: frame, raiseBorder: true)
-                }
                 return true
             }
             let focusConfirmed = {
@@ -603,28 +590,32 @@ extension StagehandModel {
                     self.focusBorder.hide()
                 }
             }
-            let outcome = if focusAlongsideSlide {
-                await runConcurrentRemovalNavigation(
-                    translate: translate,
-                    cancelTranslation: { self.ribbonMotion.cancel() },
-                    focus: focus,
-                    focusConfirmed: focusConfirmed,
-                    commitInput: commitInput,
-                    revealBorder: revealBorder
-                )
-            } else {
-                await runFocusFirstNavigation(
-                    translate: translate,
-                    focus: focus,
-                    focusConfirmed: focusConfirmed,
-                    commitInput: commitInput,
-                    revealBorder: revealBorder
-                )
-            }
+            let outcome = await runConcurrentNavigation(
+                revealBorderFirst: !focusAlongsideSlide,
+                translate: translate,
+                cancelTranslation: { self.ribbonMotion.cancel() },
+                focus: focus,
+                focusConfirmed: focusConfirmed,
+                commitInput: commitInput,
+                revealBorder: revealBorder
+            )
             switch outcome {
             case .superseded: return .completed
             case .failed: return focusOutcome == .completed ? .interrupted : focusOutcome
             case .completed: break
+            }
+            if !focusAlongsideSlide, let focusedID = state.focusedWindowID {
+                // An app can resize its window while activating. Correct it now that
+                // the motion has ended. Each frame read is a blocking AX round trip,
+                // so read once and again only after a write.
+                var frame = windowSystem.frame(windowID: focusedID)
+                if let target = placements.first(where: { $0.windowID == focusedID })?.frame,
+                   let actual = frame, !framesMatch(observed: actual, target: target) {
+                    _ = windowSystem.setFrame(windowID: focusedID, frame: target)
+                    frame = windowSystem.frame(windowID: focusedID)
+                    lastAppliedFrames[focusedID] = frame
+                }
+                if let frame { updateFocusBorder(windowID: focusedID, frame: frame, raiseBorder: true) }
             }
             if token != nil, destinationPID != nil {
                 try? await Task.sleep(for: .milliseconds(12))
@@ -727,7 +718,7 @@ extension StagehandModel {
             frames: frames,
             writtenPositions: &motionWrittenPositions,
             backingScaleFactor: motionBackingScaleFactor,
-            setPosition: { windowSystem.setPosition(windowID: $0, position: $1) }
+            setPosition: { windowSystem.setMotionPosition(windowID: $0, position: $1) }
         )
         // The border is a Stagehand overlay, so it can follow the destination at
         // display cadence without activating that app or disturbing ribbon motion.
@@ -769,7 +760,10 @@ extension StagehandModel {
             initialHorizontalVelocity: initialHorizontalVelocity,
             update: { [weak self] in self?.applyMotionFrames($0) }
         )
-        guard completed, isRunning, !isSuspended, desktopScope.refresh() == .home else { return false }
+        guard completed else { return false }
+        // Let the last motion writes land so the commit reads settled positions.
+        await windowSystem.finishMotionWrites()
+        guard isRunning, !isSuspended, !Task.isCancelled, desktopScope.refresh() == .home else { return false }
         var visibleFrames = to.filter { visibleIDs.contains($0.key) }
         var commitFailures = commitRibbonPositions(
             frames: visibleFrames,

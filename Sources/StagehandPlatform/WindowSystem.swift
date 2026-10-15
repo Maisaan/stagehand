@@ -163,14 +163,16 @@ public final class WindowSystem {
     private var windows: [String: TrackedWindow] = [:]
     private var ownedWindows: [OwnedWindow] = []
     private var observers: [pid_t: AXObserver] = [:]
+    private let motionWriter = MotionPositionWriter()
     private var focusReportInFlight = false
     private var focusReportPending = false
     /// Answers whether an observed focus change would be used now. Reads nobody
     /// would use, such as during Stagehand's own navigation, are skipped.
     public var wantsObservedFocus: (() -> Bool)?
-    /// Answers whether a moved or resized window's new frame would be used now.
-    /// Each frame read is three AX round trips to an app that may be busy.
-    public var wantsFrameChange: ((String) -> Bool)?
+    /// Answers whether moved or resized windows' frames would be used now. Checked
+    /// before identifying the window and reading its frame, which are AX round
+    /// trips to an app that may be busy; ribbon motion's own writes echo back here.
+    public var wantsFrameChange: (() -> Bool)?
     private var applicationObservations: [pid_t: ApplicationObservation] = [:]
     private var observationRetries: [pid_t: Task<Void, Never>] = [:]
     private let launchDiscovery = ApplicationLaunchDiscovery()
@@ -512,6 +514,7 @@ public final class WindowSystem {
     /// records would only accumulate until the next launch's recovery pass.
     private func applicationTerminated(pid: pid_t) {
         trackedStateGeneration &+= 1
+        motionWriter.forget(pid: pid)
         removeObserver(pid: pid)
         let removedIDs = windows.compactMap { $0.value.record.pid == pid ? $0.key : nil }
         for id in removedIDs {
@@ -978,6 +981,32 @@ public final class WindowSystem {
         }
     }
 
+    /// Moves a window during ribbon motion without waiting for its app. Only the
+    /// newest position is written; finishMotionWrites() waits for the last one.
+    /// Returns false when the window cannot be moved, such as a parked window.
+    @discardableResult
+    public func setMotionPosition(windowID: String, position: CGPoint) -> Bool {
+        guard position.x.isFinite, position.y.isFinite else { return false }
+        if nativeWindows.contains(windowID: windowID) {
+            return nativeWindows.setPosition(windowID: windowID, position: position)
+        }
+        guard let tracked = windows[windowID], tracked.isAdmitted,
+              !tracked.parking.isParked else { return false }
+        guard captureOriginalFrame(windowID: windowID) else { return false }
+        // Attached dialogs move with their owner, which needs before-and-after reads.
+        if ownedWindows.contains(where: { $0.parentID == windowID }) {
+            return moveWithOwnedWindows(windowID: windowID) {
+                writePosition(tracked.element, position: position)
+            }
+        }
+        motionWriter.write(windowID: windowID, pid: tracked.record.pid, element: tracked.element, position: position)
+        return true
+    }
+
+    public func finishMotionWrites() async {
+        await motionWriter.flush()
+    }
+
     public func frame(windowID: String) -> CGRect? {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.frame(windowID: windowID) }
         guard let tracked = windows[windowID] else { return nil }
@@ -1067,6 +1096,7 @@ public final class WindowSystem {
                      remnantWidth: CGFloat = WindowTuning.parkedRemnantWidth) -> Bool {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.park(windowID: windowID) }
         guard let tracked = windows[windowID] else { return false }
+        motionWriter.settle(pid: tracked.record.pid)
         // AX can move a parked window back onscreen after our last frame read.
         // Check its physical position on every parking request.
         guard attribute(tracked.element, kAXMinimizedAttribute) as? Bool != true else { return false }
@@ -1762,8 +1792,8 @@ public final class WindowSystem {
                 if name == kAXFocusedWindowChangedNotification { owner.reportCurrentFocus() }
                 if owner.onFrameChange != nil,
                    name == kAXMovedNotification || name == kAXResizedNotification,
+                   owner.wantsFrameChange?() ?? true,
                    let id = owner.directTrackedWindowID(matching: changedWindow),
-                   owner.wantsFrameChange?(id) ?? true,
                    let frame = owner.readFrame(changedWindow) {
                     owner.onFrameChange?(id, frame)
                 }
@@ -2265,6 +2295,7 @@ public final class WindowSystem {
     }
 
     private func moveWithOwnedWindows(windowID: String, move: () -> Bool) -> Bool {
+        if let pid = windows[windowID]?.record.pid { motionWriter.settle(pid: pid) }
         let children = ownedWindows.filter { $0.parentID == windowID }
         guard !children.isEmpty, let parent = windows[windowID]?.element,
               let before = readPosition(parent) else { return move() }

@@ -374,13 +374,14 @@ final class StagehandModel: ObservableObject {
             guard let self else { return false }
             return self.isRunning && !self.isSuspended && !self.changes.isProcessing && self.gestureBase == nil
         }
-        windowSystem.wantsFrameChange = { [weak self] id in
+        windowSystem.wantsFrameChange = { [weak self] in
             guard let self else { return false }
             return self.isRunning && !self.isSuspended && !self.isLayingOutWindows && !self.ribbonMotion.isRunning
-                && self.gestureBase == nil && self.focusBorder.windowID == id && self.state.focusedWindowID == id
+                && self.gestureBase == nil && self.focusBorder.windowID != nil
         }
         windowSystem.onFrameChange = { [weak self] id, frame in
-            guard let self, self.windowSystem.wantsFrameChange?(id) == true else { return }
+            guard let self, self.windowSystem.wantsFrameChange?() == true,
+                  self.focusBorder.windowID == id, self.state.focusedWindowID == id else { return }
             guard self.desktopScope.refresh() == .home else {
                 self.nativeDesktopChanged()
                 return

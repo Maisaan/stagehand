@@ -286,12 +286,14 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     let key = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
     #expect(gate.processKeyboardEvent(type: .keyDown, event: key))
 
-    let outcome = await runFocusFirstNavigation(
+    let outcome = await runConcurrentNavigation(
+        revealBorderFirst: true,
         translate: {
-            #expect(posted == [42])
             try? await Task.sleep(for: .milliseconds(120))
+            #expect(posted == [42])
             return .readyForFocus
         },
+        cancelTranslation: {},
         focus: { true },
         focusConfirmed: {},
         commitInput: { gate.commitTransfer(token: token, processIdentifier: 42) },
@@ -303,28 +305,66 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     #expect(posted == [42])
 }
 
-@MainActor @Test func failedFocusDoesNotTranslateOrCommitInput() async {
-    var translated = false
-    var committed = false
-    let outcome = await runFocusFirstNavigation(
+@MainActor @Test func navigationMovesBeforeFocusIsConfirmedAndShowsTheBorderFirst() async {
+    var events: [String] = []
+    var finishTranslation: CheckedContinuation<Void, Never>?
+    let outcome = await runConcurrentNavigation(
+        revealBorderFirst: true,
         translate: {
-            translated = true
+            events.append("translateStarted")
+            await withCheckedContinuation { finishTranslation = $0 }
+            events.append("translateFinished")
             return .readyForFocus
         },
-        focus: { false },
-        focusConfirmed: {},
-        commitInput: { committed = true },
-        revealBorder: {}
+        cancelTranslation: {},
+        focus: {
+            events.append("focus")
+            return true
+        },
+        focusConfirmed: {
+            events.append("confirmed")
+            finishTranslation?.resume()
+        },
+        commitInput: { events.append("commit") },
+        revealBorder: { events.append("border") }
+    )
+
+    #expect(outcome == .completed)
+    #expect(events == ["border", "translateStarted", "focus", "commit", "confirmed", "translateFinished"])
+}
+
+@MainActor @Test func failedFocusCancelsTranslationAndDoesNotCommitInput() async {
+    var events: [String] = []
+    var finishTranslation: CheckedContinuation<Void, Never>?
+    let outcome = await runConcurrentNavigation(
+        revealBorderFirst: true,
+        translate: {
+            events.append("translateStarted")
+            await withCheckedContinuation { finishTranslation = $0 }
+            events.append("translateCancelled")
+            return .failed
+        },
+        cancelTranslation: {
+            events.append("cancel")
+            finishTranslation?.resume()
+        },
+        focus: {
+            events.append("focus")
+            return false
+        },
+        focusConfirmed: { events.append("confirmed") },
+        commitInput: { events.append("commit") },
+        revealBorder: { events.append("border") }
     )
     #expect(outcome == .failed)
-    #expect(!translated)
-    #expect(!committed)
+    #expect(events == ["border", "translateStarted", "focus", "cancel", "translateCancelled"])
 }
 
 @MainActor @Test func removalFocusRunsDuringTranslationAndRevealsBorderAfterward() async {
     var events: [String] = []
     var finishTranslation: CheckedContinuation<Void, Never>?
-    let outcome = await runConcurrentRemovalNavigation(
+    let outcome = await runConcurrentNavigation(
+        revealBorderFirst: false,
         translate: {
             events.append("translateStarted")
             await withCheckedContinuation { finishTranslation = $0 }
@@ -351,7 +391,8 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
 @MainActor @Test func failedRemovalFocusCancelsTranslationWithoutRevealingBorder() async {
     var events: [String] = []
     var finishTranslation: CheckedContinuation<Void, Never>?
-    let outcome = await runConcurrentRemovalNavigation(
+    let outcome = await runConcurrentNavigation(
+        revealBorderFirst: false,
         translate: {
             events.append("translateStarted")
             await withCheckedContinuation { finishTranslation = $0 }
