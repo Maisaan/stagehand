@@ -74,6 +74,7 @@ extension StagehandModel {
         // after a switch belongs to that switch's destination once focus is verified.
         var predicted = state
         var typed: [TypedProbe] = []
+        var lines0: [String] = []
         for index in 0..<switches {
             let action: NavigationAction = index % 7 == 3 || index % 11 == 5 ? .focusPrevious : .focusNext
             if !predicted.apply(action) {
@@ -100,12 +101,44 @@ extension StagehandModel {
             try? await Task.sleep(for: .milliseconds(index % 3 == 0 ? 0 : 40))
         }
         await waitUntilIdle()
+
+        // Space switching: one window in space 2, the other two in space 1. Space
+        // changes park the whole outgoing space instead of sliding the ribbon.
+        navigate(.moveToSpace(index: 1, follow: false))
+        await waitUntilIdle()
+        let spaceSwitches = 12
+        var spacesReady = state.spaces[1].windowIDs.count == 1 && state.currentSpace.windowIDs.count == 2
+        if !spacesReady { lines0.append("FAIL: could not put one window in space 2") }
+        for index in 0..<(spacesReady ? spaceSwitches : 0) {
+            let action: NavigationAction = index % 2 == 0 ? .nextSpace : .previousSpace
+            predicted = state
+            guard predicted.apply(action) else { spacesReady = false; break }
+            navigate(action)
+            if index % 3 == 1, let destination = predicted.focusedWindowID {
+                let text = Self.probeText(index + 2_000)
+                await type(text)
+                typed.append(TypedProbe(text: text, expectedWindowID: destination, duringTransition: true))
+            } else if index % 3 == 2 {
+                await waitUntilIdle()
+                if let destination = state.focusedWindowID {
+                    let text = Self.probeText(index + 3_000)
+                    await type(text)
+                    typed.append(TypedProbe(text: text, expectedWindowID: destination, duringTransition: false))
+                }
+            } else {
+                await waitUntilIdle()
+            }
+        }
+        await waitUntilIdle()
         try? await Task.sleep(for: .milliseconds(400))
 
-        var lines: [String] = []
+        var lines: [String] = lines0
         var failures = 0
         let finalFocusMatches = isRunning && state.focusedWindowID == windowSystem.focusedWindowID()
         if !finalFocusMatches { failures += 1 }
+        failures += lines0.count
+        lines.append("Space switches: \(spacesReady ? spaceSwitches : 0) of \(spaceSwitches)")
+        if !spacesReady { failures += 1 }
         lines.append("Final focus matches the ribbon: \(finalFocusMatches)")
         for probe in typed {
             let landed = titles.compactMap { id, title -> String? in
@@ -127,18 +160,20 @@ extension StagehandModel {
             lines.append("Frame restored for \(titles[id] ?? id): \(restored ? "ok" : "FAIL")")
         }
         lines.append(contentsOf: acceptanceLogSummary(since: startedAt, failures: &failures))
-        lines.insert("\(failures == 0 ? "PASS" : "FAIL"): \(switches) switches, \(typed.count) typed checks, \(failures) failures", at: 0)
+        lines.insert("\(failures == 0 ? "PASS" : "FAIL"): \(switches) switches, \(spaceSwitches) space switches, \(typed.count) typed checks, \(failures) failures", at: 0)
         return lines.joined(separator: "\n")
     }
 
     /// Lowercase letters only: harmless if focus ever escapes to another app.
     private static func probeText(_ index: Int) -> String {
-        let letters = Array("abcdefghijklmnopqrstuvwxyz")
+        // Inner letters exclude q and z, so text typed next to another probe's
+        // cannot contain a third probe's string by accident.
+        let letters = Array("abcdefghijklmnop")
         var value = index
         var text = "q"
         repeat {
-            text.append(letters[value % 26])
-            value /= 26
+            text.append(letters[value % letters.count])
+            value /= letters.count
         } while value > 0
         return text + "z"
     }

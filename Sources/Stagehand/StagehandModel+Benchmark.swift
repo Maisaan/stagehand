@@ -216,6 +216,39 @@ extension StagehandModel {
         lines.append("  main thread: " + Self.stallSummary(monitor.stop()))
         lines.append("Final focus matches the ribbon: \(isRunning && state.focusedWindowID == windowSystem.focusedWindowID())")
 
+        // Space switches: no slide; the outgoing space is parked as a whole.
+        navigate(.moveToSpace(index: 1, follow: false))
+        await benchmarkWaitUntilIdle()
+        if state.spaces[1].windowIDs.count == 1 {
+            var spaceFocus: [Double] = []
+            var spaceSettled: [Double] = []
+            var spaceBegan = 0.0
+            var spaceFocused: Double?
+            diagnostics.eventObserver = { event in
+                if event == "navigation_focus_confirmed", spaceFocused == nil {
+                    spaceFocused = (CACurrentMediaTime() - spaceBegan) * 1_000
+                }
+            }
+            monitor.start()
+            for index in 0..<16 {
+                spaceFocused = nil
+                spaceBegan = CACurrentMediaTime()
+                navigate(index % 2 == 0 ? .nextSpace : .previousSpace)
+                await benchmarkWaitUntilIdle()
+                spaceSettled.append((CACurrentMediaTime() - spaceBegan) * 1_000)
+                if let spaceFocused { spaceFocus.append(spaceFocused) }
+                try? await Task.sleep(for: .milliseconds(busy ? 300 : 150))
+            }
+            diagnostics.eventObserver = nil
+            lines.append("Space switches:")
+            lines.append("  to focus confirmed: " + Self.percentiles(spaceFocus))
+            lines.append("  to settled: " + Self.percentiles(spaceSettled))
+            lines.append("  main thread: " + Self.stallSummary(monitor.stop()))
+            lines.append("Final focus matches the ribbon: \(isRunning && state.focusedWindowID == windowSystem.focusedWindowID())")
+        } else {
+            lines.append("Space switches: setup failed")
+        }
+
         // Interface load times.
         var appBar: [Double] = []
         for _ in 0..<5 {
