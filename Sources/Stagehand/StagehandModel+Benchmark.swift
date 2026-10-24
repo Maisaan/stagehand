@@ -177,11 +177,12 @@ extension StagehandModel {
             lastTick = nil
             switchBegan = CACurrentMediaTime()
             navigate(forward ? .focusNext : .focusPrevious)
-            let stacking = await timeUntilFrontmost(state.focusedWindowID, since: switchBegan, probes: probes)
-            frontTimes.append(stacking.front)
-            reorderCounts.append(stacking.reorders)
+            let stackingTask = frontmostPoll(state.focusedWindowID, since: switchBegan, probes: probes)
             await benchmarkWaitUntilIdle()
             current?.settled = (CACurrentMediaTime() - switchBegan) * 1_000
+            let stacking = await stackingTask.value
+            frontTimes.append(stacking.front)
+            reorderCounts.append(stacking.reorders)
             if current?.motion != nil {
                 let motion = windowSystem.motionWriteStatistics(reset: false, focusedWindowID: state.focusedWindowID)
                 current?.focusedGap = motion["focusedMotionGapMilliseconds"].flatMap(Double.init)
@@ -258,11 +259,12 @@ extension StagehandModel {
                 spaceFocused = nil
                 spaceBegan = CACurrentMediaTime()
                 navigate(index % 2 == 0 ? .nextSpace : .previousSpace)
-                let stacking = await timeUntilFrontmost(state.focusedWindowID, since: spaceBegan, probes: probes)
-                spaceFront.append(stacking.front)
-                spaceReorders.append(stacking.reorders)
+                let stackingTask = frontmostPoll(state.focusedWindowID, since: spaceBegan, probes: probes)
                 await benchmarkWaitUntilIdle()
                 spaceSettled.append((CACurrentMediaTime() - spaceBegan) * 1_000)
+                let stacking = await stackingTask.value
+                spaceFront.append(stacking.front)
+                spaceReorders.append(stacking.reorders)
                 if let spaceFocused { spaceFocus.append(spaceFocused) }
                 try? await Task.sleep(for: .milliseconds(busy ? 300 : 150))
             }
@@ -327,10 +329,21 @@ extension StagehandModel {
     /// probes' on-screen windows (nil if not within a second), and how many times the
     /// probes' front-to-back order changed after that during the next 600 ms: a
     /// reordering the user can see as a flicker.
-    private func timeUntilFrontmost(_ windowID: String?, since: Double,
-                                    probes: [NSRunningApplication]) async -> (front: Double?, reorders: Int) {
-        guard let windowID, let number = windowSystem.windowNumber(for: windowID) else { return (nil, 0) }
+    /// Polls the window list off the main thread, so neither the polling nor its
+    /// 600 ms hold after the destination comes to the front shows up as main-thread
+    /// stalls or as time to settled.
+    private func frontmostPoll(_ windowID: String?, since: Double,
+                               probes: [NSRunningApplication]) -> Task<(front: Double?, reorders: Int), Never> {
+        let number = windowID.flatMap { windowSystem.windowNumber(for: $0) }
         let pids = Set(probes.map(\.processIdentifier))
+        return Task.detached(priority: .utility) {
+            guard let number else { return (nil, 0) }
+            return await Self.timeUntilFrontmost(number, since: since, pids: pids)
+        }
+    }
+
+    nonisolated private static func timeUntilFrontmost(_ number: UInt32, since: Double,
+                                                       pids: Set<pid_t>) async -> (front: Double?, reorders: Int) {
         func order() -> [UInt32] {
             let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
                 as? [[String: Any]] ?? []
