@@ -12,6 +12,8 @@ public enum MainThreadActivity {
     nonisolated(unsafe) private static var enabled = false
     nonisolated(unsafe) private static var labels: [String] = []
 
+    public static var isEnabled: Bool { lock.withLock { enabled } }
+
     public static func setEnabled(_ value: Bool) {
         lock.withLock {
             enabled = value

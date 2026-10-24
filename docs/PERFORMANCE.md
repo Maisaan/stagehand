@@ -63,5 +63,6 @@ It reads `stagehand.1.log` and `stagehand.log` and skips acceptance and benchmar
 - **`NSLog` output is missing**: an app launched through LaunchServices does not show it in `log show`. Append to a file under `/tmp` for temporary timing.
 - **"Quit Stagehand first" when nothing is running**: `pgrep -f` matched your own shell command, which contained the app path. Build the pattern from pieces.
 - **The agent shell has no Accessibility or Automation permission**: it cannot drive other apps. Use the probe-based scripts.
+- **Window-list polling stalls the main thread**: polling `CGWindowListCopyWindowInfo` every 4 ms, even from a background thread, froze Stagehand's main thread for ~500 ms at the start of motion in most busy runs. The benchmark's stacking measurement does this, so it runs only in a `-stacking` mode; don't compare latency or stalls from those runs.
 - **Known test noise**: `quickControlsPanelTakesFocusWhenPresentedWithoutPopoverChrome` needs a frontmost test host; `relaunchRestoresTheSavedLayoutOfStillRunningWindows` and occasionally `aWindowRestoredFromTheDockJoinsAfterTheFocusedWindow` are timing-flaky in a full run. Rerun alone with `--filter`.
 - **Benchmark numbers improve but it feels worse**: check the per-window freeze metric and real usage with the analyzer. A change that lowers Stagehand's own cost can still make a window stutter.

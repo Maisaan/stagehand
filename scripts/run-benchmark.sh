@@ -6,7 +6,10 @@ set -euo pipefail
 # that load their main thread like Chrome or an Electron app.
 # STAGEHAND_APP selects the build (default dist/Stagehand.app). BENCHMARK_MODES
 # limits the modes, e.g. BENCHMARK_MODES=busy. A -quiet suffix (busy-quiet)
-# turns diagnostic logging off to measure its cost.
+# turns diagnostic logging off to measure its cost. A -stacking suffix
+# (busy-stacking) also measures when the destination reaches the front; its
+# window-list polling stalls Stagehand's main thread, so leave it off when
+# comparing latency or stalls.
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app="${STAGEHAND_APP:-$root/dist/Stagehand.app}"
 if pgrep -f "Stagehand.app/Contents/MacOS/Stagehand" >/dev/null; then
@@ -18,7 +21,8 @@ for mode in ${BENCHMARK_MODES:-responsive busy}; do
     report="$(mktemp -t stagehand-benchmark)"
     extra=()
     [[ "$mode" == busy* ]] && extra=(--busy)
-    [[ "$mode" == *-quiet ]] && extra+=(--no-diagnostics)
+    [[ "$mode" == *-quiet* ]] && extra+=(--no-diagnostics)
+    [[ "$mode" == *-stacking* ]] && extra+=(--stacking)
     open -W -n "$app" --args --benchmark "$root/dist/AcceptanceProbe.app" ${extra[@]+"${extra[@]}"} --acceptance-output "$report" &
     open_pid=$!
     deadline=$((SECONDS + 240))

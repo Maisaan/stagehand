@@ -12,16 +12,20 @@ import StagehandPlatform
 /// Posts a block to the main thread every 4 ms from a background thread and
 /// records how long each waited. The keyboard tap, gestures, and ribbon frames
 /// all run on the main thread, so this delay is the input latency users feel.
+/// While a post waits, the `MainThreadActivity` label is sampled every 2 ms, so a
+/// stall names the call that was running.
 final class MainThreadLatencyMonitor: @unchecked Sendable {
     private let lock = NSLock()
     private var samples: [Double] = []
     private var postedTimes: [Double] = []
+    private var labels: [String] = []
     private var running = false
 
     func start() {
         lock.withLock {
             samples.removeAll()
             postedTimes.removeAll()
+            labels.removeAll()
             running = true
         }
         Thread.detachNewThread { [self] in
@@ -36,7 +40,12 @@ final class MainThreadLatencyMonitor: @unchecked Sendable {
                     }
                     answered.signal()
                 }
-                answered.wait()
+                var seen: [String: Int] = [:]
+                while answered.wait(timeout: .now() + 0.002) == .timedOut {
+                    seen[MainThreadActivity.current ?? "unlabeled", default: 0] += 1
+                }
+                let label = seen.max { $0.value != $1.value ? $0.value < $1.value : $0.key > $1.key }?.key
+                lock.withLock { labels.append(label ?? "unlabeled") }
                 usleep(4_000)
             }
         }
@@ -45,6 +54,19 @@ final class MainThreadLatencyMonitor: @unchecked Sendable {
     /// Stalls over 33 ms as (posted uptime, waited ms).
     var stalls: [(Double, Double)] {
         lock.withLock { zip(postedTimes, samples).filter { $0.1 > 33 } }
+    }
+
+    /// Stall time over 33 ms by the label most often running during each stall,
+    /// with the pid dropped so one call groups across apps.
+    var blockedByCall: [String: Double] {
+        lock.withLock {
+            var result: [String: Double] = [:]
+            for (waited, label) in zip(samples, labels) where waited > 33 {
+                let call = label.replacingOccurrences(of: #" pid=-?\d+"#, with: "", options: .regularExpression)
+                result[call, default: 0] += waited
+            }
+            return result
+        }
     }
 
     func stop() -> [Double] {
@@ -76,7 +98,11 @@ extension StagehandModel {
             return "FAIL: Accessibility permission is missing for this build."
         }
         let loggingWasEnabled = diagnostics.isEnabled
+        let activityWasEnabled = MainThreadActivity.isEnabled
+        MainThreadActivity.setEnabled(true)
+        defer { MainThreadActivity.setEnabled(activityWasEnabled) }
         let logging = !ProcessInfo.processInfo.arguments.contains("--no-diagnostics")
+        let measuresStacking = ProcessInfo.processInfo.arguments.contains("--stacking")
         diagnostics.isEnabled = logging
         windowSystem.focusDiagnosticsEnabled = logging
         // Marks the probe-driven run so scripts/analyze-log.py can leave it out of real usage.
@@ -177,7 +203,8 @@ extension StagehandModel {
             lastTick = nil
             switchBegan = CACurrentMediaTime()
             navigate(forward ? .focusNext : .focusPrevious)
-            let stackingTask = frontmostPoll(state.focusedWindowID, since: switchBegan, probes: probes)
+            let stackingTask = frontmostPoll(measuresStacking ? state.focusedWindowID : nil,
+                                             since: switchBegan, probes: probes)
             await benchmarkWaitUntilIdle()
             current?.settled = (CACurrentMediaTime() - switchBegan) * 1_000
             let stacking = await stackingTask.value
@@ -202,10 +229,12 @@ extension StagehandModel {
         lines.append("  to first motion: " + Self.percentiles(timings.compactMap(\.motion)))
         lines.append("  to focus confirmed: " + Self.percentiles(timings.compactMap(\.focus)))
         lines.append("  to settled: " + Self.percentiles(timings.map(\.settled)))
-        lines.append("  destination frontmost on screen: " + Self.percentiles(frontTimes.compactMap { $0 })
-            + ", never within 1 s: \(frontTimes.count { $0 == nil })")
-        lines.append("  stacking reorders after the destination was in front: \(reorderCounts.reduce(0, +)) in "
-            + "\(reorderCounts.count { $0 > 0 }) of \(reorderCounts.count) switches")
+        if measuresStacking {
+            lines.append("  destination frontmost on screen: " + Self.percentiles(frontTimes.compactMap { $0 })
+                + ", never within 1 s: \(frontTimes.count { $0 == nil })")
+            lines.append("  stacking reorders after the destination was in front: \(reorderCounts.reduce(0, +)) in "
+                + "\(reorderCounts.count { $0 > 0 }) of \(reorderCounts.count) switches")
+        }
         let work = timings.flatMap(\.frameWork)
         let dropped = timings.map(\.droppedFrames).reduce(0, +)
         lines.append("  frame work per tick: " + Self.percentiles(work, digits: 2)
@@ -215,6 +244,8 @@ extension StagehandModel {
         lines.append("  longest freeze of any moving window: " + Self.percentiles(timings.compactMap(\.largestGap)))
         lines.append("  main thread: " + Self.stallSummary(sequentialStalls))
         lines.append("  stalls by phase: " + blockedByPhase.sorted { $0.value > $1.value }
+            .map { "\($0.key) \(Int($0.value))" }.joined(separator: ", "))
+        lines.append("  stalls by call: " + monitor.blockedByCall.sorted { $0.value > $1.value }.prefix(4)
             .map { "\($0.key) \(Int($0.value))" }.joined(separator: ", "))
         diagnostics.eventObserver = nil
         ribbonMotion.onFrameTiming = nil
@@ -259,7 +290,8 @@ extension StagehandModel {
                 spaceFocused = nil
                 spaceBegan = CACurrentMediaTime()
                 navigate(index % 2 == 0 ? .nextSpace : .previousSpace)
-                let stackingTask = frontmostPoll(state.focusedWindowID, since: spaceBegan, probes: probes)
+                let stackingTask = frontmostPoll(measuresStacking ? state.focusedWindowID : nil,
+                                                 since: spaceBegan, probes: probes)
                 await benchmarkWaitUntilIdle()
                 spaceSettled.append((CACurrentMediaTime() - spaceBegan) * 1_000)
                 let stacking = await stackingTask.value
@@ -272,10 +304,12 @@ extension StagehandModel {
             lines.append("Space switches:")
             lines.append("  to focus confirmed: " + Self.percentiles(spaceFocus))
             lines.append("  to settled: " + Self.percentiles(spaceSettled))
-            lines.append("  destination frontmost on screen: " + Self.percentiles(spaceFront.compactMap { $0 })
-                + ", never within 1 s: \(spaceFront.count { $0 == nil })")
-            lines.append("  stacking reorders after the destination was in front: \(spaceReorders.reduce(0, +)) in "
-                + "\(spaceReorders.count { $0 > 0 }) of \(spaceReorders.count) switches")
+            if measuresStacking {
+                lines.append("  destination frontmost on screen: " + Self.percentiles(spaceFront.compactMap { $0 })
+                    + ", never within 1 s: \(spaceFront.count { $0 == nil })")
+                lines.append("  stacking reorders after the destination was in front: \(spaceReorders.reduce(0, +)) in "
+                    + "\(spaceReorders.count { $0 > 0 }) of \(spaceReorders.count) switches")
+            }
             lines.append("  main thread: " + Self.stallSummary(monitor.stop()))
             lines.append("Final focus matches the ribbon: \(isRunning && state.focusedWindowID == windowSystem.focusedWindowID())")
         } else {
@@ -330,8 +364,10 @@ extension StagehandModel {
     /// probes' front-to-back order changed after that during the next 600 ms: a
     /// reordering the user can see as a flicker.
     /// Polls the window list off the main thread, so neither the polling nor its
-    /// 600 ms hold after the destination comes to the front shows up as main-thread
-    /// stalls or as time to settled.
+    /// 600 ms hold after the destination comes to the front shows up as time to
+    /// settled. Only with --stacking: polling every 4 ms from any thread still
+    /// froze the main thread for ~500 ms at the start of motion in 4 of 6 busy
+    /// runs, and none in 2 runs without it.
     private func frontmostPoll(_ windowID: String?, since: Double,
                                probes: [NSRunningApplication]) -> Task<(front: Double?, reorders: Int), Never> {
         let number = windowID.flatMap { windowSystem.windowNumber(for: $0) }
