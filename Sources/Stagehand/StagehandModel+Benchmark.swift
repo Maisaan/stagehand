@@ -168,6 +168,8 @@ extension StagehandModel {
         }
         monitor.start()
         var forward = true
+        var frontTimes: [Double?] = []
+        var reorderCounts: [Int] = []
         for _ in 0..<switches {
             var predicted = state
             if !predicted.apply(forward ? .focusNext : .focusPrevious) { forward.toggle() }
@@ -175,6 +177,9 @@ extension StagehandModel {
             lastTick = nil
             switchBegan = CACurrentMediaTime()
             navigate(forward ? .focusNext : .focusPrevious)
+            let stacking = await timeUntilFrontmost(state.focusedWindowID, since: switchBegan, probes: probes)
+            frontTimes.append(stacking.front)
+            reorderCounts.append(stacking.reorders)
             await benchmarkWaitUntilIdle()
             current?.settled = (CACurrentMediaTime() - switchBegan) * 1_000
             if current?.motion != nil {
@@ -196,6 +201,10 @@ extension StagehandModel {
         lines.append("  to first motion: " + Self.percentiles(timings.compactMap(\.motion)))
         lines.append("  to focus confirmed: " + Self.percentiles(timings.compactMap(\.focus)))
         lines.append("  to settled: " + Self.percentiles(timings.map(\.settled)))
+        lines.append("  destination frontmost on screen: " + Self.percentiles(frontTimes.compactMap { $0 })
+            + ", never within 1 s: \(frontTimes.count { $0 == nil })")
+        lines.append("  stacking reorders after the destination was in front: \(reorderCounts.reduce(0, +)) in "
+            + "\(reorderCounts.count { $0 > 0 }) of \(reorderCounts.count) switches")
         let work = timings.flatMap(\.frameWork)
         let dropped = timings.map(\.droppedFrames).reduce(0, +)
         lines.append("  frame work per tick: " + Self.percentiles(work, digits: 2)
@@ -235,6 +244,8 @@ extension StagehandModel {
         if state.spaces[1].windowIDs.count == 1 {
             var spaceFocus: [Double] = []
             var spaceSettled: [Double] = []
+            var spaceFront: [Double?] = []
+            var spaceReorders: [Int] = []
             var spaceBegan = 0.0
             var spaceFocused: Double?
             diagnostics.eventObserver = { event in
@@ -247,6 +258,9 @@ extension StagehandModel {
                 spaceFocused = nil
                 spaceBegan = CACurrentMediaTime()
                 navigate(index % 2 == 0 ? .nextSpace : .previousSpace)
+                let stacking = await timeUntilFrontmost(state.focusedWindowID, since: spaceBegan, probes: probes)
+                spaceFront.append(stacking.front)
+                spaceReorders.append(stacking.reorders)
                 await benchmarkWaitUntilIdle()
                 spaceSettled.append((CACurrentMediaTime() - spaceBegan) * 1_000)
                 if let spaceFocused { spaceFocus.append(spaceFocused) }
@@ -256,6 +270,10 @@ extension StagehandModel {
             lines.append("Space switches:")
             lines.append("  to focus confirmed: " + Self.percentiles(spaceFocus))
             lines.append("  to settled: " + Self.percentiles(spaceSettled))
+            lines.append("  destination frontmost on screen: " + Self.percentiles(spaceFront.compactMap { $0 })
+                + ", never within 1 s: \(spaceFront.count { $0 == nil })")
+            lines.append("  stacking reorders after the destination was in front: \(spaceReorders.reduce(0, +)) in "
+                + "\(spaceReorders.count { $0 > 0 }) of \(spaceReorders.count) switches")
             lines.append("  main thread: " + Self.stallSummary(monitor.stop()))
             lines.append("Final focus matches the ribbon: \(isRunning && state.focusedWindowID == windowSystem.focusedWindowID())")
         } else {
@@ -303,6 +321,40 @@ extension StagehandModel {
         lines.append(String(format: "Pause and restore frames: %.0f ms", (CACurrentMediaTime() - pauseBegan) * 1_000))
         lines.append("  main thread: " + Self.stallSummary(monitor.stop()))
         return lines.joined(separator: "\n")
+    }
+
+    /// Milliseconds from `since` until WindowServer lists the window frontmost among the
+    /// probes' on-screen windows (nil if not within a second), and how many times the
+    /// probes' front-to-back order changed after that during the next 600 ms: a
+    /// reordering the user can see as a flicker.
+    private func timeUntilFrontmost(_ windowID: String?, since: Double,
+                                    probes: [NSRunningApplication]) async -> (front: Double?, reorders: Int) {
+        guard let windowID, let number = windowSystem.windowNumber(for: windowID) else { return (nil, 0) }
+        let pids = Set(probes.map(\.processIdentifier))
+        func order() -> [UInt32] {
+            let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+                as? [[String: Any]] ?? []
+            return info.compactMap { window in
+                guard (window[kCGWindowOwnerPID as String] as? Int32).map(pids.contains) == true,
+                      (window[kCGWindowLayer as String] as? Int) == 0 else { return nil }
+                return window[kCGWindowNumber as String] as? UInt32
+            }
+        }
+        var front: Double?
+        var last: [UInt32] = []
+        var reorders = 0
+        while CACurrentMediaTime() - since < (front == nil ? 1 : 0.6 + (front ?? 0) / 1_000) {
+            let current = order()
+            if front == nil, current.first == number {
+                front = (CACurrentMediaTime() - since) * 1_000
+                last = current
+            } else if front != nil, current != last {
+                reorders += 1
+                last = current
+            }
+            try? await Task.sleep(for: .milliseconds(4))
+        }
+        return (front, reorders)
     }
 
     private func benchmarkWaitUntilIdle(timeout: Duration = .seconds(8)) async {

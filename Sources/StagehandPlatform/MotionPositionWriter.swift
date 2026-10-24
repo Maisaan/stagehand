@@ -62,20 +62,29 @@ final class MotionPositionWriter: @unchecked Sendable {
         queue?.async { self.drain(pid: pid) }
     }
 
+    /// Brings a window to the front without activating its app, ahead of any
+    /// position written to it afterwards. An app answers this at once while it is
+    /// idle; activation, which also raises, is what keeps an app busy.
+    func raise(pid: pid_t, element: AXUIElement) {
+        let queue = lock.withLock { queueLocked(pid: pid) }
+        queue.async { _ = AXUIElementPerformAction(element, kAXRaiseAction as CFString) }
+    }
+
     /// Drops queued writes for the app and waits for one already in progress.
     /// Call before any other frame change to the app's windows, so a stale motion
     /// write cannot land after it. Free when no motion write is outstanding.
     func settle(pid: pid_t) {
         let queue: DispatchQueue? = lock.withLock {
             pending[pid] = nil
-            return draining.contains(pid) ? queues[pid] : nil
+            return queues[pid]
         }
+        // Waits for a raise or a write already sent; free when the queue is idle.
         queue?.sync {}
     }
 
     /// Waits, without blocking the caller's thread, until every queued write has been sent.
     func flush() async {
-        let queues: [DispatchQueue] = lock.withLock { draining.compactMap { self.queues[$0] } }
+        let queues: [DispatchQueue] = lock.withLock { Array(self.queues.values) }
         for queue in queues {
             await withCheckedContinuation { continuation in
                 queue.async { continuation.resume() }

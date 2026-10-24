@@ -49,6 +49,8 @@ public protocol WindowManaging: AnyObject {
     /// Ribbon motion: moves without waiting for the app; finishMotionWrites() waits for the last write.
     @discardableResult func setMotionPosition(windowID: String, position: CGPoint) -> Bool
     func finishMotionWrites() async
+    /// Brings a window to the front without activating its app.
+    func raiseWithoutActivating(windowID: String)
     func motionWriteStatistics(reset: Bool, focusedWindowID: String?) -> [String: String]
     @discardableResult func setFrame(windowID: String, frame: CGRect) -> Bool
     /// `remnantWidth` is the widest strip that may stay visible at the side for

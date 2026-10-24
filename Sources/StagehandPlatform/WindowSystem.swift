@@ -1005,6 +1005,14 @@ public final class WindowSystem {
         return true
     }
 
+    /// Brings a window to the front without activating its app, so the window
+    /// being switched to is on top from the first frame; activation follows later.
+    public func raiseWithoutActivating(windowID: String) {
+        guard !nativeWindows.contains(windowID: windowID),
+              let tracked = windows[windowID], tracked.isAdmitted else { return }
+        motionWriter.raise(pid: tracked.record.pid, element: tracked.element)
+    }
+
     public func finishMotionWrites() async {
         await motionWriter.flush()
     }

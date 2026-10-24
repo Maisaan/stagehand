@@ -141,6 +141,9 @@ final class FakeWindowSystem: WindowManaging {
 
     func finishMotionWrites() async {}
 
+    private(set) var raisedWithoutActivating: [String] = []
+    func raiseWithoutActivating(windowID: String) { raisedWithoutActivating.append(windowID) }
+
     func motionWriteStatistics(reset: Bool, focusedWindowID: String?) -> [String: String] { [:] }
 
     func setFrame(windowID: String, frame: CGRect) -> Bool {

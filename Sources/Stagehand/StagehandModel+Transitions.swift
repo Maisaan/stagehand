@@ -438,6 +438,20 @@ extension StagehandModel {
                 lastLayoutMilliseconds = layoutStart.duration(to: .now).wholeMilliseconds
                 if request == .navigation { emptySpace.hide() }
                 if slideFrom == nil {
+                    if request == .navigation, pass == 0 {
+                        // Show the destination at once: raise it and clear the outgoing
+                        // windows before the slow part, the app's activation. Waiting
+                        // for activation kept the old space on screen until it finished.
+                        windowSystem.raiseWithoutActivating(windowID: record.id)
+                        let shownIDs = Set(placements.filter(\.isVisible).map(\.windowID))
+                        let frames = Dictionary(placements.map { ($0.windowID, $0.frame) },
+                                                uniquingKeysWith: { first, _ in first })
+                        switch await parkHiddenWindows(keeping: shownIDs, layoutFrames: frames) {
+                        case .interrupted: return .interrupted
+                        case .failed(let details): return failLayout("window_parking_failed", details: details)
+                        case .completed: break
+                        }
+                    }
                     let focus = await focusManagedWindow(record, token: token, request: request, operation: operation)
                     guard focus == .completed else { return focus }
                     destinationPID = record.pid
@@ -588,6 +602,11 @@ extension StagehandModel {
                 } else {
                     self.focusBorder.hide()
                 }
+            }
+            // Motion-first navigation activates the destination only as the slide
+            // ends. Raise it now so it slides in on top instead of popping forward.
+            if !focusAlongsideSlide, let focusedID = state.focusedWindowID {
+                windowSystem.raiseWithoutActivating(windowID: focusedID)
             }
             let outcome = if focusAlongsideSlide {
                 await runConcurrentNavigation(
