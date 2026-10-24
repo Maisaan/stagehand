@@ -175,6 +175,10 @@ public final class WindowSystem {
     public var wantsFrameChange: (() -> Bool)?
     private var applicationObservations: [pid_t: ApplicationObservation] = [:]
     private var observationRetries: [pid_t: Task<Void, Never>] = [:]
+    /// One serial queue per app for its notification registrations. A launching app
+    /// answers each with cannotComplete only at the messaging timeout; four of those
+    /// on the main thread blocked it for ~400 ms on every attempt.
+    private var observationQueues: [pid_t: DispatchQueue] = [:]
     private let launchDiscovery = ApplicationLaunchDiscovery()
     private var applicationInventoryTask: Task<Void, Never>?
     /// Set while the login session is inactive or the displays are asleep. The
@@ -1830,49 +1834,79 @@ public final class WindowSystem {
         observers[pid] = observer
         applicationObservations[pid] = ApplicationObservation()
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
-        if registerApplicationNotifications(element: element, pid: pid) {
-            scheduleObservationRetries(element: element, pid: pid)
-        }
+        scheduleApplicationRegistration(element: element, pid: pid)
         for id in Array(windows.keys) where windows[id]?.record.pid == pid {
             guard let element = windows[id]?.element else { continue }
             windows[id]?.observationComplete = observeWindow(element, observer: observer)
         }
     }
 
-    private func registerApplicationNotifications(element: AXUIElement, pid: pid_t) -> Bool {
-        guard let observer = observers[pid], var registration = applicationObservations[pid] else { return false }
-        let context = Unmanaged.passUnretained(self).toOpaque()
-        let retry = registration.register { name in
-            let status = MainThreadActivity.during("observe \(name) pid=\(pid)") {
-                AXObserverAddNotification(observer, element, name as CFString, context)
+    /// Registers on the app's own queue and applies the result on the main actor.
+    /// Returns whether a subscription is still pending; false also when the
+    /// observer was replaced or removed while the registration ran.
+    private func registerApplicationNotifications(element: AXUIElement, pid: pid_t) async -> Bool {
+        guard let observer = observers[pid], let pending = applicationObservations[pid]?.pending,
+              !pending.isEmpty else { return false }
+        let queue = observationQueues[pid] ?? DispatchQueue(label: "app.stagehand.observation.\(pid)",
+                                                            qos: .userInitiated)
+        observationQueues[pid] = queue
+        let request = ObservationRequest(observer: observer, element: element,
+                                         context: Unmanaged.passUnretained(self).toOpaque())
+        let diagnostics = focusDiagnosticsEnabled
+        let statuses = await withCheckedContinuation { continuation in
+            queue.async {
+                var statuses: [String: AXError] = [:]
+                for name in pending {
+                    let status = AXObserverAddNotification(request.observer, request.element,
+                                                           name as CFString, request.context)
+                    if diagnostics { logger.notice("Discovery observe pid=\(pid, privacy: .public) AX=\(name, privacy: .public) status=\(status.rawValue, privacy: .public)") }
+                    statuses[name] = status
+                }
+                continuation.resume(returning: statuses)
             }
-            if focusDiagnosticsEnabled { logger.notice("Discovery observe pid=\(pid, privacy: .public) AX=\(name, privacy: .public) status=\(status.rawValue, privacy: .public)") }
-            return status
         }
+        // A pause or an app relaunch tore this observer down while the
+        // registration ran. Its run-loop source is gone, so nothing it
+        // subscribed can be delivered.
+        guard observers[pid] === observer, var registration = applicationObservations[pid] else { return false }
+        let retry = registration.register { statuses[$0] ?? .cannotComplete }
         applicationObservations[pid] = registration
         return retry
     }
 
-    /// An app that keeps answering .cannotComplete is retried for as long as it
-    /// runs, but at a widening interval, and a rescan is requested only when a
-    /// subscription actually registered. Rescanning on every failed attempt kept
-    /// the whole system scanning every few seconds for one unresponsive app.
-    private func scheduleObservationRetries(element: AXUIElement, pid: pid_t) {
+    private struct ObservationRequest: @unchecked Sendable {
+        let observer: AXObserver
+        let element: AXUIElement
+        let context: UnsafeMutableRawPointer
+    }
+
+    /// Registers once right away, then retries an app that keeps answering
+    /// .cannotComplete for as long as it runs, but at a widening interval, and
+    /// requests a rescan only when a subscription actually registered.
+    /// Rescanning on every failed attempt kept the whole system scanning every
+    /// few seconds for one unresponsive app.
+    private func scheduleApplicationRegistration(element: AXUIElement, pid: pid_t) {
         let delays = WindowTuning.observationRetryDelaysMilliseconds
+        observationRetries[pid]?.cancel()
         observationRetries[pid] = Task { @MainActor [weak self] in
             var attempt = 0
             while !Task.isCancelled {
-                let delay = delays[min(attempt, delays.count - 1)]
-                do { try await Task.sleep(for: .milliseconds(delay)) }
-                catch { return }
+                if attempt > 0 {
+                    let delay = delays[min(attempt - 1, delays.count - 1)]
+                    do { try await Task.sleep(for: .milliseconds(delay)) }
+                    catch { return }
+                }
                 guard let self, self.started, !Task.isCancelled else { return }
                 guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else {
                     self.removeObserver(pid: pid)
                     return
                 }
                 let pendingBefore = self.applicationObservations[pid]?.pending
-                let retry = self.registerApplicationNotifications(element: element, pid: pid)
+                let retry = await self.registerApplicationNotifications(element: element, pid: pid)
+                guard !Task.isCancelled else { return }
                 // Discover windows that appeared before registration succeeded.
+                // The scan that created the observer no longer waits for the
+                // first registration, so this covers the first attempt too.
                 if self.applicationObservations[pid]?.pending != pendingBefore { self.onChange?() }
                 if !retry { break }
                 attempt += 1
@@ -1956,6 +1990,7 @@ public final class WindowSystem {
     private func removeObserver(pid: pid_t) {
         launchDiscovery.cancel(pid: pid)
         observationRetries.removeValue(forKey: pid)?.cancel()
+        observationQueues.removeValue(forKey: pid)
         let registration = applicationObservations.removeValue(forKey: pid)
         if let observer = observers.removeValue(forKey: pid) {
             // Unsubscribe before dropping the source so a late delivery cannot
