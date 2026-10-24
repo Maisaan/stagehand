@@ -2,7 +2,7 @@ import AppKit
 import StagehandCore
 import StagehandPlatform
 
-/// The app bar, focus border, and warnings, as used by the model. Tests use a
+/// The app bar, focus border, shortcut ribbon, and warnings, as used by the model. Tests use a
 /// headless implementation so nothing appears on screen.
 @MainActor
 protocol NavigationPresenting: AnyObject {
@@ -12,6 +12,7 @@ protocol NavigationPresenting: AnyObject {
     var onRemoveWindow: ((String) -> Void)? { get set }
     var onReorderWindow: ((String, Int) -> Void)? { get set }
     var canRevealNavigation: (() -> Bool)? { get set }
+    var showsShortcutHintsDuringNavigation: Bool { get set }
 
     func setBorderColor(_ color: NSColor)
     func updateBorder(frame: CGRect, visible: Bool, cornerRadius: CGFloat?,
@@ -19,6 +20,8 @@ protocol NavigationPresenting: AnyObject {
     func showNavigation(state: WorkspaceState, windows: [WindowRecord])
     func updateNavigation(state: WorkspaceState, windows: [WindowRecord])
     func showWarning(_ message: String)
+    func setShortcutHints(_ bindings: [ShortcutBinding])
+    func toggleShortcutHints()
     func hide()
 }
 

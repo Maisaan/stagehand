@@ -74,6 +74,8 @@ final class NavigationOverlays {
     private var hudIsExiting = false
     private var dismissTask: Task<Void, Never>?
     let hudModel = NavigationHUDModel()
+    private let shortcutHints: ShortcutHintsRibbon
+    var showsShortcutHintsDuringNavigation = true
     var onFocusWindow: ((String) -> Void)?
     var onSelectSpace: ((Int) -> Void)?
     var onShareWindow: ((String, Int) -> Void)?
@@ -91,6 +93,7 @@ final class NavigationOverlays {
 
     init(reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }) {
         self.reduceMotion = reduceMotion
+        shortcutHints = ShortcutHintsRibbon(reduceMotion: reduceMotion)
         hudModel.onFocusWindow = { [weak self] id in self?.onFocusWindow?(id) }
         hudModel.onSelectSpace = { [weak self] index in self?.onSelectSpace?(index) }
         hudModel.onShareWindow = { [weak self] id, index in self?.onShareWindow?(id, index) }
@@ -176,6 +179,17 @@ final class NavigationOverlays {
         hudModel.showingSpaces = false
         hudModel.warning = nil
         presentHUD(dismissAfter: .milliseconds(1_500))
+        if showsShortcutHintsDuringNavigation {
+            shortcutHints.show()
+        }
+    }
+
+    func setShortcutHints(_ bindings: [ShortcutBinding]) {
+        shortcutHints.setBindings(bindings)
+    }
+
+    func toggleShortcutHints() {
+        shortcutHints.toggle()
     }
 
     private func dropTargetChanged(isTargeted: Bool) {
@@ -351,6 +365,7 @@ final class NavigationOverlays {
         dismissTask = nil
         hudGeneration &+= 1
         hudIsExiting = false
+        shortcutHints.hide()
         border?.orderOut(nil)
         hud?.orderOut(nil)
         border?.close()
@@ -375,6 +390,8 @@ final class HUDContainerView: NSView {
     let animatedView = NSView()
     let hostingView: NSView
     var attachedToNotch = false
+    /// Content at the bottom of the screen grows from and sinks toward its bottom edge.
+    let anchoredToBottom: Bool
     private var motionConfiguration = InterfaceAnimationConfiguration.default
     var hiddenTravel: CGFloat {
         CGFloat(attachedToNotch
@@ -382,8 +399,13 @@ final class HUDContainerView: NSView {
             : motionConfiguration.floatingHUDTravel)
     }
 
-    init(model: NavigationHUDModel) {
-        hostingView = FirstMouseHostingView(rootView: NavigationHUD(model: model))
+    convenience init(model: NavigationHUDModel) {
+        self.init(hostingView: FirstMouseHostingView(rootView: NavigationHUD(model: model)))
+    }
+
+    init(hostingView: NSView, anchoredToBottom: Bool = false) {
+        self.hostingView = hostingView
+        self.anchoredToBottom = anchoredToBottom
         super.init(frame: .zero)
         wantsLayer = true
         // The top edge is flush with the physical camera housing on notched displays.
@@ -416,9 +438,10 @@ final class HUDContainerView: NSView {
         let scale = CGFloat(motionConfiguration.hiddenHUDScale)
         let size = animatedView.bounds.size
         // AppKit owns this backing layer's bottom-left anchor and resets custom anchors
-        // at commit. Compensate the scale in the transform to keep its top center fixed.
+        // at commit. Compensate the scale in the transform to keep its top (or bottom)
+        // center fixed.
         let x = size.width * (1 - scale) / 2
-        let y = size.height * (1 - scale) + hiddenTravel
+        let y = anchoredToBottom ? -hiddenTravel : size.height * (1 - scale) + hiddenTravel
         return CATransform3DScale(CATransform3DMakeTranslation(x, y, 0), scale, scale, 1)
     }
 

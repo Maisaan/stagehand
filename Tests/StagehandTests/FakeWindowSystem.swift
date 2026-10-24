@@ -214,6 +214,8 @@ final class FakeOverlays: NavigationPresenting {
     var onRemoveWindow: ((String) -> Void)?
     var onReorderWindow: ((String, Int) -> Void)?
     var canRevealNavigation: (() -> Bool)?
+    var showsShortcutHintsDuringNavigation = true
+    private(set) var shortcutHintToggles = 0
     private(set) var warnings: [String] = []
     private(set) var borderFrame: CGRect?
     /// Each time the border appeared (true) or disappeared (false).
@@ -228,6 +230,8 @@ final class FakeOverlays: NavigationPresenting {
     func showNavigation(state: WorkspaceState, windows: [WindowRecord]) {}
     func updateNavigation(state: WorkspaceState, windows: [WindowRecord]) {}
     func showWarning(_ message: String) { warnings.append(message) }
+    func setShortcutHints(_ bindings: [ShortcutBinding]) {}
+    func toggleShortcutHints() { shortcutHintToggles += 1 }
     func hide() {
         if borderFrame != nil { borderVisibility.append(false) }
         borderFrame = nil

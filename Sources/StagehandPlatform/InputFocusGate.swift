@@ -520,7 +520,7 @@ public final class FocusInputGate {
         let isAutorepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
         if type == .keyUp, state.navigationKeys.remove(key) != nil { return (true, effects) }
         if type == .keyDown, let action = ShortcutBinding.action(for: event, in: state.shortcutBindings) {
-            if action != .showSettings, action != .togglePause {
+            if !action.isStagehandCommand {
                 state.navigationKeys.insert(key)
                 // The caller only enqueues work. It must not run AX calls on the event tap.
                 // Capture starts here, under the lock, so typing that follows the chord while

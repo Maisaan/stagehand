@@ -21,6 +21,17 @@ public enum NavigationAction: Equatable, Sendable {
     case growHeight
     case togglePause
     case showSettings
+    /// Shows or hides the shortcut ribbon at the bottom of the screen.
+    case toggleShortcutHints
+
+    /// Commands for Stagehand itself. They never move focus, so their chords pass
+    /// through the keyboard tap to Carbon instead of reserving a focus transfer.
+    public var isStagehandCommand: Bool {
+        switch self {
+        case .togglePause, .showSettings, .toggleShortcutHints: true
+        default: false
+        }
+    }
 }
 
 public struct SpaceState: Codable, Equatable, Sendable {
@@ -330,7 +341,7 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         case .togglePause:
             isPaused.toggle()
             return true
-        case .showSettings:
+        case .showSettings, .toggleShortcutHints:
             return false
         }
     }

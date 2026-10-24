@@ -24,10 +24,14 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
     public let action: NavigationAction
 
     public var label: String {
-        let displayedModifiers = keyLabel == "+" ? modifiers & ~UInt32(shiftKey) : modifiers
-        return [Self.modifierLabel(displayedModifiers), keyLabel]
+        [modifierLabel, keyLabel]
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+
+    /// The modifiers as shown beside the key. Shift is implied by "+".
+    public var modifierLabel: String {
+        Self.modifierLabel(keyLabel == "+" ? modifiers & ~UInt32(shiftKey) : modifiers)
     }
 
     public var isDefault: Bool {
@@ -107,6 +111,9 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
             .init(id: "showSettings", title: "Open settings", group: .stagehand,
                   key: UInt32(kVK_ANSI_Comma), modifiers: base, keyLabel: ",", isEnabled: true,
                   action: .showSettings),
+            .init(id: "toggleShortcutHints", title: "Show or hide shortcuts", group: .stagehand,
+                  key: UInt32(kVK_ANSI_Slash), modifiers: base | command, keyLabel: "/", isEnabled: true,
+                  action: .toggleShortcutHints),
         ]
         let numbers = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5,
                        kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9]

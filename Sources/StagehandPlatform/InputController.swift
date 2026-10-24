@@ -80,11 +80,11 @@ public final class InputController {
         registerHotKeys()
     }
 
-    /// Settings and pause chords always pass through the tap, so Carbon owns them. Every
+    /// Stagehand command chords always pass through the tap, so Carbon owns them. Every
     /// other chord is consumed by the tap whenever it is available, which is the only time
     /// the same press could reach both paths.
     static func shouldDispatchHotKey(_ action: NavigationAction, tapHandlesNavigation: Bool) -> Bool {
-        if action == .showSettings || action == .togglePause { return true }
+        if action.isStagehandCommand { return true }
         return !tapHandlesNavigation
     }
 
