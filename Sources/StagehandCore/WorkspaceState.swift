@@ -253,7 +253,7 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     @discardableResult
     public mutating func remove(windowID: String, fromSpace index: Int) -> Bool {
         guard spaces.indices.contains(index), spaces[index].windowIDs.contains(windowID),
-              spaces.filter({ $0.windowIDs.contains(windowID) }).count > 1 else { return false }
+              spaces.membershipCount(of: windowID) > 1 else { return false }
         spaces[index].remove(windowID: windowID)
         return true
     }
@@ -377,11 +377,11 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
             activeSpaceIndex: try values.decodeIfPresent(Int.self, forKey: .activeSpaceIndex) ?? 0
         )
     }
+}
 
-    public func encode(to encoder: any Encoder) throws {
-        var values = encoder.container(keyedBy: CodingKeys.self)
-        try values.encode(isPaused, forKey: .isPaused)
-        try values.encode(spaces, forKey: .spaces)
-        try values.encode(activeSpaceIndex, forKey: .activeSpaceIndex)
+extension Sequence where Element == SpaceState {
+    /// The number of spaces that contain the window.
+    public func membershipCount(of windowID: String) -> Int {
+        count { $0.windowIDs.contains(windowID) }
     }
 }

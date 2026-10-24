@@ -464,20 +464,8 @@ final class RibbonMotion {
     }
 
     static func interpolate(from: [String: CGRect], to: [String: CGRect], progress: Double,
-                            curve: RibbonAnimationCurve = .smoother,
-                            duration: TimeInterval? = nil,
-                            initialHorizontalVelocity: CGFloat? = nil) -> [String: CGRect] {
-        let progress = min(1, max(0, progress))
-        let timeline = timeline(
-            from: from,
-            to: to,
-            duration: duration ?? 1,
-            curve: curve,
-            initialHorizontalVelocity: initialHorizontalVelocity
-        )
-        let requestedDuration = duration ?? timeline.duration
-        let elapsed = (requestedDuration > 0 ? requestedDuration : timeline.duration) * progress
-        let eased = timeline.curve.progress(at: min(1, elapsed / timeline.duration))
+                            curve: RibbonAnimationCurve = .smoother) -> [String: CGRect] {
+        let eased = curve.progress(at: min(1, max(0, progress)))
         var frames: [String: CGRect] = [:]
         frames.reserveCapacity(to.count)
         for (id, target) in to {

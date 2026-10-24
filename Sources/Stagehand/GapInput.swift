@@ -115,32 +115,27 @@ struct GapInput: NSViewRepresentable {
     var onCommit: (Double) -> Void
 
     func makeNSView(context: Context) -> GapTextField {
-        GapTextField(value: value) { value in
-            self.value = value
-            onCommit(value)
-        }
+        GapTextField(value: value, onCommit: commit)
     }
 
     func updateNSView(_ field: GapTextField, context: Context) {
-        field.onCommit = { value in
-            self.value = value
-            onCommit(value)
-        }
+        field.onCommit = commit
         field.update(value: value)
+    }
+
+    private func commit(_ value: Double) {
+        self.value = value
+        onCommit(value)
     }
 }
 
 final class GapTextField: InsetTextField, NSTextFieldDelegate {
     var onCommit: (Double) -> Void
     private var committedValue: Double
-    private let modifierFlags: () -> NSEvent.ModifierFlags
     private var outsideClickMonitor: Any?
 
-    init(value: Double, modifierFlags: @escaping () -> NSEvent.ModifierFlags = {
-        NSApp.currentEvent?.modifierFlags ?? []
-    }, onCommit: @escaping (Double) -> Void) {
+    init(value: Double, onCommit: @escaping (Double) -> Void) {
         committedValue = GapInput.clamped(value)
-        self.modifierFlags = modifierFlags
         self.onCommit = onCommit
         super.init(frame: .zero)
         delegate = self
@@ -185,7 +180,7 @@ final class GapTextField: InsetTextField, NSTextFieldDelegate {
              #selector(NSResponder.moveUpAndModifySelection(_:)), #selector(NSResponder.moveDownAndModifySelection(_:)):
             let shiftedCommand = commandSelector == #selector(NSResponder.moveUpAndModifySelection(_:))
                 || commandSelector == #selector(NSResponder.moveDownAndModifySelection(_:))
-            let step: Double = shiftedCommand || modifierFlags().contains(.shift) ? 10 : 1
+            let step: Double = shiftedCommand || NSApp.currentEvent?.modifierFlags.contains(.shift) == true ? 10 : 1
             let upward = commandSelector == #selector(NSResponder.moveUp(_:))
                 || commandSelector == #selector(NSResponder.moveUpAndModifySelection(_:))
             let direction: Double = upward ? 1 : -1

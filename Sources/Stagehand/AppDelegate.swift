@@ -19,10 +19,6 @@ struct StatusMenuState {
     let spaces: [(index: Int, windowCount: Int)]
 }
 
-private final class QuickControlsHostingView<Content: View>: NSHostingView<Content> {
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-}
-
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private static let onboardingCompleteKey = "onboardingComplete"
@@ -310,7 +306,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         guard let model else { return }
         let panel = quickControlsPanel ?? {
-            let hostingView = QuickControlsHostingView(rootView: QuickControlsView(
+            let hostingView = FirstMouseHostingView(rootView: QuickControlsView(
                 model: model,
                 openSettings: { [weak self] in
                     self?.closeQuickControls { [weak self] in self?.openSettings() }
@@ -473,12 +469,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     (suffix: "", size: NSSize(width: 700, height: 620)),
                     (suffix: "-expanded", size: NSSize(width: 900, height: 760))
                 ]
-                for section in ["General", "Windows", "Shortcuts", "About"] {
+                for section in SettingsPage.allCases {
                     for variant in sizes {
                         try await render(
                             SettingsView(model: model, initialTab: section),
                             size: variant.size,
-                            filename: "\(section.lowercased())\(variant.suffix).png"
+                            filename: "\(section.rawValue.lowercased())\(variant.suffix).png"
                         )
                     }
                 }
@@ -494,7 +490,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     filename: "onboarding-overview.png"
                 )
                 try await render(
-                    SettingsView(model: model, initialTab: "About", expandAboutDetails: true),
+                    SettingsView(model: model, initialTab: .about, expandAboutDetails: true),
                     size: NSSize(width: 700, height: 620),
                     filename: "about-details-expanded.png"
                 )

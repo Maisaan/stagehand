@@ -157,7 +157,7 @@ extension StagehandModel {
                             "displacement": String(displacement),
                             "frameWriteAccepted": String(frameWritten),
                             "isLogicalFocused": String(state.focusedWindowID == id),
-                            "membershipCount": String(state.spaces.count { $0.windowIDs.contains(id) }),
+                            "membershipCount": String(state.spaces.membershipCount(of: id)),
                             "parkedAfter": String(windowSystem.isParked(windowID: id)),
                             "parkedBefore": String(parkedBefore)
                         ]

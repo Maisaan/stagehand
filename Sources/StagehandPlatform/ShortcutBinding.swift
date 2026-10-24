@@ -34,11 +34,11 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
         Self.defaultsByID[id] == self
     }
 
-    public static let supportedModifiers = UInt32(controlKey | optionKey | shiftKey | cmdKey | alphaLock)
+    static let supportedModifiers = UInt32(controlKey | optionKey | shiftKey | cmdKey | alphaLock)
     /// A chord needs one of these. Shift and Caps Lock alone would capture ordinary typing.
-    public static let requiredModifiers = UInt32(controlKey | optionKey | cmdKey)
+    static let requiredModifiers = UInt32(controlKey | optionKey | cmdKey)
     /// Virtual key codes above this are not keyboard keys.
-    public static let maximumVirtualKeyCode: UInt32 = 0x7F
+    static let maximumVirtualKeyCode: UInt32 = 0x7F
     /// Chords macOS owns. Consuming them would hide quitting, closing, switching, and Spotlight.
     static let systemChords: [(key: UInt32, modifiers: UInt32, label: String)] = [
         (UInt32(kVK_ANSI_Q), UInt32(cmdKey), "⌘ Q"),
@@ -169,10 +169,6 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
         public let issues: [String]
     }
 
-    public static func load(from userDefaults: UserDefaults = .standard) -> [Self] {
-        loadReportingIssues(from: userDefaults).bindings
-    }
-
     /// Saved chords that fail validation revert to their default chord and are turned off,
     /// so a stale or hand-edited preference can never capture ordinary typing or a system chord.
     public static func loadReportingIssues(from userDefaults: UserDefaults = .standard) -> LoadResult {
@@ -262,7 +258,7 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
         return modifiers
     }
 
-    public static func modifierLabel(_ modifiers: UInt32) -> String {
+    static func modifierLabel(_ modifiers: UInt32) -> String {
         var labels: [String] = []
         if modifiers & UInt32(controlKey) != 0 { labels.append("⌃") }
         if modifiers & UInt32(optionKey) != 0 { labels.append("⌥") }

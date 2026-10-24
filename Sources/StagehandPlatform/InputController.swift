@@ -20,7 +20,6 @@ public final class InputController {
         didSet { if isRunning && oldValue != reverseShortcutSwipeDirection { updateGestures() } }
     }
     public private(set) var issues: [String] = []
-    public var gesturesAvailable: Bool { gestures.isRunning }
 
     static let navigationGestureFingerCount = 3
     /// `defaults write com.example.Stagehand StagehandDisableTrackpadGestures -bool YES` keeps
@@ -40,10 +39,13 @@ public final class InputController {
     private let gestures = GestureMonitor()
     private var wakeObserver: NSObjectProtocol?
 
-    public init(shortcutBindings: [ShortcutBinding] = ShortcutBinding.load(), shortcutLoadIssues: [String] = []) {
+    public init(shortcutBindings: [ShortcutBinding], shortcutLoadIssues: [String] = []) {
         self.shortcutBindings = shortcutBindings
         self.shortcutLoadIssues = shortcutLoadIssues
-        gestures.onFailure = { [weak self] _ in self?.refreshGestureStatus() }
+        gestures.onFailure = { [weak self] _ in
+            guard let self, self.isRunning else { return }
+            self.updateGestures()
+        }
     }
 
     isolated deinit {
@@ -134,10 +136,6 @@ public final class InputController {
         shortcutIssues = []
         issues = []
         onStatusChange?()
-    }
-
-    public func refreshGestureStatus() {
-        if isRunning { updateGestures() }
     }
 
     /// Gestures can stop arriving after sleep. Rebuild the monitor with a fresh device.

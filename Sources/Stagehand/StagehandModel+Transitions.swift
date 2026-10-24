@@ -181,7 +181,7 @@ extension StagehandModel {
         guard change.policy == .navigation, diagnostics.isEnabled else { return }
         let destinationID = state.focusedWindowID
         let observedFocus = windowSystem.focusedWindowID()
-        let membershipCount = destinationID.map { id in state.spaces.count { $0.windowIDs.contains(id) } } ?? 0
+        let membershipCount = destinationID.map { state.spaces.membershipCount(of: $0) } ?? 0
         diagnostics.record("navigation_motion_planned", details: [
             "destinationFocusedWindowID": destinationID ?? "none",
             "destinationMembershipCount": String(membershipCount),
@@ -322,7 +322,7 @@ extension StagehandModel {
             let observedFocusAfter = focused ? record.id : windowSystem.focusedWindowID()
             var details = [
                 "focusConfirmed": String(focused),
-                "membershipCount": String(state.spaces.count { $0.windowIDs.contains(record.id) }),
+                "membershipCount": String(state.spaces.membershipCount(of: record.id)),
                 "observedFocusedWindowIDAfter": observedFocusAfter ?? "none",
                 "observedFocusedWindowIDBefore": observedFocusBefore ?? "none",
                 "operation": operation,
@@ -518,10 +518,9 @@ extension StagehandModel {
             break
         }
         let visibleIDs = Set(placements.filter(\.isVisible).map(\.windowID))
-        let motionCandidates = placements.filter {
+        let sliding = placements.filter {
             $0.isVisible || slideFrom?[$0.windowID]?.intersects(availableFrame) == true
         }
-        let sliding = motionCandidates
         let animatedWindowIDs = slideFrom == nil ? Set<String>() : Set(sliding.map(\.windowID))
         guard preferenceFocusStillMatches(request) else { return .completed }
         guard desktopScope.refresh() == .home else {

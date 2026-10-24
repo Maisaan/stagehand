@@ -3,8 +3,7 @@ import Carbon
 import os
 import StagehandCore
 
-/// The buffer is separate from the event tap so token ownership can be tested without
-/// monitoring or posting real keyboard input.
+/// Queued keyboard events per input transfer, kept apart from the event tap's state.
 struct InputTransferBuffer<Event> {
     private var nextToken: UInt64 = 0
     private var transfers: [(token: UInt64, events: [Event])] = []
@@ -14,7 +13,6 @@ struct InputTransferBuffer<Event> {
     var tokens: [UInt64] { transfers.map(\.token) }
     func contains(token: UInt64) -> Bool { transfers.contains { $0.token == token } }
     func isEmpty(token: UInt64) -> Bool { transfers.first { $0.token == token }?.events.isEmpty == true }
-    func count(token: UInt64) -> Int { transfers.first { $0.token == token }?.events.count ?? 0 }
 
     mutating func begin() -> UInt64 {
         nextToken &+= 1
@@ -96,10 +94,26 @@ private struct GateState {
         navigationKeys.removeAll()
     }
 
-    mutating func discardDestinations(for token: UInt64) {
+    /// Points every key still pending on the transfer at its final destination.
+    mutating func resolveDestinations(for token: UInt64, to resolved: KeyDestination) {
         for (key, destination) in keyDestinations {
-            if case .pending(let pendingToken) = destination, pendingToken == token { keyDestinations[key] = .discarded }
+            if case .pending(let pendingToken) = destination, pendingToken == token { keyDestinations[key] = resolved }
         }
+    }
+
+    /// Ends one transfer without delivering it and returns its held events.
+    mutating func abandon(_ token: UInt64) -> [CGEvent] {
+        unreserve(token)
+        resolveDestinations(for: token, to: .discarded)
+        return buffer.take(token: token)
+    }
+
+    /// Ends every transfer and forgets every key; returns the number of held events.
+    mutating func reset() -> Int {
+        let count = buffer.removeAll()
+        reservedTokens.removeAll()
+        clearKeys()
+        return count
     }
 
     mutating func removeAllTransfers() -> Int {
@@ -144,7 +158,7 @@ public final class FocusInputGate {
     public var isAvailable: Bool { core.withLockUnchecked { $0.tapIsAvailable } && !isSecureInputEnabled }
     public var isSecureInputEnabled: Bool { secureInputEnabled() }
     /// Events held for transfers that have not been committed or cancelled.
-    public var pendingEventCount: Int { core.withLockUnchecked { $0.buffer.eventCount } }
+    var pendingEventCount: Int { core.withLockUnchecked { $0.buffer.eventCount } }
     public var onTransferExpired: ((UInt64) -> Void)?
     public var onInputDiscarded: ((Int) -> Void)?
     public var onAvailabilityChanged: (() -> Void)?
@@ -301,11 +315,7 @@ public final class FocusInputGate {
         let events = core.withLockUnchecked { state -> [CGEvent] in
             state.unreserve(token)
             let events = state.buffer.take(token: token)
-            for (key, destination) in state.keyDestinations {
-                if case .pending(let pendingToken) = destination, pendingToken == token {
-                    state.keyDestinations[key] = .delivered(processIdentifier)
-                }
-            }
+            state.resolveDestinations(for: token, to: .delivered(processIdentifier))
             if !events.isEmpty { state.replayDestination = processIdentifier }
             return events
         }
@@ -316,12 +326,7 @@ public final class FocusInputGate {
 
     public func cancelTransfer(token: UInt64) {
         deadlines.removeValue(forKey: token)?.cancel()
-        let events = core.withLockUnchecked { state -> [CGEvent] in
-            state.unreserve(token)
-            let events = state.buffer.take(token: token)
-            state.discardDestinations(for: token)
-            return events
-        }
+        let events = core.withLockUnchecked { $0.abandon(token) }
         if !events.isEmpty { onInputDiscarded?(events.count) }
         stopAvailabilityWatchIfIdle()
     }
@@ -332,9 +337,7 @@ public final class FocusInputGate {
     public func cancelTransferIfEmpty(token: UInt64) -> Bool {
         let removed = core.withLockUnchecked { state -> Bool in
             guard state.buffer.isEmpty(token: token) else { return false }
-            _ = state.buffer.take(token: token)
-            state.unreserve(token)
-            state.discardDestinations(for: token)
+            _ = state.abandon(token)
             return true
         }
         guard removed else { return false }
@@ -383,11 +386,7 @@ public final class FocusInputGate {
     private func cancelAllForAvailabilityChange() {
         for deadline in deadlines.values { deadline.cancel() }
         deadlines.removeAll()
-        let count = core.withLockUnchecked { state -> Int in
-            let count = state.removeAllTransfers()
-            state.clearKeys()
-            return count
-        }
+        let count = core.withLockUnchecked { $0.reset() }
         stopAvailabilityWatchIfIdle()
         if count > 0 { onInputDiscarded?(count) }
         onAvailabilityChanged?()
@@ -403,9 +402,7 @@ public final class FocusInputGate {
             // and let the main actor re-enable the tap with backoff.
             let discarded = core.withLockUnchecked { state -> Int in
                 state.tapIsAvailable = false
-                let count = state.removeAllTransfers()
-                state.clearKeys()
-                return count
+                return state.reset()
             }
             DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {
@@ -421,8 +418,7 @@ public final class FocusInputGate {
             guard state.tapIsAvailable, !secureInput else {
                 var effects = RoutingEffects()
                 effects.cancelledTokens = state.buffer.tokens
-                effects.discardedCount = state.removeAllTransfers()
-                state.clearKeys()
+                effects.discardedCount = state.reset()
                 return (false, effects)
             }
             return Self.route(type: type, event: event, state: &state, allowProvisional: true)
@@ -592,9 +588,7 @@ public final class FocusInputGate {
         guard state.buffer.eventCount < maximumBufferedEvents, let copy = event.copy() else {
             // Abandon the transfer that owns this key. Report its held events plus the
             // event that could not be buffered as one count.
-            let held = state.buffer.take(token: token).count
-            state.discardDestinations(for: token)
-            state.unreserve(token)
+            let held = state.abandon(token).count
             effects.discardedCount += held + 1
             effects.expiredToken = token
             return

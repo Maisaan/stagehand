@@ -70,8 +70,8 @@ struct NavigationHUDGeometry {
 final class NavigationOverlays {
     private(set) var border: OverlayPanel?
     private(set) var hud: OverlayPanel?
-    private(set) var hudGeneration: UInt64 = 0
-    private(set) var hudIsExiting = false
+    private var hudGeneration: UInt64 = 0
+    private var hudIsExiting = false
     private var dismissTask: Task<Void, Never>?
     let hudModel = NavigationHUDModel()
     var onFocusWindow: ((String) -> Void)?
@@ -84,16 +84,13 @@ final class NavigationOverlays {
     private var localMouseMonitor: Any?
     private var hoverFrame: CGRect?
     private var contentFrame: CGRect?
-    private(set) var pointerKeepsHUDVisible = false
-    private(set) var dropTargetKeepsHUDVisible = false
+    private var pointerKeepsHUDVisible = false
+    private var dropTargetKeepsHUDVisible = false
     private let reduceMotion: () -> Bool
-    private let animationDurationMultiplier: Double
     private var borderColor = BorderView.defaultColor
 
-    init(reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion },
-         animationDurationMultiplier: Double = 1) {
+    init(reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }) {
         self.reduceMotion = reduceMotion
-        self.animationDurationMultiplier = animationDurationMultiplier
         hudModel.onFocusWindow = { [weak self] id in self?.onFocusWindow?(id) }
         hudModel.onSelectSpace = { [weak self] index in self?.onSelectSpace?(index) }
         hudModel.onShareWindow = { [weak self] id, index in self?.onShareWindow?(id, index) }
@@ -168,7 +165,7 @@ final class NavigationOverlays {
                 ? configuration.focusRevealOpacity
                 : (layer.presentation()?.opacity ?? Float(configuration.focusRevealOpacity))
             reveal.toValue = 1
-            reveal.duration = configuration.focusRevealDuration * animationDurationMultiplier
+            reveal.duration = configuration.focusRevealDuration
             reveal.timingFunction = RibbonAnimationCurve.ease.mediaTimingFunction
             layer.add(reveal, forKey: "focusReveal")
         }
@@ -232,7 +229,7 @@ final class NavigationOverlays {
                             height: screen.frame.maxY - geometry.contentFrame.maxY + 4)
     }
 
-    func pointerMoved(to point: CGPoint) {
+    private func pointerMoved(to point: CGPoint) {
         let insideTrigger = hoverFrame?.contains(point) == true
         let insideBar = hud?.isVisible == true && hudModel.warning == nil && contentFrame?.contains(point) == true
         let inside = insideTrigger || insideBar
@@ -294,7 +291,7 @@ final class NavigationOverlays {
             container.transition(
                 visible: true,
                 reduceMotion: hudModel.reduceMotion,
-                duration: configuration.hudEnterDuration * animationDurationMultiplier,
+                duration: configuration.hudEnterDuration,
                 configuration: configuration
             )
         }
@@ -310,16 +307,14 @@ final class NavigationOverlays {
             do {
                 try await Task.sleep(for: .seconds(
                     self.hudModel.interfaceAnimationConfiguration.hudExitDuration
-                        * self.animationDurationMultiplier
                 ))
             } catch { return }
             guard !Task.isCancelled else { return }
-            _ = self.completeHUDDismiss(generation: generation)
+            self.completeHUDDismiss(generation: generation)
         }
     }
 
-    @discardableResult
-    func beginHUDDismiss(generation: UInt64) -> Bool {
+    private func beginHUDDismiss(generation: UInt64) -> Bool {
         guard generation == hudGeneration, !hudIsExiting, !pointerKeepsHUDVisible,
               !dropTargetKeepsHUDVisible,
               let container = hud?.contentView as? HUDContainerView else { return false }
@@ -328,19 +323,17 @@ final class NavigationOverlays {
         container.transition(
             visible: false,
             reduceMotion: reduceMotion(),
-            duration: configuration.hudExitDuration * animationDurationMultiplier,
+            duration: configuration.hudExitDuration,
             configuration: configuration
         )
         return true
     }
 
-    @discardableResult
-    func completeHUDDismiss(generation: UInt64) -> Bool {
-        guard generation == hudGeneration, hudIsExiting else { return false }
+    private func completeHUDDismiss(generation: UInt64) {
+        guard generation == hudGeneration, hudIsExiting else { return }
         hud?.orderOut(nil)
         hudIsExiting = false
         hudModel.showingSpaces = false
-        return true
     }
 
     func hide() {
@@ -390,7 +383,7 @@ final class HUDContainerView: NSView {
     }
 
     init(model: NavigationHUDModel) {
-        hostingView = NavigationHostingView(rootView: NavigationHUD(model: model))
+        hostingView = FirstMouseHostingView(rootView: NavigationHUD(model: model))
         super.init(frame: .zero)
         wantsLayer = true
         // The top edge is flush with the physical camera housing on notched displays.
@@ -483,8 +476,8 @@ final class HUDContainerView: NSView {
     }
 }
 
-private final class NavigationHostingView<Content: View>: NSHostingView<Content> {
-    // The HUD receives the first click while the managed app remains the key application.
+/// Receives the first click while the managed app remains the key application.
+final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
@@ -591,7 +584,6 @@ enum WindowDropIndicatorEdge: Equatable {
 
 @MainActor
 final class NavigationHUDModel: ObservableObject {
-    static let defaultAppBarColor = BorderView.defaultColor
 
     @Published var space = 1
     @Published var windows: [WindowRecord] = []
@@ -602,7 +594,7 @@ final class NavigationHUDModel: ObservableObject {
     @Published var spaces: [SpaceState] = []
     @Published var availableSpaceIndices: [Int] = []
     @Published var showingSpaces = false
-    @Published var appBarColor = defaultAppBarColor
+    @Published var appBarColor = BorderView.defaultColor
     @Published private(set) var animatesFocusIndicator = false
     @Published private(set) var draggedWindowID: String?
     @Published private(set) var dropTargetID: String?
@@ -687,7 +679,7 @@ final class NavigationHUDModel: ObservableObject {
     func canRemoveFromCurrentSpace(windowID: String) -> Bool {
         spaces.indices.contains(space - 1) &&
             spaces[space - 1].windowIDs.contains(windowID) &&
-            spaces.filter { $0.windowIDs.contains(windowID) }.count > 1
+            spaces.membershipCount(of: windowID) > 1
     }
 
     func shareWindow(id: String, withSpace index: Int) {

@@ -426,7 +426,7 @@ func sizeShortcutChordsResolve(key: Int, flags: CGEventFlags, action: Navigation
     #expect(result.issues.count == 2)
     #expect(result.issues[0].hasPrefix("Next window was turned off"))
     #expect(result.issues[1].hasPrefix("Open settings was turned off"))
-    #expect(ShortcutBinding.load(from: defaults) == loaded)
+    #expect(ShortcutBinding.loadReportingIssues(from: defaults).bindings == loaded)
 }
 
 @Test(arguments: [
@@ -524,7 +524,7 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     }
     defaults.set(try JSONSerialization.data(withJSONObject: saved), forKey: ShortcutBinding.preferenceKey)
 
-    let loaded = ShortcutBinding.load(from: defaults)
+    let loaded = ShortcutBinding.loadReportingIssues(from: defaults).bindings
     #expect(loaded.first { $0.id == "shrinkWidth" } == ShortcutBinding.defaultBinding(id: "shrinkWidth"))
     #expect(loaded.first { $0.id == "growWidth" }?.key == UInt32(kVK_ANSI_K))
     #expect(loaded.first { $0.id == "growWidth" }?.modifiers == UInt32(controlKey))

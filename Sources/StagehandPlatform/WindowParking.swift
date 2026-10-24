@@ -22,12 +22,16 @@ struct WindowParking {
     mutating func park(frame: CGRect, bounds: CGRect, displays: [CGRect], preferredSide: WindowParkingSide? = nil,
                        remnantWidth requestedRemnantWidth: CGFloat = WindowTuning.parkedRemnantWidth,
                        setPosition: (CGPoint) -> Bool, readFrame: () -> CGRect?) -> Bool {
-        guard Self.valid(frame), Self.valid(bounds), !displays.isEmpty, displays.allSatisfy(Self.valid) else { return false }
+        guard Self.valid(frame), Self.valid(bounds), let containingDisplay = displays.max(by: {
+            $0.overlapArea(with: bounds) < $1.overlapArea(with: bounds)
+        }), displays.allSatisfy(Self.valid) else { return false }
+        // Never spill the parked body onto a neighboring display.
+        let neighbors = displays.filter { $0 != containingDisplay }
         remnantWidth = Self.clampedRemnantWidth(requestedRemnantWidth)
         let isReparking = restoreFrame != nil
         if isReparking {
             if let actual = readFrame(), Self.valid(actual),
-               acceptablyParked(actual, bounds: bounds, displays: displays) {
+               acceptablyParked(actual, bounds: bounds, neighbors: neighbors) {
                 isParked = true
                 parkingBounds = bounds
                 parkedFrame = actual
@@ -39,11 +43,11 @@ struct WindowParking {
             // moved there by the user) has no known original frame. Return it to the
             // nearest onscreen position rather than remembering the parked one, which
             // would make a later restore a no-op that leaves it at the edge.
-            restoreFrame = acceptablyParked(frame, bounds: bounds, displays: displays)
+            restoreFrame = acceptablyParked(frame, bounds: bounds, neighbors: neighbors)
                 ? Self.onscreen(frame, within: bounds) : frame
         }
         parkingBounds = bounds
-        if acceptablyParked(frame, bounds: bounds, displays: displays) {
+        if acceptablyParked(frame, bounds: bounds, neighbors: neighbors) {
             isParked = true
             parkedFrame = frame
             return true
@@ -53,20 +57,16 @@ struct WindowParking {
         let right = CGPoint(x: bounds.maxX - 1, y: frame.minY)
         let left = CGPoint(x: bounds.minX + 1 - frame.width, y: frame.minY)
         let destinations = preferredSide == .left ? [left, right] : [right, left]
-        let containingDisplay = displays.max {
-            Self.overlapArea($0, bounds) < Self.overlapArea($1, bounds)
-        }
         var attempted = false
         for destination in destinations {
             let proposed = CGRect(origin: destination, size: frame.size)
-            // Never spill the parked body onto a neighboring display.
-            guard displays.filter({ $0 != containingDisplay }).allSatisfy({ !$0.intersects(proposed) }) else { continue }
+            guard neighbors.allSatisfy({ !$0.intersects(proposed) }) else { continue }
             attempted = true
             _ = setPosition(destination)
             guard let actual = readFrame(), Self.valid(actual),
                   abs(actual.width - frame.width) <= 1, abs(actual.height - frame.height) <= 1,
-                  displays.filter({ $0 != containingDisplay }).allSatisfy({ !$0.intersects(actual) }) else { continue }
-            if acceptablyParked(actual, bounds: bounds, displays: displays) {
+                  neighbors.allSatisfy({ !$0.intersects(actual) }) else { continue }
+            if acceptablyParked(actual, bounds: bounds, neighbors: neighbors) {
                 isParked = true
                 parkedFrame = actual
                 return true
@@ -151,14 +151,8 @@ struct WindowParking {
         return remnant.isNull || remnant.width <= remnantWidth
     }
 
-    private func acceptablyParked(_ frame: CGRect, bounds: CGRect, displays: [CGRect]) -> Bool {
-        guard let containingDisplay = displays.max(by: {
-            Self.overlapArea($0, bounds) < Self.overlapArea($1, bounds)
-        }), atParkingSide(frame, bounds: bounds),
-              displays.filter({ $0 != containingDisplay }).allSatisfy({ !$0.intersects(frame) }) else {
-            return false
-        }
-        return true
+    private func acceptablyParked(_ frame: CGRect, bounds: CGRect, neighbors: [CGRect]) -> Bool {
+        atParkingSide(frame, bounds: bounds) && neighbors.allSatisfy { !$0.intersects(frame) }
     }
 
     /// The nearest position inside `bounds` on the parking axis; Y is preserved.
@@ -169,9 +163,11 @@ struct WindowParking {
             : min(max(frame.minX, bounds.minX), bounds.maxX - frame.width)
         return restored
     }
+}
 
-    private static func overlapArea(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {
-        let overlap = lhs.intersection(rhs)
+extension CGRect {
+    func overlapArea(with other: CGRect) -> CGFloat {
+        let overlap = intersection(other)
         return overlap.isNull ? 0 : overlap.width * overlap.height
     }
 }

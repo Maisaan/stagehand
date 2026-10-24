@@ -537,8 +537,10 @@ public final class WindowSystem {
         restoreAll()
         // A subsequent Start can happen on a different native Desktop. Keep
         // stable identities, but admit only its visible windows again.
-        for id in Array(windows.keys) { windows[id]?.isAdmitted = false }
-        for id in Array(windows.keys) { windows[id]?.observationComplete = false }
+        for id in Array(windows.keys) {
+            windows[id]?.isAdmitted = false
+            windows[id]?.observationComplete = false
+        }
         ownedWindows.removeAll()
         let center = NSWorkspace.shared.notificationCenter
         for token in workspaceTokens { center.removeObserver(token) }
@@ -1122,9 +1124,7 @@ public final class WindowSystem {
                    width: screen.frame.width, height: screen.frame.height)
         }
         guard let screenIndex = displays.indices.max(by: {
-            let lhs = displays[$0].intersection(currentFrame)
-            let rhs = displays[$1].intersection(currentFrame)
-            return (lhs.isNull ? 0 : lhs.width * lhs.height) < (rhs.isNull ? 0 : rhs.width * rhs.height)
+            displays[$0].overlapArea(with: currentFrame) < displays[$1].overlapArea(with: currentFrame)
         }) else { return false }
         let visible = screens[screenIndex].visibleFrame
         let bounds = CGRect(x: visible.minX, y: primaryTop - visible.maxY,
@@ -1870,7 +1870,8 @@ public final class WindowSystem {
         applicationInventoryTask?.cancel()
         let initialVisibleWindows = onScreenWindows()
         lastApplicationInventory = applicationInventory(
-            applications: NSWorkspace.shared.runningApplications,
+            eligible: eligibleApplications(from: NSWorkspace.shared.runningApplications,
+                                           accessoryPIDs: Set(initialVisibleWindows.map(\.pid))),
             visibleWindows: initialVisibleWindows
         )
         applicationInventoryTask = Task { @MainActor [weak self] in
@@ -1880,20 +1881,13 @@ public final class WindowSystem {
                 guard let self, self.started, !Task.isCancelled else { return }
                 if self.inventoryPaused { continue }
                 let visibleWindows = self.onScreenWindows()
-                let applications = NSWorkspace.shared.runningApplications
-                let visiblePIDs = Set(visibleWindows.map(\.pid))
+                let eligible = self.eligibleApplications(from: NSWorkspace.shared.runningApplications,
+                                                         accessoryPIDs: Set(visibleWindows.map(\.pid)))
                 var scheduled = false
-                for app in self.eligibleApplications(
-                    from: applications,
-                    accessoryPIDs: visiblePIDs
-                )
-                where self.observers[app.resolvedProcessIdentifier] == nil {
+                for app in eligible where self.observers[app.resolvedProcessIdentifier] == nil {
                     scheduled = self.scheduleDiscovery(for: app) || scheduled
                 }
-                let inventory = self.applicationInventory(
-                    applications: applications,
-                    visibleWindows: visibleWindows
-                )
+                let inventory = self.applicationInventory(eligible: eligible, visibleWindows: visibleWindows)
                 let changed = inventory != self.lastApplicationInventory
                 self.lastApplicationInventory = inventory
                 if scheduled || changed { self.onChange?() }
@@ -1902,15 +1896,11 @@ public final class WindowSystem {
     }
 
     private func applicationInventory(
-        applications: [NSRunningApplication],
+        eligible: [NSRunningApplication],
         visibleWindows: [VisibleWindow]
     ) -> ApplicationInventory {
-        let visiblePIDs = Set(visibleWindows.map(\.pid))
-        return ApplicationInventory(
-            applicationPIDs: Set(eligibleApplications(
-                from: applications,
-                accessoryPIDs: visiblePIDs
-            ).map(\.resolvedProcessIdentifier)),
+        ApplicationInventory(
+            applicationPIDs: Set(eligible.map(\.resolvedProcessIdentifier)),
             visibleWindows: Set(visibleWindows.map {
                 VisibleWindowIdentity(pid: $0.pid, windowNumber: $0.windowNumber)
             })
@@ -2029,10 +2019,6 @@ public final class WindowSystem {
 
     private func directTrackedWindowID(matching element: AXUIElement) -> String? {
         directTrackedWindowID(matching: element, in: identitySnapshot())
-    }
-
-    private func trackedWindowID(matching element: AXUIElement) -> String? {
-        trackedWindowID(matching: element, in: identitySnapshot())
     }
 
     /// Main-actor window identity state, captured so focus matching can run off the main thread.

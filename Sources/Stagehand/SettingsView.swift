@@ -29,15 +29,6 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .about: .gray
         }
     }
-
-    init(tab: String) {
-        switch tab {
-        case "Controls", "Shortcuts": self = .shortcuts
-        case "Setup", "System", "General": self = .general
-        case "About": self = .about
-        default: self = .windows
-        }
-    }
 }
 
 private enum ShortcutPage: String, CaseIterable, Identifiable {
@@ -65,14 +56,14 @@ struct SettingsView: View {
 
     init(
         model: StagehandModel,
-        initialTab: String = "General",
+        initialTab: SettingsPage = .general,
         showOnboarding: @escaping () -> Void = {},
         expandAboutDetails: Bool = false
     ) {
         self.model = model
         self.showOnboarding = showOnboarding
         self.expandAboutDetails = expandAboutDetails
-        _page = State(initialValue: SettingsPage(tab: initialTab))
+        _page = State(initialValue: initialTab)
         _gapInput = State(initialValue: GapInput.clamped(model.gap))
         _selectedSpaceIndex = State(initialValue: model.state.activeSpaceIndex)
     }
@@ -495,7 +486,7 @@ struct SettingsView: View {
                         }
                     }
                 }
-                if model.state.spaces.filter({ $0.windowIDs.contains(window.id) }).count > 1 {
+                if model.state.spaces.membershipCount(of: window.id) > 1 {
                     Button("Remove from Space \(spaceIndex + 1)") {
                         model.removeMembership(windowID: window.id, fromSpaceIndex: spaceIndex)
                     }
@@ -1021,7 +1012,10 @@ private final class ShortcutRecorderButton: NSButton {
     }
 
     private func record(_ event: NSEvent) {
-        let modifiers = carbonModifiers(event.modifierFlags)
+        // NSEvent's device-independent modifier bits match CGEventFlags.
+        let modifiers = ShortcutBinding.carbonModifiers(
+            for: CGEventFlags(rawValue: UInt64(event.modifierFlags.rawValue))
+        )
         // Caps Lock is a recordable modifier, but it must not turn Esc into a shortcut.
         if event.keyCode == UInt16(kVK_Escape), modifiers & ~UInt32(alphaLock) == 0 {
             stopRecording()
@@ -1029,16 +1023,6 @@ private final class ShortcutRecorderButton: NSButton {
         }
         onRecord?(UInt32(event.keyCode), modifiers, Self.keyLabel(for: event))
         stopRecording()
-    }
-
-    private func carbonModifiers(_ flags: NSEvent.ModifierFlags) -> UInt32 {
-        var modifiers: UInt32 = 0
-        if flags.contains(.control) { modifiers |= UInt32(controlKey) }
-        if flags.contains(.option) { modifiers |= UInt32(optionKey) }
-        if flags.contains(.shift) { modifiers |= UInt32(shiftKey) }
-        if flags.contains(.command) { modifiers |= UInt32(cmdKey) }
-        if flags.contains(.capsLock) { modifiers |= UInt32(alphaLock) }
-        return modifiers
     }
 
     private static func keyLabel(for event: NSEvent) -> String {

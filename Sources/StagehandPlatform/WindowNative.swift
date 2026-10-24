@@ -1,14 +1,5 @@
 import AppKit
 
-/// A managed window can extend beyond the display as part of the scrolling ribbon.
-/// AppKit's default titled-window constraints would move it back onto the screen.
-@MainActor
-public final class RibbonWindow: NSWindow {
-    public override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
-        frameRect
-    }
-}
-
 /// Only explicitly registered windows participate. Stagehand's overlays never enter this registry.
 @MainActor
 final class NativeWindowRegistry: NSObject {
@@ -78,21 +69,21 @@ final class NativeWindowRegistry: NSObject {
         windows.values.compactMap { entry in
             guard let window = entry.window, !entry.closed, !window.isMiniaturized,
                   !window.styleMask.contains(.fullScreen), window.isVisible || entry.parked else { return nil }
-            return WindowRecord(id: entry.id, appName: "Stagehand", title: window.title,
-                                bundleIdentifier: Bundle.main.bundleIdentifier ?? "app.stagehand.Stagehand",
-                                pid: ProcessInfo.processInfo.processIdentifier,
-                                frame: accessibilityFrame(window.frame),
-                                isResizable: window.styleMask.contains(.resizable))
+            return record(id: entry.id, window: window)
         }.sorted { $0.id < $1.id }
     }
 
     func record(windowID: String) -> WindowRecord? {
         guard let entry = windows[windowID], let window = entry.window, !entry.closed else { return nil }
-        return WindowRecord(id: entry.id, appName: "Stagehand", title: window.title,
-                            bundleIdentifier: Bundle.main.bundleIdentifier ?? "app.stagehand.Stagehand",
-                            pid: ProcessInfo.processInfo.processIdentifier,
-                            frame: accessibilityFrame(window.frame),
-                            isResizable: window.styleMask.contains(.resizable))
+        return record(id: entry.id, window: window)
+    }
+
+    private func record(id: String, window: NSWindow) -> WindowRecord {
+        WindowRecord(id: id, appName: "Stagehand", title: window.title,
+                     bundleIdentifier: Bundle.main.bundleIdentifier ?? "app.stagehand.Stagehand",
+                     pid: ProcessInfo.processInfo.processIdentifier,
+                     frame: accessibilityFrame(window.frame),
+                     isResizable: window.styleMask.contains(.resizable))
     }
 
     var focusedWindowID: String? {

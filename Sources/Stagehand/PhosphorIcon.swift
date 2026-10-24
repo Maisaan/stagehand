@@ -23,7 +23,6 @@ enum PhosphorIconName: String {
     case shieldCheck = "shield-check-fill"
     case warning = "warning-fill"
     case warningCircle = "warning-circle-fill"
-    case x = "x-fill"
     case xCircle = "x-circle-fill"
 }
 
