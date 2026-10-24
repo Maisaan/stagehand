@@ -34,17 +34,28 @@ public struct WindowFocusReport: Codable, Equatable, Sendable {
         func confirmsFocus(targetPID: Int32) -> Bool {
             guard targetApplicationActive else { return false }
             if targetWindowMatches { return true }
-            // The global AX focus can still point at Stagehand after its Start
-            // menu closes. Trust the target app's exact window only when AppKit
-            // also says that app is active and frontmost.
-            let applicationUnavailable = focusedApplicationStatus.map(Self.isUnavailable) == true
-            let focusedApplicationIsStagehand = focusedApplicationPID == ProcessInfo.processInfo.processIdentifier &&
-                targetPID != ProcessInfo.processInfo.processIdentifier
-            let windowUnavailable = focusedApplicationPID == targetPID &&
-                focusedWindowStatus.map(Self.isUnavailable) == true
-            return (applicationUnavailable || focusedApplicationIsStagehand || windowUnavailable) &&
+            // Trust the target app's own focused window only when AppKit also
+            // says that app is active and frontmost.
+            return Self.readsTargetDirectly(focusedApplicationPID: focusedApplicationPID,
+                                            focusedApplicationStatus: focusedApplicationStatus,
+                                            focusedWindowStatus: focusedWindowStatus,
+                                            targetPID: targetPID) &&
                 frontmostPID == targetPID &&
                 directFocusedWindowStatus == AXError.success.rawValue && directTargetWindowMatches
+        }
+
+        /// Whether the global AX read cannot say which window of the target app has
+        /// focus, so the target app's own focused window is the evidence. Global AX
+        /// can name another process while the target app is frontmost: Stagehand
+        /// just after its Start menu closes, the previous app while activation
+        /// settles, or a non-activating panel such as Raycast or Spotlight that
+        /// holds the keyboard until it closes. A successful global read of the
+        /// target app is never overridden.
+        static func readsTargetDirectly(focusedApplicationPID: Int32?, focusedApplicationStatus: Int32?,
+                                        focusedWindowStatus: Int32?, targetPID: Int32) -> Bool {
+            if focusedApplicationStatus.map(isUnavailable) == true { return true }
+            guard let focusedApplicationPID else { return false }
+            return focusedApplicationPID != targetPID || focusedWindowStatus.map(isUnavailable) == true
         }
 
         static func isUnavailable(_ status: Int32) -> Bool {

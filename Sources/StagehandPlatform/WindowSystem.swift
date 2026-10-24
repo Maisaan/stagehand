@@ -1413,8 +1413,12 @@ public final class WindowSystem {
         if let value = result.value, CFGetTypeID(value) == AXUIElementGetTypeID() {
             let reportedApp = unsafeDowncast(value, to: AXUIElement.self)
             var reportedPID: pid_t = 0
+            // Global AX names a process that is not the active frontmost app:
+            // Stagehand after its Start menu closes, or a non-activating panel
+            // such as Raycast. The frontmost app's focused window is the one
+            // the keyboard returns to.
             if AXUIElementGetPid(reportedApp, &reportedPID) == .success,
-               reportedPID == ownPID, let frontmostPID, frontmostPID != reportedPID {
+               let frontmostPID, frontmostPID != reportedPID {
                 focusedApp = AXUIElementCreateApplication(frontmostPID)
             } else {
                 focusedApp = reportedApp
@@ -1696,6 +1700,7 @@ public final class WindowSystem {
                 )
             }
             let context = self.context
+            let targetFrontmost = NSWorkspace.shared.frontmostApplication?.resolvedProcessIdentifier == context.targetPID
             let focus = await Self.accessibility { () -> AccessibilityFocus in
                 let system = context.system
                 let ownPID = ProcessInfo.processInfo.processIdentifier
@@ -1717,13 +1722,11 @@ public final class WindowSystem {
                         }
                     }
                 }
-                // Read the target directly when global AX has not caught up with
-                // AppKit after Stagehand's Start menu closes.
-                let applicationUnavailable = WindowFocusReport.Observation.isUnavailable(application.error.rawValue)
-                let focusedApplicationIsStagehand = result.focusedPID == ownPID && context.targetPID != ownPID
-                let focusedWindowUnavailable = result.focusedPID == context.targetPID
-                    && result.windowStatus.map(WindowFocusReport.Observation.isUnavailable) == true
-                if applicationUnavailable || focusedApplicationIsStagehand || focusedWindowUnavailable {
+                // The direct read can confirm focus only while the target is frontmost.
+                if targetFrontmost, WindowFocusReport.Observation.readsTargetDirectly(
+                    focusedApplicationPID: result.focusedPID, focusedApplicationStatus: result.applicationStatus,
+                    focusedWindowStatus: result.windowStatus, targetPID: context.targetPID
+                ) {
                     let direct = system.copyAttribute(context.appElement, kAXFocusedWindowAttribute)
                     result.directStatus = direct.error.rawValue
                     result.directMatches = direct.value.map {

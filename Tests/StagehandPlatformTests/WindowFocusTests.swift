@@ -278,6 +278,57 @@ private func missingGlobalReading(
     #expect(report.outcome == .focused)
 }
 
+/// Raycast's panel kept the global AX focus while Terminal stayed frontmost, so
+/// a swipe to another Terminal window timed out and paused Stagehand.
+@Test @MainActor func nonActivatingPanelFromAnotherAppDoesNotBlockExactTargetFocus() async {
+    func reading(frontmostPID: Int32, directMatches: Bool) -> WindowFocusReport.Observation {
+        WindowFocusReport.Observation(
+            frontmostPID: frontmostPID,
+            focusedApplicationPID: 999,
+            focusedApplicationStatus: AXError.success.rawValue,
+            focusedWindowStatus: AXError.success.rawValue,
+            directFocusedWindowStatus: AXError.success.rawValue,
+            directTargetWindowMatches: directMatches,
+            targetApplicationActive: true,
+            targetWindowMatches: false
+        )
+    }
+    let focused = await WindowFocusAttempt.run(
+        driver: FocusDriverFixture(readings: [reading(frontmostPID: 123, directMatches: true)])
+    )
+    #expect(focused.outcome == .focused)
+    let busyTarget = WindowFocusReport.Observation(
+        frontmostPID: 123, focusedApplicationPID: 999, focusedApplicationStatus: AXError.success.rawValue,
+        focusedWindowStatus: AXError.success.rawValue, directFocusedWindowStatus: AXError.cannotComplete.rawValue,
+        directTargetWindowMatches: true, targetApplicationActive: true, targetWindowMatches: false
+    )
+    for unsafe in [reading(frontmostPID: 123, directMatches: false), reading(frontmostPID: 999, directMatches: true),
+                   busyTarget] {
+        let report = await WindowFocusAttempt.run(driver: FocusDriverFixture(readings: [unsafe]))
+        #expect(report.outcome == .timedOut)
+    }
+}
+
+/// After the panel closed, global AX named the target app with another of its
+/// windows focused. That successful read is never overridden by the direct read.
+@Test @MainActor func targetAppFocusingAnotherWindowIsNotConfirmedAfterAPanelCloses() async {
+    let panel = WindowFocusReport.Observation(
+        frontmostPID: 123, focusedApplicationPID: 999, focusedApplicationStatus: AXError.success.rawValue,
+        focusedWindowStatus: AXError.success.rawValue, directFocusedWindowStatus: AXError.success.rawValue,
+        directTargetWindowMatches: false, targetApplicationActive: true, targetWindowMatches: false
+    )
+    let otherWindow = WindowFocusReport.Observation(
+        frontmostPID: 123, focusedApplicationPID: 123, focusedApplicationStatus: AXError.success.rawValue,
+        focusedWindowStatus: AXError.success.rawValue, directFocusedWindowStatus: AXError.success.rawValue,
+        directTargetWindowMatches: true, targetApplicationActive: true, targetWindowMatches: false
+    )
+    let report = await WindowFocusAttempt.run(
+        driver: FocusDriverFixture(readings: [panel, panel, otherWindow])
+    )
+    #expect(report.outcome == .timedOut)
+    #expect(report.elapsedMilliseconds <= WindowTuning.focusRecoveryDeadlineMilliseconds + 100)
+}
+
 @Test @MainActor func directFallbackRejectsIncompleteOrContradictoryEvidence() async {
     let unsafeReadings = [
         missingGlobalReading(frontmostPID: 456),
