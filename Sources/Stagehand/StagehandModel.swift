@@ -414,11 +414,12 @@ final class StagehandModel: ObservableObject {
         }
         windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
         if persistence == .standard, injectedWindowSystem == nil {
-            mainThreadWatchdog = MainThreadWatchdog { [weak self] waited in
+            mainThreadWatchdog = MainThreadWatchdog { [weak self] waited, activity in
                 guard let self else { return }
                 let last = self.diagnostics.lastEvent
                 self.diagnostics.record("main_thread_stall", details: [
                     "waitedMilliseconds": String(waited),
+                    "activity": activity,
                     "lastEvent": last?.name ?? "none",
                     "lastEventAgeMilliseconds": last.map {
                         String(Int((ProcessInfo.processInfo.systemUptime - $0.uptime) * 1_000))

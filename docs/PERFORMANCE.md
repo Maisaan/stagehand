@@ -42,7 +42,7 @@ It reads `stagehand.1.log` and `stagehand.log` and skips acceptance and benchmar
 
 ### Events worth knowing
 
-- `main_thread_stall`: the main thread was blocked for 50 ms or more. `lastEvent` names the phase. Logged only while diagnostic logging is on.
+- `main_thread_stall`: the main thread was blocked for 50 ms or more. `lastEvent` names the phase. `activity` names the call that was running, sampled every 10 ms during the wait (`MainThreadActivity` labels around main-thread Accessibility calls, the AX callback, and the window list; `unlabeled` is anything else, such as AppKit or a loaded machine). Logged only while diagnostic logging is on.
 - `ribbon_animation_completed`: `focusedMotionGapMilliseconds` and `largestMotionGapMilliseconds` (visible freezes), `slowestMotionWriteMilliseconds`, `motionPositionsRequested`, `motionWritesSent`.
 - `navigation_focus_confirmed`: `focusReport.elapsedMilliseconds` and the AX operations of the focus attempt.
 - `screen_locked`, `screen_unlocked`, `desktop_suspended`, `desktop_resumed`: unlock-to-resume latency. A short lock may not suspend at all.

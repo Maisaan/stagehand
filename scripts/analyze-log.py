@@ -18,13 +18,15 @@ Sections:
   focus by app focus confirmation per target pid (names resolved while running)
   motion       per-animation write statistics; *MotionGap is the longest a
                window went without moving, i.e. a visible freeze
-  main thread  main_thread_stall events by the last event before them
+  main thread  main_thread_stall events by the last event before them, and by
+               the call most often running during them (activity)
   lifecycle    lock/unlock, suspend/resume latency, pauses and failures
 """
 import argparse
 import collections
 import json
 import os
+import re
 import subprocess
 from datetime import datetime
 
@@ -59,11 +61,19 @@ def report(events, title):
     focus_by_pid = collections.defaultdict(list)
     motion = collections.defaultdict(list)
     stalls = collections.defaultdict(list)
+    stalls_by_activity = collections.defaultdict(list)
     lifecycle = []
     pending = {}
     for event in events:
         name, t, d = event["event"], ms(event["timestamp"]), event.get("details", {})
         operation = d.get("operation", "")
+        # Separate from the chain below: a swipe's action is also an action change.
+        if name == "gesture_motion_started":
+            pending["gesture"] = t
+        elif name == "change_queued" and operation.startswith("action.") and "gesture" in pending:
+            nav["swipe start -> action"].append(t - pending.pop("gesture"))
+        elif name == "gesture_motion_resolved":
+            pending.pop("gesture", None)
         if name == "change_queued" and operation.startswith("action."):
             pending["queued"] = t
             pending.pop("motion", None)
@@ -79,10 +89,6 @@ def report(events, title):
                 focus_by_pid[report_.get("targetPID")].append(report_["elapsedMilliseconds"])
         elif name == "change_completed" and operation.startswith("action.") and "queued" in pending:
             nav["action -> settled"].append(t - pending.pop("queued"))
-        elif name == "gesture_motion_started":
-            pending["gesture"] = t
-        elif name == "change_queued" and "gesture" in pending:
-            nav["swipe start -> action"].append(t - pending.pop("gesture"))
         if name == "ribbon_animation_completed":
             for key in ("elapsedMilliseconds", "slowestMotionWriteMilliseconds",
                         "largestMotionGapMilliseconds", "focusedMotionGapMilliseconds"):
@@ -93,6 +99,11 @@ def report(events, title):
                     100 * int(d["motionWritesSent"]) / int(d["motionPositionsRequested"]))
         if name == "main_thread_stall":
             stalls[d.get("lastEvent", "?")].append(float(d.get("waitedMilliseconds", 0)))
+            if "activity" in d:
+                # The most-sampled label, without its count or the pid, so one
+                # call groups across apps.
+                top = re.sub(r" pid=-?\d+| x\d+$", "", d["activity"].split(", ")[0])
+                stalls_by_activity[top].append(float(d.get("waitedMilliseconds", 0)))
         if name in ("screen_locked", "screen_unlocked", "desktop_suspended", "desktop_resumed",
                     "started", "paused", "automatic_pause", "layout_failed", "automatic_resume_failed",
                     "ribbon_position_commit_failed", "refresh_starved", "ribbon_animation_stalled"):
@@ -113,6 +124,10 @@ def report(events, title):
         print("  none (or logging predates the watchdog)")
     for last, values in sorted(stalls.items(), key=lambda item: -sum(item[1])):
         print(f"  {last:32s} total={sum(values):.0f} {pct(values)}")
+    if stalls_by_activity:
+        print("-- main thread stalls >= 50 ms, by the call most often running during them")
+        for label, values in sorted(stalls_by_activity.items(), key=lambda item: -sum(item[1]))[:15]:
+            print(f"  {label[:60]:60s} total={sum(values):.0f} {pct(values)}")
     print("-- lifecycle")
     unlocked = None
     for timestamp, name, extra in lifecycle:

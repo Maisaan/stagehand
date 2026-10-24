@@ -1778,50 +1778,52 @@ public final class WindowSystem {
                 let owner = Unmanaged<WindowSystem>.fromOpaque(context).takeUnretainedValue()
                 guard owner.started else { return }
                 let name = notification as String
-                if owner.focusDiagnosticsEnabled {
-                    var pid: pid_t = 0
-                    _ = AXUIElementGetPid(changedWindow, &pid)
-                    logger.notice("Discovery t=\(ProcessInfo.processInfo.systemUptime, privacy: .public) AX=\(name, privacy: .public) pid=\(pid, privacy: .public)")
-                }
-                if let availabilityChange = windowAvailabilityChange(for: name),
-                   let id = owner.directTrackedWindowID(matching: changedWindow) {
-                    owner.trackedStateGeneration &+= 1
-                    switch availabilityChange {
-                    case .destroyed:
-                        owner.windows.removeValue(forKey: id)
-                        try? owner.recoveryJournal.remove(windowID: id)
-                        owner.interruptedWindowIDs.remove(id)
-                        owner.onWindowDestroyed?(id)
-                    case .minimized:
-                        owner.onWindowMiniaturized?(id)
-                        return
-                    case .restored:
-                        owner.completeDeferredRecovery(windowID: id)
-                        owner.onWindowDeminiaturized?(id)
+                MainThreadActivity.during("axCallback \(name) pid=\(WindowSystem.pid(of: changedWindow))") {
+                    if owner.focusDiagnosticsEnabled {
+                        var pid: pid_t = 0
+                        _ = AXUIElementGetPid(changedWindow, &pid)
+                        logger.notice("Discovery t=\(ProcessInfo.processInfo.systemUptime, privacy: .public) AX=\(name, privacy: .public) pid=\(pid, privacy: .public)")
+                    }
+                    if let availabilityChange = windowAvailabilityChange(for: name),
+                       let id = owner.directTrackedWindowID(matching: changedWindow) {
+                        owner.trackedStateGeneration &+= 1
+                        switch availabilityChange {
+                        case .destroyed:
+                            owner.windows.removeValue(forKey: id)
+                            try? owner.recoveryJournal.remove(windowID: id)
+                            owner.interruptedWindowIDs.remove(id)
+                            owner.onWindowDestroyed?(id)
+                        case .minimized:
+                            owner.onWindowMiniaturized?(id)
+                            return
+                        case .restored:
+                            owner.completeDeferredRecovery(windowID: id)
+                            owner.onWindowDeminiaturized?(id)
+                            return
+                        }
+                    }
+                    if name == kAXTitleChangedNotification,
+                       let id = owner.directTrackedWindowID(matching: changedWindow),
+                       let tracked = owner.windows[id], tracked.isAdmitted {
+                        // Terminals and browsers retitle often. Update the one record
+                        // instead of rescanning every window of every app.
+                        if let title = owner.attribute(changedWindow, kAXTitleAttribute) as? String,
+                           title != tracked.record.title {
+                            owner.windows[id]?.record = tracked.record.withTitle(title)
+                            owner.onTitleChange?(id, title)
+                        }
                         return
                     }
-                }
-                if name == kAXTitleChangedNotification,
-                   let id = owner.directTrackedWindowID(matching: changedWindow),
-                   let tracked = owner.windows[id], tracked.isAdmitted {
-                    // Terminals and browsers retitle often. Update the one record
-                    // instead of rescanning every window of every app.
-                    if let title = owner.attribute(changedWindow, kAXTitleAttribute) as? String,
-                       title != tracked.record.title {
-                        owner.windows[id]?.record = tracked.record.withTitle(title)
-                        owner.onTitleChange?(id, title)
+                    if name == kAXFocusedWindowChangedNotification { owner.reportCurrentFocus() }
+                    if owner.onFrameChange != nil,
+                       name == kAXMovedNotification || name == kAXResizedNotification,
+                       owner.wantsFrameChange?() ?? true,
+                       let id = owner.directTrackedWindowID(matching: changedWindow),
+                       let frame = owner.readFrame(changedWindow) {
+                        owner.onFrameChange?(id, frame)
                     }
-                    return
+                    owner.onChange?()
                 }
-                if name == kAXFocusedWindowChangedNotification { owner.reportCurrentFocus() }
-                if owner.onFrameChange != nil,
-                   name == kAXMovedNotification || name == kAXResizedNotification,
-                   owner.wantsFrameChange?() ?? true,
-                   let id = owner.directTrackedWindowID(matching: changedWindow),
-                   let frame = owner.readFrame(changedWindow) {
-                    owner.onFrameChange?(id, frame)
-                }
-                owner.onChange?()
             }
         }
         guard AXObserverCreate(pid, callback, &created) == .success, let observer = created else { return }
@@ -1841,7 +1843,9 @@ public final class WindowSystem {
         guard let observer = observers[pid], var registration = applicationObservations[pid] else { return false }
         let context = Unmanaged.passUnretained(self).toOpaque()
         let retry = registration.register { name in
-            let status = AXObserverAddNotification(observer, element, name as CFString, context)
+            let status = MainThreadActivity.during("observe \(name) pid=\(pid)") {
+                AXObserverAddNotification(observer, element, name as CFString, context)
+            }
             if focusDiagnosticsEnabled { logger.notice("Discovery observe pid=\(pid, privacy: .public) AX=\(name, privacy: .public) status=\(status.rawValue, privacy: .public)") }
             return status
         }
@@ -1979,7 +1983,9 @@ public final class WindowSystem {
         let context = Unmanaged.passUnretained(self).toOpaque()
         var complete = true
         for name in Self.windowNotifications {
-            let status = AXObserverAddNotification(observer, element, name as CFString, context)
+            let status = MainThreadActivity.during("observe \(name) pid=\(Self.pid(of: element))") {
+                AXObserverAddNotification(observer, element, name as CFString, context)
+            }
             if status != .success, status != .notificationAlreadyRegistered { complete = false }
         }
         return complete
@@ -1999,8 +2005,17 @@ public final class WindowSystem {
 
     nonisolated private func copyAttribute(_ element: AXUIElement, _ name: String) -> (value: CFTypeRef?, error: AXError) {
         var value: CFTypeRef?
-        let error = AXUIElementCopyAttributeValue(element, name as CFString, &value)
+        let error = MainThreadActivity.during("read \(name) pid=\(Self.pid(of: element))") {
+            AXUIElementCopyAttributeValue(element, name as CFString, &value)
+        }
         return (error == .success ? value : nil, error)
+    }
+
+    /// For main-thread activity labels.
+    nonisolated static func pid(of element: AXUIElement) -> pid_t {
+        var pid: pid_t = 0
+        _ = AXUIElementGetPid(element, &pid)
+        return pid
     }
 
     private typealias VisibleWindow = (pid: pid_t, windowNumber: CGWindowID, frame: CGRect, isModalPanel: Bool)
@@ -2008,8 +2023,9 @@ public final class WindowSystem {
     /// Normal-level windows on the current Desktop. App-modal alerts sit at the
     /// modal panel level instead.
     private func onScreenWindows(includingModalPanels: Bool = false) -> [VisibleWindow] {
-        guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
-            as? [[String: Any]] else { return [] }
+        guard let info = MainThreadActivity.during("windowList", {
+            CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+        }) as? [[String: Any]] else { return [] }
         let modalPanelLevel = Int(CGWindowLevelForKey(.modalPanelWindow))
         return info.compactMap { window in
             guard let pid = window[kCGWindowOwnerPID as String] as? NSNumber,
@@ -2225,9 +2241,11 @@ public final class WindowSystem {
     /// so callers never multiply the wait with individual reads.
     nonisolated private func copyAttributes(_ element: AXUIElement, _ names: [String]) -> [(value: CFTypeRef?, error: AXError)]? {
         var raw: CFArray?
-        let status = AXUIElementCopyMultipleAttributeValues(
-            element, names as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &raw
-        )
+        let status = MainThreadActivity.during("read \(names.joined(separator: ",")) pid=\(Self.pid(of: element))") {
+            AXUIElementCopyMultipleAttributeValues(
+                element, names as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &raw
+            )
+        }
         return Self.batchedAttributes(status: status, values: raw as? [AnyObject], count: names.count)
     }
 
@@ -2301,7 +2319,9 @@ public final class WindowSystem {
     private func writePosition(_ element: AXUIElement, position: CGPoint) -> Bool {
         var point = position
         guard let value = AXValueCreate(.cgPoint, &point) else { return false }
-        return AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value) == .success
+        return MainThreadActivity.during("write position pid=\(Self.pid(of: element))") {
+            AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value)
+        } == .success
     }
 
     private func moveWithOwnedWindows(windowID: String, move: () -> Bool) -> Bool {
@@ -2339,7 +2359,9 @@ public final class WindowSystem {
         Self.writeFrame(frame: frame, resizeFirst: resizeFirst, readFrame: { self.readFrame(element) }, setSize: { requested in
             var size = requested
             guard let value = AXValueCreate(.cgSize, &size) else { return false }
-            return AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value) == .success
+            return MainThreadActivity.during("write size pid=\(Self.pid(of: element))") {
+                AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value)
+            } == .success
         }, setPosition: { self.writePosition(element, position: $0) })
     }
 
