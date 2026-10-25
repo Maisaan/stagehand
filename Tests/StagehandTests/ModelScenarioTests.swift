@@ -420,33 +420,27 @@ struct ModelScenarioTests {
     }
 
     /// Typing captured for a switch is held for a bounded time. A destination
-    /// that stays busy past that deadline pauses with input_transfer_expired
-    /// rather than delivering the keys late or to the wrong window.
+    /// that stays busy past that deadline drops the held keys rather than
+    /// delivering them late, but the switch still finishes and Stagehand keeps
+    /// running: a slow system is not a failed switch.
     @Test(.enabled(if: !IsSecureEventInputEnabled(), "Secure Input is on, so the focus gate holds no transfers"))
-    func anExpiredInputTransferPausesAndRestoresFrames() async {
+    func anExpiredInputTransferFinishesTheSwitchWithoutPausing() async {
         let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a", transferTimeoutMilliseconds: 40)
         defer { harness.cleanUp() }
-        let originals = harness.windows.windows.mapValues(\.original)
         harness.model.start()
         await harness.settle()
         harness.windows.focusDelayMilliseconds = 300
 
         harness.model.navigate(.focusNext)
-        let deadline = ContinuousClock.now.advanced(by: .seconds(4))
-        while harness.events("automatic_pause").isEmpty, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        // The pause restores every frame. The automatic resume 100 ms later may
-        // succeed, because the still-focused window needs no activation, and lay
-        // the ribbon out again; read the frames before that.
-        let framesAtPause = harness.windows.windows.mapValues(\.frame)
         await harness.settle()
 
-        let pause = harness.events("automatic_pause").first?["details"] as? [String: String]
-        #expect(pause?["reason"] == "input_transfer_expired")
-        #expect(pause?["token"] != nil)
-        #expect(harness.overlays.warnings.contains { $0.contains("couldn't finish switching windows") })
-        #expect(framesAtPause == originals)
+        let expiry = harness.events("input_transfer_expired").first?["details"] as? [String: String]
+        #expect(expiry?["token"] != nil)
+        #expect(harness.events("automatic_pause").isEmpty)
+        #expect(harness.events("layout_failed").isEmpty)
+        #expect(harness.model.isRunning)
+        #expect(harness.model.state.focusedWindowID == "b")
+        #expect(harness.windows.focused == "b")
         #expect(harness.model.focusGate.isAvailable)
     }
 

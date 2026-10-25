@@ -337,7 +337,7 @@ extension StagehandModel {
             diagnostics.record("navigation_focus_confirmed", details: details)
         }
         if request == .preferences, !focused { return .completed }
-        lastFocusTokenExpired = token.map { expiredTokens.contains($0) } ?? false
+        lastFocusTokenExpired = token.map { expiredTokens.remove($0) != nil } ?? false
         guard desktopScope.refresh() == .home else {
             nativeDesktopChanged()
             return .interrupted
@@ -346,7 +346,7 @@ extension StagehandModel {
             if let token { focusGate.cancelTransfer(token: token) }
             return .interrupted
         }
-        guard focused, token.map({ expiredTokens.contains($0) }) != true else {
+        guard focused else {
             if let token { focusGate.cancelTransfer(token: token) }
             if case .unavailable(let reason) = confirmation {
                 return .targetUnavailable(windowID: record.id, reason: reason)
@@ -356,7 +356,7 @@ extension StagehandModel {
                 "bundleIdentifier": record.bundleIdentifier,
                 "focusConfirmed": String(focused),
                 "pid": String(record.pid),
-                "transferExpired": String(token.map { expiredTokens.contains($0) } ?? false),
+                "transferExpired": String(lastFocusTokenExpired),
                 "windowID": record.id
             ]
             if let report = windowSystem.lastFocusReport { details["focusReport"] = report.summary }

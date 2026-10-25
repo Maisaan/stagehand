@@ -456,24 +456,20 @@ final class StagehandModel: ObservableObject {
         focusGate.onAvailabilityChanged = { [weak self] in self?.updateInputStatus() }
         (input as? InputController)?.navigationChordsHandledByTap = { [weak self] in self?.focusGate.isAvailable ?? false }
         focusGate.onInputDiscarded = { [weak self] count in
+            self?.diagnostics.record("held_input_discarded", details: ["eventCount": String(count)])
             self?.warning = "Stagehand couldn't confirm the new window, so it did not send \(count) buffered key \(count == 1 ? "event" : "events"). Check your last input."
             NSSound.beep()
         }
+        // The gate has already dropped any held keys, the only thing the deadline
+        // protects. The switch itself keeps going: an expired timer means the system
+        // was slow, not that Stagehand lost track of its windows.
         focusGate.onTransferExpired = { [weak self] token in
             guard let self else { return }
             self.expiredTokens.insert(token)
-            let generation = self.changes.generation
-            Task { @MainActor [weak self] in
-                guard let self, self.isRunning, self.changes.generation == generation else { return }
-                self.stop(
-                    reason: "input_transfer_expired",
-                    automatic: true,
-                    details: ["token": String(token)]
-                )
-                if self.warning == nil {
-                    self.warning = "Stagehand couldn't finish switching windows. It paused and restored your windows."
-                }
-            }
+            self.diagnostics.record("input_transfer_expired", details: [
+                "token": String(token),
+                "changeRunning": String(self.changes.isProcessing)
+            ])
         }
         sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
