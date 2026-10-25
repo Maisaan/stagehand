@@ -171,9 +171,9 @@ extension StagehandModel {
                     continue
                 }
                 gesturePrepared.insert(id)
-                let acceptedPosition = windowSystem.observedFrame(windowID: id)?.origin ?? shifted.origin
+                // setFrame verified the position to within a point; no readback.
                 motionWrittenPositions[id] = RibbonMotion.pixelAligned(
-                    acceptedPosition,
+                    shifted.origin,
                     backingScaleFactor: motionBackingScaleFactor
                 )
             }
@@ -203,7 +203,7 @@ extension StagehandModel {
             )
             guard completed else { return }
             if let focused = self.state.focusedWindowID,
-               let frame = self.windowSystem.frame(windowID: focused) {
+               let frame = targets[focused] ?? self.windowSystem.frame(windowID: focused) {
                 self.updateFocusBorder(windowID: focused, frame: frame)
             }
             self.scheduleRefresh()

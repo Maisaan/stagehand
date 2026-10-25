@@ -164,6 +164,10 @@ final class StagehandModel: ObservableObject {
     var observedFocusTask: Task<Void, Never>?
     let changes = ChangeQueue<PendingChange>()
     var lastAppliedFrames: [String: CGRect] = [:]
+    /// Where each window is as far as Stagehand knows: the frame its last layout
+    /// wrote and verified, or the last scan reported. A slide starts from these
+    /// instead of reading every window's frame again from its app.
+    var knownFrames: [String: CGRect] = [:]
     var preferredHeights: [String: CGFloat] = [:] {
         didSet { if isRunning, preferredHeights != oldValue { scheduleLayoutSave() } }
     }
@@ -571,6 +575,7 @@ final class StagehandModel: ObservableObject {
                                       trackedWindowIDs: windowSystem.trackedWindowIDs)
         pointerInteraction = nil
         lastAppliedFrames.removeAll()
+        knownFrames.removeAll()
         preferencesNeedLayout = true
         onStateChange?()
     }
@@ -786,6 +791,7 @@ final class StagehandModel: ObservableObject {
         emptySpace.hide()
         windowSystem.stop()
         lastAppliedFrames.removeAll()
+        knownFrames.removeAll()
         recoveryInProgress = false
         if automatic {
             if automaticResumeAttempted {

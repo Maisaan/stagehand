@@ -26,6 +26,25 @@ struct ModelScenarioTests {
         #expect(harness.events("automatic_pause").isEmpty)
     }
 
+    /// Every frame read is a synchronous round trip to an app, on the main thread.
+    /// A slide starts from the frames Stagehand wrote or scanned and reads a frame
+    /// back only once, after activation, when the app may have resized its window.
+    @Test func aSlideStartsFromKnownFramesWithoutReadingThem() async {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        harness.windows.resetReadCounts()
+
+        harness.model.navigate(.focusNext)
+        await harness.settle()
+
+        #expect(harness.model.state.focusedWindowID == "b")
+        #expect(harness.windows.frameReads == 1)
+        #expect(harness.events("ribbon_animation_completed").count == 1)
+        #expect(harness.events("ribbon_position_commit_failed").isEmpty)
+    }
+
     /// The preset shortcut steps through the presets saved in settings, and a listed
     /// app's windows are parked with the wider allowance while others keep the default.
     @Test func widthPresetsAndParkedEdgeAllowanceComeFromSettings() async {

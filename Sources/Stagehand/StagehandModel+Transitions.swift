@@ -415,15 +415,20 @@ extension StagehandModel {
                 var preparedFrame = placement.frame
                 if let start = slideFrom?[placement.windowID] { preparedFrame.origin.x = start.minX }
                 if pass > 0, acceptedFrames[placement.windowID] == preparedFrame { continue }
-                if !windowSystem.isParked(windowID: placement.windowID),
-                   let current = windowSystem.frame(windowID: placement.windowID),
-                   framesMatch(observed: current, target: preparedFrame) {
+                // A sliding window is where the slide starts: a frame Stagehand wrote and
+                // verified or the last scan read. Only a window without one is read now.
+                // A parked window is always written; its logical frame is not its position.
+                let current = windowSystem.isParked(windowID: placement.windowID)
+                    ? nil : slideFrom?[placement.windowID] ?? windowSystem.frame(windowID: placement.windowID)
+                if let current, framesMatch(observed: current, target: preparedFrame) {
                     acceptedFrames[placement.windowID] = current
-                    lastAppliedFrames[placement.windowID] = current
+                    noteAppliedFrame(current, windowID: placement.windowID)
                     continue
                 }
                 let frameWritten = windowSystem.setFrame(windowID: placement.windowID, frame: preparedFrame)
-                let actualFrame = windowSystem.frame(windowID: placement.windowID)
+                // setFrame verified an accepted write to within a point; read back a refusal.
+                let actualFrame = frameWritten ? preparedFrame : windowSystem.frame(windowID: placement.windowID)
+                if let actualFrame { acceptedFrames[placement.windowID] = actualFrame }
                 if !frameWritten, placement.isFocused {
                     recordWindowGeometry(
                         event: "frame_write_constrained",
@@ -433,7 +438,7 @@ extension StagehandModel {
                         details: ["pass": String(pass + 1)]
                     )
                 }
-                lastAppliedFrames[placement.windowID] = actualFrame
+                noteAppliedFrame(actualFrame, windowID: placement.windowID)
             }
             if let focusedID = state.focusedWindowID,
                let record = windows.first(where: { $0.id == focusedID }) {
@@ -460,7 +465,11 @@ extension StagehandModel {
                 }
                 var constrained = false
                 for placement in visible {
-                    guard let actual = windowSystem.frame(windowID: placement.windowID) else { continue }
+                    // A slide's windows were matched or written just above. A space
+                    // switch reads back after activation, when an app may have resized.
+                    guard let actual = slideFrom != nil
+                        ? acceptedFrames[placement.windowID]
+                        : windowSystem.frame(windowID: placement.windowID) else { continue }
                     acceptedFrames[placement.windowID] = actual
                     var constrainedAxes: [String] = []
                     if actual.width.isFinite, actual.width > 0,
@@ -552,10 +561,13 @@ extension StagehandModel {
         guard preferenceFocusStillMatches(request) else { return .completed }
         preferencesNeedLayout = false
         if slideFrom != nil {
+            // Pass 0 left every sliding window at its accepted frame.
             let starts = Dictionary(sliding.compactMap { placement in
-                windowSystem.frame(windowID: placement.windowID).map { (placement.windowID, $0) }
+                (acceptedFrames[placement.windowID] ?? windowSystem.frame(windowID: placement.windowID))
+                    .map { (placement.windowID, $0) }
             }, uniquingKeysWith: { first, _ in first })
             let targets = Dictionary(sliding.map { ($0.windowID, $0.frame) }, uniquingKeysWith: { first, _ in first })
+            var slideFinished = false
             let translate = {
                 let completed = await self.settleRibbon(
                     from: starts,
@@ -564,7 +576,10 @@ extension StagehandModel {
                     operation: operation,
                     initialHorizontalVelocity: initialHorizontalVelocity
                 )
-                if completed { return RibbonTranslationOutcome.readyForFocus }
+                if completed {
+                    slideFinished = true
+                    return RibbonTranslationOutcome.readyForFocus
+                }
                 guard self.isRunning, !self.isSuspended, !Task.isCancelled else {
                     return RibbonTranslationOutcome.failed
                 }
@@ -598,8 +613,10 @@ extension StagehandModel {
                 }
             }
             let revealBorder = {
+                // The border follows the frames the slide was given: the start before
+                // the motion, the target once it has settled.
                 if let focused = self.state.focusedWindowID,
-                   let frame = self.windowSystem.frame(windowID: focused) {
+                   let frame = (slideFinished ? targets : starts)[focused] ?? self.windowSystem.frame(windowID: focused) {
                     self.updateFocusBorder(windowID: focused, frame: frame)
                 } else {
                     self.focusBorder.hide()
@@ -641,11 +658,13 @@ extension StagehandModel {
                 var frame = windowSystem.frame(windowID: focusedID)
                 if let target = placements.first(where: { $0.windowID == focusedID })?.frame,
                    let actual = frame, !framesMatch(observed: actual, target: target) {
-                    _ = windowSystem.setFrame(windowID: focusedID, frame: target)
-                    frame = windowSystem.frame(windowID: focusedID)
-                    lastAppliedFrames[focusedID] = frame
+                    let written = windowSystem.setFrame(windowID: focusedID, frame: target)
+                    frame = written ? target : windowSystem.frame(windowID: focusedID)
                 }
-                if let frame { updateFocusBorder(windowID: focusedID, frame: frame, raiseBorder: true) }
+                if let frame {
+                    noteAppliedFrame(frame, windowID: focusedID)
+                    updateFocusBorder(windowID: focusedID, frame: frame, raiseBorder: true)
+                }
             }
             if token != nil, destinationPID != nil {
                 try? await Task.sleep(for: .milliseconds(12))
@@ -671,11 +690,24 @@ extension StagehandModel {
         return .completed
     }
 
+    /// Records a frame a layout wrote and verified, or accepted as matching.
+    func noteAppliedFrame(_ frame: CGRect?, windowID: String) {
+        lastAppliedFrames[windowID] = frame
+        if let frame { knownFrames[windowID] = frame }
+    }
+
+    /// The frame Stagehand last wrote or scanned; a parked window's logical frame.
+    /// Reads from the app only for a window it has never placed or scanned.
+    func knownFrame(windowID: String) -> CGRect? {
+        if windowSystem.isParked(windowID: windowID) { return windowSystem.frame(windowID: windowID) }
+        return knownFrames[windowID] ?? windowSystem.frame(windowID: windowID)
+    }
+
     func navigationFrames() -> [String: CGRect] {
         guard let availableFrame else { return [:] }
         let members = Set(state.currentSpace.windowIDs)
         let actual = Dictionary(windows.filter { members.contains($0.id) }.compactMap { window in
-            windowSystem.frame(windowID: window.id).map { (window.id, $0) }
+            knownFrame(windowID: window.id).map { (window.id, $0) }
         }, uniquingKeysWith: { first, _ in first })
         let placements = WindowLayout.placements(for: state, availableFrame: availableFrame, gap: gap,
                                                  observedWidths: actual.mapValues(\.width),
@@ -846,7 +878,8 @@ extension StagehandModel {
             return false
         case .completed: break
         }
-        for id in visibleIDs { lastAppliedFrames[id] = windowSystem.frame(windowID: id) }
+        // The commit verified each position; sizes were written and verified by the layout pass.
+        for id in visibleIDs { noteAppliedFrame(to[id], windowID: id) }
         lastTransition = Date()
         return true
     }
