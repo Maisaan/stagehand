@@ -497,6 +497,7 @@ final class StagehandModel: ObservableObject {
             forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
+                self?.desktopScope.invalidate()
                 self?.diagnostics.record("screen_locked", details: [
                     "running": String(self?.isRunning ?? false)
                 ])
@@ -561,6 +562,7 @@ final class StagehandModel: ObservableObject {
     /// refresh, and the cleared applied frames make that refresh lay out again
     /// instead of reading half-moved windows as a user drag.
     func systemWillSleep() {
+        desktopScope.invalidate()
         guard isRunning else { return }
         diagnostics.record("system_will_sleep", details: workspaceDetails())
         guard !isSuspended else { return }
@@ -1087,6 +1089,7 @@ final class StagehandModel: ObservableObject {
     }
 
     func screenUnlocked() {
+        desktopScope.invalidate()
         diagnostics.record("screen_unlocked", details: [
             "running": String(isRunning), "suspended": String(isSuspended)
         ])
@@ -1097,6 +1100,7 @@ final class StagehandModel: ObservableObject {
     }
 
     func nativeDesktopChanged() {
+        desktopScope.invalidate()
         guard isRunning else { return }
         desktopCheckTask?.cancel()
         switch desktopScope.refresh() {
