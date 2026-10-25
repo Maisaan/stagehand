@@ -164,7 +164,9 @@ final class StagehandModel: ObservableObject {
     var observedFocusTask: Task<Void, Never>?
     let changes = ChangeQueue<PendingChange>()
     var lastAppliedFrames: [String: CGRect] = [:]
-    var preferredHeights: [String: CGFloat] = [:]
+    var preferredHeights: [String: CGFloat] = [:] {
+        didSet { if isRunning, preferredHeights != oldValue { scheduleLayoutSave() } }
+    }
     var lastTransition = Date.distantPast
     var automaticResumeTask: Task<Void, Never>?
     var automaticResumeAttempted = false
@@ -694,8 +696,9 @@ final class StagehandModel: ObservableObject {
             savedLayoutConsidered = true
             if state.spaces.allSatisfy(\.windowIDs.isEmpty), let layoutStore {
                 switch layoutStore.load(windows: windows) {
-                case .restored(let saved):
+                case .restored(let saved, let savedHeights):
                     state = saved
+                    preferredHeights.merge(savedHeights) { current, _ in current }
                     diagnostics.record("layout_restored", details: [
                         "windowCount": String(Set(saved.spaces.flatMap(\.windowIDs)).count),
                         "activeSpace": String(saved.activeSpaceIndex + 1)
@@ -707,7 +710,11 @@ final class StagehandModel: ObservableObject {
                 }
             }
         }
-        preferredHeights = Dictionary(windows.map { ($0.id, $0.frame.height) }, uniquingKeysWith: { first, _ in first })
+        // Pausing returned every window to its frame from before Stagehand, so a
+        // known window keeps the height chosen while Stagehand ran; only a window
+        // seen for the first time takes its current height.
+        preferredHeights = Dictionary(windows.map { ($0.id, preferredHeights[$0.id] ?? $0.frame.height) },
+                                      uniquingKeysWith: { first, _ in first })
         workspaceRestoration.reconcile(state: &state, windowIDs: windows.map(\.id),
                                        trackedWindowIDs: windowSystem.trackedWindowIDs,
                                        initialWidthFractions: initialWidthFractions(for: windows))
@@ -817,7 +824,7 @@ final class StagehandModel: ObservableObject {
     func saveLayout() {
         guard let layoutStore else { return }
         do {
-            try layoutStore.save(state, windows: windows)
+            try layoutStore.save(state, windows: windows, preferredHeights: preferredHeights)
         } catch {
             diagnostics.record("layout_save_failed", details: ["error": error.localizedDescription])
             NSLog("Stagehand layout save failed: %@", error.localizedDescription)

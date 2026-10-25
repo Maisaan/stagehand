@@ -419,6 +419,28 @@ struct ModelScenarioTests {
         #expect(harness.model.warning == nil)
     }
 
+    /// Pausing returns windows to their frames from before Stagehand. Resuming
+    /// must lay them out at the heights chosen while Stagehand ran, as it does
+    /// for widths, not at those older heights.
+    @Test func resumingKeepsTheHeightChosenBeforeThePause() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        let original = harness.windows.windows["a"]!.original.height
+        harness.model.navigate(.shrinkHeight)
+        await harness.settle()
+        let chosen = harness.windows.windows["a"]!.frame.height
+        #expect(chosen < original)
+
+        harness.model.pause()
+        #expect(harness.windows.windows["a"]!.frame.height == original)
+        harness.model.start()
+        await harness.settle()
+
+        #expect(harness.windows.windows["a"]!.frame.height == chosen)
+    }
+
     /// Typing captured for a switch is held for a bounded time. A destination
     /// that stays busy past that deadline drops the held keys rather than
     /// delivering them late, but the switch still finishes and Stagehand keeps
