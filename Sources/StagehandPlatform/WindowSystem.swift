@@ -127,6 +127,7 @@ public final class WindowSystem {
     /// acceptance runner uses it so disposable windows are the only ones moved.
     public var managedBundleIdentifiers: Set<String>?
     public private(set) var lastFocusReport: WindowFocusReport?
+    public private(set) var lastObservedFocusedWindowID: String?
 
     /// Includes known windows omitted from a scan while busy, minimized, or on another Desktop.
     public var trackedWindowIDs: Set<String> {
@@ -641,7 +642,7 @@ public final class WindowSystem {
     }
 
     private func beginScan() -> ScanPlan {
-        let runningApps = NSWorkspace.shared.runningApplications
+        let runningApps = MainThreadActivity.during("runningApplications") { NSWorkspace.shared.runningApplications }
         // Modal panels count only toward a standalone dialog's admission.
         let visibleWindows = onScreenWindows(includingModalPanels: true)
         let accessoryPIDs = Set(visibleWindows.filter { !$0.isModalPanel }.map(\.pid))
@@ -1154,7 +1155,10 @@ public final class WindowSystem {
                                    readFrame: { self.readFrame(tracked.element) })
         windows[windowID]?.parking = parking
         if focusDiagnosticsEnabled {
-            logger.notice("Parking pid=\(tracked.record.pid, privacy: .public) success=\(success, privacy: .public) remnantWidth=\(remnantWidth, privacy: .public) actual=\(String(describing: self.readFrame(tracked.element)), privacy: .public) minimized=\(String(describing: self.attribute(tracked.element, kAXMinimizedAttribute) as? Bool), privacy: .public) restorePending=\(parking.restoreFrame != nil, privacy: .public)")
+            // A parked window was verified by the write's readback; read back only a refusal.
+            let actual = success ? "verified" : String(describing: self.readFrame(tracked.element))
+            let minimized = success ? "false" : String(describing: self.attribute(tracked.element, kAXMinimizedAttribute) as? Bool)
+            logger.notice("Parking pid=\(tracked.record.pid, privacy: .public) success=\(success, privacy: .public) remnantWidth=\(remnantWidth, privacy: .public) actual=\(actual, privacy: .public) minimized=\(minimized, privacy: .public) restorePending=\(parking.restoreFrame != nil, privacy: .public)")
         }
         return success
     }
@@ -1176,7 +1180,8 @@ public final class WindowSystem {
                                       readFrame: { self.readFrame(tracked.element) })
         windows[windowID]?.parking = parking
         if focusDiagnosticsEnabled {
-            logger.notice("Parking restore pid=\(tracked.record.pid, privacy: .public) success=\(success, privacy: .public) actual=\(String(describing: self.readFrame(tracked.element)), privacy: .public) restorePending=\(parking.restoreFrame != nil, privacy: .public)")
+            let actual = success ? "verified" : String(describing: self.readFrame(tracked.element))
+            logger.notice("Parking restore pid=\(tracked.record.pid, privacy: .public) success=\(success, privacy: .public) actual=\(actual, privacy: .public) restorePending=\(parking.restoreFrame != nil, privacy: .public)")
         }
         return success
     }
@@ -1248,7 +1253,7 @@ public final class WindowSystem {
         // A busy app answers a later request; a bounded retry covers the common
         // case without holding pause or quit for long.
         for delay in WindowTuning.restoreRetryDelaysMilliseconds where !failed.isEmpty {
-            Thread.sleep(forTimeInterval: Double(delay) / 1_000)
+            MainThreadActivity.during("restoreAll wait") { Thread.sleep(forTimeInterval: Double(delay) / 1_000) }
             failed = failed.filter { returnToOriginalFrame(windowID: $0) == .failed }
         }
         for id in failed where recoveryJournal.records[id] != nil {
@@ -1392,9 +1397,12 @@ public final class WindowSystem {
     }
 
     public func focusedWindowID() -> String? {
-        if NSApp?.isActive == true { return nativeWindows.focusedWindowID }
-        return resolveFocus(readFocus(systemElement: systemElement, frontmostPID: Self.activeFrontmostPID(),
-                                      in: identitySnapshot()))
+        let id = NSApp?.isActive == true
+            ? nativeWindows.focusedWindowID
+            : resolveFocus(readFocus(systemElement: systemElement, frontmostPID: Self.activeFrontmostPID(),
+                                     in: identitySnapshot()))
+        lastObservedFocusedWindowID = id
+        return id
     }
 
     private enum FocusRead: Sendable {
@@ -1488,7 +1496,9 @@ public final class WindowSystem {
             reportCurrentFocus()
             return
         }
-        guard started, wantsObservedFocus?() ?? true, let id = resolveFocus(read) else { return }
+        guard started, let id = resolveFocus(read) else { return }
+        lastObservedFocusedWindowID = id
+        guard wantsObservedFocus?() ?? true else { return }
         if nativeWindows.contains(windowID: id) {
             onFocusedWindowChange?(id)
             return
@@ -1513,6 +1523,7 @@ public final class WindowSystem {
         if nativeWindows.contains(windowID: windowID) {
             let began = ContinuousClock.now
             let success = await nativeWindows.focus(windowID: windowID)
+            if success { lastObservedFocusedWindowID = windowID }
             if focusDiagnosticsEnabled {
                 let elapsed = began.duration(to: .now)
                 lastFocusReport = WindowFocusReport(targetPID: ProcessInfo.processInfo.processIdentifier,
@@ -1574,6 +1585,7 @@ public final class WindowSystem {
         let driver = FocusDriver(system: self, tracked: tracked, app: app, recordsDiagnostics: focusDiagnosticsEnabled)
         let report = await WindowFocusAttempt.run(driver: driver, recordDiagnostics: focusDiagnosticsEnabled)
         if focusDiagnosticsEnabled { lastFocusReport = report }
+        if report.outcome == .focused { lastObservedFocusedWindowID = windowID }
         return report.outcome == .focused
     }
 
@@ -1657,7 +1669,8 @@ public final class WindowSystem {
                     return steps
                 })
             }
-            operations += record([Step(name: "activate", status: nil, accepted: app.activate(options: []))])
+            let activated = MainThreadActivity.during("activate pid=\(targetPID)") { app.activate(options: []) }
+            operations += record([Step(name: "activate", status: nil, accepted: activated)])
             return operations
         }
 
@@ -1996,11 +2009,13 @@ public final class WindowSystem {
             // Unsubscribe before dropping the source so a late delivery cannot
             // reach a callback whose context no longer exists.
             let appElement = AXUIElementCreateApplication(pid)
-            for name in registration?.registered ?? [] {
-                AXObserverRemoveNotification(observer, appElement, name as CFString)
-            }
-            for tracked in windows.values where tracked.record.pid == pid {
-                unobserveWindow(tracked.element, observer: observer)
+            MainThreadActivity.during("unobserve pid=\(pid)") {
+                for name in registration?.registered ?? [] {
+                    AXObserverRemoveNotification(observer, appElement, name as CFString)
+                }
+                for tracked in windows.values where tracked.record.pid == pid {
+                    unobserveWindow(tracked.element, observer: observer)
+                }
             }
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         }

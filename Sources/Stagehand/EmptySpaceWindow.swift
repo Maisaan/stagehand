@@ -1,4 +1,5 @@
 import AppKit
+import StagehandPlatform
 import SwiftUI
 
 /// A blank, focusable window that keeps typing out of parked apps on an empty space.
@@ -35,8 +36,10 @@ final class EmptySpaceWindow: EmptySpacePresenting {
             Text("Use your space shortcuts or swipe vertically.\nFrom another space, use the Share window shortcut for this space.")
                 .font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }.frame(maxWidth: .infinity, maxHeight: .infinity))
-        NSApp.activate()
-        window.makeKeyAndOrderFront(nil)
+        MainThreadActivity.during("emptySpaceWindow orderFront") {
+            NSApp.activate()
+            window.makeKeyAndOrderFront(nil)
+        }
         let deadline = ContinuousClock.now.advanced(by: .milliseconds(180))
         repeat {
             guard !Task.isCancelled else { return false }
@@ -46,7 +49,7 @@ final class EmptySpaceWindow: EmptySpacePresenting {
         return false
     }
 
-    func hide() { window.orderOut(nil) }
+    func hide() { MainThreadActivity.during("emptySpaceWindow orderOut") { window.orderOut(nil) } }
 }
 
 private final class EmptyWindow: NSWindow {

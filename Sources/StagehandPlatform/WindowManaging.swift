@@ -26,6 +26,9 @@ public protocol WindowManaging: AnyObject {
     var isAccessibilityTrusted: Bool { get }
     var focusDiagnosticsEnabled: Bool { get set }
     var lastFocusReport: WindowFocusReport? { get }
+    /// The focus the last read or confirmed focus attempt reported. For diagnostics
+    /// that would otherwise read focus again, on the main thread, from a busy app.
+    var lastObservedFocusedWindowID: String? { get }
     var trackedWindowIDs: Set<String> { get }
     var hasPendingRecovery: Bool { get }
     var pendingRecoveryWindowIDs: Set<String> { get }

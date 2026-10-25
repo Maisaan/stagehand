@@ -38,9 +38,11 @@ extension StagehandModel {
                     RibbonMotion.pixelAligned($0.origin, backingScaleFactor: motionBackingScaleFactor)
                 } ?? [:]
                 if diagnostics.isEnabled {
+                    // The last observed focus, not a new read: a focus read is an
+                    // Accessibility call to the app the gesture is leaving.
                     diagnostics.record("gesture_motion_started", details: [
                         "focusedWindowID": state.focusedWindowID ?? "none",
-                        "observedFocusedWindowID": windowSystem.focusedWindowID() ?? "none",
+                        "observedFocusedWindowID": windowSystem.lastObservedFocusedWindowID ?? "none",
                         "preparedWindowCount": String(gesturePrepared.count),
                         "trackedWindowCount": String(frames.count)
                     ])
@@ -77,16 +79,15 @@ extension StagehandModel {
             resolvedAction = recognizerAction
         }
         if diagnostics.isEnabled {
-            // This runs on the path that routes a keyboard event after a trackpad release.
-            // Reading the observed focus is an Accessibility call, so record it afterwards
-            // rather than making the key wait on it.
+            // Recorded after the action this release resolves to has been queued, so
+            // the log analyzer pairs the swipe with its own action.
             let logicalFocus = state.focusedWindowID ?? "none"
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.diagnostics.record("gesture_motion_resolved", details: [
                     "displacement": String(displacement),
                     "focusedWindowID": logicalFocus,
-                    "observedFocusedWindowID": self.windowSystem.focusedWindowID() ?? "none",
+                    "observedFocusedWindowID": self.windowSystem.lastObservedFocusedWindowID ?? "none",
                     "resolvedAction": resolvedAction.map { String(describing: $0) } ?? "none",
                     "velocity": String(velocity)
                 ])
@@ -143,16 +144,17 @@ extension StagehandModel {
         for (id, shifted) in preview {
             guard shifted.intersects(availableFrame) || gesturePrepared.contains(id) else { continue }
             if !gesturePrepared.contains(id) {
-                let beforeFrame = diagnostics.isEnabled ? windowSystem.observedFrame(windowID: id) : nil
                 let parkedBefore = diagnostics.isEnabled ? windowSystem.isParked(windowID: id) : false
                 let frameWritten = windowSystem.setFrame(windowID: id, frame: shifted)
                 if diagnostics.isEnabled {
+                    // The frame the gesture started from, and the written frame, which
+                    // setFrame verified to within a point. Only a refused write is read back.
                     recordWindowGeometry(
                         event: "gesture_window_frame_applied",
                         windowID: id,
                         requestedFrame: shifted,
-                        beforeFrame: beforeFrame,
-                        actualFrame: windowSystem.observedFrame(windowID: id),
+                        beforeFrame: base[id],
+                        actualFrame: frameWritten ? shifted : windowSystem.observedFrame(windowID: id),
                         details: [
                             "displacement": String(displacement),
                             "frameWriteAccepted": String(frameWritten),

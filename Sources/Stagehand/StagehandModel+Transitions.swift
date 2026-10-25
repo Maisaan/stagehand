@@ -180,7 +180,7 @@ extension StagehandModel {
                                   motionStartCount: Int, reduceMotion: Bool, canSlide: Bool) {
         guard change.policy == .navigation, diagnostics.isEnabled else { return }
         let destinationID = state.focusedWindowID
-        let observedFocus = windowSystem.focusedWindowID()
+        let observedFocus = windowSystem.lastObservedFocusedWindowID
         let membershipCount = destinationID.map { state.spaces.membershipCount(of: $0) } ?? 0
         diagnostics.record("navigation_motion_planned", details: [
             "destinationFocusedWindowID": destinationID ?? "none",
@@ -307,7 +307,9 @@ extension StagehandModel {
 
     func focusManagedWindow(_ record: WindowRecord, token: UInt64?,
                                     request: LayoutRequestPolicy, operation: String) async -> LayoutOutcome {
-        let observedFocusBefore = diagnostics.isEnabled ? windowSystem.focusedWindowID() : nil
+        // Diagnostics use the focus already observed; a new read would wait on the
+        // outgoing app, on the main thread, before the attempt even starts.
+        let observedFocusBefore = diagnostics.isEnabled ? windowSystem.lastObservedFocusedWindowID : nil
         let confirmation = await request.confirmFocus(
             windowID: record.id,
             currentFocus: { windowSystem.focusedWindowID() },
@@ -319,7 +321,7 @@ extension StagehandModel {
         if request == .navigation, diagnostics.isEnabled {
             // A confirmed focus already observed the target. Avoid another
             // synchronous AX read while the newly active app may still be busy.
-            let observedFocusAfter = focused ? record.id : windowSystem.focusedWindowID()
+            let observedFocusAfter = focused ? record.id : windowSystem.lastObservedFocusedWindowID
             var details = [
                 "focusConfirmed": String(focused),
                 "membershipCount": String(state.spaces.membershipCount(of: record.id)),
@@ -832,7 +834,7 @@ extension StagehandModel {
             diagnostics.record("ribbon_animation_completed", details: windowSystem.motionWriteStatistics(reset: false, focusedWindowID: state.focusedWindowID).merging([
                 "elapsedMilliseconds": String(elapsedMilliseconds),
                 "focusedWindowID": state.focusedWindowID ?? "none",
-                "observedFocusedWindowID": windowSystem.focusedWindowID() ?? "none",
+                "observedFocusedWindowID": windowSystem.lastObservedFocusedWindowID ?? "none",
                 "operation": operation,
                 "windowCount": String(to.count)
             ]) { _, new in new })

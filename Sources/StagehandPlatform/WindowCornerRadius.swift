@@ -17,7 +17,7 @@ public enum WindowCornerRadius {
             let radius = provider.focusBorderCornerRadius
             if radius.isFinite, radius >= 0 { return radius }
         }
-        return nativeRadius(windowNumber)
+        return MainThreadActivity.during("windowCornerRadius") { nativeRadius(windowNumber) }
     }
 
     static func validatedRadius(_ values: [NSNumber]) -> CGFloat? {
