@@ -229,7 +229,7 @@ final class FakeOverlays: NavigationPresenting {
     func showNavigation(state: WorkspaceState, windows: [WindowRecord]) {}
     func updateNavigation(state: WorkspaceState, windows: [WindowRecord]) {}
     func showWarning(_ message: String) { warnings.append(message) }
-    func setShortcutHints(_ bindings: [ShortcutBinding]) {}
+    func setShortcutHints(_ bindings: [ShortcutBinding], swipeTip: String?) {}
     func toggleShortcutHints() { shortcutHintToggles += 1 }
     func hide() {
         if borderFrame != nil { borderVisibility.append(false) }

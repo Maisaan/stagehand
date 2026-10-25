@@ -180,8 +180,8 @@ final class NavigationOverlays {
         presentHUD(dismissAfter: .milliseconds(1_500))
     }
 
-    func setShortcutHints(_ bindings: [ShortcutBinding]) {
-        shortcutHints.setBindings(bindings)
+    func setShortcutHints(_ bindings: [ShortcutBinding], swipeTip: String?) {
+        shortcutHints.setContent(bindings, swipeTip: swipeTip)
     }
 
     func toggleShortcutHints() {

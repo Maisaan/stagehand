@@ -48,14 +48,14 @@ import StagehandPlatform
 @Test func shortcutRibbonPanelFitsItsContent() throws {
     let ribbon = ShortcutHintsRibbon(reduceMotion: { true })
     defer { ribbon.hide() }
-    ribbon.setBindings(ShortcutBinding.defaults)
+    ribbon.setContent(ShortcutBinding.defaults, swipeTip: nil)
     ribbon.toggle()
 
     let panel = try #require(ribbon.panel)
     let padding = HUDContainerView.padding * 2
-    // Four sections side by side, wider than any single label.
-    #expect(panel.frame.width - padding > 400)
-    #expect(panel.frame.height - padding > 40)
+    // A narrow list of four groups.
+    #expect(abs(panel.frame.width - padding - ShortcutHintsView.width) <= 1)
+    #expect(panel.frame.height - padding > 300)
     let visible = try #require(NSScreen.managedDisplay).visibleFrame
     #expect(abs(panel.frame.maxX - HUDContainerView.padding - (visible.maxX - ShortcutHintsRibbon.edgeInset)) <= 1)
     #expect(abs(panel.frame.minY + HUDContainerView.padding - (visible.minY + ShortcutHintsRibbon.edgeInset)) <= 1)
@@ -68,7 +68,7 @@ import StagehandPlatform
     #expect(ShortcutHintsRibbon.visibleDuration == .seconds(4))
     let ribbon = ShortcutHintsRibbon(reduceMotion: { true })
     defer { ribbon.hide() }
-    ribbon.setBindings(ShortcutBinding.defaults)
+    ribbon.setContent(ShortcutBinding.defaults, swipeTip: nil)
     ribbon.toggle()
     #expect(ribbon.isShowing)
     ribbon.toggle()
@@ -79,4 +79,13 @@ import StagehandPlatform
     }
     #expect(!ribbon.isShowing)
     #expect(ribbon.panel?.isVisible == false)
+}
+
+@MainActor
+@Test func shortcutRibbonSwipeTipFollowsTheSwipeSettings() {
+    #expect(ShortcutHintsModel.swipeTip(enabled: false, reversed: true) == nil)
+    let plain = ShortcutHintsModel.swipeTip(enabled: true, reversed: false)
+    #expect(plain?.contains("three fingers") == true)
+    #expect(plain?.contains("Swipe left") == false)
+    #expect(ShortcutHintsModel.swipeTip(enabled: true, reversed: true)?.contains("Swipe left for →") == true)
 }

@@ -48,6 +48,7 @@ final class StagehandModel: ObservableObject {
         didSet {
             UserDefaults.standard.set(shortcutSwipesEnabled, forKey: PreferenceKey.shortcutSwipesEnabled)
             input.shortcutSwipesEnabled = shortcutSwipesEnabled && !isSuspended
+            updateShortcutHints()
             updateInputStatus()
         }
     }
@@ -55,6 +56,7 @@ final class StagehandModel: ObservableObject {
         didSet {
             UserDefaults.standard.set(reverseShortcutSwipeDirection, forKey: PreferenceKey.reverseShortcutSwipeDirection)
             input.reverseShortcutSwipeDirection = reverseShortcutSwipeDirection
+            updateShortcutHints()
             updateInputStatus()
         }
     }
@@ -364,7 +366,7 @@ final class StagehandModel: ObservableObject {
             return self.desktopScope.refresh() == .home
         }
         overlays.setBorderColor(focusBorderColor)
-        overlays.setShortcutHints(shortcutBindings)
+        updateShortcutHints()
         input.onStatusChange = { [weak self] in self?.updateInputStatus() }
         windowSystem.onChange = { [weak self] in self?.scheduleRefresh() }
         windowSystem.onApplicationTerminated = { [weak self] pid in
@@ -965,8 +967,13 @@ final class StagehandModel: ObservableObject {
     func saveShortcutBindings() {
         ShortcutBinding.save(shortcutBindings)
         input.setShortcutBindings(shortcutBindings)
-        overlays.setShortcutHints(shortcutBindings)
+        updateShortcutHints()
         focusGate.setShortcutBindings(isRecordingShortcut ? [] : shortcutBindings)
+    }
+
+    func updateShortcutHints() {
+        overlays.setShortcutHints(shortcutBindings, swipeTip: ShortcutHintsModel.swipeTip(
+            enabled: shortcutSwipesEnabled, reversed: reverseShortcutSwipeDirection))
     }
 
     static func normalizedColor(_ color: NSColor, alpha: CGFloat = 1) -> NSColor? {

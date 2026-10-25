@@ -66,24 +66,62 @@ struct ShortcutHintSection: Equatable, Identifiable {
 @MainActor
 final class ShortcutHintsModel: ObservableObject {
     @Published var sections: [ShortcutHintSection] = []
+    /// Shown under the shortcuts when Arrow shortcut swipes is on.
+    @Published var swipeTip: String?
+
+    static func swipeTip(enabled: Bool, reversed: Bool) -> String? {
+        guard enabled else { return nil }
+        let tip = "Holding the same keys, swipe with three fingers instead of pressing the arrows."
+        return reversed ? tip + " Swipe left for →, up for ↓." : tip
+    }
 }
 
+/// A short list grouped like macOS Settings: a heading over a rounded box per group,
+/// faint lines between rows, and each row's chord right-aligned against a key column.
 struct ShortcutHintsView: View {
     @ObservedObject var model: ShortcutHintsModel
+    static let width: CGFloat = 244
+    private static let keyColumnWidth: CGFloat = 42
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
-        HStack(alignment: .top, spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(model.sections.enumerated()), id: \.element.id) { index, section in
-                if index > 0 {
-                    Rectangle().fill(.white.opacity(0.08)).frame(width: 1).padding(.horizontal, 14)
+                Text(section.title.uppercased())
+                    .font(.system(size: 9, weight: .semibold))
+                    .tracking(0.7)
+                    .foregroundStyle(.white.opacity(0.42))
+                    .padding(.horizontal, 4)
+                    .padding(.top, index == 0 ? 0 : 12)
+                    .padding(.bottom, 5)
+                VStack(spacing: 0) {
+                    ForEach(Array(section.hints.enumerated()), id: \.element.id) { row, hint in
+                        if row > 0 { Rectangle().fill(.white.opacity(0.06)).frame(height: 1) }
+                        hintRow(hint)
+                    }
                 }
-                sectionView(section)
+                .padding(.horizontal, 10)
+                .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            }
+            if let tip = model.swipeTip {
+                HStack(alignment: .center, spacing: 8) {
+                    TrackpadGlyph()
+                    Text(tip)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(Color(red: 0.78, green: 0.87, blue: 1).opacity(0.85))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(red: 0.5, green: 0.7, blue: 1).opacity(0.1),
+                            in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .padding(.top, 12)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .fixedSize()
+        .padding(12)
+        .frame(width: Self.width)
+        .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(white: 0.07), in: shape)
         .overlay { shape.stroke(.white.opacity(0.12), lineWidth: 1) }
@@ -92,38 +130,48 @@ struct ShortcutHintsView: View {
         .accessibilityLabel("Stagehand shortcuts")
     }
 
-    private func sectionView(_ section: ShortcutHintSection) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(section.title.uppercased())
-                .font(.system(size: 9, weight: .semibold))
-                .tracking(0.6)
-                .foregroundStyle(.white.opacity(0.4))
-            Grid(alignment: .leading, horizontalSpacing: 6, verticalSpacing: 5) {
-                ForEach(section.hints) { hint in
-                    GridRow {
-                        Text(hint.modifiers)
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.45))
-                            .gridColumnAlignment(.trailing)
-                        HStack(spacing: 3) {
-                            ForEach(hint.keys, id: \.self) { key in
-                                Text(key)
-                                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(.white.opacity(0.9))
-                                    .padding(.horizontal, 5)
-                                    .frame(minWidth: 18, minHeight: 18)
-                                    .background(.white.opacity(0.12),
-                                                in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                            }
-                        }
-                        Text(hint.title)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.8))
-                    }
+    private func hintRow(_ hint: ShortcutHint) -> some View {
+        HStack(spacing: 7) {
+            Text(hint.title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.84))
+            Spacer(minLength: 8)
+            Text(hint.modifiers.replacingOccurrences(of: " ", with: ""))
+                .font(.system(size: 10.5, weight: .medium))
+                .tracking(1.5)
+                .foregroundStyle(.white.opacity(0.5))
+            HStack(spacing: 3) {
+                ForEach(hint.keys, id: \.self) { key in
+                    Text(key)
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.92))
+                        .padding(.horizontal, 5)
+                        .frame(minWidth: 18, minHeight: 18)
+                        .background(.white.opacity(0.12),
+                                    in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                 }
             }
+            .frame(minWidth: Self.keyColumnWidth, alignment: .trailing)
         }
         .lineLimit(1)
+        .frame(height: 26)
+    }
+}
+
+/// A trackpad outline with three fingertips.
+private struct TrackpadGlyph: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                .stroke(.white.opacity(0.6), lineWidth: 1.2)
+            HStack(alignment: .top, spacing: 1.8) {
+                Circle().frame(width: 2.2, height: 2.2).padding(.top, 1.5)
+                Circle().frame(width: 2.2, height: 2.2)
+                Circle().frame(width: 2.2, height: 2.2).padding(.top, 1.5)
+            }
+            .foregroundStyle(.white.opacity(0.75))
+        }
+        .frame(width: 16, height: 14)
     }
 }
 
@@ -150,10 +198,11 @@ final class ShortcutHintsRibbon {
         self.reduceMotion = reduceMotion
     }
 
-    func setBindings(_ bindings: [ShortcutBinding]) {
+    func setContent(_ bindings: [ShortcutBinding], swipeTip: String?) {
         let sections = ShortcutHintSection.sections(for: bindings)
-        guard sections != model.sections else { return }
+        guard sections != model.sections || swipeTip != model.swipeTip else { return }
         model.sections = sections
+        model.swipeTip = swipeTip
         contentSize = nil
         if isShowing { show() }
     }

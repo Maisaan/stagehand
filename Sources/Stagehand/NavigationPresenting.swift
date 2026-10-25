@@ -19,7 +19,7 @@ protocol NavigationPresenting: AnyObject {
     func showNavigation(state: WorkspaceState, windows: [WindowRecord])
     func updateNavigation(state: WorkspaceState, windows: [WindowRecord])
     func showWarning(_ message: String)
-    func setShortcutHints(_ bindings: [ShortcutBinding])
+    func setShortcutHints(_ bindings: [ShortcutBinding], swipeTip: String?)
     func toggleShortcutHints()
     func hide()
 }
