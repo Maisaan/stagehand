@@ -181,11 +181,14 @@ private struct TrackpadGlyph: View {
 /// The shortcut ribbon in the bottom-right corner of the managed display. It ignores the
 /// pointer and never becomes key, so it cannot take focus or input from the real app.
 /// The toggle shortcut shows it for `visibleDuration`; pressing it again while it
-/// shows hides it early.
+/// shows hides it early. The pointer over it holds it open: the panel cannot see the
+/// pointer, so a mouse monitor runs while it is visible.
 @MainActor
 final class ShortcutHintsRibbon {
     static let edgeInset: CGFloat = 12
     static let visibleDuration: Duration = .seconds(4)
+    /// How long the ribbon stays after the pointer leaves it, once its time is up.
+    static let pointerExitDelay: Duration = .milliseconds(450)
     private(set) var panel: OverlayPanel?
     private var hostingView: NSHostingView<ShortcutHintsView>?
     private let model = ShortcutHintsModel()
@@ -196,9 +199,16 @@ final class ShortcutHintsRibbon {
     private var generation: UInt64 = 0
     private var isExiting = false
     private var dismissTask: Task<Void, Never>?
+    private let pointerLocation: () -> CGPoint
+    private var mouseMonitors: [Any] = []
+    private(set) var pointerInside = false
+    /// The timer ran out while the pointer was inside; dismiss when it leaves.
+    private var dismissWhenPointerLeaves = false
 
-    init(reduceMotion: @escaping () -> Bool) {
+    init(reduceMotion: @escaping () -> Bool,
+         pointerLocation: @escaping () -> CGPoint = { NSEvent.mouseLocation }) {
         self.reduceMotion = reduceMotion
+        self.pointerLocation = pointerLocation
     }
 
     func setContent(_ bindings: [ShortcutBinding], swipeTip: String?) {
@@ -214,20 +224,22 @@ final class ShortcutHintsRibbon {
     var isShowing: Bool { panel?.isVisible == true && !isExiting }
 
     /// Shows the ribbon, or keeps it up, for another `visibleDuration`.
-    func show() {
+    func show(for duration: Duration = visibleDuration) {
         present()
-        scheduleDismiss(after: Self.visibleDuration)
+        scheduleDismiss(after: duration)
     }
 
+    /// The shortcut hides the ribbon even under the pointer.
     func toggle() {
         if isShowing {
-            scheduleDismiss(after: .zero)
+            scheduleDismiss(after: .zero, evenUnderPointer: true)
         } else {
             show()
         }
     }
 
     func hide() {
+        removeMouseMonitors()
         dismissTask?.cancel()
         dismissTask = nil
         generation &+= 1
@@ -281,6 +293,8 @@ final class ShortcutHintsRibbon {
         generation &+= 1
         isExiting = false
         dismissTask?.cancel()
+        dismissWhenPointerLeaves = false
+        installMouseMonitors()
         if !wasVisible {
             container.setHidden(reduceMotion: reduceMotion(), configuration: configuration)
             panel.orderFrontRegardless()
@@ -289,14 +303,58 @@ final class ShortcutHintsRibbon {
             container.transition(visible: true, reduceMotion: reduceMotion(),
                                  duration: configuration.hudEnterDuration, configuration: configuration)
         }
+        pointerMoved()
     }
 
-    private func scheduleDismiss(after delay: Duration) {
+    private func installMouseMonitors() {
+        guard mouseMonitors.isEmpty else { return }
+        let events: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged]
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: events, handler: { [weak self] _ in
+            MainActor.assumeIsolated { self?.pointerMoved() }
+        }) {
+            mouseMonitors.append(global)
+        }
+        if let local = NSEvent.addLocalMonitorForEvents(matching: events, handler: { [weak self] event in
+            self?.pointerMoved()
+            return event
+        }) {
+            mouseMonitors.append(local)
+        }
+    }
+
+    private func removeMouseMonitors() {
+        mouseMonitors.forEach(NSEvent.removeMonitor)
+        mouseMonitors.removeAll()
+        pointerInside = false
+        dismissWhenPointerLeaves = false
+    }
+
+    /// The drawn ribbon, without the transparent padding around it.
+    private var contentFrame: CGRect? {
+        panel.map { $0.frame.insetBy(dx: HUDContainerView.padding, dy: HUDContainerView.padding) }
+    }
+
+    func pointerMoved() {
+        let inside = isShowing && contentFrame?.contains(pointerLocation()) == true
+        guard inside != pointerInside else { return }
+        pointerInside = inside
+        if !inside, dismissWhenPointerLeaves {
+            dismissWhenPointerLeaves = false
+            scheduleDismiss(after: Self.pointerExitDelay)
+        }
+    }
+
+    private func scheduleDismiss(after delay: Duration, evenUnderPointer: Bool = false) {
         dismissTask?.cancel()
         let generation = generation
         dismissTask = Task { [weak self] in
             do { try await Task.sleep(for: delay) } catch { return }
-            guard !Task.isCancelled, let self, self.beginDismiss(generation: generation) else { return }
+            guard !Task.isCancelled, let self, generation == self.generation else { return }
+            if !evenUnderPointer, self.pointerInside {
+                self.dismissWhenPointerLeaves = true
+                return
+            }
+            guard self.beginDismiss(generation: generation) else { return }
             do { try await Task.sleep(for: .seconds(self.configuration.hudExitDuration)) } catch { return }
             guard !Task.isCancelled else { return }
             self.completeDismiss(generation: generation)
@@ -316,5 +374,6 @@ final class ShortcutHintsRibbon {
         guard generation == self.generation, isExiting else { return }
         panel?.orderOut(nil)
         isExiting = false
+        removeMouseMonitors()
     }
 }

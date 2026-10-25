@@ -89,3 +89,27 @@ import StagehandPlatform
     #expect(plain?.contains("Swipe left") == false)
     #expect(ShortcutHintsModel.swipeTip(enabled: true, reversed: true)?.contains("Swipe left for →") == true)
 }
+
+@MainActor
+@Test func shortcutRibbonStaysWhileThePointerIsOverIt() async throws {
+    var pointer = CGPoint(x: -10_000, y: -10_000)
+    let ribbon = ShortcutHintsRibbon(reduceMotion: { true }, pointerLocation: { pointer })
+    defer { ribbon.hide() }
+    ribbon.setContent(ShortcutBinding.defaults, swipeTip: nil)
+    ribbon.show(for: .milliseconds(50))
+    let panel = try #require(ribbon.panel)
+    pointer = CGPoint(x: panel.frame.midX, y: panel.frame.midY)
+    ribbon.pointerMoved()
+    #expect(ribbon.pointerInside)
+
+    try await Task.sleep(for: .milliseconds(500))
+    #expect(ribbon.isShowing)
+
+    pointer = CGPoint(x: -10_000, y: -10_000)
+    ribbon.pointerMoved()
+    let deadline = ContinuousClock.now + .seconds(3)
+    while panel.isVisible, ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(20))
+    }
+    #expect(!panel.isVisible)
+}
