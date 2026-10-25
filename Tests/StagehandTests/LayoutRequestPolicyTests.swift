@@ -70,3 +70,37 @@ import Testing
     #expect(parked == .focused)
     #expect(activations == 1)
 }
+
+/// 2026-10-25: the focus read before activation waited on the app being left,
+/// on the main thread, although AppKit already said the destination's app was
+/// not frontmost and so could not hold focus.
+@MainActor
+@Test func navigationDoesNotReadFocusWhenTheDestinationAppIsNotFrontmost() async {
+    var focusReads = 0
+    let activated = await LayoutRequestPolicy.navigation.confirmFocus(
+        windowID: "target",
+        currentFocus: { focusReads += 1; return "other" },
+        activate: { true },
+        mayHoldFocus: { false }
+    )
+    #expect(activated == .focused)
+    #expect(focusReads == 0)
+    // A refused activation still fails without a read when the app is not frontmost.
+    let refused = await LayoutRequestPolicy.navigation.confirmFocus(
+        windowID: "target",
+        currentFocus: { focusReads += 1; return "other" },
+        activate: { false },
+        mayHoldFocus: { false }
+    )
+    #expect(refused == .failed)
+    #expect(focusReads == 0)
+    // Once the app is frontmost, the read decides as before.
+    let alreadyFocused = await LayoutRequestPolicy.navigation.confirmFocus(
+        windowID: "target",
+        currentFocus: { focusReads += 1; return "target" },
+        activate: { false },
+        mayHoldFocus: { true }
+    )
+    #expect(alreadyFocused == .focused)
+    #expect(focusReads == 1)
+}

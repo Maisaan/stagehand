@@ -30,12 +30,17 @@ enum LayoutRequestPolicy: Equatable {
         return state
     }
 
+    /// `mayHoldFocus` answers, without an Accessibility call, whether the window's
+    /// app is frontmost. `currentFocus` is a synchronous read from the focused app,
+    /// which is busy at both points it would be asked, so it is skipped when the
+    /// answer is already no.
     func confirmFocus(
         windowID: String,
         currentFocus: () -> String?,
         activate: () async -> Bool,
         unavailability: () -> WindowUnavailability? = { nil },
-        isParked: () -> Bool = { false }
+        isParked: () -> Bool = { false },
+        mayHoldFocus: () -> Bool = { true }
     ) async -> FocusConfirmation {
         guard self == .navigation else { return currentFocus() == windowID ? .focused : .failed }
         // A visible window that already holds focus needs no activation.
@@ -43,8 +48,8 @@ enum LayoutRequestPolicy: Equatable {
         // key status away from a panel another process has just presented for
         // it, such as a system authentication prompt. A window still parked
         // goes through activation, whose restore retries bring it back.
-        if !isParked(), currentFocus() == windowID { return .focused }
-        if await activate() || currentFocus() == windowID { return .focused }
+        if !isParked(), mayHoldFocus(), currentFocus() == windowID { return .focused }
+        if await activate() || (mayHoldFocus() && currentFocus() == windowID) { return .focused }
         return unavailability().map(FocusConfirmation.unavailable) ?? .failed
     }
 }

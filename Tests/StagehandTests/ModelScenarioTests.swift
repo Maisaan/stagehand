@@ -41,6 +41,9 @@ struct ModelScenarioTests {
 
         #expect(harness.model.state.focusedWindowID == "b")
         #expect(harness.windows.frameReads == 1)
+        // The destination's app was not frontmost, so no focus read preceded
+        // activation; the refresh after the switch reads focus once.
+        #expect(harness.windows.focusReads == 1)
         #expect(harness.events("ribbon_animation_completed").count == 1)
         #expect(harness.events("ribbon_position_commit_failed").isEmpty)
     }

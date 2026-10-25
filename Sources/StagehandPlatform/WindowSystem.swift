@@ -1315,6 +1315,22 @@ public final class WindowSystem {
     /// neither ribbon motion nor the event taps.
     nonisolated static let accessibilityQueue = DispatchQueue(label: "app.stagehand.focus-accessibility", qos: .userInteractive)
 
+    private struct ElementRead: @unchecked Sendable {
+        let system: WindowSystem
+        let element: AXUIElement
+    }
+
+    /// One kAXMinimized read on the focus queue, interpreted as `availability`.
+    nonisolated private static func readAvailability(_ read: ElementRead) async -> TargetAvailability {
+        await withCheckedContinuation { continuation in
+            accessibilityQueue.async {
+                let minimized = read.system.copyAttribute(read.element, kAXMinimizedAttribute)
+                continuation.resume(returning: availability(minimizedStatus: minimized.error,
+                                                            minimized: minimized.value as? Bool))
+            }
+        }
+    }
+
     /// A panel from a process with no Dock presence, such as the system's
     /// authentication prompt, is placed by macOS at the screen's center. The
     /// ribbon keeps its focused window at the left, so the panel lands beside
@@ -1411,6 +1427,12 @@ public final class WindowSystem {
                                      in: identitySnapshot()))
         lastObservedFocusedWindowID = id
         return id
+    }
+
+    public func mayHoldFocus(windowID: String) -> Bool {
+        if nativeWindows.contains(windowID: windowID) { return NSApp?.isActive == true }
+        guard let pid = windows[windowID]?.record.pid else { return false }
+        return Self.activeFrontmostPID() == pid
     }
 
     private enum FocusRead: Sendable {
@@ -1556,10 +1578,10 @@ public final class WindowSystem {
         // the caller's unavailability check drops the window without pausing. A
         // busy app answers this read with cannotComplete, as Chrome does for its
         // remaining windows just after one closes; that is not a minimized window,
-        // and the attempt below already waits for the app to answer.
-        let minimizedRead = copyAttribute(tracked.element, kAXMinimizedAttribute)
-        let availability = Self.availability(minimizedStatus: minimizedRead.error,
-                                             minimized: minimizedRead.value as? Bool)
+        // and the attempt below already waits for the app to answer. The read runs
+        // on the focus queue like the attempt's own calls, not on the main thread.
+        let availability = await Self.readAvailability(ElementRead(system: self, element: tracked.element))
+        guard !Task.isCancelled else { return false }
         guard availability == .available || availability == .unknown else {
             if focusDiagnosticsEnabled {
                 lastFocusReport = WindowFocusReport(

@@ -315,7 +315,8 @@ extension StagehandModel {
             currentFocus: { windowSystem.focusedWindowID() },
             activate: { await windowSystem.focus(windowID: record.id) },
             unavailability: { windowSystem.unavailability(windowID: record.id) },
-            isParked: { windowSystem.isParked(windowID: record.id) }
+            isParked: { windowSystem.isParked(windowID: record.id) },
+            mayHoldFocus: { windowSystem.mayHoldFocus(windowID: record.id) }
         )
         let focused = confirmation == .focused
         if request == .navigation, diagnostics.isEnabled {
