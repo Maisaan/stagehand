@@ -12,6 +12,8 @@ public protocol WindowManaging: AnyObject {
     var wantsObservedFocus: (() -> Bool)? { get set }
     /// Whether moved or resized windows' frames would be used now; unused AX reads are skipped.
     var wantsFrameChange: (() -> Bool)? { get set }
+    /// Whether the window-list inventory poll may run now; it skips switches and gestures.
+    var wantsInventory: (() -> Bool)? { get set }
     var onTitleChange: ((String, String) -> Void)? { get set }
     var onApplicationTerminated: ((pid_t) -> Void)? { get set }
     var onWindowDestroyed: ((String) -> Void)? { get set }

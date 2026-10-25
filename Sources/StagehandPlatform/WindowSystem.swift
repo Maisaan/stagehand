@@ -19,7 +19,9 @@ public enum WindowTuning {
     /// How long a single Accessibility request to the system-wide element may wait.
     public static let accessibilityMessagingTimeoutSeconds: Float = 0.1
     /// Cadence of the CGWindowList poll that notices apps and windows AX did not report.
+    /// The poll doubles its wait while nothing changes, up to the maximum.
     public static let applicationInventoryPollSeconds: Int = 2
+    public static let applicationInventoryMaxPollSeconds: Int = 10
     /// Delays between AXObserverAddNotification retries for an app answering
     /// .cannotComplete; the last value repeats while the app runs.
     public static let observationRetryDelaysMilliseconds = [100, 200, 400, 800, 1600, 3200, 5000, 10_000, 20_000, 30_000]
@@ -174,6 +176,10 @@ public final class WindowSystem {
     /// before identifying the window and reading its frame, which are AX round
     /// trips to an app that may be busy; ribbon motion's own writes echo back here.
     public var wantsFrameChange: (() -> Bool)?
+    /// Answers whether the inventory poll may run now. The window list is a
+    /// WindowServer round trip; during a switch the main thread's own window
+    /// ordering waits behind it, so the poll skips switches and gestures.
+    public var wantsInventory: (() -> Bool)?
     private var applicationObservations: [pid_t: ApplicationObservation] = [:]
     private var observationRetries: [pid_t: Task<Void, Never>] = [:]
     /// One serial queue per app for its notification registrations. A launching app
@@ -576,7 +582,7 @@ public final class WindowSystem {
         guard isAccessibilityTrusted else {
             return windows.values.filter(\.isAdmitted).map(\.record) + nativeWindows.records
         }
-        let plan = beginScan()
+        let plan = beginScan(visibleWindows: Self.onScreenWindows(includingModalPanels: true))
         return applyScan(plan, reads: Self.readApplications(plan.reads))
     }
 
@@ -585,7 +591,9 @@ public final class WindowSystem {
     /// during the read; callers should scan again later.
     public func scanWindowsOffMain() async -> [WindowRecord]? {
         guard isAccessibilityTrusted else { return scanWindows() }
-        let plan = beginScan()
+        let visibleWindows = await Self.onScreenWindowsOffMain(includingModalPanels: true)
+        guard started else { return nil }
+        let plan = beginScan(visibleWindows: visibleWindows)
         let generation = trackedStateGeneration
         let reads = await withCheckedContinuation { continuation in
             Self.scanQueue.async { continuation.resume(returning: Self.readApplications(plan.reads)) }
@@ -641,10 +649,10 @@ public final class WindowSystem {
         let candidates: [Candidate]?
     }
 
-    private func beginScan() -> ScanPlan {
+    /// `visibleWindows` is the window list including modal panels, which count only
+    /// toward a standalone dialog's admission.
+    private func beginScan(visibleWindows: [VisibleWindow]) -> ScanPlan {
         let runningApps = MainThreadActivity.during("runningApplications") { NSWorkspace.shared.runningApplications }
-        // Modal panels count only toward a standalone dialog's admission.
-        let visibleWindows = onScreenWindows(includingModalPanels: true)
         let accessoryPIDs = Set(visibleWindows.filter { !$0.isModalPanel }.map(\.pid))
             .union(windows.values.map(\.record.pid))
         let apps = eligibleApplications(from: runningApps, accessoryPIDs: accessoryPIDs)
@@ -1928,21 +1936,37 @@ public final class WindowSystem {
         }
     }
 
+    /// Seconds until the next inventory poll after `unchangedPolls` polls in a row
+    /// found nothing new: the base cadence, doubling up to the maximum.
+    nonisolated static func inventoryPollSeconds(unchangedPolls: Int) -> Int {
+        let base = WindowTuning.applicationInventoryPollSeconds
+        let doubled = base << min(max(unchangedPolls, 0), 8)
+        return min(max(doubled, base), WindowTuning.applicationInventoryMaxPollSeconds)
+    }
+
     private func startApplicationInventory() {
         applicationInventoryTask?.cancel()
-        let initialVisibleWindows = onScreenWindows()
+        let initialVisibleWindows = Self.onScreenWindows()
         lastApplicationInventory = applicationInventory(
             eligible: eligibleApplications(from: NSWorkspace.shared.runningApplications,
                                            accessoryPIDs: Set(initialVisibleWindows.map(\.pid))),
             visibleWindows: initialVisibleWindows
         )
         applicationInventoryTask = Task { @MainActor [weak self] in
+            var unchangedPolls = 0
             while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(WindowTuning.applicationInventoryPollSeconds)) }
+                do { try await Task.sleep(for: .seconds(Self.inventoryPollSeconds(unchangedPolls: unchangedPolls))) }
                 catch { return }
                 guard let self, self.started, !Task.isCancelled else { return }
-                if self.inventoryPaused { continue }
-                let visibleWindows = self.onScreenWindows()
+                // A skipped poll keeps the base cadence: a switch that just ended may
+                // have been the moment a window appeared.
+                if self.inventoryPaused || self.wantsInventory?() == false {
+                    unchangedPolls = 0
+                    continue
+                }
+                // The window list is read off the main thread; the rest is cheap.
+                let visibleWindows = await Self.onScreenWindowsOffMain()
+                guard self.started, !Task.isCancelled else { return }
                 let eligible = self.eligibleApplications(from: NSWorkspace.shared.runningApplications,
                                                          accessoryPIDs: Set(visibleWindows.map(\.pid)))
                 var scheduled = false
@@ -1952,6 +1976,7 @@ public final class WindowSystem {
                 let inventory = self.applicationInventory(eligible: eligible, visibleWindows: visibleWindows)
                 let changed = inventory != self.lastApplicationInventory
                 self.lastApplicationInventory = inventory
+                unchangedPolls = scheduled || changed ? 0 : unchangedPolls + 1
                 if scheduled || changed { self.onChange?() }
             }
         }
@@ -2071,8 +2096,8 @@ public final class WindowSystem {
     private typealias VisibleWindow = (pid: pid_t, windowNumber: CGWindowID, frame: CGRect, isModalPanel: Bool)
 
     /// Normal-level windows on the current Desktop. App-modal alerts sit at the
-    /// modal panel level instead.
-    private func onScreenWindows(includingModalPanels: Bool = false) -> [VisibleWindow] {
+    /// modal panel level instead. A WindowServer round trip; see onScreenWindowsOffMain.
+    nonisolated private static func onScreenWindows(includingModalPanels: Bool = false) -> [VisibleWindow] {
         guard let info = MainThreadActivity.during("windowList", {
             CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
         }) as? [[String: Any]] else { return [] }
@@ -2085,6 +2110,16 @@ public final class WindowSystem {
                   let bounds = window[kCGWindowBounds as String] as? [String: Any],
                   let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return nil }
             return (pid.int32Value, windowNumber.uint32Value, frame, layer != 0)
+        }
+    }
+
+    /// The window list read on the scan queue. On 2026-10-25, with WindowServer
+    /// loaded, one main-thread read waited 9 s; the main thread's own window
+    /// ordering then waited behind it, so the callers also avoid reading during
+    /// a switch.
+    private static func onScreenWindowsOffMain(includingModalPanels: Bool = false) async -> [VisibleWindow] {
+        await withCheckedContinuation { continuation in
+            scanQueue.async { continuation.resume(returning: onScreenWindows(includingModalPanels: includingModalPanels)) }
         }
     }
 

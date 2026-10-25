@@ -20,6 +20,7 @@ final class FakeWindowSystem: WindowManaging {
     var onFocusedWindowChange: ((String) -> Void)?
     var wantsObservedFocus: (() -> Bool)?
     var wantsFrameChange: (() -> Bool)?
+    var wantsInventory: (() -> Bool)?
     var onTitleChange: ((String, String) -> Void)?
     var onApplicationTerminated: ((pid_t) -> Void)?
     var onWindowDestroyed: ((String) -> Void)?
