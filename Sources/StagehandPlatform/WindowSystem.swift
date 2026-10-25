@@ -2050,28 +2050,46 @@ public final class WindowSystem {
     private func removeObserver(pid: pid_t) {
         launchDiscovery.cancel(pid: pid)
         observationRetries.removeValue(forKey: pid)?.cancel()
-        observationQueues.removeValue(forKey: pid)
+        let queue = observationQueues.removeValue(forKey: pid)
         let registration = applicationObservations.removeValue(forKey: pid)
         if let observer = observers.removeValue(forKey: pid) {
-            // Unsubscribe before dropping the source so a late delivery cannot
-            // reach a callback whose context no longer exists.
-            let appElement = AXUIElementCreateApplication(pid)
-            MainThreadActivity.during("unobserve pid=\(pid)") {
-                for name in registration?.registered ?? [] {
-                    AXObserverRemoveNotification(observer, appElement, name as CFString)
-                }
-                for tracked in windows.values where tracked.record.pid == pid {
-                    unobserveWindow(tracked.element, observer: observer)
-                }
-            }
+            // With its run-loop source gone the observer can deliver nothing more, so
+            // the callback's context is safe. The unsubscriptions are round trips to
+            // the app, each answered at the messaging timeout once the app is busy or
+            // gone; they run on the app's registration queue, as the subscriptions do.
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+            let removal = ObserverRemoval(
+                observer: observer, appElement: AXUIElementCreateApplication(pid),
+                applicationNotifications: registration?.registered ?? [],
+                windowElements: windows.values.filter { $0.record.pid == pid }.map(\.element)
+            )
+            (queue ?? Self.scanQueue).async { removal.perform() }
         }
         for id in Array(windows.keys) where windows[id]?.record.pid == pid {
             windows[id]?.observationComplete = false
         }
     }
 
-    private static let windowNotifications = [
+    /// An observer's subscriptions, removed off the main thread after its source.
+    private struct ObserverRemoval: @unchecked Sendable {
+        let observer: AXObserver
+        let appElement: AXUIElement
+        let applicationNotifications: [String]
+        let windowElements: [AXUIElement]
+
+        func perform() {
+            for name in applicationNotifications {
+                AXObserverRemoveNotification(observer, appElement, name as CFString)
+            }
+            for element in windowElements {
+                for name in WindowSystem.windowNotifications {
+                    AXObserverRemoveNotification(observer, element, name as CFString)
+                }
+            }
+        }
+    }
+
+    nonisolated private static let windowNotifications = [
         kAXUIElementDestroyedNotification, kAXMovedNotification, kAXResizedNotification,
         kAXTitleChangedNotification, kAXWindowMiniaturizedNotification, kAXWindowDeminiaturizedNotification
     ]
