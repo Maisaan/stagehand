@@ -80,46 +80,47 @@ final class ShortcutHintsModel: ObservableObject {
 /// faint lines between rows, and each row's chord right-aligned against a key column.
 struct ShortcutHintsView: View {
     @ObservedObject var model: ShortcutHintsModel
-    static let width: CGFloat = 244
-    private static let keyColumnWidth: CGFloat = 42
+    static let width: CGFloat = 290
+    private static let keyColumnWidth: CGFloat = 50
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(model.sections.enumerated()), id: \.element.id) { index, section in
                 Text(section.title.uppercased())
-                    .font(.system(size: 9, weight: .semibold))
-                    .tracking(0.7)
-                    .foregroundStyle(.white.opacity(0.42))
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .tracking(0.8)
+                    .foregroundStyle(.white.opacity(0.45))
                     .padding(.horizontal, 4)
-                    .padding(.top, index == 0 ? 0 : 12)
-                    .padding(.bottom, 5)
+                    .padding(.top, index == 0 ? 0 : 16)
+                    .padding(.bottom, 6)
                 VStack(spacing: 0) {
                     ForEach(Array(section.hints.enumerated()), id: \.element.id) { row, hint in
                         if row > 0 { Rectangle().fill(.white.opacity(0.06)).frame(height: 1) }
                         hintRow(hint)
                     }
                 }
-                .padding(.horizontal, 10)
-                .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .padding(.horizontal, 12)
+                .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
             if let tip = model.swipeTip {
-                HStack(alignment: .center, spacing: 8) {
+                HStack(alignment: .center, spacing: 10) {
                     TrackpadGlyph()
                     Text(tip)
-                        .font(.system(size: 10.5, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
+                        .lineSpacing(2)
                         .foregroundStyle(Color(red: 0.78, green: 0.87, blue: 1).opacity(0.85))
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color(red: 0.5, green: 0.7, blue: 1).opacity(0.1),
-                            in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .padding(.top, 12)
+                            in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .padding(.top, 16)
             }
         }
-        .padding(12)
+        .padding(14)
         .frame(width: Self.width)
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -131,30 +132,30 @@ struct ShortcutHintsView: View {
     }
 
     private func hintRow(_ hint: ShortcutHint) -> some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 9) {
             Text(hint.title)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.white.opacity(0.84))
-            Spacer(minLength: 8)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white.opacity(0.88))
+            Spacer(minLength: 10)
             Text(hint.modifiers.replacingOccurrences(of: " ", with: ""))
-                .font(.system(size: 10.5, weight: .medium))
-                .tracking(1.5)
-                .foregroundStyle(.white.opacity(0.5))
-            HStack(spacing: 3) {
+                .font(.system(size: 12.5, weight: .medium))
+                .tracking(2)
+                .foregroundStyle(.white.opacity(0.55))
+            HStack(spacing: 4) {
                 ForEach(hint.keys, id: \.self) { key in
                     Text(key)
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.92))
-                        .padding(.horizontal, 5)
-                        .frame(minWidth: 18, minHeight: 18)
-                        .background(.white.opacity(0.12),
-                                    in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                        .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.95))
+                        .padding(.horizontal, 6)
+                        .frame(minWidth: 22, minHeight: 22)
+                        .background(.white.opacity(0.13),
+                                    in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
             }
             .frame(minWidth: Self.keyColumnWidth, alignment: .trailing)
         }
         .lineLimit(1)
-        .frame(height: 26)
+        .frame(height: 34)
     }
 }
 
@@ -172,6 +173,8 @@ private struct TrackpadGlyph: View {
             .foregroundStyle(.white.opacity(0.75))
         }
         .frame(width: 16, height: 14)
+        .scaleEffect(1.2)
+        .frame(width: 19, height: 17)
     }
 }
 
