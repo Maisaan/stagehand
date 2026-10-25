@@ -12,6 +12,8 @@ public protocol WindowManaging: AnyObject {
     var wantsObservedFocus: (() -> Bool)? { get set }
     /// Whether moved or resized windows' frames would be used now; unused AX reads are skipped.
     var wantsFrameChange: (() -> Bool)? { get set }
+    /// Whether the window-list inventory poll may run now; it skips switches and gestures.
+    var wantsInventory: (() -> Bool)? { get set }
     var onTitleChange: ((String, String) -> Void)? { get set }
     var onApplicationTerminated: ((pid_t) -> Void)? { get set }
     var onWindowDestroyed: ((String) -> Void)? { get set }
@@ -26,6 +28,9 @@ public protocol WindowManaging: AnyObject {
     var isAccessibilityTrusted: Bool { get }
     var focusDiagnosticsEnabled: Bool { get set }
     var lastFocusReport: WindowFocusReport? { get }
+    /// The focus the last read or confirmed focus attempt reported. For diagnostics
+    /// that would otherwise read focus again, on the main thread, from a busy app.
+    var lastObservedFocusedWindowID: String? { get }
     var trackedWindowIDs: Set<String> { get }
     var hasPendingRecovery: Bool { get }
     var pendingRecoveryWindowIDs: Set<String> { get }
@@ -58,6 +63,9 @@ public protocol WindowManaging: AnyObject {
     @discardableResult func park(windowID: String, preferredSide: WindowParkingSide?, remnantWidth: CGFloat) -> Bool
 
     func focusedWindowID() -> String?
+    /// Whether the window's app is the active frontmost app, from AppKit without an
+    /// Accessibility call. A window of any other app cannot be the focused window.
+    func mayHoldFocus(windowID: String) -> Bool
     func focus(windowID: String) async -> Bool
     /// Centers the accessory process's frontmost panel over `anchor`, kept inside `bounds`.
     func centerCompanionPanel(pid: pid_t, over anchor: CGRect, within bounds: CGRect)

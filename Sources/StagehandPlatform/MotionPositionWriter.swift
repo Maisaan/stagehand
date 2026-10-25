@@ -79,7 +79,8 @@ final class MotionPositionWriter: @unchecked Sendable {
             return queues[pid]
         }
         // Waits for a raise or a write already sent; free when the queue is idle.
-        queue?.sync {}
+        guard let queue else { return }
+        MainThreadActivity.during("settle motion writes pid=\(pid)") { queue.sync {} }
     }
 
     /// Waits, without blocking the caller's thread, until every queued write has been sent.

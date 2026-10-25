@@ -19,7 +19,9 @@ public enum WindowTuning {
     /// How long a single Accessibility request to the system-wide element may wait.
     public static let accessibilityMessagingTimeoutSeconds: Float = 0.1
     /// Cadence of the CGWindowList poll that notices apps and windows AX did not report.
+    /// The poll doubles its wait while nothing changes, up to the maximum.
     public static let applicationInventoryPollSeconds: Int = 2
+    public static let applicationInventoryMaxPollSeconds: Int = 10
     /// Delays between AXObserverAddNotification retries for an app answering
     /// .cannotComplete; the last value repeats while the app runs.
     public static let observationRetryDelaysMilliseconds = [100, 200, 400, 800, 1600, 3200, 5000, 10_000, 20_000, 30_000]
@@ -127,6 +129,7 @@ public final class WindowSystem {
     /// acceptance runner uses it so disposable windows are the only ones moved.
     public var managedBundleIdentifiers: Set<String>?
     public private(set) var lastFocusReport: WindowFocusReport?
+    public private(set) var lastObservedFocusedWindowID: String?
 
     /// Includes known windows omitted from a scan while busy, minimized, or on another Desktop.
     public var trackedWindowIDs: Set<String> {
@@ -173,6 +176,10 @@ public final class WindowSystem {
     /// before identifying the window and reading its frame, which are AX round
     /// trips to an app that may be busy; ribbon motion's own writes echo back here.
     public var wantsFrameChange: (() -> Bool)?
+    /// Answers whether the inventory poll may run now. The window list is a
+    /// WindowServer round trip; during a switch the main thread's own window
+    /// ordering waits behind it, so the poll skips switches and gestures.
+    public var wantsInventory: (() -> Bool)?
     private var applicationObservations: [pid_t: ApplicationObservation] = [:]
     private var observationRetries: [pid_t: Task<Void, Never>] = [:]
     /// One serial queue per app for its notification registrations. A launching app
@@ -575,7 +582,7 @@ public final class WindowSystem {
         guard isAccessibilityTrusted else {
             return windows.values.filter(\.isAdmitted).map(\.record) + nativeWindows.records
         }
-        let plan = beginScan()
+        let plan = beginScan(visibleWindows: Self.onScreenWindows(includingModalPanels: true))
         return applyScan(plan, reads: Self.readApplications(plan.reads))
     }
 
@@ -584,7 +591,9 @@ public final class WindowSystem {
     /// during the read; callers should scan again later.
     public func scanWindowsOffMain() async -> [WindowRecord]? {
         guard isAccessibilityTrusted else { return scanWindows() }
-        let plan = beginScan()
+        let visibleWindows = await Self.onScreenWindowsOffMain(includingModalPanels: true)
+        guard started else { return nil }
+        let plan = beginScan(visibleWindows: visibleWindows)
         let generation = trackedStateGeneration
         let reads = await withCheckedContinuation { continuation in
             Self.scanQueue.async { continuation.resume(returning: Self.readApplications(plan.reads)) }
@@ -640,10 +649,10 @@ public final class WindowSystem {
         let candidates: [Candidate]?
     }
 
-    private func beginScan() -> ScanPlan {
-        let runningApps = NSWorkspace.shared.runningApplications
-        // Modal panels count only toward a standalone dialog's admission.
-        let visibleWindows = onScreenWindows(includingModalPanels: true)
+    /// `visibleWindows` is the window list including modal panels, which count only
+    /// toward a standalone dialog's admission.
+    private func beginScan(visibleWindows: [VisibleWindow]) -> ScanPlan {
+        let runningApps = MainThreadActivity.during("runningApplications") { NSWorkspace.shared.runningApplications }
         let accessoryPIDs = Set(visibleWindows.filter { !$0.isModalPanel }.map(\.pid))
             .union(windows.values.map(\.record.pid))
         let apps = eligibleApplications(from: runningApps, accessoryPIDs: accessoryPIDs)
@@ -1154,7 +1163,10 @@ public final class WindowSystem {
                                    readFrame: { self.readFrame(tracked.element) })
         windows[windowID]?.parking = parking
         if focusDiagnosticsEnabled {
-            logger.notice("Parking pid=\(tracked.record.pid, privacy: .public) success=\(success, privacy: .public) remnantWidth=\(remnantWidth, privacy: .public) actual=\(String(describing: self.readFrame(tracked.element)), privacy: .public) minimized=\(String(describing: self.attribute(tracked.element, kAXMinimizedAttribute) as? Bool), privacy: .public) restorePending=\(parking.restoreFrame != nil, privacy: .public)")
+            // A parked window was verified by the write's readback; read back only a refusal.
+            let actual = success ? "verified" : String(describing: self.readFrame(tracked.element))
+            let minimized = success ? "false" : String(describing: self.attribute(tracked.element, kAXMinimizedAttribute) as? Bool)
+            logger.notice("Parking pid=\(tracked.record.pid, privacy: .public) success=\(success, privacy: .public) remnantWidth=\(remnantWidth, privacy: .public) actual=\(actual, privacy: .public) minimized=\(minimized, privacy: .public) restorePending=\(parking.restoreFrame != nil, privacy: .public)")
         }
         return success
     }
@@ -1176,7 +1188,8 @@ public final class WindowSystem {
                                       readFrame: { self.readFrame(tracked.element) })
         windows[windowID]?.parking = parking
         if focusDiagnosticsEnabled {
-            logger.notice("Parking restore pid=\(tracked.record.pid, privacy: .public) success=\(success, privacy: .public) actual=\(String(describing: self.readFrame(tracked.element)), privacy: .public) restorePending=\(parking.restoreFrame != nil, privacy: .public)")
+            let actual = success ? "verified" : String(describing: self.readFrame(tracked.element))
+            logger.notice("Parking restore pid=\(tracked.record.pid, privacy: .public) success=\(success, privacy: .public) actual=\(actual, privacy: .public) restorePending=\(parking.restoreFrame != nil, privacy: .public)")
         }
         return success
     }
@@ -1248,7 +1261,7 @@ public final class WindowSystem {
         // A busy app answers a later request; a bounded retry covers the common
         // case without holding pause or quit for long.
         for delay in WindowTuning.restoreRetryDelaysMilliseconds where !failed.isEmpty {
-            Thread.sleep(forTimeInterval: Double(delay) / 1_000)
+            MainThreadActivity.during("restoreAll wait") { Thread.sleep(forTimeInterval: Double(delay) / 1_000) }
             failed = failed.filter { returnToOriginalFrame(windowID: $0) == .failed }
         }
         for id in failed where recoveryJournal.records[id] != nil {
@@ -1301,6 +1314,22 @@ public final class WindowSystem {
     /// Accessibility calls to other processes run here so a busy app blocks
     /// neither ribbon motion nor the event taps.
     nonisolated static let accessibilityQueue = DispatchQueue(label: "app.stagehand.focus-accessibility", qos: .userInteractive)
+
+    private struct ElementRead: @unchecked Sendable {
+        let system: WindowSystem
+        let element: AXUIElement
+    }
+
+    /// One kAXMinimized read on the focus queue, interpreted as `availability`.
+    nonisolated private static func readAvailability(_ read: ElementRead) async -> TargetAvailability {
+        await withCheckedContinuation { continuation in
+            accessibilityQueue.async {
+                let minimized = read.system.copyAttribute(read.element, kAXMinimizedAttribute)
+                continuation.resume(returning: availability(minimizedStatus: minimized.error,
+                                                            minimized: minimized.value as? Bool))
+            }
+        }
+    }
 
     /// A panel from a process with no Dock presence, such as the system's
     /// authentication prompt, is placed by macOS at the screen's center. The
@@ -1392,9 +1421,18 @@ public final class WindowSystem {
     }
 
     public func focusedWindowID() -> String? {
-        if NSApp?.isActive == true { return nativeWindows.focusedWindowID }
-        return resolveFocus(readFocus(systemElement: systemElement, frontmostPID: Self.activeFrontmostPID(),
-                                      in: identitySnapshot()))
+        let id = NSApp?.isActive == true
+            ? nativeWindows.focusedWindowID
+            : resolveFocus(readFocus(systemElement: systemElement, frontmostPID: Self.activeFrontmostPID(),
+                                     in: identitySnapshot()))
+        lastObservedFocusedWindowID = id
+        return id
+    }
+
+    public func mayHoldFocus(windowID: String) -> Bool {
+        if nativeWindows.contains(windowID: windowID) { return NSApp?.isActive == true }
+        guard let pid = windows[windowID]?.record.pid else { return false }
+        return Self.activeFrontmostPID() == pid
     }
 
     private enum FocusRead: Sendable {
@@ -1488,7 +1526,9 @@ public final class WindowSystem {
             reportCurrentFocus()
             return
         }
-        guard started, wantsObservedFocus?() ?? true, let id = resolveFocus(read) else { return }
+        guard started, let id = resolveFocus(read) else { return }
+        lastObservedFocusedWindowID = id
+        guard wantsObservedFocus?() ?? true else { return }
         if nativeWindows.contains(windowID: id) {
             onFocusedWindowChange?(id)
             return
@@ -1513,6 +1553,7 @@ public final class WindowSystem {
         if nativeWindows.contains(windowID: windowID) {
             let began = ContinuousClock.now
             let success = await nativeWindows.focus(windowID: windowID)
+            if success { lastObservedFocusedWindowID = windowID }
             if focusDiagnosticsEnabled {
                 let elapsed = began.duration(to: .now)
                 lastFocusReport = WindowFocusReport(targetPID: ProcessInfo.processInfo.processIdentifier,
@@ -1537,10 +1578,10 @@ public final class WindowSystem {
         // the caller's unavailability check drops the window without pausing. A
         // busy app answers this read with cannotComplete, as Chrome does for its
         // remaining windows just after one closes; that is not a minimized window,
-        // and the attempt below already waits for the app to answer.
-        let minimizedRead = copyAttribute(tracked.element, kAXMinimizedAttribute)
-        let availability = Self.availability(minimizedStatus: minimizedRead.error,
-                                             minimized: minimizedRead.value as? Bool)
+        // and the attempt below already waits for the app to answer. The read runs
+        // on the focus queue like the attempt's own calls, not on the main thread.
+        let availability = await Self.readAvailability(ElementRead(system: self, element: tracked.element))
+        guard !Task.isCancelled else { return false }
         guard availability == .available || availability == .unknown else {
             if focusDiagnosticsEnabled {
                 lastFocusReport = WindowFocusReport(
@@ -1574,6 +1615,7 @@ public final class WindowSystem {
         let driver = FocusDriver(system: self, tracked: tracked, app: app, recordsDiagnostics: focusDiagnosticsEnabled)
         let report = await WindowFocusAttempt.run(driver: driver, recordDiagnostics: focusDiagnosticsEnabled)
         if focusDiagnosticsEnabled { lastFocusReport = report }
+        if report.outcome == .focused { lastObservedFocusedWindowID = windowID }
         return report.outcome == .focused
     }
 
@@ -1657,7 +1699,8 @@ public final class WindowSystem {
                     return steps
                 })
             }
-            operations += record([Step(name: "activate", status: nil, accepted: app.activate(options: []))])
+            let activated = MainThreadActivity.during("activate pid=\(targetPID)") { app.activate(options: []) }
+            operations += record([Step(name: "activate", status: nil, accepted: activated)])
             return operations
         }
 
@@ -1915,21 +1958,37 @@ public final class WindowSystem {
         }
     }
 
+    /// Seconds until the next inventory poll after `unchangedPolls` polls in a row
+    /// found nothing new: the base cadence, doubling up to the maximum.
+    nonisolated static func inventoryPollSeconds(unchangedPolls: Int) -> Int {
+        let base = WindowTuning.applicationInventoryPollSeconds
+        let doubled = base << min(max(unchangedPolls, 0), 8)
+        return min(max(doubled, base), WindowTuning.applicationInventoryMaxPollSeconds)
+    }
+
     private func startApplicationInventory() {
         applicationInventoryTask?.cancel()
-        let initialVisibleWindows = onScreenWindows()
+        let initialVisibleWindows = Self.onScreenWindows()
         lastApplicationInventory = applicationInventory(
             eligible: eligibleApplications(from: NSWorkspace.shared.runningApplications,
                                            accessoryPIDs: Set(initialVisibleWindows.map(\.pid))),
             visibleWindows: initialVisibleWindows
         )
         applicationInventoryTask = Task { @MainActor [weak self] in
+            var unchangedPolls = 0
             while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(WindowTuning.applicationInventoryPollSeconds)) }
+                do { try await Task.sleep(for: .seconds(Self.inventoryPollSeconds(unchangedPolls: unchangedPolls))) }
                 catch { return }
                 guard let self, self.started, !Task.isCancelled else { return }
-                if self.inventoryPaused { continue }
-                let visibleWindows = self.onScreenWindows()
+                // A skipped poll keeps the base cadence: a switch that just ended may
+                // have been the moment a window appeared.
+                if self.inventoryPaused || self.wantsInventory?() == false {
+                    unchangedPolls = 0
+                    continue
+                }
+                // The window list is read off the main thread; the rest is cheap.
+                let visibleWindows = await Self.onScreenWindowsOffMain()
+                guard self.started, !Task.isCancelled else { return }
                 let eligible = self.eligibleApplications(from: NSWorkspace.shared.runningApplications,
                                                          accessoryPIDs: Set(visibleWindows.map(\.pid)))
                 var scheduled = false
@@ -1939,6 +1998,7 @@ public final class WindowSystem {
                 let inventory = self.applicationInventory(eligible: eligible, visibleWindows: visibleWindows)
                 let changed = inventory != self.lastApplicationInventory
                 self.lastApplicationInventory = inventory
+                unchangedPolls = scheduled || changed ? 0 : unchangedPolls + 1
                 if scheduled || changed { self.onChange?() }
             }
         }
@@ -1990,26 +2050,46 @@ public final class WindowSystem {
     private func removeObserver(pid: pid_t) {
         launchDiscovery.cancel(pid: pid)
         observationRetries.removeValue(forKey: pid)?.cancel()
-        observationQueues.removeValue(forKey: pid)
+        let queue = observationQueues.removeValue(forKey: pid)
         let registration = applicationObservations.removeValue(forKey: pid)
         if let observer = observers.removeValue(forKey: pid) {
-            // Unsubscribe before dropping the source so a late delivery cannot
-            // reach a callback whose context no longer exists.
-            let appElement = AXUIElementCreateApplication(pid)
-            for name in registration?.registered ?? [] {
-                AXObserverRemoveNotification(observer, appElement, name as CFString)
-            }
-            for tracked in windows.values where tracked.record.pid == pid {
-                unobserveWindow(tracked.element, observer: observer)
-            }
+            // With its run-loop source gone the observer can deliver nothing more, so
+            // the callback's context is safe. The unsubscriptions are round trips to
+            // the app, each answered at the messaging timeout once the app is busy or
+            // gone; they run on the app's registration queue, as the subscriptions do.
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+            let removal = ObserverRemoval(
+                observer: observer, appElement: AXUIElementCreateApplication(pid),
+                applicationNotifications: registration?.registered ?? [],
+                windowElements: windows.values.filter { $0.record.pid == pid }.map(\.element)
+            )
+            (queue ?? Self.scanQueue).async { removal.perform() }
         }
         for id in Array(windows.keys) where windows[id]?.record.pid == pid {
             windows[id]?.observationComplete = false
         }
     }
 
-    private static let windowNotifications = [
+    /// An observer's subscriptions, removed off the main thread after its source.
+    private struct ObserverRemoval: @unchecked Sendable {
+        let observer: AXObserver
+        let appElement: AXUIElement
+        let applicationNotifications: [String]
+        let windowElements: [AXUIElement]
+
+        func perform() {
+            for name in applicationNotifications {
+                AXObserverRemoveNotification(observer, appElement, name as CFString)
+            }
+            for element in windowElements {
+                for name in WindowSystem.windowNotifications {
+                    AXObserverRemoveNotification(observer, element, name as CFString)
+                }
+            }
+        }
+    }
+
+    nonisolated private static let windowNotifications = [
         kAXUIElementDestroyedNotification, kAXMovedNotification, kAXResizedNotification,
         kAXTitleChangedNotification, kAXWindowMiniaturizedNotification, kAXWindowDeminiaturizedNotification
     ]
@@ -2056,8 +2136,8 @@ public final class WindowSystem {
     private typealias VisibleWindow = (pid: pid_t, windowNumber: CGWindowID, frame: CGRect, isModalPanel: Bool)
 
     /// Normal-level windows on the current Desktop. App-modal alerts sit at the
-    /// modal panel level instead.
-    private func onScreenWindows(includingModalPanels: Bool = false) -> [VisibleWindow] {
+    /// modal panel level instead. A WindowServer round trip; see onScreenWindowsOffMain.
+    nonisolated private static func onScreenWindows(includingModalPanels: Bool = false) -> [VisibleWindow] {
         guard let info = MainThreadActivity.during("windowList", {
             CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
         }) as? [[String: Any]] else { return [] }
@@ -2070,6 +2150,16 @@ public final class WindowSystem {
                   let bounds = window[kCGWindowBounds as String] as? [String: Any],
                   let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return nil }
             return (pid.int32Value, windowNumber.uint32Value, frame, layer != 0)
+        }
+    }
+
+    /// The window list read on the scan queue. On 2026-10-25, with WindowServer
+    /// loaded, one main-thread read waited 9 s; the main thread's own window
+    /// ordering then waited behind it, so the callers also avoid reading during
+    /// a switch.
+    private static func onScreenWindowsOffMain(includingModalPanels: Bool = false) async -> [VisibleWindow] {
+        await withCheckedContinuation { continuation in
+            scanQueue.async { continuation.resume(returning: onScreenWindows(includingModalPanels: includingModalPanels)) }
         }
     }
 

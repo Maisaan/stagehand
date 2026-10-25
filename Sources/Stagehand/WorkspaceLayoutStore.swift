@@ -3,7 +3,7 @@ import StagehandCore
 import StagehandPlatform
 
 /// Saves the ribbon layout so a relaunched Stagehand can return windows to their
-/// spaces, order, and widths. Window IDs combine a process ID and a WindowServer
+/// spaces, order, widths, and heights. Window IDs combine a process ID and a WindowServer
 /// window number, so a saved window is restored only while the same process,
 /// identified by its launch date, is still running.
 struct WorkspaceLayoutStore {
@@ -15,11 +15,14 @@ struct WorkspaceLayoutStore {
         var version: Int
         var state: WorkspaceState
         var processLaunchDates: [String: Date]
+        var preferredHeights: [String: Double]
 
-        init(version: Int, state: WorkspaceState, processLaunchDates: [String: Date]) {
+        init(version: Int, state: WorkspaceState, processLaunchDates: [String: Date],
+             preferredHeights: [String: Double]) {
             self.version = version
             self.state = state
             self.processLaunchDates = processLaunchDates
+            self.preferredHeights = preferredHeights
         }
 
         /// Files written before the version field existed are version 1.
@@ -28,6 +31,8 @@ struct WorkspaceLayoutStore {
             version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
             state = try container.decode(WorkspaceState.self, forKey: .state)
             processLaunchDates = try container.decode([String: Date].self, forKey: .processLaunchDates)
+            // Files written before heights were saved restore widths only.
+            preferredHeights = try container.decodeIfPresent([String: Double].self, forKey: .preferredHeights) ?? [:]
         }
     }
 
@@ -48,7 +53,8 @@ struct WorkspaceLayoutStore {
 
     /// Saves memberships of windows whose process can be identified later.
     /// Throws on an encoding or file error; the caller records it.
-    func save(_ state: WorkspaceState, windows: [WindowRecord]) throws {
+    func save(_ state: WorkspaceState, windows: [WindowRecord],
+              preferredHeights: [String: CGFloat] = [:]) throws {
         var launchDates: [String: Date] = [:]
         for window in windows {
             if let date = launchDate(window.pid) { launchDates[window.id] = date }
@@ -59,13 +65,15 @@ struct WorkspaceLayoutStore {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
         let data = try JSONEncoder().encode(
-            SavedLayout(version: Self.currentVersion, state: saved, processLaunchDates: launchDates)
+            SavedLayout(version: Self.currentVersion, state: saved, processLaunchDates: launchDates,
+                        preferredHeights: preferredHeights.filter { launchDates[$0.key] != nil }
+                            .mapValues(Double.init))
         )
         try data.write(to: url, options: .atomic)
     }
 
     enum LoadResult: Equatable {
-        case restored(WorkspaceState)
+        case restored(WorkspaceState, preferredHeights: [String: CGFloat] = [:])
         case unavailable(reason: String)
     }
 
@@ -93,7 +101,10 @@ struct WorkspaceLayoutStore {
         }
         var state = saved.state
         state.reconcile(windowIDs: survivingIDs)
-        return .restored(state)
+        let surviving = Set(survivingIDs)
+        return .restored(state, preferredHeights: saved.preferredHeights
+            .filter { surviving.contains($0.key) && $0.value.isFinite && $0.value > 0 }
+            .mapValues { CGFloat($0) })
     }
 
     /// Where an unreadable file written at `date` is moved.

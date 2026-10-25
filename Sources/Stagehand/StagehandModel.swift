@@ -164,7 +164,13 @@ final class StagehandModel: ObservableObject {
     var observedFocusTask: Task<Void, Never>?
     let changes = ChangeQueue<PendingChange>()
     var lastAppliedFrames: [String: CGRect] = [:]
-    var preferredHeights: [String: CGFloat] = [:]
+    /// Where each window is as far as Stagehand knows: the frame its last layout
+    /// wrote and verified, or the last scan reported. A slide starts from these
+    /// instead of reading every window's frame again from its app.
+    var knownFrames: [String: CGRect] = [:]
+    var preferredHeights: [String: CGFloat] = [:] {
+        didSet { if isRunning, preferredHeights != oldValue { scheduleLayoutSave() } }
+    }
     var lastTransition = Date.distantPast
     var automaticResumeTask: Task<Void, Never>?
     var automaticResumeAttempted = false
@@ -392,6 +398,10 @@ final class StagehandModel: ObservableObject {
             return self.isRunning && !self.isSuspended && !self.isLayingOutWindows && !self.ribbonMotion.isRunning
                 && self.gestureBase == nil && self.focusBorder.windowID != nil
         }
+        windowSystem.wantsInventory = { [weak self] in
+            guard let self else { return false }
+            return !self.changes.isProcessing && !self.ribbonMotion.isRunning && self.gestureBase == nil
+        }
         windowSystem.onFrameChange = { [weak self] id, frame in
             guard let self, self.windowSystem.wantsFrameChange?() == true,
                   self.focusBorder.windowID == id, self.state.focusedWindowID == id else { return }
@@ -456,24 +466,20 @@ final class StagehandModel: ObservableObject {
         focusGate.onAvailabilityChanged = { [weak self] in self?.updateInputStatus() }
         (input as? InputController)?.navigationChordsHandledByTap = { [weak self] in self?.focusGate.isAvailable ?? false }
         focusGate.onInputDiscarded = { [weak self] count in
+            self?.diagnostics.record("held_input_discarded", details: ["eventCount": String(count)])
             self?.warning = "Stagehand couldn't confirm the new window, so it did not send \(count) buffered key \(count == 1 ? "event" : "events"). Check your last input."
             NSSound.beep()
         }
+        // The gate has already dropped any held keys, the only thing the deadline
+        // protects. The switch itself keeps going: an expired timer means the system
+        // was slow, not that Stagehand lost track of its windows.
         focusGate.onTransferExpired = { [weak self] token in
             guard let self else { return }
             self.expiredTokens.insert(token)
-            let generation = self.changes.generation
-            Task { @MainActor [weak self] in
-                guard let self, self.isRunning, self.changes.generation == generation else { return }
-                self.stop(
-                    reason: "input_transfer_expired",
-                    automatic: true,
-                    details: ["token": String(token)]
-                )
-                if self.warning == nil {
-                    self.warning = "Stagehand couldn't finish switching windows. It paused and restored your windows."
-                }
-            }
+            self.diagnostics.record("input_transfer_expired", details: [
+                "token": String(token),
+                "changeRunning": String(self.changes.isProcessing)
+            ])
         }
         sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
@@ -491,6 +497,7 @@ final class StagehandModel: ObservableObject {
             forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
+                self?.desktopScope.invalidate()
                 self?.diagnostics.record("screen_locked", details: [
                     "running": String(self?.isRunning ?? false)
                 ])
@@ -555,6 +562,7 @@ final class StagehandModel: ObservableObject {
     /// refresh, and the cleared applied frames make that refresh lay out again
     /// instead of reading half-moved windows as a user drag.
     func systemWillSleep() {
+        desktopScope.invalidate()
         guard isRunning else { return }
         diagnostics.record("system_will_sleep", details: workspaceDetails())
         guard !isSuspended else { return }
@@ -569,6 +577,7 @@ final class StagehandModel: ObservableObject {
                                       trackedWindowIDs: windowSystem.trackedWindowIDs)
         pointerInteraction = nil
         lastAppliedFrames.removeAll()
+        knownFrames.removeAll()
         preferencesNeedLayout = true
         onStateChange?()
     }
@@ -698,8 +707,9 @@ final class StagehandModel: ObservableObject {
             savedLayoutConsidered = true
             if state.spaces.allSatisfy(\.windowIDs.isEmpty), let layoutStore {
                 switch layoutStore.load(windows: windows) {
-                case .restored(let saved):
+                case .restored(let saved, let savedHeights):
                     state = saved
+                    preferredHeights.merge(savedHeights) { current, _ in current }
                     diagnostics.record("layout_restored", details: [
                         "windowCount": String(Set(saved.spaces.flatMap(\.windowIDs)).count),
                         "activeSpace": String(saved.activeSpaceIndex + 1)
@@ -711,7 +721,11 @@ final class StagehandModel: ObservableObject {
                 }
             }
         }
-        preferredHeights = Dictionary(windows.map { ($0.id, $0.frame.height) }, uniquingKeysWith: { first, _ in first })
+        // Pausing returned every window to its frame from before Stagehand, so a
+        // known window keeps the height chosen while Stagehand ran; only a window
+        // seen for the first time takes its current height.
+        preferredHeights = Dictionary(windows.map { ($0.id, preferredHeights[$0.id] ?? $0.frame.height) },
+                                      uniquingKeysWith: { first, _ in first })
         workspaceRestoration.reconcile(state: &state, windowIDs: windows.map(\.id),
                                        trackedWindowIDs: windowSystem.trackedWindowIDs,
                                        initialWidthFractions: initialWidthFractions(for: windows))
@@ -779,6 +793,7 @@ final class StagehandModel: ObservableObject {
         emptySpace.hide()
         windowSystem.stop()
         lastAppliedFrames.removeAll()
+        knownFrames.removeAll()
         recoveryInProgress = false
         if automatic {
             if automaticResumeAttempted {
@@ -821,7 +836,7 @@ final class StagehandModel: ObservableObject {
     func saveLayout() {
         guard let layoutStore else { return }
         do {
-            try layoutStore.save(state, windows: windows)
+            try layoutStore.save(state, windows: windows, preferredHeights: preferredHeights)
         } catch {
             diagnostics.record("layout_save_failed", details: ["error": error.localizedDescription])
             NSLog("Stagehand layout save failed: %@", error.localizedDescription)
@@ -1074,6 +1089,7 @@ final class StagehandModel: ObservableObject {
     }
 
     func screenUnlocked() {
+        desktopScope.invalidate()
         diagnostics.record("screen_unlocked", details: [
             "running": String(isRunning), "suspended": String(isSuspended)
         ])
@@ -1084,6 +1100,7 @@ final class StagehandModel: ObservableObject {
     }
 
     func nativeDesktopChanged() {
+        desktopScope.invalidate()
         guard isRunning else { return }
         desktopCheckTask?.cancel()
         switch desktopScope.refresh() {

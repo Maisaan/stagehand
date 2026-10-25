@@ -26,6 +26,28 @@ struct ModelScenarioTests {
         #expect(harness.events("automatic_pause").isEmpty)
     }
 
+    /// Every frame read is a synchronous round trip to an app, on the main thread.
+    /// A slide starts from the frames Stagehand wrote or scanned and reads a frame
+    /// back only once, after activation, when the app may have resized its window.
+    @Test func aSlideStartsFromKnownFramesWithoutReadingThem() async {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        harness.windows.resetReadCounts()
+
+        harness.model.navigate(.focusNext)
+        await harness.settle()
+
+        #expect(harness.model.state.focusedWindowID == "b")
+        #expect(harness.windows.frameReads == 1)
+        // The destination's app was not frontmost, so no focus read preceded
+        // activation; the refresh after the switch reads focus once.
+        #expect(harness.windows.focusReads == 1)
+        #expect(harness.events("ribbon_animation_completed").count == 1)
+        #expect(harness.events("ribbon_position_commit_failed").isEmpty)
+    }
+
     /// The preset shortcut steps through the presets saved in settings, and a listed
     /// app's windows are parked with the wider allowance while others keep the default.
     @Test func widthPresetsAndParkedEdgeAllowanceComeFromSettings() async {
@@ -419,34 +441,50 @@ struct ModelScenarioTests {
         #expect(harness.model.warning == nil)
     }
 
+    /// Pausing returns windows to their frames from before Stagehand. Resuming
+    /// must lay them out at the heights chosen while Stagehand ran, as it does
+    /// for widths, not at those older heights.
+    @Test func resumingKeepsTheHeightChosenBeforeThePause() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        let original = harness.windows.windows["a"]!.original.height
+        harness.model.navigate(.shrinkHeight)
+        await harness.settle()
+        let chosen = harness.windows.windows["a"]!.frame.height
+        #expect(chosen < original)
+
+        harness.model.pause()
+        #expect(harness.windows.windows["a"]!.frame.height == original)
+        harness.model.start()
+        await harness.settle()
+
+        #expect(harness.windows.windows["a"]!.frame.height == chosen)
+    }
+
     /// Typing captured for a switch is held for a bounded time. A destination
-    /// that stays busy past that deadline pauses with input_transfer_expired
-    /// rather than delivering the keys late or to the wrong window.
+    /// that stays busy past that deadline drops the held keys rather than
+    /// delivering them late, but the switch still finishes and Stagehand keeps
+    /// running: a slow system is not a failed switch.
     @Test(.enabled(if: !IsSecureEventInputEnabled(), "Secure Input is on, so the focus gate holds no transfers"))
-    func anExpiredInputTransferPausesAndRestoresFrames() async {
+    func anExpiredInputTransferFinishesTheSwitchWithoutPausing() async {
         let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a", transferTimeoutMilliseconds: 40)
         defer { harness.cleanUp() }
-        let originals = harness.windows.windows.mapValues(\.original)
         harness.model.start()
         await harness.settle()
         harness.windows.focusDelayMilliseconds = 300
 
         harness.model.navigate(.focusNext)
-        let deadline = ContinuousClock.now.advanced(by: .seconds(4))
-        while harness.events("automatic_pause").isEmpty, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        // The pause restores every frame. The automatic resume 100 ms later may
-        // succeed, because the still-focused window needs no activation, and lay
-        // the ribbon out again; read the frames before that.
-        let framesAtPause = harness.windows.windows.mapValues(\.frame)
         await harness.settle()
 
-        let pause = harness.events("automatic_pause").first?["details"] as? [String: String]
-        #expect(pause?["reason"] == "input_transfer_expired")
-        #expect(pause?["token"] != nil)
-        #expect(harness.overlays.warnings.contains { $0.contains("couldn't finish switching windows") })
-        #expect(framesAtPause == originals)
+        let expiry = harness.events("input_transfer_expired").first?["details"] as? [String: String]
+        #expect(expiry?["token"] != nil)
+        #expect(harness.events("automatic_pause").isEmpty)
+        #expect(harness.events("layout_failed").isEmpty)
+        #expect(harness.model.isRunning)
+        #expect(harness.model.state.focusedWindowID == "b")
+        #expect(harness.windows.focused == "b")
         #expect(harness.model.focusGate.isAvailable)
     }
 

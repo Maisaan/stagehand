@@ -53,6 +53,36 @@ struct WorkspaceLayoutStoreTests {
                 .restored(WorkspaceState(spaces: [SpaceState(windowIDs: ["a"], focusedWindowID: "a")])))
     }
 
+    @Test func heightsRoundTripForSurvivingWindows() throws {
+        let fixture = StoreFixture()
+        defer { fixture.remove() }
+        let launchDate = Date(timeIntervalSinceReferenceDate: 1)
+        let store = WorkspaceLayoutStore(url: fixture.url, launchDate: { $0 == 1 ? launchDate : nil })
+        let state = WorkspaceState(spaces: [SpaceState(windowIDs: ["a", "b"], focusedWindowID: "a")])
+        try store.save(state, windows: [record("a", pid: 1), record("b", pid: 2)],
+                       preferredHeights: ["a": 640, "b": 480])
+
+        let result = store.load(windows: [record("a", pid: 1)])
+
+        #expect(result == .restored(WorkspaceState(spaces: [SpaceState(windowIDs: ["a"], focusedWindowID: "a")]),
+                                    preferredHeights: ["a": 640]))
+    }
+
+    @Test func aFileWithoutHeightsStillLoads() throws {
+        let fixture = StoreFixture()
+        defer { fixture.remove() }
+        let launchDate = Date(timeIntervalSinceReferenceDate: 1)
+        let store = WorkspaceLayoutStore(url: fixture.url, launchDate: { _ in launchDate })
+        try store.save(WorkspaceState(spaces: [SpaceState(windowIDs: ["a"], focusedWindowID: "a")]),
+                       windows: [record("a", pid: 1)], preferredHeights: ["a": 640])
+        var object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: fixture.url)) as? [String: Any])
+        object.removeValue(forKey: "preferredHeights")
+        try JSONSerialization.data(withJSONObject: object).write(to: fixture.url)
+
+        #expect(store.load(windows: [record("a", pid: 1)]) ==
+                .restored(WorkspaceState(spaces: [SpaceState(windowIDs: ["a"], focusedWindowID: "a")])))
+    }
+
     @Test func aFileFromAnotherVersionIsMovedAside() throws {
         let fixture = StoreFixture()
         defer { fixture.remove() }
@@ -83,7 +113,7 @@ struct WorkspaceLayoutStoreTests {
         try store.save(paused, windows: [record("a", pid: 1), record("b", pid: 2)])
         let result = store.load(windows: [record("a", pid: 1), record("b", pid: 2)])
 
-        guard case .restored(let restored) = result else {
+        guard case .restored(let restored, _) = result else {
             Issue.record("expected restored, got \(result)")
             return
         }

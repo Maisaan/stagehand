@@ -143,7 +143,7 @@ final class NavigationOverlays {
         raiseBorder: Bool = false
     ) {
         guard visible, let primary = NSScreen.screens.first else {
-            border?.orderOut(nil)
+            MainThreadActivity.during("borderWindow orderOut") { border?.orderOut(nil) }
             return
         }
         let border = borderPanel()
@@ -154,11 +154,14 @@ final class NavigationOverlays {
                                width: frame.width, height: frame.height)
         // Frame/path changes remain synchronous, including throughout a native live resize.
         // Draw inward so the complete stroke remains visible at display edges.
-        border.setFrame(converted, display: radiusChanged || border.frame.size != converted.size)
+        // Both are WindowServer round trips, which queue behind a slow window-list call.
+        MainThreadActivity.during("borderWindow setFrame") {
+            border.setFrame(converted, display: radiusChanged || border.frame.size != converted.size)
+        }
         if !border.isVisible || focusChanged || raiseBorder {
             // Relative ordering does not reliably raise a panel above another app's
             // window. Front ordering is confined to the border's window level.
-            border.orderFrontRegardless()
+            MainThreadActivity.during("borderWindow orderFront") { border.orderFrontRegardless() }
         }
         if focusChanged, let layer = border.contentView?.layer {
             let configuration = hudModel.interfaceAnimationConfiguration
@@ -280,7 +283,7 @@ final class NavigationOverlays {
         if hud.frame != geometry.panelFrame || container.attachedToNotch != geometry.attachedToNotch {
             hudModel.attachedToNotch = geometry.attachedToNotch
             container.attachedToNotch = geometry.attachedToNotch
-            hud.setFrame(geometry.panelFrame, display: true)
+            MainThreadActivity.during("hudWindow setFrame") { hud.setFrame(geometry.panelFrame, display: true) }
             container.needsLayout = true
             container.layoutSubtreeIfNeeded()
         }
@@ -294,7 +297,7 @@ final class NavigationOverlays {
                 reduceMotion: hudModel.reduceMotion,
                 configuration: hudModel.interfaceAnimationConfiguration
             )
-            hud.orderFrontRegardless()
+            MainThreadActivity.during("hudWindow orderFront") { hud.orderFrontRegardless() }
         }
         if !wasVisible || wasExiting {
             let configuration = hudModel.interfaceAnimationConfiguration
@@ -362,10 +365,12 @@ final class NavigationOverlays {
         hudGeneration &+= 1
         hudIsExiting = false
         shortcutHints.hide()
-        border?.orderOut(nil)
-        hud?.orderOut(nil)
-        border?.close()
-        hud?.close()
+        MainThreadActivity.during("overlays close") {
+            border?.orderOut(nil)
+            hud?.orderOut(nil)
+            border?.close()
+            hud?.close()
+        }
         // Recreate on the next presentation so an explicit Start on a different native
         // Desktop binds the panels there without making them visible on every Desktop.
         border = nil

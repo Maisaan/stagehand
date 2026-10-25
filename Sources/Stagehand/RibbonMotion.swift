@@ -1,6 +1,7 @@
 import AppKit
 import QuartzCore
 import StagehandCore
+import StagehandPlatform
 
 struct RibbonAnimationCurve: Equatable {
     /// Strong ease-in-out for objects that remain onscreen and move to a new position.
@@ -141,7 +142,9 @@ private final class SystemRibbonFrameDriver: NSObject, RibbonFrameDriving {
         }) ?? NSScreen.main else {
             return false
         }
-        let displayLink = screen.displayLink(target: self, selector: #selector(displayFrame(_:)))
+        let displayLink = MainThreadActivity.during("displayLink create") {
+            screen.displayLink(target: self, selector: #selector(displayFrame(_:)))
+        }
         self.onFrame = onFrame
         self.displayLink = displayLink
         // AX window moves are synchronous cross-process messages, not cheap layer

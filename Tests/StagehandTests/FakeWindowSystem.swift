@@ -20,6 +20,7 @@ final class FakeWindowSystem: WindowManaging {
     var onFocusedWindowChange: ((String) -> Void)?
     var wantsObservedFocus: (() -> Bool)?
     var wantsFrameChange: (() -> Bool)?
+    var wantsInventory: (() -> Bool)?
     var onTitleChange: ((String, String) -> Void)?
     var onApplicationTerminated: ((pid_t) -> Void)?
     var onWindowDestroyed: ((String) -> Void)?
@@ -36,6 +37,7 @@ final class FakeWindowSystem: WindowManaging {
     var isAccessibilityTrusted = true
     var focusDiagnosticsEnabled = false
     var lastFocusReport: WindowFocusReport? { nil }
+    var lastObservedFocusedWindowID: String? { focused }
     var hasPendingRecovery = false
     var pendingRecoveryWindowIDs: Set<String> = []
     private(set) var windows: [String: Window] = [:]
@@ -119,8 +121,29 @@ final class FakeWindowSystem: WindowManaging {
     }
 
     func record(windowID: String) -> WindowRecord? { windows[windowID]?.record }
-    func frame(windowID: String) -> CGRect? { windows[windowID].map { $0.restoreFrame ?? $0.frame } }
-    func observedFrame(windowID: String) -> CGRect? { windows[windowID]?.frame }
+
+    /// Frame reads since the last reset that asked the app. Each stands for a
+    /// synchronous AX round trip on the main thread.
+    private(set) var frameReads = 0
+    private(set) var observedFrameReads = 0
+    func resetReadCounts() {
+        frameReads = 0
+        observedFrameReads = 0
+        focusReads = 0
+    }
+
+    func frame(windowID: String) -> CGRect? {
+        guard let window = windows[windowID] else { return nil }
+        // A parked window answers from its logical frame, as WindowSystem does, without asking the app.
+        if let restoreFrame = window.restoreFrame { return restoreFrame }
+        frameReads += 1
+        return window.frame
+    }
+
+    func observedFrame(windowID: String) -> CGRect? {
+        observedFrameReads += 1
+        return windows[windowID]?.frame
+    }
     func windowNumber(for windowID: String) -> CGWindowID? { nil }
     func isParked(windowID: String) -> Bool { windows[windowID]?.restoreFrame != nil }
 
@@ -163,7 +186,19 @@ final class FakeWindowSystem: WindowManaging {
         return true
     }
 
-    func focusedWindowID() -> String? { focused }
+    /// Focus reads since the last reset; each is a synchronous AX round trip to the focused app.
+    private(set) var focusReads = 0
+
+    func focusedWindowID() -> String? {
+        focusReads += 1
+        return focused
+    }
+
+    /// The focused window's app is the frontmost app.
+    func mayHoldFocus(windowID: String) -> Bool {
+        guard let pid = windows[windowID]?.record.pid, let focused else { return false }
+        return windows[focused]?.record.pid == pid
+    }
 
     func focus(windowID: String) async -> Bool {
         if focusDelayMilliseconds > 0 {

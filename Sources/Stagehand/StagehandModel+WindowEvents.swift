@@ -215,6 +215,7 @@ extension StagehandModel {
         }
         preferredHeights = preferredHeights.filter { !removedIDs.contains($0.key) }
         lastAppliedFrames = lastAppliedFrames.filter { !removedIDs.contains($0.key) }
+        knownFrames = knownFrames.filter { !removedIDs.contains($0.key) }
         motionWrittenPositions = motionWrittenPositions.filter { !removedIDs.contains($0.key) }
         presentationFrames = presentationFrames?.filter { !removedIDs.contains($0.key) }
         gestureBase = gestureBase?.filter { !removedIDs.contains($0.key) }
@@ -277,6 +278,8 @@ extension StagehandModel {
         let motionStart = navigationFrames()
         let oldState = state
         windows = current
+        // The scan read every frame off the main thread; the next slide starts from them.
+        for window in current { knownFrames[window.id] = window.frame }
         workspaceRestoration.reconcile(state: &state, windowIDs: current.map(\.id),
                                        trackedWindowIDs: windowSystem.trackedWindowIDs,
                                        initialWidthFractions: initialWidthFractions(for: current))
@@ -376,7 +379,7 @@ extension StagehandModel {
         } else if preferencesNeedLayout,
                   LayoutRequestPolicy.preferences.prepare(state: state, focusedWindowID: observedFocusedWindowID) != nil {
             enqueue(.preferences)
-        } else if let id = state.focusedWindowID, let frame = windowSystem.frame(windowID: id) {
+        } else if let id = state.focusedWindowID, let frame = knownFrame(windowID: id) {
             updateFocusBorder(windowID: id, frame: frame,
                               raiseBorder: observedFocusedWindowID == id)
         }
