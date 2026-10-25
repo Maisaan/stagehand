@@ -80,7 +80,7 @@ final class ShortcutHintsModel: ObservableObject {
 /// faint lines between rows, and each row's chord right-aligned against a key column.
 struct ShortcutHintsView: View {
     @ObservedObject var model: ShortcutHintsModel
-    static let width: CGFloat = 290
+    static let width: CGFloat = 300
     private static let keyColumnWidth: CGFloat = 50
 
     var body: some View {
@@ -134,11 +134,11 @@ struct ShortcutHintsView: View {
     private func hintRow(_ hint: ShortcutHint) -> some View {
         HStack(spacing: 9) {
             Text(hint.title)
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.white.opacity(0.88))
             Spacer(minLength: 10)
             Text(hint.modifiers.replacingOccurrences(of: " ", with: ""))
-                .font(.system(size: 12.5, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
                 .tracking(2)
                 .foregroundStyle(.white.opacity(0.55))
             HStack(spacing: 4) {
