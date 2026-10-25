@@ -17,7 +17,6 @@ enum PreferenceKey {
     static let widthPresets = "widthPresets"
     static let wideParkedEdgeBundleIdentifiers = "wideParkedEdgeBundleIdentifiers"
     static let wideParkedEdgeWidth = "wideParkedEdgeWidth"
-    static let shortcutHintsDuringNavigation = "shortcutHintsDuringNavigation"
 }
 
 @MainActor
@@ -57,12 +56,6 @@ final class StagehandModel: ObservableObject {
             UserDefaults.standard.set(reverseShortcutSwipeDirection, forKey: PreferenceKey.reverseShortcutSwipeDirection)
             input.reverseShortcutSwipeDirection = reverseShortcutSwipeDirection
             updateInputStatus()
-        }
-    }
-    @Published var shortcutHintsDuringNavigation: Bool {
-        didSet {
-            UserDefaults.standard.set(shortcutHintsDuringNavigation, forKey: PreferenceKey.shortcutHintsDuringNavigation)
-            overlays.showsShortcutHintsDuringNavigation = shortcutHintsDuringNavigation
         }
     }
     @Published var gap: Double {
@@ -334,7 +327,6 @@ final class StagehandModel: ObservableObject {
         gesturesEnabled = defaults.object(forKey: PreferenceKey.gesturesEnabled) as? Bool ?? false
         shortcutSwipesEnabled = defaults.bool(forKey: PreferenceKey.shortcutSwipesEnabled)
         reverseShortcutSwipeDirection = defaults.object(forKey: PreferenceKey.reverseShortcutSwipeDirection) as? Bool ?? true
-        shortcutHintsDuringNavigation = defaults.object(forKey: PreferenceKey.shortcutHintsDuringNavigation) as? Bool ?? true
         gap = GapInput.clamped(defaults.object(forKey: PreferenceKey.windowGap) as? Double ?? 8)
         widthPresets = SpaceState.normalizedWidthPresets(
             defaults.array(forKey: PreferenceKey.widthPresets) as? [Double] ?? SpaceState.defaultWidthPresets
@@ -373,7 +365,6 @@ final class StagehandModel: ObservableObject {
         }
         overlays.setBorderColor(focusBorderColor)
         overlays.setShortcutHints(shortcutBindings)
-        overlays.showsShortcutHintsDuringNavigation = shortcutHintsDuringNavigation
         input.onStatusChange = { [weak self] in self?.updateInputStatus() }
         windowSystem.onChange = { [weak self] in self?.scheduleRefresh() }
         windowSystem.onApplicationTerminated = { [weak self] pid in

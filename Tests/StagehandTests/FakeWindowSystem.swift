@@ -214,7 +214,6 @@ final class FakeOverlays: NavigationPresenting {
     var onRemoveWindow: ((String) -> Void)?
     var onReorderWindow: ((String, Int) -> Void)?
     var canRevealNavigation: (() -> Bool)?
-    var showsShortcutHintsDuringNavigation = true
     private(set) var shortcutHintToggles = 0
     private(set) var warnings: [String] = []
     private(set) var borderFrame: CGRect?

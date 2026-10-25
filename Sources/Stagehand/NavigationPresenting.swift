@@ -12,7 +12,6 @@ protocol NavigationPresenting: AnyObject {
     var onRemoveWindow: ((String) -> Void)? { get set }
     var onReorderWindow: ((String, Int) -> Void)? { get set }
     var canRevealNavigation: (() -> Bool)? { get set }
-    var showsShortcutHintsDuringNavigation: Bool { get set }
 
     func setBorderColor(_ color: NSColor)
     func updateBorder(frame: CGRect, visible: Bool, cornerRadius: CGFloat?,

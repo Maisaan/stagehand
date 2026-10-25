@@ -75,7 +75,6 @@ final class NavigationOverlays {
     private var dismissTask: Task<Void, Never>?
     let hudModel = NavigationHUDModel()
     private let shortcutHints: ShortcutHintsRibbon
-    var showsShortcutHintsDuringNavigation = true
     var onFocusWindow: ((String) -> Void)?
     var onSelectSpace: ((Int) -> Void)?
     var onShareWindow: ((String, Int) -> Void)?
@@ -179,9 +178,6 @@ final class NavigationOverlays {
         hudModel.showingSpaces = false
         hudModel.warning = nil
         presentHUD(dismissAfter: .milliseconds(1_500))
-        if showsShortcutHintsDuringNavigation {
-            shortcutHints.show()
-        }
     }
 
     func setShortcutHints(_ bindings: [ShortcutBinding]) {

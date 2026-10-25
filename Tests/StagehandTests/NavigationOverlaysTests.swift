@@ -16,24 +16,22 @@ import StagehandPlatform
 }
 
 @Test func shortcutRibbonFollowsTheCurrentBindings() throws {
-    let rows = ShortcutHintRow.rows(for: ShortcutBinding.defaults)
-    #expect(rows.map(\.modifiers) == ["⌃ ⌥", "⌃ ⌥ ⌘", "⌃ ⌥ ⇧"])
-    // Columns line up by key kind across rows.
-    #expect(rows[0].columns[0] == [ShortcutHint(title: "Focus", keys: ["←", "→"])])
-    #expect(rows[1].columns[0] == [ShortcutHint(title: "Reorder", keys: ["←", "→"])])
-    #expect(rows[0].columns[2] == [ShortcutHint(title: "Go to", keys: ["1–9"])])
-    #expect(rows[2].columns[2] == [ShortcutHint(title: "Share with", keys: ["1–9"])])
-    // "+" implies Shift, so grow stays beside shrink in the unshifted row.
-    #expect(rows[0].columns[3] == [ShortcutHint(title: "Width", keys: ["-", "+"])])
-    #expect(rows[2].columns[4] == [ShortcutHint(title: "Previous preset", keys: ["0"])])
-    #expect(rows[1].columns.flatMap { $0 }.contains(ShortcutHint(title: "Shortcuts", keys: ["/"])))
+    let sections = ShortcutHintSection.sections(for: ShortcutBinding.defaults)
+    #expect(sections.map(\.title) == ["Navigate", "Move window", "Size", "Stagehand"])
+    let hints = sections.flatMap(\.hints)
+    #expect(hints.contains(ShortcutHint(title: "Window", modifiers: "⌃ ⌥", keys: ["←", "→"])))
+    #expect(hints.contains(ShortcutHint(title: "Go to space", modifiers: "⌃ ⌥", keys: ["1–9"])))
+    #expect(hints.contains(ShortcutHint(title: "Share with", modifiers: "⌃ ⌥ ⇧", keys: ["1–9"])))
+    // "+" implies Shift, so grow stays on the same line as shrink.
+    #expect(hints.contains(ShortcutHint(title: "Width", modifiers: "⌃ ⌥", keys: ["-", "+"])))
+    #expect(hints.contains(ShortcutHint(title: "Shortcuts", modifiers: "⌃ ⌥ ⌘", keys: ["/"])))
 
     var bindings = ShortcutBinding.defaults
     for index in bindings.indices where bindings[index].id == "focusPrevious" || bindings[index].id == "togglePause" {
         bindings[index].isEnabled = false
     }
-    let edited = ShortcutHintRow.rows(for: bindings).flatMap { $0.columns.flatMap { $0 } }
-    #expect(edited.contains(ShortcutHint(title: "Focus", keys: ["→"])))
+    let edited = ShortcutHintSection.sections(for: bindings).flatMap(\.hints)
+    #expect(edited.contains(ShortcutHint(title: "Window", modifiers: "⌃ ⌥", keys: ["→"])))
     #expect(!edited.contains { $0.title == "Pause" })
 }
 
@@ -55,9 +53,12 @@ import StagehandPlatform
 
     let panel = try #require(ribbon.panel)
     let padding = HUDContainerView.padding * 2
-    // Two rows of hints, wider than any single label.
+    // Four sections side by side, wider than any single label.
     #expect(panel.frame.width - padding > 400)
     #expect(panel.frame.height - padding > 40)
+    let visible = try #require(NSScreen.managedDisplay).visibleFrame
+    #expect(abs(panel.frame.maxX - HUDContainerView.padding - (visible.maxX - ShortcutHintsRibbon.edgeInset)) <= 1)
+    #expect(abs(panel.frame.minY + HUDContainerView.padding - (visible.minY + ShortcutHintsRibbon.edgeInset)) <= 1)
     #expect(panel.ignoresMouseEvents)
     #expect(!panel.canBecomeKey)
 }

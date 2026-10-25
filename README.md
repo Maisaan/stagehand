@@ -93,6 +93,7 @@ While the app bar is visible, about 1.5 seconds after a navigation or while the 
 | Shrink or grow height | Control + Option + Command + - or + |
 | Pause and restore | Control + Option + Escape |
 | Open settings | Control + Option + comma |
+| Show or hide the shortcut ribbon | Control + Option + Command + / |
 
 Navigation stops at each end and does not wrap. Width shortcuts stop at the 25% and 100% limits. The preset shortcuts step the active window through the widths listed in Settings > Layout (50%, 75%, and 100% by default) and wrap at the ends.
 These are the defaults. The Controls settings let you turn off, record, or reset each binding, including bindings that use Caps Lock as a modifier.

@@ -526,15 +526,6 @@ struct SettingsView: View {
     private var shortcuts: some View {
         SettingsSection("Keyboard shortcuts") {
             VStack(spacing: 12) {
-                SettingsCard {
-                    SettingsRow("Show shortcuts while navigating") {
-                        Toggle("Show shortcuts while navigating", isOn: $model.shortcutHintsDuringNavigation)
-                            .labelsHidden()
-                            .toggleStyle(.switch)
-                            .help("A ribbon at the bottom of the screen lists the shortcuts for 4 seconds after each navigation. The Show or hide shortcuts shortcut shows it too.")
-                    }
-                }
-
                 Picker("Shortcut category", selection: $shortcutPage) {
                     ForEach(ShortcutPage.allCases) { page in
                         Text(page.rawValue).tag(page)
