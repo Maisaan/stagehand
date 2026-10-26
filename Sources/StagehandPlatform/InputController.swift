@@ -179,6 +179,14 @@ public final class InputController {
         GestureMonitor.syntheticPointerEventCount()
     }
 
+    /// How Stagehand's pointer moves for a held click went; `reset` clears the maxima.
+    nonisolated public static func syntheticPointerStats(reset: Bool) -> SyntheticPointerStats {
+        GestureMonitor.syntheticPointerStats(reset: reset)
+    }
+
+    /// The source user data on pointer events Stagehand posts.
+    nonisolated public static var syntheticPointerTag: Int64 { StagehandPlatform.syntheticPointerTag }
+
     /// The hidden setting for Dock gestures beside a held click: withhold, pass, or cancel.
     nonisolated public static var dockSwipeHandling: String { DockSwipeHandling.current.rawValue }
 

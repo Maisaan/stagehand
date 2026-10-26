@@ -285,6 +285,12 @@ struct GestureCallbackState {
     /// Pointer points per trackpad width for moves Stagehand makes on macOS's behalf.
     var heldDragPointsPerPadWidth: Double = 1_800
     var syntheticPointerEvents = 0
+    /// The pointer position Stagehand last moved to is still the cursor's. Cleared when
+    /// macOS moves the pointer itself and when the lock ends; the next move then reads
+    /// the cursor once instead of every frame.
+    var syntheticAnchorValid = false
+    var lastSyntheticFrame: TimeInterval = 0
+    var syntheticStats = SyntheticPointerStats()
     var heldClickPositions: [Int32: (x: Double, y: Double)] = [:]
     var recognizer = NavigationGestureRecognizer()
     var ownership = GestureInputOwnership()
@@ -328,8 +334,43 @@ private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
          state.takeHeldClickPointerMove(now: now, buttonDown: buttonDown))
     }
     delivery?()
-    if let move { postHeldClickDrag(dx: move.dx, dy: move.dy) }
+    if let move {
+        let posted = postHeldClickDrag(move)
+        gestureCallbackState.withLock { $0.syntheticStats.recordPost(posted) }
+    }
     return 0
+}
+
+/// One frame's pointer move for a held click macOS has locked, in points.
+struct HeldClickPointerMove: Equatable, Sendable {
+    var dx: Double
+    var dy: Double
+    /// Read the cursor before moving: Stagehand's last position may no longer be its.
+    var reanchor: Bool
+}
+
+/// How Stagehand's pointer moves for a held click went, for drag_and_drop_ended.
+public struct SyntheticPointerStats: Equatable, Sendable {
+    /// Drags posted, frames whose movement stayed under a point (kept for the next),
+    /// and times the cursor had to be read again.
+    public var posts = 0
+    public var subPointFrames = 0
+    public var reanchors = 0
+    /// Since the last reset: the longest wait between frames that moved the pointer,
+    /// and the slowest post.
+    public var longestFrameGapMilliseconds: Double = 0
+    public var slowestPostMicroseconds: Double = 0
+
+    public init() {}
+
+    mutating func recordPost(_ result: (posted: Bool, microseconds: Double)) {
+        if result.posted {
+            posts &+= 1
+            slowestPostMicroseconds = max(slowestPostMicroseconds, result.microseconds)
+        } else {
+            subPointFrames &+= 1
+        }
+    }
 }
 
 /// Real drags arriving within this long stop Stagehand's own pointer moves.
@@ -344,21 +385,42 @@ nonisolated(unsafe) private let syntheticPointerSource: CGEventSource? = {
     return source
 }()
 
+// Used only on the MultitouchSupport callback thread. Where Stagehand has put the
+// pointer (fractional: sub-point movement adds up), where it last posted it, and the
+// displays' bounds, read again with the cursor at each reanchor.
+nonisolated(unsafe) private var syntheticAnchor = CGPoint.zero
+nonisolated(unsafe) private var syntheticPosted = CGPoint.zero
+nonisolated(unsafe) private var syntheticBounds = CGRect.null
+
 /// Moves the pointer, and the item a held click is carrying, by a drag Stagehand posts.
-/// Called on the MultitouchSupport thread; CGEvent posting is thread-safe.
-private func postHeldClickDrag(dx: Double, dy: Double) {
-    guard let current = CGEvent(source: nil)?.location else { return }
-    var count: UInt32 = 0
-    var displays = [CGDirectDisplayID](repeating: 0, count: 8)
-    guard CGGetActiveDisplayList(8, &displays, &count) == .success, count > 0 else { return }
-    let bounds = displays.prefix(Int(count)).map { CGDisplayBounds($0) }.reduce(CGRect.null) { $0.union($1) }
-    let target = CGPoint(x: min(max(current.x + dx, bounds.minX), bounds.maxX - 1),
-                         y: min(max(current.y + dy, bounds.minY), bounds.maxY - 1))
+/// Called on the MultitouchSupport thread; CGEvent posting is thread-safe. The cursor
+/// is read only at a reanchor: posting is asynchronous, so a read every frame could
+/// return a position from before the previous post and lose that frame's movement.
+/// Movement under a point is kept for the next frame instead of posted, so a resting
+/// finger's jitter does not shake the cursor.
+private func postHeldClickDrag(_ move: HeldClickPointerMove) -> (posted: Bool, microseconds: Double) {
+    if move.reanchor {
+        guard let current = CGEvent(source: nil)?.location else { return (false, 0) }
+        var count: UInt32 = 0
+        var displays = [CGDirectDisplayID](repeating: 0, count: 8)
+        guard CGGetActiveDisplayList(8, &displays, &count) == .success, count > 0 else { return (false, 0) }
+        syntheticBounds = displays.prefix(Int(count)).map { CGDisplayBounds($0) }.reduce(CGRect.null) { $0.union($1) }
+        syntheticAnchor = current
+        syntheticPosted = current
+    }
+    let bounds = syntheticBounds
+    let target = CGPoint(x: min(max(syntheticAnchor.x + move.dx, bounds.minX), bounds.maxX - 1),
+                         y: min(max(syntheticAnchor.y + move.dy, bounds.minY), bounds.maxY - 1))
+    syntheticAnchor = target
+    guard abs(target.x - syntheticPosted.x) >= 1 || abs(target.y - syntheticPosted.y) >= 1 else { return (false, 0) }
+    let began = DispatchTime.now().uptimeNanoseconds
     guard let event = CGEvent(mouseEventSource: syntheticPointerSource, mouseType: .leftMouseDragged,
-                              mouseCursorPosition: target, mouseButton: .left) else { return }
-    event.setIntegerValueField(.mouseEventDeltaX, value: Int64((target.x - current.x).rounded()))
-    event.setIntegerValueField(.mouseEventDeltaY, value: Int64((target.y - current.y).rounded()))
+                              mouseCursorPosition: target, mouseButton: .left) else { return (false, 0) }
+    event.setIntegerValueField(.mouseEventDeltaX, value: Int64((target.x - syntheticPosted.x).rounded()))
+    event.setIntegerValueField(.mouseEventDeltaY, value: Int64((target.y - syntheticPosted.y).rounded()))
     event.post(tap: .cghidEventTap)
+    syntheticPosted = target
+    return (true, Double(DispatchTime.now().uptimeNanoseconds - began) / 1_000)
 }
 
 extension GestureCallbackState {
@@ -504,15 +566,30 @@ extension GestureCallbackState {
     /// or nil. Only while macOS has the touch locked for its own gesture, only the held
     /// finger is down, and macOS has sent no real drag recently: once it moves the pointer
     /// again, Stagehand stops within one frame, so the two never move it together.
-    mutating func takeHeldClickPointerMove(now: TimeInterval, buttonDown: Bool) -> (dx: Double, dy: Double)? {
+    mutating func takeHeldClickPointerMove(now: TimeInterval, buttonDown: Bool) -> HeldClickPointerMove? {
+        // Taken once: a frame the validator rejects never reaches excludingHeldClick,
+        // and must not post the previous frame's movement again.
+        let delta = heldClickFrameDelta
+        heldClickFrameDelta = (0, 0)
+        if !buttonDown { pointerLockedBesideHeldClick = false }
+        if !pointerLockedBesideHeldClick { syntheticAnchorValid = false }
         guard enabled, buttonDown, pointerLockedBesideHeldClick, !heldClickContactIDs.isEmpty,
               previousFilteredCount == 0, now - lastRealPointerDrag > syntheticPointerHoldoff,
-              heldClickFrameDelta.x != 0 || heldClickFrameDelta.y != 0 else { return nil }
+              delta.x != 0 || delta.y != 0 else { return nil }
         syntheticPointerEvents &+= 1
+        if now - lastSyntheticFrame < 0.5 {
+            syntheticStats.longestFrameGapMilliseconds = max(syntheticStats.longestFrameGapMilliseconds,
+                                                             (now - lastSyntheticFrame) * 1_000)
+        }
+        lastSyntheticFrame = now
+        let reanchor = !syntheticAnchorValid
+        if reanchor { syntheticStats.reanchors &+= 1 }
+        syntheticAnchorValid = true
         // MultitouchSupport y grows upward; CG y grows downward. A trackpad is wider than
         // it is tall, so a height is a smaller distance than a width.
-        return (heldClickFrameDelta.x * heldDragPointsPerPadWidth,
-                -heldClickFrameDelta.y * heldDragPointsPerPadWidth * trackpadAspect)
+        return HeldClickPointerMove(dx: delta.x * heldDragPointsPerPadWidth,
+                                    dy: -delta.y * heldDragPointsPerPadWidth * trackpadAspect,
+                                    reanchor: reanchor)
     }
 
     /// Leaves out the finger holding a click. It must have been touching in the frame
@@ -714,7 +791,19 @@ final class GestureMonitor {
 
     /// Pointer drags Stagehand posted for a held click since gestures last started.
     nonisolated static func syntheticPointerEventCount() -> Int {
-        gestureCallbackState.withLock { $0.syntheticPointerEvents }
+        gestureCallbackState.withLock { $0.syntheticStats.posts }
+    }
+
+    /// How Stagehand's pointer moves went; `reset` clears the maxima for the next press.
+    nonisolated static func syntheticPointerStats(reset: Bool) -> SyntheticPointerStats {
+        gestureCallbackState.withLock { state in
+            let stats = state.syntheticStats
+            if reset {
+                state.syntheticStats.longestFrameGapMilliseconds = 0
+                state.syntheticStats.slowestPostMicroseconds = 0
+            }
+            return stats
+        }
     }
 
     func cancelGestureSequence() {
@@ -754,7 +843,10 @@ private let inputTapCallback: CGEventTapCallBack = { _, type, event, context in
     let now = ProcessInfo.processInfo.systemUptime
     if type == .leftMouseDragged {
         if event.getIntegerValueField(.eventSourceUserData) != syntheticPointerTag {
-            gestureCallbackState.withLock { $0.lastRealPointerDrag = now }
+            gestureCallbackState.withLock {
+                $0.lastRealPointerDrag = now
+                $0.syntheticAnchorValid = false
+            }
         }
         return Unmanaged.passUnretained(event)
     }

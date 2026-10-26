@@ -34,7 +34,10 @@ final class PointerDragTracker {
         let dockEventsAtStart: Int
         let dockPhasesAtStart: [Int64: Int]
         let syntheticPointerEventsAtStart: Int
+        var synthesisAtStart = SyntheticPointerStats()
         var dragEvents = 0
+        /// Drags Stagehand posted itself; they do not end a gap in macOS's.
+        var syntheticDragsSeen = 0
         var lastDrag: TimeInterval
         var travelAtLastDrag: Double
         var longestGap: TimeInterval = 0
@@ -58,6 +61,14 @@ final class PointerDragTracker {
     var onDragAndDropEnded: (([String: String]) -> Void)?
 
     private static let dragPasteboard = NSPasteboard(name: .drag)
+
+    /// Counts since `start`; the maxima were reset when the press began.
+    static func synthesisDetails(_ stats: SyntheticPointerStats, since start: SyntheticPointerStats) -> [String: String] {
+        ["syntheticReanchors": String(stats.reanchors - start.reanchors),
+         "syntheticSubPointFrames": String(stats.subPointFrames - start.subPointFrames),
+         "syntheticLongestFrameGapMilliseconds": String(Int(stats.longestFrameGapMilliseconds)),
+         "syntheticSlowestPostMicroseconds": String(Int(stats.slowestPostMicroseconds))]
+    }
 
     init(buttonDown: @escaping () -> Bool = { NSEvent.pressedMouseButtons & 1 != 0 },
          dragChangeCount: @escaping () -> Int = { PointerDragTracker.dragPasteboard.changeCount },
@@ -109,8 +120,9 @@ final class PointerDragTracker {
             return event
         }) { monitors.append(monitor) }
         let dragged: NSEvent.EventTypeMask = [.leftMouseDragged]
-        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: dragged, handler: { [weak self] _ in
-            MainActor.assumeIsolated { self?.pointerDragged() }
+        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: dragged, handler: { [weak self] event in
+            let synthetic = event.cgEvent?.getIntegerValueField(.eventSourceUserData) == InputController.syntheticPointerTag
+            MainActor.assumeIsolated { self?.pointerDragged(synthetic: synthetic) }
         }) { monitors.append(monitor) }
         if let monitor = NSEvent.addLocalMonitorForEvents(matching: dragged, handler: { [weak self] event in
             self?.pointerDragged()
@@ -118,7 +130,11 @@ final class PointerDragTracker {
         }) { monitors.append(monitor) }
     }
 
-    func pointerDragged() {
+    func pointerDragged(synthetic: Bool = false) {
+        if synthetic {
+            press?.syntheticDragsSeen += 1
+            return
+        }
         press?.pointerMoved(at: now(), travel: heldClickTravel())
     }
 
@@ -132,9 +148,11 @@ final class PointerDragTracker {
         pressCarriesDrop = false
         pressBaseline = inStagehand ? nil : dragChangeCount()
         let time = now()
+        let synthesisAtStart = InputController.syntheticPointerStats(reset: true)
         press = PressRecord(began: time, dockEventsAtStart: dockEventsWithheld(), dockPhasesAtStart: dockPhases(),
                             syntheticPointerEventsAtStart: syntheticPointerEvents(),
                             lastDrag: time, travelAtLastDrag: heldClickTravel())
+        press?.synthesisAtStart = synthesisAtStart
     }
 
     func pressEnded() {
@@ -159,9 +177,12 @@ final class PointerDragTracker {
                     return delta > 0 ? "\(phase):\(delta)" : nil
                 }.joined(separator: " "),
                 "dockHandling": InputController.dockSwipeHandling,
-                // Pointer drags Stagehand posted while macOS had the touch locked.
-                "syntheticPointerEvents": String(syntheticPointerEvents() - press.syntheticPointerEventsAtStart)
-            ])
+                // Pointer drags Stagehand posted while macOS had the touch locked, and
+                // how many of them came back through the event monitor.
+                "syntheticPointerEvents": String(syntheticPointerEvents() - press.syntheticPointerEventsAtStart),
+                "syntheticDragsSeen": String(press.syntheticDragsSeen)
+            ].merging(Self.synthesisDetails(InputController.syntheticPointerStats(reset: false),
+                                            since: press.synthesisAtStart)) { current, _ in current })
         }
         press = nil
         pressCarriesDrop = false

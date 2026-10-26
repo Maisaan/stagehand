@@ -1108,7 +1108,7 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     var state = enabledCallbackState()
     state.heldDragPointsPerPadWidth = 1_000
     var frame: Int32 = 1
-    func feed(_ contacts: [GestureContact], at time: Double, buttonDown: Bool = true) -> (dx: Double, dy: Double)? {
+    func feed(_ contacts: [GestureContact], at time: Double, buttonDown: Bool = true) -> HeldClickPointerMove? {
         _ = state.process(contacts: contacts, touches: touches(contacts, frame: frame), rawCount: Int32(contacts.count),
                           flags: [], timestamp: time, now: time, buttonDown: buttonDown)
         frame += 1
@@ -1125,16 +1125,24 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     // The swipe fingers are still down.
     #expect(feed([held(0.52, 0.2)] + contacts(dx: -0.05), at: 1.05) == nil)
     _ = feed([held(0.52, 0.2)], at: 1.1)
-    // Alone and locked: right on the pad is right on screen, up on the pad is up on screen.
+    // Alone and locked: right on the pad is right on screen, up on the pad is up on
+    // screen. The first move of a burst reads the cursor; the next ones do not.
     let move = feed([held(0.53, 0.21)], at: 1.11)
     #expect(move.map { abs($0.dx - 10) < 0.001 && abs($0.dy + 10 * trackpadAspect) < 0.001 } == true)
-    #expect(feed([held(0.53, 0.21)], at: 1.12) == nil)
-    // A real drag from macOS stops Stagehand's moves.
-    state.lastRealPointerDrag = 1.125
+    #expect(move?.reanchor == true)
+    #expect(feed([held(0.54, 0.21)], at: 1.12)?.reanchor == false)
     #expect(feed([held(0.54, 0.21)], at: 1.13) == nil)
-    #expect(feed([held(0.55, 0.21)], at: 1.2) != nil)
-    #expect(state.syntheticPointerEvents == 2)
+    // A frame the validator rejects (its timestamp goes back) posts nothing again.
+    _ = feed([held(0.55, 0.21)], at: 1.14)
+    #expect(feed([held(0.55, 0.21)], at: 1.135) == nil)
+    // A real drag from macOS stops Stagehand's moves, and the next one reads the cursor.
+    state.lastRealPointerDrag = 1.15
+    state.syntheticAnchorValid = false
+    #expect(feed([held(0.56, 0.21)], at: 1.16) == nil)
+    #expect(feed([held(0.57, 0.21)], at: 1.25)?.reanchor == true)
+    #expect(state.syntheticStats.reanchors == 2)
     // The drop ends the lock.
-    #expect(feed([held(0.56, 0.21)], at: 1.3, buttonDown: false) == nil)
+    #expect(feed([held(0.58, 0.21)], at: 1.3, buttonDown: false) == nil)
     #expect(!state.pointerLockedBesideHeldClick)
+    #expect(!state.syntheticAnchorValid)
 }

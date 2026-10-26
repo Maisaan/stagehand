@@ -83,3 +83,28 @@ import Testing
     tracker.pressEnded()
     #expect(reports.count == 1)
 }
+
+/// Drags Stagehand posts for a locked held click are counted apart from macOS's, so
+/// the longest gap still says how long macOS itself sent nothing.
+@MainActor
+@Test func stagehandsOwnDragsDoNotEndAGapInMacOSDrags() {
+    var count = 10, time = 100.0
+    var reports: [[String: String]] = []
+    let tracker = PointerDragTracker(buttonDown: { true }, dragChangeCount: { count },
+                                     now: { time }, heldClickTravel: { 0 }, dockEventsWithheld: { 0 },
+                                     syntheticPointerEvents: { 0 })
+    tracker.onDragAndDropEnded = { reports.append($0) }
+    tracker.pressBegan(inStagehand: false)
+    count += 1
+    #expect(tracker.isDragAndDrop)
+    time += 0.01
+    tracker.pointerDragged()
+    for _ in 0..<50 {
+        time += 0.01
+        tracker.pointerDragged(synthetic: true)
+    }
+    tracker.pressEnded()
+    #expect(reports.first?["pointerDragEvents"] == "1")
+    #expect(reports.first?["syntheticDragsSeen"] == "50")
+    #expect(reports.first?["longestPointerGapMilliseconds"] == "500")
+}
