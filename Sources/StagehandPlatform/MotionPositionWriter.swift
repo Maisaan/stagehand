@@ -12,6 +12,8 @@ final class MotionPositionWriter: @unchecked Sendable {
         let windowID: String
         let element: AXUIElement
         let position: CGPoint
+        /// The statistics period the position was requested in.
+        let generation: UInt64
     }
 
     private let lock = NSLock()
@@ -22,6 +24,9 @@ final class MotionPositionWriter: @unchecked Sendable {
     /// Per-animation counts for diagnostics: positions requested, AX writes sent, slowest write.
     private var requested = 0
     private var sent = 0
+    /// Advanced by each reset. A write requested before a reset and sent after it
+    /// belongs to the previous animation and is not counted in the new one.
+    private var generation: UInt64 = 0
     private var slowestWrite: Double = 0
     /// When each window last moved, and the longest it went without moving. A
     /// long gap is a visible freeze of that window mid-motion.
@@ -30,6 +35,7 @@ final class MotionPositionWriter: @unchecked Sendable {
 
     func resetStatistics() {
         lock.withLock {
+            generation &+= 1
             requested = 0
             sent = 0
             slowestWrite = 0
@@ -55,7 +61,8 @@ final class MotionPositionWriter: @unchecked Sendable {
     func write(windowID: String, pid: pid_t, element: AXUIElement, position: CGPoint) {
         let queue: DispatchQueue? = lock.withLock {
             requested += 1
-            pending[pid, default: [:]][windowID] = Pending(windowID: windowID, element: element, position: position)
+            pending[pid, default: [:]][windowID] = Pending(windowID: windowID, element: element, position: position,
+                                                           generation: generation)
             guard draining.insert(pid).inserted else { return nil }
             return queueLocked(pid: pid)
         }
@@ -122,6 +129,7 @@ final class MotionPositionWriter: @unchecked Sendable {
                 AXUIElementSetAttributeValue(item.element, kAXPositionAttribute as CFString, value)
                 let finished = CFAbsoluteTimeGetCurrent()
                 lock.withLock {
+                    guard item.generation == generation else { return }
                     sent += 1
                     slowestWrite = max(slowestWrite, finished - began)
                     if let previous = lastSent[item.windowID] {
