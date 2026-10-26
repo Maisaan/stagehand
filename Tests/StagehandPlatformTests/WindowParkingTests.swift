@@ -446,4 +446,15 @@ struct WindowParkingTests {
     #expect(!skip(side: .right))
     #expect(!skip(remnant: 200))
     #expect(!skip(now: 100 + WindowSystem.parkCheckLifetime))
+    func reason(isParked: Bool = true, observed: Bool = true, check: WindowSystem.ParkCheck? = check,
+                side: WindowParkingSide? = .left, now: TimeInterval = 110) -> String? {
+        WindowSystem.parkCheckReason(isParked: isParked, observationComplete: observed, check: check,
+                                     side: side, remnantWidth: 64, now: now)
+    }
+    #expect(reason() == nil)
+    #expect(reason(isParked: false) == "notParked")
+    #expect(reason(observed: false) == "observationIncomplete")
+    #expect(reason(check: nil) == "noCheck")
+    #expect(reason(side: .right) == "sideChanged")
+    #expect(reason(now: 200) == "expired")
 }

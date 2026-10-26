@@ -170,8 +170,39 @@ public final class WindowSystem {
     nonisolated static func canSkipParkCheck(isParked: Bool, observationComplete: Bool, check: ParkCheck?,
                                              side: WindowParkingSide?, remnantWidth: CGFloat,
                                              now: TimeInterval) -> Bool {
-        guard isParked, observationComplete, let check else { return false }
-        return check.side == side && check.remnantWidth == remnantWidth && now - check.at < parkCheckLifetime
+        parkCheckReason(isParked: isParked, observationComplete: observationComplete, check: check,
+                        side: side, remnantWidth: remnantWidth, now: now) == nil
+    }
+
+    /// Why a parking request must read the window, or nil when it can skip.
+    nonisolated static func parkCheckReason(isParked: Bool, observationComplete: Bool, check: ParkCheck?,
+                                            side: WindowParkingSide?, remnantWidth: CGFloat,
+                                            now: TimeInterval) -> String? {
+        guard isParked else { return "notParked" }
+        guard observationComplete else { return "observationIncomplete" }
+        guard let check else { return "noCheck" }
+        guard check.side == side else { return "sideChanged" }
+        guard check.remnantWidth == remnantWidth else { return "widthChanged" }
+        guard now - check.at < parkCheckLifetime else { return "expired" }
+        return nil
+    }
+
+    /// Parking requests since the last take: how many skipped their reads, and why the
+    /// others read.
+    private var parkRequests = 0
+    private var parkSkipped = 0
+    private var parkReadReasons: [String: Int] = [:]
+
+    /// For change_completed: parking requests, skips, and read reasons since the last call.
+    public func takeParkingStatistics() -> [String: String] {
+        defer {
+            parkRequests = 0
+            parkSkipped = 0
+            parkReadReasons.removeAll()
+        }
+        return ["parkRequests": String(parkRequests), "parkSkipped": String(parkSkipped),
+                "parkReadReasons": parkReadReasons.sorted { $0.key < $1.key }
+                    .map { "\($0.key):\($0.value)" }.joined(separator: " ")]
     }
 
     /// A move, resize, or (de)minimize notification: the window may no longer be where
@@ -1211,10 +1242,14 @@ public final class WindowSystem {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.park(windowID: windowID) }
         guard let tracked = windows[windowID] else { return false }
         let now = ProcessInfo.processInfo.systemUptime
-        if Self.canSkipParkCheck(isParked: tracked.parking.isParked, observationComplete: tracked.observationComplete,
-                                 check: tracked.parkCheck, side: preferredSide, remnantWidth: remnantWidth, now: now) {
+        parkRequests += 1
+        guard let reason = Self.parkCheckReason(
+            isParked: tracked.parking.isParked, observationComplete: tracked.observationComplete,
+            check: tracked.parkCheck, side: preferredSide, remnantWidth: remnantWidth, now: now) else {
+            parkSkipped += 1
             return true
         }
+        parkReadReasons[reason, default: 0] += 1
         motionWriter.settle(pid: tracked.record.pid)
         // AX can move a parked window back onscreen after our last frame read.
         // Check its physical position on every parking request.

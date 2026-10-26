@@ -62,6 +62,9 @@ extension StagehandModel {
                          generation: Int) async -> Bool {
         let change = pendingChange.change
         let token = pendingChange.token
+        // change_completed reports only this change's calls and parking requests.
+        _ = MainThreadActivity.takeAppCallCount()
+        _ = windowSystem.takeParkingStatistics()
         diagnostics.record("change_started", details: [
             "operation": change.diagnosticName,
             "pendingChanges": String(changes.count),
@@ -206,7 +209,12 @@ extension StagehandModel {
         switch outcome {
         case .completed:
             if let focusedWindowID = state.focusedWindowID { focusHistory.record(windowID: focusedWindowID) }
-            diagnostics.record("change_completed", details: ["operation": change.diagnosticName])
+            // What the change cost the main thread in calls to other apps, and how many
+            // parking requests could trust a window already at the side.
+            diagnostics.record("change_completed", details: [
+                "operation": change.diagnosticName,
+                "appCallsOnMain": String(MainThreadActivity.takeAppCallCount())
+            ].merging(windowSystem.takeParkingStatistics()) { current, _ in current })
             if recoveryInProgress && change == .refresh {
                 recoveryInProgress = false
                 automaticResumeAttempted = false

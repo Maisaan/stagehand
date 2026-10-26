@@ -31,3 +31,17 @@ import Testing
     #expect(MainThreadWatchdog.summary(["unlabeled": 1, "observe AXWindowCreated pid=1": 9, "windowList": 1, "b": 1])
         == "observe AXWindowCreated pid=1 x9, b x1, unlabeled x1")
 }
+
+/// change_completed reports how many labeled reads and writes to other apps a change
+/// made on the main thread; other labels do not count.
+@MainActor
+@Test func mainThreadActivityCountsCallsToOtherApps() {
+    MainThreadActivity.setEnabled(true)
+    defer { MainThreadActivity.setEnabled(false) }
+    _ = MainThreadActivity.takeAppCallCount()
+    MainThreadActivity.during("read AXPosition,AXSize pid=1") {}
+    MainThreadActivity.during("write position pid=1") {}
+    MainThreadActivity.during("hudWindow setFrame") {}
+    #expect(MainThreadActivity.takeAppCallCount() == 2)
+    #expect(MainThreadActivity.takeAppCallCount() == 0)
+}

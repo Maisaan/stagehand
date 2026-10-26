@@ -44,6 +44,8 @@ public protocol WindowManaging: AnyObject {
     func stop()
     /// Pause or quit while the user is away from this Desktop: restore once, no retries.
     func stop(windowsReachable: Bool)
+    /// Parking requests, skips, and read reasons since the last call; resets them.
+    func takeParkingStatistics() -> [String: String]
     func scanWindows() -> [WindowRecord]
     /// Reads off the main thread; nil when windows changed during the read.
     func scanWindowsOffMain() async -> [WindowRecord]?

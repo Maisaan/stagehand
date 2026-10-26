@@ -106,6 +106,7 @@ final class FakeWindowSystem: WindowManaging {
         return scanWindows()
     }
 
+    func takeParkingStatistics() -> [String: String] { [:] }
     private(set) var stopsWhileAway = 0
     func stop(windowsReachable: Bool) {
         if !windowsReachable { stopsWhileAway += 1 }

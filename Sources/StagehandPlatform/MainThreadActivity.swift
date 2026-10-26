@@ -11,6 +11,8 @@ public enum MainThreadActivity {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var enabled = false
     nonisolated(unsafe) private static var labels: [String] = []
+    /// Labeled reads and writes to other apps on the main thread since the last take.
+    nonisolated(unsafe) private static var appCalls = 0
 
     public static var isEnabled: Bool { lock.withLock { enabled } }
 
@@ -29,11 +31,24 @@ public enum MainThreadActivity {
         }
     }
 
+    /// Synchronous Accessibility reads and writes made on the main thread since the last
+    /// call, counted while enabled. Each waits on another app.
+    public static func takeAppCallCount() -> Int {
+        lock.withLock {
+            defer { appCalls = 0 }
+            return appCalls
+        }
+    }
+
     @discardableResult
     public static func during<T>(_ label: @autoclosure () -> String, _ work: () throws -> T) rethrows -> T {
         guard Thread.isMainThread, lock.withLock({ enabled }) else { return try work() }
         let text = label()
-        lock.withLock { labels.append(text) }
+        let appCall = text.hasPrefix("read ") || text.hasPrefix("write ")
+        lock.withLock {
+            labels.append(text)
+            if appCall { appCalls += 1 }
+        }
         defer { lock.withLock { if !labels.isEmpty { labels.removeLast() } } }
         return try work()
     }

@@ -26,6 +26,8 @@ Sections:
   resources    resource_sample: footprint, CPU %, wakeups/s, threads
   timing       launch_timing and desktop_resume_refreshed
   drag and drop  drag_and_drop_ended: pointer gaps and Stagehand's own moves
+  layouts      change_completed: Accessibility calls on the main thread and parking
+               requests skipped or read, by kind of change
   lifecycle    lock/unlock, suspend/resume latency, pauses and failures
 """
 import argparse
@@ -73,6 +75,8 @@ def report(events, title):
     resources = collections.defaultdict(list)
     timing = collections.defaultdict(list)
     drags = []
+    layouts = collections.defaultdict(lambda: collections.defaultdict(list))
+    park_reasons = collections.Counter()
     lifecycle = []
     pending = {}
     for event in events:
@@ -131,6 +135,14 @@ def report(events, title):
                 timing["launch " + key].append(float(value))
         if name == "desktop_resume_refreshed":
             timing["resume refresh milliseconds"].append(float(d.get("milliseconds", 0)))
+        if name == "change_completed" and "appCallsOnMain" in d:
+            kind = operation.split(".")[0]
+            for key in ("appCallsOnMain", "parkRequests", "parkSkipped"):
+                if key in d:
+                    layouts[kind][key].append(float(d[key]))
+            for part in d.get("parkReadReasons", "").split():
+                reason, _, count = part.partition(":")
+                park_reasons[reason] += int(count or 0)
         if name == "drag_and_drop_ended":
             drags.append((event["timestamp"], d))
         if name in ("screen_locked", "screen_unlocked", "desktop_suspended", "desktop_resumed",
@@ -177,6 +189,13 @@ def report(events, title):
             print(f"  {timestamp} dur={d.get('durationMilliseconds')} gap={d.get('longestPointerGapMilliseconds')}"
                   f" travel={d.get('heldFingerTravelDuringGap')} dock={d.get('dockControlEventsWithheld')}"
                   f" synthetic={d.get('syntheticPointerEvents', '-')}")
+    if layouts:
+        print("-- layouts (per change_completed)")
+        for kind, values in sorted(layouts.items()):
+            for key, numbers in values.items():
+                print(f"  {kind:12s} {key:16s} total={sum(numbers):.0f} {pct(numbers)}")
+        if park_reasons:
+            print("  parking reads by reason: " + ", ".join(f"{k} {v}" for k, v in park_reasons.most_common()))
     print("-- lifecycle")
     unlocked = None
     for timestamp, name, extra in lifecycle:
