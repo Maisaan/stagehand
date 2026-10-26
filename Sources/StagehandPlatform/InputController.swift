@@ -159,6 +159,11 @@ public final class InputController {
         gestures.takePendingGestureCompletion()
     }
 
+    /// Dock gesture events withheld beside a held click since gestures last started.
+    nonisolated public static func withheldDockControlEventCount() -> Int {
+        GestureMonitor.withheldDockControlEventCount()
+    }
+
     /// Safe from any thread, for the keyboard tap's routing decision. Gesture state is
     /// process-wide, so this does not need the controller instance.
     nonisolated public static func hasPendingGestureCompletion() -> Bool {

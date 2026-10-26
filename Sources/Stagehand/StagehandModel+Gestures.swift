@@ -16,7 +16,8 @@ extension StagehandModel {
     /// Whether the left button is held and, if so, whether it carries a drag-and-drop.
     func pointerDetails() -> [String: String] {
         let held = pointer.isButtonDown
-        return ["pointerHeld": String(held), "dragAndDrop": String(held && pointer.isDragAndDrop)]
+        return ["pointerHeld": String(held), "dragAndDrop": String(held && pointer.isDragAndDrop),
+                "dockControlEventsWithheld": String(InputController.withheldDockControlEventCount())]
     }
 
     func handleGesture(_ event: GestureNavigationEvent) {

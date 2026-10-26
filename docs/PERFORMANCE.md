@@ -46,7 +46,7 @@ It reads `stagehand.1.log` and `stagehand.log` and skips acceptance and benchmar
 - `ribbon_animation_completed`: `focusedMotionGapMilliseconds` and `largestMotionGapMilliseconds` (visible freezes), `slowestMotionWriteMilliseconds`, `motionPositionsRequested`, `motionWritesSent`.
 - `navigation_focus_confirmed`: `focusReport.elapsedMilliseconds` and the AX operations of the focus attempt.
 - `screen_locked`, `screen_unlocked`, `desktop_suspended`, `desktop_resumed`: unlock-to-resume latency. A short lock may not suspend at all.
-- `ribbon_motion_yielded_to_pointer`: a slide stopped because the left button held a window (no `ribbon_animation_completed` follows). `gesture_ignored_for_pointer`: a swipe released during a window drag. Swipe and `navigation_motion_planned` events carry `pointerHeld` and `dragAndDrop`.
+- `ribbon_motion_yielded_to_pointer`: a slide stopped because the left button held a window (no `ribbon_animation_completed` follows). `gesture_ignored_for_pointer`: a swipe released during a window drag. Swipe and `navigation_motion_planned` events carry `pointerHeld`, `dragAndDrop`, and `dockControlEventsWithheld` (macOS Space-swipe events withheld beside a held click since gestures started).
 - Telling a drag-and-drop from a window drag reads the drag pasteboard's change count (one round trip to the pasteboard server, sub-millisecond) on the main thread at every left mouse-down on the system, and on each check while a held press is not yet a drag-and-drop: during a title-bar drag, about every 100 ms from the refresh poll.
 
 ## How Stagehand spends time

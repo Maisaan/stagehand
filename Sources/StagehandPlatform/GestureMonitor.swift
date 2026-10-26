@@ -48,6 +48,8 @@ enum SuppressibleInputEvent: Equatable, Sendable {
     case scroll(phase: Int64, momentumPhase: Int64)
     /// Touch, swipe, and begin/end gesture events derived from the same contacts.
     case gesture
+    /// The Dock's own gestures, among them its swipe between Spaces and full-screen apps.
+    case dockControl
 
     static let live = SuppressibleInputEvent.scroll(phase: 2, momentumPhase: 0)
     static let liveBegan = SuppressibleInputEvent.scroll(phase: 1, momentumPhase: 0)
@@ -109,6 +111,9 @@ struct GestureInputOwnership: Equatable, Sendable {
     mutating func suppress(_ event: SuppressibleInputEvent, now: TimeInterval) -> Bool {
         let framesFresh = now - lastContactFrameTime < inputSuppressionStaleInterval
         switch event {
+        case .dockControl:
+            // Withheld only beside a held click, by GestureCallbackState.suppress.
+            return false
         case .gesture:
             return (ownsSequence && framesFresh)
                 || (liftTailPending && now - lastLiftTime < inputSuppressionStaleInterval)
@@ -143,8 +148,15 @@ let suppressibleEventTypeMask: CGEventMask = [
     UInt32(NSEvent.EventType.beginGesture.rawValue),
     UInt32(NSEvent.EventType.endGesture.rawValue),
     UInt32(NSEvent.EventType.gesture.rawValue),
-    UInt32(NSEvent.EventType.swipe.rawValue)
+    UInt32(NSEvent.EventType.swipe.rawValue),
+    dockControlEventType
 ].reduce(0) { $0 | (CGEventMask(1) << CGEventMask($1)) }
+
+/// kCGSEventDockControl: the events WindowServer sends the Dock for its trackpad gestures,
+/// including the swipe between Spaces (HID type 23, kIOHIDEventTypeDockSwipe). Private;
+/// named in https://github.com/jurplel/InstantSpaceSwitcher/blob/main/Sources/ISS/ISS.c,
+/// which intercepts them with a session event tap like this one.
+let dockControlEventType: UInt32 = 30
 
 /// Rejects contact frames that cannot have come from a working trackpad. The private
 /// framework has no contract; after a macOS update it may report garbage with the right
@@ -227,6 +239,8 @@ struct GestureCallbackState {
     var heldClickContactIDs: Set<Int32> = []
     var buttonWasDown = false
     var previousContactIDs: Set<Int32> = []
+    /// Dock gesture events withheld beside a held click since gestures started.
+    var withheldDockControlEvents = 0
     var recognizer = NavigationGestureRecognizer()
     var ownership = GestureInputOwnership()
     var frameValidator = GestureFrameValidator()
@@ -376,6 +390,22 @@ extension GestureCallbackState {
 }
 
 extension GestureCallbackState {
+    /// Decide one app-bound event for the input tap.
+    ///
+    /// The held click is still a finger on the trackpad to macOS: with three fingers
+    /// swiping beside it, macOS sees four and starts its own four-finger swipe between
+    /// Spaces, which freezes the pointer and the carried item until it gives up. While a
+    /// held click is left out and Stagehand owns the other fingers, the Dock's gesture
+    /// events are withheld too. Four fingers with no held click stay macOS's swipe.
+    mutating func suppress(_ kind: SuppressibleInputEvent, now: TimeInterval) -> Bool {
+        guard enabled else { return false }
+        guard case .dockControl = kind else { return ownership.suppress(kind, now: now) }
+        guard !heldClickContactIDs.isEmpty, ownership.suppress(.gesture, now: now) else { return false }
+        withheldDockControlEvents &+= 1
+        if traceGestures { NSLog("[DEBUG-gesture] dock gesture withheld beside a held click") }
+        return true
+    }
+
     /// Leaves out the finger holding a click. It must have been touching in the frame
     /// before the button went down, and fewer fingers than a swipe were down, with no
     /// swipe under way: a swipe that presses the pad keeps its fingers, and fingers that
@@ -533,6 +563,11 @@ final class GestureMonitor {
         gestureCallbackState.withLock { $0.enabled && $0.pendingEvents.hasCompletion }
     }
 
+    /// Dock gesture events withheld beside a held click since gestures last started.
+    nonisolated static func withheldDockControlEventCount() -> Int {
+        gestureCallbackState.withLock { $0.withheldDockControlEvents }
+    }
+
     func cancelGestureSequence() {
         if traceGestures { NSLog("[DEBUG-gesture] sequence interrupted by app") }
         gestureCallbackState.withLock { state in
@@ -559,13 +594,17 @@ private let inputTapCallback: CGEventTapCallBack = { _, type, event, context in
         if let context { Unmanaged<InputTapThread>.fromOpaque(context).takeUnretainedValue().reenable() }
         return Unmanaged.passUnretained(event)
     }
-    let kind: SuppressibleInputEvent = type == .scrollWheel
-        ? .scroll(phase: event.getIntegerValueField(.scrollWheelEventScrollPhase),
-                  momentumPhase: event.getIntegerValueField(.scrollWheelEventMomentumPhase))
-        : .gesture
+    let kind: SuppressibleInputEvent = if type == .scrollWheel {
+        .scroll(phase: event.getIntegerValueField(.scrollWheelEventScrollPhase),
+                momentumPhase: event.getIntegerValueField(.scrollWheelEventMomentumPhase))
+    } else if type.rawValue == dockControlEventType {
+        .dockControl
+    } else {
+        .gesture
+    }
     let now = ProcessInfo.processInfo.systemUptime
     let suppress = gestureCallbackState.withLock { state in
-        state.enabled && state.ownership.suppress(kind, now: now)
+        state.suppress(kind, now: now)
     }
     return suppress ? nil : Unmanaged.passUnretained(event)
 }

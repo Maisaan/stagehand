@@ -306,7 +306,7 @@ private func enabledCallbackState(unmodified: Bool = true, shortcut: Bool = fals
 }
 
 @Test func inputTapMaskCoversScrollAndTheGestureFamily() {
-    for type: UInt32 in [CGEventType.scrollWheel.rawValue, 19, 20, 29, 31] {
+    for type: UInt32 in [CGEventType.scrollWheel.rawValue, 19, 20, 29, 30, 31] {
         #expect(suppressibleEventTypeMask & (CGEventMask(1) << CGEventMask(type)) != 0, "type \(type)")
     }
     for type: UInt32 in [CGEventType.keyDown.rawValue, CGEventType.leftMouseDown.rawValue,
@@ -1015,4 +1015,39 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     _ = state.process(contacts: [held] + scroll, touches: touches([held] + scroll, frame: 3), rawCount: 3,
                       flags: [], timestamp: 1.02, now: 1.02, buttonDown: true)
     #expect(!suppressed(&state.ownership, .liveBegan, now: 1.021))
+}
+
+/// A held click is still a finger to macOS: three fingers swiping beside it are four,
+/// and macOS started its own four-finger swipe between Spaces, freezing the pointer and
+/// the carried file. Its Dock events are withheld only beside a held click; four plain
+/// fingers stay macOS's swipe.
+@Test func theDockSwipeIsWithheldOnlyBesideAHeldClick() {
+    var state = enabledCallbackState()
+    var frame: Int32 = 1
+    func feed(_ contacts: [GestureContact], at time: Double, buttonDown: Bool) {
+        _ = state.process(contacts: contacts, touches: touches(contacts, frame: frame), rawCount: Int32(contacts.count),
+                          flags: [], timestamp: time, now: time, buttonDown: buttonDown)
+        frame += 1
+    }
+    func withheld(_ kind: SuppressibleInputEvent, at time: Double) -> Bool { state.suppress(kind, now: time) }
+    let held = GestureContact(id: 9, x: 0.5, y: 0.1)
+    feed([held], at: 1, buttonDown: false)
+    feed([held], at: 1.01, buttonDown: true)
+    #expect(!withheld(.dockControl, at: 1.011))
+    feed([held] + contacts(), at: 1.02, buttonDown: true)
+    feed([held] + contacts(dx: -0.05), at: 1.07, buttonDown: true)
+    #expect(withheld(.dockControl, at: 1.071))
+    // The swipe fingers lift; the Dock's last event of that sequence is withheld too.
+    feed([held], at: 1.12, buttonDown: true)
+    #expect(withheld(.dockControl, at: 1.121))
+    #expect(!withheld(.dockControl, at: 1.3))
+    #expect(state.withheldDockControlEvents == 2)
+    feed([], at: 1.4, buttonDown: false)
+
+    // Four fingers without a held click: macOS's swipe between Spaces.
+    let four = contacts(count: 4)
+    feed(four, at: 2, buttonDown: false)
+    feed(contacts(count: 4, dx: -0.05), at: 2.05, buttonDown: false)
+    #expect(!withheld(.dockControl, at: 2.051))
+    #expect(withheld(.liveBegan, at: 2.051))
 }
