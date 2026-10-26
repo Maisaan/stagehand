@@ -46,6 +46,7 @@ It reads `stagehand.1.log` and `stagehand.log` and skips acceptance and benchmar
 - `ribbon_animation_completed`: `focusedMotionGapMilliseconds` and `largestMotionGapMilliseconds` (visible freezes), `slowestMotionWriteMilliseconds`, `motionPositionsRequested`, `motionWritesSent`.
 - `navigation_focus_confirmed`: `focusReport.elapsedMilliseconds` and the AX operations of the focus attempt.
 - `screen_locked`, `screen_unlocked`, `desktop_suspended`, `desktop_resumed`: unlock-to-resume latency. A short lock may not suspend at all.
+- `ribbon_motion_yielded_to_pointer`: a slide stopped because the left button held a window (no `ribbon_animation_completed` follows). `gesture_ignored_for_pointer`: a swipe released during a window drag. Swipe and `navigation_motion_planned` events carry `pointerHeld` and `dragAndDrop`.
 
 ## How Stagehand spends time
 
