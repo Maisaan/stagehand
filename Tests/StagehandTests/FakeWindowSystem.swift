@@ -197,6 +197,8 @@ final class FakeWindowSystem: WindowManaging {
     /// Focus reads since the last reset; each is a synchronous AX round trip to the focused app.
     private(set) var focusReads = 0
 
+    func focusedWindowIDOffMain() async -> String? { focusedWindowID() }
+
     func focusedWindowID() -> String? {
         focusReads += 1
         return focused

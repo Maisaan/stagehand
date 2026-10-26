@@ -1441,6 +1441,29 @@ public final class WindowSystem {
         return id
     }
 
+    /// focusedWindowID() with its Accessibility read on the focus-observation queue. The
+    /// refresh after a change asks the app that was just activated, while it is busiest;
+    /// on the main thread that wait delayed typing in every app (21 stalls, 1.75 s in
+    /// real use since 2026-10-25T12:10).
+    public func focusedWindowIDOffMain() async -> String? {
+        if NSApp?.isActive == true {
+            let id = nativeWindows.focusedWindowID
+            lastObservedFocusedWindowID = id
+            return id
+        }
+        let request = FocusReadRequest(system: self, systemElement: systemElement,
+                                       frontmostPID: Self.activeFrontmostPID(), snapshot: identitySnapshot())
+        let read = await withCheckedContinuation { (continuation: CheckedContinuation<FocusRead, Never>) in
+            Self.focusObservationQueue.async {
+                continuation.resume(returning: request.system.readFocus(
+                    systemElement: request.systemElement, frontmostPID: request.frontmostPID, in: request.snapshot))
+            }
+        }
+        let id = resolveFocus(read)
+        lastObservedFocusedWindowID = id
+        return id
+    }
+
     public func mayHoldFocus(windowID: String) -> Bool {
         if nativeWindows.contains(windowID: windowID) { return NSApp?.isActive == true }
         guard let pid = windows[windowID]?.record.pid else { return false }

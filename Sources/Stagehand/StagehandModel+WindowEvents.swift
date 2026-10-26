@@ -69,6 +69,8 @@ extension StagehandModel {
                     }
                     current = scanned
                 }
+                // Focus, like the scan, is read off the main thread.
+                let observedFocus = await self.windowSystem.focusedWindowIDOffMain()
                 guard !Task.isCancelled, self.isRunning, !self.isSuspended else { return }
                 guard !self.changes.isProcessing, !self.ribbonMotion.isRunning,
                       self.gestureBase == nil, !self.isLayingOutWindows else { continue }
@@ -76,7 +78,7 @@ extension StagehandModel {
                     self.nativeDesktopChanged()
                     return
                 }
-                self.applyRefresh(current)
+                self.applyRefresh(current, observedFocusedWindowID: .some(observedFocus))
                 return
             }
         }
@@ -274,7 +276,10 @@ extension StagehandModel {
     /// Reconciles the workspace with a completed scan.
     /// `forceLayout` lays the ribbon out even when nothing changed, as after
     /// returning to the Desktop, instead of only redrawing the border.
-    func applyRefresh(_ current: [WindowRecord], forceLayout: Bool = false) {
+    /// `observedFocusedWindowID` is the focus read with the scan; nil reads it now, on
+    /// the main thread, for the synchronous callers (resume, launch, fallbacks).
+    func applyRefresh(_ current: [WindowRecord], forceLayout: Bool = false,
+                      observedFocusedWindowID observed: String?? = nil) {
         let motionStart = navigationFrames()
         let oldState = state
         windows = current
@@ -283,7 +288,7 @@ extension StagehandModel {
         workspaceRestoration.reconcile(state: &state, windowIDs: current.map(\.id),
                                        trackedWindowIDs: windowSystem.trackedWindowIDs,
                                        initialWidthFractions: initialWidthFractions(for: current))
-        let observedFocusedWindowID = windowSystem.focusedWindowID()
+        let observedFocusedWindowID = observed ?? windowSystem.focusedWindowID()
         // A window restored from the Dock takes focus even if macOS has not reported it yet.
         let placedRestoredWindow = placeRestoredWindows()
         if !placedRestoredWindow, oldState.activeSpaceIndex == state.activeSpaceIndex,

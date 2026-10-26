@@ -63,6 +63,8 @@ public protocol WindowManaging: AnyObject {
     @discardableResult func park(windowID: String, preferredSide: WindowParkingSide?, remnantWidth: CGFloat) -> Bool
 
     func focusedWindowID() -> String?
+    /// The same answer, read without waiting on the focused app on the main thread.
+    func focusedWindowIDOffMain() async -> String?
     /// Whether the window's app is the active frontmost app, from AppKit without an
     /// Accessibility call. A window of any other app cannot be the focused window.
     func mayHoldFocus(windowID: String) -> Bool
