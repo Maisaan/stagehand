@@ -26,6 +26,63 @@ struct ModelScenarioTests {
         #expect(harness.events("automatic_pause").isEmpty)
     }
 
+    /// Holding a file and switching windows to drop it: the held button was taken for a
+    /// title-bar drag, so the slide stopped on its first frame and layout waited for the
+    /// drop (2026-10-25T12:30:37Z, 2026-10-26T03:29:45Z). A title-bar drag still stops it.
+    @Test func aSwitchDuringADragAndDropSlidesButOneDuringAWindowDragYields() async {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+
+        harness.pointer.beginDragAndDrop()
+        harness.model.navigate(.focusNext)
+        await harness.settle()
+        #expect(harness.model.state.focusedWindowID == "b")
+        #expect(harness.events("ribbon_animation_completed").count == 1)
+        #expect(harness.events("ribbon_motion_yielded_to_pointer").isEmpty)
+        harness.pointer.release()
+
+        harness.pointer.beginWindowDrag()
+        harness.model.navigate(.focusNext)
+        await harness.settle(timeout: .milliseconds(500))
+        #expect(harness.events("ribbon_motion_yielded_to_pointer").count == 1)
+        #expect(harness.events("ribbon_animation_completed").count == 1)
+        harness.pointer.release()
+        await harness.settle()
+        #expect(harness.events("automatic_pause").isEmpty)
+    }
+
+    /// A swipe while the button holds a window would slide windows under that drag, so it
+    /// is ignored, including a release the keyboard tap claims before its began arrives.
+    /// The same swipe while carrying a drag-and-drop switches.
+    @Test func aSwipeIsIgnoredDuringAWindowDragButSwitchesDuringADragAndDrop() async {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        let swipe = {
+            harness.model.handleGesture(.began(axis: .horizontal, displacement: -0.02, mode: .plain))
+            harness.model.handleGesture(.ended(displacement: -0.2, velocity: -1.5, action: .focusNext, mode: .plain))
+        }
+
+        harness.pointer.beginWindowDrag()
+        swipe()
+        harness.model.finishGesture(axis: .horizontal, displacement: -0.2, velocity: -1.5,
+                                    recognizerAction: .focusNext, mode: .plain)
+        await harness.settle(timeout: .milliseconds(500))
+        #expect(harness.model.state.focusedWindowID == "a")
+        #expect(harness.events("gesture_ignored_for_pointer").count == 1)
+        harness.pointer.release()
+        await harness.settle()
+
+        harness.pointer.beginDragAndDrop()
+        swipe()
+        await harness.settle()
+        #expect(harness.model.state.focusedWindowID == "b")
+        harness.pointer.release()
+    }
+
     /// A swipe preview retried a refused first move on every display tick. For a closing
     /// window, or one whose app is not answering, each try is a main-thread round trip.
     /// A refusal that can still be read keeps its per-tick retry.

@@ -770,8 +770,9 @@ extension StagehandModel {
             if isRunning { nativeDesktopChanged() }
             return
         }
-        if gestureBase == nil, NSEvent.pressedMouseButtons & 1 != 0 {
-            // A real pointer interaction takes over from decorative settling.
+        if gestureBase == nil, pointer.isButtonDown, !pointer.isDragAndDrop {
+            // A real pointer interaction takes over from decorative settling. A
+            // drag-and-drop moves no window, so a switch made during one keeps sliding.
             if diagnostics.isEnabled {
                 // Logged because the slide then ends without ribbon_animation_completed.
                 diagnostics.record("ribbon_motion_yielded_to_pointer", details: [

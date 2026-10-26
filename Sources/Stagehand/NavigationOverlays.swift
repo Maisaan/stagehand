@@ -81,6 +81,7 @@ final class NavigationOverlays {
     var onRemoveWindow: ((String) -> Void)?
     var onReorderWindow: ((String, Int) -> Void)?
     var canRevealNavigation: (() -> Bool)?
+    var pointerCarriesDrop: (() -> Bool)?
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
     private var hoverFrame: CGRect?
@@ -243,6 +244,11 @@ final class NavigationOverlays {
     }
 
     private func pointerMoved(to point: CGPoint) {
+        // Shown during another app's drag-and-drop, the bar ignored the pointer; take it
+        // back once the drop is over.
+        if let hud, hud.ignoresMouseEvents, hudModel.warning == nil, NSEvent.pressedMouseButtons == 0 {
+            hud.ignoresMouseEvents = false
+        }
         let insideTrigger = hoverFrame?.contains(point) == true
         let insideBar = hud?.isVisible == true && hudModel.warning == nil && contentFrame?.contains(point) == true
         let inside = insideTrigger || insideBar
@@ -261,7 +267,7 @@ final class NavigationOverlays {
     private func presentHUD(dismissAfter: Duration) {
         guard let screen = NSScreen.managedDisplay else { return }
         let hud = hudPanel()
-        hud.ignoresMouseEvents = hudModel.warning != nil
+        hud.ignoresMouseEvents = hudModel.warning != nil || pointerCarriesDrop?() == true
         guard let container = hud.contentView as? HUDContainerView else { return }
         hudModel.reduceMotion = reduceMotion()
         let warningHeight = hudModel.warning.map { message in

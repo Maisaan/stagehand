@@ -31,7 +31,7 @@ extension StagehandModel {
         guard isRunning, !isSuspended else { return }
         switch event {
         case .began(let axis, let displacement, let mode):
-            guard desktopScope.refresh() == .home else { return }
+            guard desktopScope.refresh() == .home, !pointerHoldsAWindow() else { return }
             gestureAxis = axis
             if mode == .plain, !changes.isProcessing, axis == .horizontal,
                !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
@@ -70,8 +70,27 @@ extension StagehandModel {
         }
     }
 
+    /// A held button that is not carrying a drag-and-drop is moving or resizing a window,
+    /// or selecting. A swipe then would slide windows under that drag, so it is ignored.
+    /// Before this, such a swipe switched windows and the slide stopped on its first frame.
+    func pointerHoldsAWindow() -> Bool {
+        pointer.isButtonDown && !pointer.isDragAndDrop
+    }
+
     func finishGesture(axis: GestureAxis, displacement: Double, velocity: Double,
                                recognizerAction: NavigationAction?, mode: GestureMode) {
+        if pointerHoldsAWindow() {
+            gestureAxis = nil
+            if diagnostics.isEnabled {
+                diagnostics.record("gesture_ignored_for_pointer", details: [
+                    "displacement": String(displacement),
+                    "focusedWindowID": state.focusedWindowID ?? "none",
+                    "recognizerAction": recognizerAction.map { String(describing: $0) } ?? "none"
+                ].merging(pointerDetails()) { current, _ in current })
+            }
+            restoreGesturePreview()
+            return
+        }
         let resolvedAction: NavigationAction?
         if mode == .plain, axis == .horizontal, let gestureBase, let availableFrame {
             resolvedAction = RibbonMotion.horizontalCompletionAction(

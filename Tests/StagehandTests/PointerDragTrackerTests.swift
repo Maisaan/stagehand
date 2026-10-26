@@ -1,14 +1,6 @@
 import Testing
 @testable import Stagehand
 
-@MainActor
-private final class FakePointer {
-    var buttonDown = false
-    var dragChangeCount = 10
-    lazy var tracker = PointerDragTracker(buttonDown: { [unowned self] in buttonDown },
-                                          dragChangeCount: { [unowned self] in dragChangeCount })
-}
-
 /// A drag session started during a press makes it a drag-and-drop until release.
 @MainActor
 @Test func aPressBecomesADragAndDropWhenADragSessionStarts() {

@@ -378,6 +378,10 @@ final class StagehandModel: ObservableObject {
             guard let self, self.isRunning, !self.isSuspended else { return false }
             return self.desktopScope.refresh() == .home
         }
+        overlays.pointerCarriesDrop = { [weak self] in
+            guard let self else { return false }
+            return self.pointer.isButtonDown && self.pointer.isDragAndDrop
+        }
         overlays.setBorderColor(focusBorderColor)
         updateShortcutHints()
         input.onStatusChange = { [weak self] in self?.updateInputStatus() }

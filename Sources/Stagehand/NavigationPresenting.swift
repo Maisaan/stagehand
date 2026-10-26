@@ -12,6 +12,9 @@ protocol NavigationPresenting: AnyObject {
     var onRemoveWindow: ((String) -> Void)? { get set }
     var onReorderWindow: ((String, Int) -> Void)? { get set }
     var canRevealNavigation: (() -> Bool)? { get set }
+    /// True while the pointer carries another app's drag-and-drop; the app bar then
+    /// ignores the pointer so a drop near the notch reaches the window under it.
+    var pointerCarriesDrop: (() -> Bool)? { get set }
 
     func setBorderColor(_ color: NSColor)
     func updateBorder(frame: CGRect, visible: Bool, cornerRadius: CGFloat?,
