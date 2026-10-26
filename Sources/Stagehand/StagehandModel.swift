@@ -120,6 +120,7 @@ final class StagehandModel: ObservableObject {
             UserDefaults.standard.set(diagnosticLoggingEnabled, forKey: PreferenceKey.diagnosticLoggingEnabled)
             windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
             mainThreadWatchdog?.setEnabled(diagnosticLoggingEnabled)
+            resourceSampler?.setEnabled(diagnosticLoggingEnabled)
             if diagnosticLoggingEnabled {
                 diagnostics.isEnabled = true
                 diagnostics.record("logging_enabled")
@@ -186,6 +187,7 @@ final class StagehandModel: ObservableObject {
     var lockObserver: NSObjectProtocol?
     /// Logs main-thread stalls while diagnostic logging is on (the app session only).
     var mainThreadWatchdog: MainThreadWatchdog?
+    var resourceSampler: ResourceSampler?
     /// AXIsProcessTrusted() is cheap; macOS sends no notification when the user
     /// revokes Accessibility, and didBecomeActive only fires when Stagehand's own
     /// windows come forward.
@@ -441,7 +443,7 @@ final class StagehandModel: ObservableObject {
         }
         windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
         if persistence == .standard, injectedWindowSystem == nil {
-            mainThreadWatchdog = MainThreadWatchdog { [weak self] waited, activity in
+            mainThreadWatchdog = MainThreadWatchdog { [weak self] waited, activity, measured in
                 guard let self else { return }
                 let last = self.diagnostics.lastEvent
                 self.diagnostics.record("main_thread_stall", details: [
@@ -454,9 +456,13 @@ final class StagehandModel: ObservableObject {
                     "running": String(self.isRunning),
                     "ribbonMoving": String(self.ribbonMotion.isRunning),
                     "changeRunning": String(self.changes.isProcessing)
-                ])
+                ].merging(measured) { current, _ in current })
+            }
+            resourceSampler = ResourceSampler { [weak self] name, details in
+                self?.diagnostics.record(name, details: details)
             }
             mainThreadWatchdog?.setEnabled(diagnosticLoggingEnabled)
+            resourceSampler?.setEnabled(diagnosticLoggingEnabled)
         }
         ribbonMotion.onStall = { [weak self] in
             self?.diagnostics.record("ribbon_animation_stalled")
@@ -852,7 +858,9 @@ final class StagehandModel: ObservableObject {
     func saveLayout() {
         guard let layoutStore else { return }
         do {
-            try layoutStore.save(state, windows: windows, preferredHeights: preferredHeights)
+            try MainThreadActivity.during("layout save") {
+                try layoutStore.save(state, windows: windows, preferredHeights: preferredHeights)
+            }
         } catch {
             diagnostics.record("layout_save_failed", details: ["error": error.localizedDescription])
             NSLog("Stagehand layout save failed: %@", error.localizedDescription)
@@ -1133,7 +1141,11 @@ final class StagehandModel: ObservableObject {
             // Reconcile only after returning to the bound Desktop; away windows never enter state.
             // One layout after returning: the Desktop may have changed while away. A
             // second, separate reveal of the border before it would flash it.
+            let refreshBegan = ProcessInfo.processInfo.systemUptime
             refreshWindows(forceLayout: true)
+            diagnostics.record("desktop_resume_refreshed", details: [
+                "milliseconds": String(Int((ProcessInfo.processInfo.systemUptime - refreshBegan) * 1_000))
+            ])
             onStateChange?()
         case .away, .unknown:
             if !isSuspended {

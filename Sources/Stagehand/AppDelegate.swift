@@ -178,7 +178,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !UserDefaults.standard.bool(forKey: Self.onboardingCompleteKey) {
             openOnboarding()
         } else if model.accessibilityGranted && !interrupted {
+            let startBegan = Date()
             model.start()
+            var timing = ["startMilliseconds": String(Int(Date().timeIntervalSince(startBegan) * 1_000))]
+            if let launchFinishedMilliseconds { timing["launchFinishedMilliseconds"] = String(launchFinishedMilliseconds) }
+            if let modelInitMilliseconds { timing["modelInitMilliseconds"] = String(modelInitMilliseconds) }
+            model.diagnostics.record("launch_timing", details: timing)
         }
     }
 
@@ -568,6 +573,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func updateMenu() {
+        MainThreadActivity.during("statusMenu update") { rebuildMenu() }
+    }
+
+    private func rebuildMenu() {
         guard let model else { return }
         statusItem?.button?.toolTip = model.isSuspended
             ? "Stagehand: waiting for managed desktop"

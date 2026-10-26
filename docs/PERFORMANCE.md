@@ -9,6 +9,8 @@ How to measure Stagehand, find where time goes, and check a change. Live checks 
 | `scripts/run-benchmark.sh` | Live benchmark against disposable probe windows. Quit Stagehand first. |
 | `scripts/run-acceptance.sh` | Focus, typing, and space-switching correctness. Run before and after any change to focus, motion, input, or lifecycle. |
 | `scripts/analyze-log.py` | Summarizes real usage from the diagnostic log. |
+| `scripts/find-dead-code.sh` | Periphery scan for unused code (with and without tests as users); about 30 s, own build directory. |
+| `sample <pid> 5`, `footprint <pid>`, `top -pid <pid> -stats pid,cpu,idlew,power,threads` | Where Stagehand's threads are and how heavy it is, read-only. |
 | Diagnostic logging (Settings) | Writes `~/Library/Logs/Stagehand/stagehand.log`; keep it on. |
 | `/usr/bin/log show --predicate 'subsystem == "app.stagehand.Stagehand"'` | Window-system detail (scans, parking writes, AX notifications). Local time, whole-second `--start`. Plain `log` is a zsh builtin. |
 
@@ -42,7 +44,9 @@ It reads `stagehand.1.log` and `stagehand.log` and skips acceptance and benchmar
 
 ### Events worth knowing
 
-- `main_thread_stall`: the main thread was blocked for 50 ms or more. `lastEvent` names the phase. `activity` names the call that was running, sampled every 10 ms during the wait (`MainThreadActivity` labels around main-thread Accessibility calls, the AX callback, and the window list; `unlabeled` is anything else, such as AppKit or a loaded machine). Logged only while diagnostic logging is on.
+- `main_thread_stall`: the main thread was blocked for 50 ms or more. `lastEvent` names the phase. `activity` names the call that was running, sampled every 10 ms during the wait (`MainThreadActivity` labels around main-thread Accessibility calls, the AX callback, and the window list; `unlabeled` is anything else, such as AppKit or a loaded machine). `mainThreadCPUMilliseconds` is the main thread's own CPU during the wait: close to `waitedMilliseconds` means Stagehand was computing, near zero means it was waiting on another app or, with a high `loadAverage`, for a CPU. analyze-log.py splits stalls into computing and waiting. Logged only while diagnostic logging is on.
+- `resource_sample`: once a minute while logging is on: `footprintMegabytes`, `cpuPercent`, `idleWakeupsPerSecond`, `interruptWakeupsPerSecond`, `threads` since the previous sample. Compare builds with `--split` for lightness.
+- `launch_timing` (`launchFinishedMilliseconds`, `modelInitMilliseconds`, `startMilliseconds`) and `desktop_resume_refreshed` (`milliseconds` of the refresh after returning to the Desktop).
 - `ribbon_animation_completed`: `focusedMotionGapMilliseconds` and `largestMotionGapMilliseconds` (visible freezes), `slowestMotionWriteMilliseconds`, `motionPositionsRequested`, `motionWritesSent`.
 - `navigation_focus_confirmed`: `focusReport.elapsedMilliseconds` and the AX operations of the focus attempt.
 - `screen_locked`, `screen_unlocked`, `desktop_suspended`, `desktop_resumed`: unlock-to-resume latency. A short lock may not suspend at all.
@@ -61,7 +65,7 @@ It reads `stagehand.1.log` and `stagehand.log` and skips acceptance and benchmar
 ## Traps
 
 - **Probe windows did not appear**: the screen is locked. Check `ioreg -n Root -d1 -a | grep CGSSessionScreenIsLocked`.
-- **`sample` shows an empty call graph**: the signed, hardened build does not allow task access. Use the benchmark's stalls by phase, or temporary `diagnostics.eventObserver?("mark")` calls, which the benchmark attributes stalls to.
+- **`sample` works on the signed build** (checked 2026-10-26; it used to show an empty call graph). It only shows where threads are at that moment; for stalls, use `main_thread_stall` activity and the benchmark's stalls by phase.
 - **`NSLog` output is missing**: an app launched through LaunchServices does not show it in `log show`. Append to a file under `/tmp` for temporary timing.
 - **"Quit Stagehand first" when nothing is running**: `pgrep -f` matched your own shell command, which contained the app path. Build the pattern from pieces.
 - **The agent shell has no Accessibility or Automation permission**: it cannot drive other apps. Use the probe-based scripts.

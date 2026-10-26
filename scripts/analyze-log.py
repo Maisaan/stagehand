@@ -20,6 +20,12 @@ Sections:
                window went without moving, i.e. a visible freeze
   main thread  main_thread_stall events by the last event before them, and by
                the call most often running during them (activity)
+  stall kind   stalls split by the main thread's own CPU during the wait:
+               computing (CPU >= half the wait) or waiting (on another app's
+               reply, or for a CPU under load; loadAverage tells which)
+  resources    resource_sample: footprint, CPU %, wakeups/s, threads
+  timing       launch_timing and desktop_resume_refreshed
+  drag and drop  drag_and_drop_ended: pointer gaps and Stagehand's own moves
   lifecycle    lock/unlock, suspend/resume latency, pauses and failures
 """
 import argparse
@@ -62,6 +68,11 @@ def report(events, title):
     motion = collections.defaultdict(list)
     stalls = collections.defaultdict(list)
     stalls_by_activity = collections.defaultdict(list)
+    stall_kinds = collections.defaultdict(list)
+    stall_loads = []
+    resources = collections.defaultdict(list)
+    timing = collections.defaultdict(list)
+    drags = []
     lifecycle = []
     pending = {}
     for event in events:
@@ -99,11 +110,29 @@ def report(events, title):
                     100 * int(d["motionWritesSent"]) / int(d["motionPositionsRequested"]))
         if name == "main_thread_stall":
             stalls[d.get("lastEvent", "?")].append(float(d.get("waitedMilliseconds", 0)))
+            if "mainThreadCPUMilliseconds" in d:
+                waited = float(d.get("waitedMilliseconds", 0))
+                kind = "computing" if float(d["mainThreadCPUMilliseconds"]) >= waited / 2 else "waiting"
+                stall_kinds[kind].append(waited)
+            if "loadAverage" in d:
+                stall_loads.append(float(d["loadAverage"]))
             if "activity" in d:
                 # The most-sampled label, without its count or the pid, so one
                 # call groups across apps.
                 top = re.sub(r" pid=-?\d+| x\d+$", "", d["activity"].split(", ")[0])
                 stalls_by_activity[top].append(float(d.get("waitedMilliseconds", 0)))
+        if name == "resource_sample":
+            for key in ("footprintMegabytes", "cpuPercent", "idleWakeupsPerSecond",
+                        "interruptWakeupsPerSecond", "threads"):
+                if key in d:
+                    resources[key].append(float(d[key]))
+        if name == "launch_timing":
+            for key, value in d.items():
+                timing["launch " + key].append(float(value))
+        if name == "desktop_resume_refreshed":
+            timing["resume refresh milliseconds"].append(float(d.get("milliseconds", 0)))
+        if name == "drag_and_drop_ended":
+            drags.append((event["timestamp"], d))
         if name in ("screen_locked", "screen_unlocked", "desktop_suspended", "desktop_resumed",
                     "started", "paused", "automatic_pause", "layout_failed", "automatic_resume_failed",
                     "ribbon_position_commit_failed", "refresh_starved", "ribbon_animation_stalled"):
@@ -128,6 +157,26 @@ def report(events, title):
         print("-- main thread stalls >= 50 ms, by the call most often running during them")
         for label, values in sorted(stalls_by_activity.items(), key=lambda item: -sum(item[1]))[:15]:
             print(f"  {label[:60]:60s} total={sum(values):.0f} {pct(values)}")
+    if stall_kinds:
+        print("-- main thread stalls by kind (main thread CPU during the wait)")
+        for kind, values in sorted(stall_kinds.items()):
+            print(f"  {kind:12s} total={sum(values):.0f} {pct(values)}")
+        if stall_loads:
+            print(f"  load average during stalls {pct(stall_loads)}")
+    if resources:
+        print("-- resources (resource_sample, one a minute)")
+        for key, values in resources.items():
+            print(f"  {key:28s} {pct(values)}")
+    if timing:
+        print("-- timing (ms)")
+        for key, values in timing.items():
+            print(f"  {key:40s} {pct(values)}")
+    if drags:
+        print("-- drag and drop (per drag)")
+        for timestamp, d in drags[-15:]:
+            print(f"  {timestamp} dur={d.get('durationMilliseconds')} gap={d.get('longestPointerGapMilliseconds')}"
+                  f" travel={d.get('heldFingerTravelDuringGap')} dock={d.get('dockControlEventsWithheld')}"
+                  f" synthetic={d.get('syntheticPointerEvents', '-')}")
     print("-- lifecycle")
     unlocked = None
     for timestamp, name, extra in lifecycle:

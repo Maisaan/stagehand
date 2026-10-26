@@ -204,6 +204,12 @@ final class NavigationOverlays {
 
     /// Keep hover content current without opening the bar during background reconciliation.
     func updateNavigation(state: WorkspaceState, windows: [WindowRecord]) {
+        // Publishing to the app bar's model re-renders its SwiftUI content synchronously.
+        MainThreadActivity.during("hudModel update") { publishNavigation(state: state, windows: windows) }
+        if canRevealNavigation != nil { installMouseMonitors() }
+    }
+
+    private func publishNavigation(state: WorkspaceState, windows: [WindowRecord]) {
         let recordsByID = Dictionary(windows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let records = state.currentSpace.windowIDs.compactMap { recordsByID[$0] }
         let space = state.activeSpaceIndex + 1
@@ -215,7 +221,6 @@ final class NavigationOverlays {
         if hudModel.availableSpaceIndices != availableSpaceIndices {
             hudModel.availableSpaceIndices = availableSpaceIndices
         }
-        if canRevealNavigation != nil { installMouseMonitors() }
     }
 
     private func installMouseMonitors() {
@@ -291,7 +296,7 @@ final class NavigationOverlays {
             container.attachedToNotch = geometry.attachedToNotch
             MainThreadActivity.during("hudWindow setFrame") { hud.setFrame(geometry.panelFrame, display: true) }
             container.needsLayout = true
-            container.layoutSubtreeIfNeeded()
+            MainThreadActivity.during("hudWindow layout") { container.layoutSubtreeIfNeeded() }
         }
         let wasVisible = hud.isVisible
         let wasExiting = hudIsExiting
@@ -307,12 +312,14 @@ final class NavigationOverlays {
         }
         if !wasVisible || wasExiting {
             let configuration = hudModel.interfaceAnimationConfiguration
-            container.transition(
-                visible: true,
-                reduceMotion: hudModel.reduceMotion,
-                duration: configuration.hudEnterDuration,
-                configuration: configuration
-            )
+            MainThreadActivity.during("hud transition") {
+                container.transition(
+                    visible: true,
+                    reduceMotion: hudModel.reduceMotion,
+                    duration: configuration.hudEnterDuration,
+                    configuration: configuration
+                )
+            }
         }
         if !pointerKeepsHUDVisible && !dropTargetKeepsHUDVisible { scheduleDismiss(after: dismissAfter) }
     }
