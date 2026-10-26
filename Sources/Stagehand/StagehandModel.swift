@@ -1138,7 +1138,8 @@ final class StagehandModel: ObservableObject {
                 focusGate.stop()
                 input.stop()
                 focusBorder.reset()
-                overlays.hide()
+                // Resume returns to this Desktop; keep the panels instead of rebuilding them.
+                overlays.suspend()
                 emptySpace.hide()
                 updateInputStatus()
                 onStateChange?()

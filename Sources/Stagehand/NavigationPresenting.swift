@@ -21,7 +21,10 @@ protocol NavigationPresenting: AnyObject {
     func showWarning(_ message: String)
     func setShortcutHints(_ bindings: [ShortcutBinding], swipeTip: String?)
     func toggleShortcutHints()
+    /// Hides and releases the panels; the next presentation creates them on the current Desktop.
     func hide()
+    /// Hides the panels and keeps them for a resume on the same Desktop.
+    func suspend()
 }
 
 extension NavigationPresenting {

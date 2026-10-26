@@ -252,6 +252,7 @@ final class FakeOverlays: NavigationPresenting {
     private(set) var shortcutHintToggles = 0
     private(set) var warnings: [String] = []
     private(set) var borderFrame: CGRect?
+    var suspensions = 0
     /// Each time the border appeared (true) or disappeared (false).
     var borderVisibility: [Bool] = []
 
@@ -269,6 +270,10 @@ final class FakeOverlays: NavigationPresenting {
     func hide() {
         if borderFrame != nil { borderVisibility.append(false) }
         borderFrame = nil
+    }
+    func suspend() {
+        suspensions += 1
+        hide()
     }
 }
 

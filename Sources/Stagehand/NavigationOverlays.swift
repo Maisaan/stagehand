@@ -350,6 +350,21 @@ final class NavigationOverlays {
     }
 
     func hide() {
+        suspend()
+        MainThreadActivity.during("overlays close") {
+            border?.close()
+            hud?.close()
+        }
+        // Recreate on the next presentation so an explicit Start on a different native
+        // Desktop binds the panels there without making them visible on every Desktop.
+        border = nil
+        hud = nil
+    }
+
+    /// Hides the overlays but keeps their panels for a resume, which always returns to
+    /// the Desktop they were created on. A new HUD panel lays out and draws its content
+    /// synchronously on first presentation, a 60-260 ms main-thread stall after unlock.
+    func suspend() {
         if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
         if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
         globalMouseMonitor = nil
@@ -365,16 +380,10 @@ final class NavigationOverlays {
         hudGeneration &+= 1
         hudIsExiting = false
         shortcutHints.hide()
-        MainThreadActivity.during("overlays close") {
+        MainThreadActivity.during("overlays orderOut") {
             border?.orderOut(nil)
             hud?.orderOut(nil)
-            border?.close()
-            hud?.close()
         }
-        // Recreate on the next presentation so an explicit Start on a different native
-        // Desktop binds the panels there without making them visible on every Desktop.
-        border = nil
-        hud = nil
     }
 
     func showWarning(_ message: String) {

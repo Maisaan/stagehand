@@ -15,6 +15,27 @@ import StagehandPlatform
     #expect(border.level.rawValue < NSWindow.Level.floating.rawValue)
 }
 
+/// A lock or a trip to another Desktop keeps the panels, so the first presentation after
+/// unlock does not build and draw a new one on the main thread. Stop releases them.
+@MainActor
+@Test func suspendKeepsThePanelsAndHideReleasesThem() throws {
+    let overlays = NavigationOverlays()
+    defer { overlays.hide() }
+    let frame = CGRect(x: 0, y: 0, width: 100, height: 100)
+    overlays.updateBorder(frame: frame, visible: true)
+    let border = try #require(overlays.border)
+
+    overlays.suspend()
+    #expect(!border.isVisible)
+    #expect(overlays.border === border)
+    overlays.updateBorder(frame: frame, visible: true)
+    #expect(overlays.border === border)
+    #expect(border.isVisible)
+
+    overlays.hide()
+    #expect(overlays.border == nil)
+}
+
 @Test func shortcutRibbonFollowsTheCurrentBindings() throws {
     let sections = ShortcutHintSection.sections(for: ShortcutBinding.defaults)
     #expect(sections.map(\.title) == ["Navigate", "Move window", "Size", "Stagehand"])
