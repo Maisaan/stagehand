@@ -112,6 +112,7 @@ func uniqueWindowID(
 @MainActor
 public final class WindowSystem {
     public var onChange: (() -> Void)?
+    public var onWindowCreated: (() -> Void)?
     public var onFrameChange: ((String, CGRect) -> Void)?
     public var onFocusedWindowChange: ((String) -> Void)?
     /// A tracked window's title changed. No rescan is scheduled for it.
@@ -1904,7 +1905,11 @@ public final class WindowSystem {
                        let frame = owner.readFrame(changedWindow) {
                         owner.onFrameChange?(id, frame)
                     }
-                    owner.onChange?()
+                    if name == kAXWindowCreatedNotification, let created = owner.onWindowCreated {
+                        created()
+                    } else {
+                        owner.onChange?()
+                    }
                 }
             }
         }

@@ -20,7 +20,18 @@ extension StagehandModel {
 
     func scheduleRefresh(immediately: Bool = false) {
         guard isRunning, !isSuspended else { return }
+        // A change during a read: keep that read and scan once more after it.
+        // Cancelling it threw the read away and waited out the debounce again
+        // (a launch on 2026-10-26 15:25:15 local lost ~110 ms and a full scan).
+        if let scanning = refreshScanningGeneration, scanning == refreshGeneration,
+           refreshTask?.isCancelled == false {
+            refreshRescanRequested = true
+            return
+        }
         refreshTask?.cancel()
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
+        refreshRescanRequested = false
         refreshTask = Task { [weak self] in
             var attempts = 0
             var staleScans = 0
@@ -54,6 +65,8 @@ extension StagehandModel {
                     return
                 }
                 let current: [WindowRecord]
+                self.refreshScanningGeneration = generation
+                defer { if self.refreshScanningGeneration == generation { self.refreshScanningGeneration = nil } }
                 if staleScans >= self.refreshStaleScanFallback {
                     // Windows keep changing under the background reader. One
                     // synchronous scan cannot be invalidated the same way.
@@ -79,7 +92,11 @@ extension StagehandModel {
                     return
                 }
                 self.applyRefresh(current, observedFocusedWindowID: .some(observedFocus))
-                return
+                guard self.refreshRescanRequested, !Task.isCancelled else { return }
+                self.refreshRescanRequested = false
+                attempts = 0
+                staleScans = 0
+                delay = .zero
             }
         }
     }

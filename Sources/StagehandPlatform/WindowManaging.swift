@@ -6,6 +6,8 @@ import StagehandCore
 @MainActor
 public protocol WindowManaging: AnyObject {
     var onChange: (() -> Void)? { get set }
+    /// A tracked app created a window; called instead of onChange for that notification.
+    var onWindowCreated: (() -> Void)? { get set }
     var onFrameChange: ((String, CGRect) -> Void)? { get set }
     var onFocusedWindowChange: ((String) -> Void)? { get set }
     /// Whether an observed focus change would be used now; unused AX reads are skipped.

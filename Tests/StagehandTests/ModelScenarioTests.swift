@@ -26,6 +26,40 @@ struct ModelScenarioTests {
         #expect(harness.events("automatic_pause").isEmpty)
     }
 
+    /// A change arriving while a refresh reads windows used to cancel that read and wait
+    /// out the 100 ms debounce again (a launch on 2026-10-26 lost ~110 ms and a scan).
+    /// Now the read is applied and one more scan follows at once.
+    @Test func aChangeDuringARefreshScanKeepsItsResultAndScansAgain() async throws {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        let scansBefore = harness.windows.offMainScans
+        let windows = harness.windows
+        windows.duringOffMainScan = {
+            _ = windows.addWindow("new", pid: 300, frame: CGRect(x: 80, y: 60, width: 700, height: 500))
+            windows.onChange?()
+        }
+        harness.model.scheduleRefresh(immediately: true)
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(harness.model.state.currentSpace.windowIDs.contains("new"))
+        await harness.settle()
+        #expect(harness.windows.offMainScans - scansBefore == 2)
+    }
+
+    /// A new window is what an app launch waits for: it is scanned without the debounce
+    /// that absorbs bursts of moves and resizes.
+    @Test func aCreatedWindowIsScannedWithoutTheDebounce() async throws {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        _ = harness.windows.addWindow("new", pid: 300, frame: CGRect(x: 80, y: 60, width: 700, height: 500))
+        harness.windows.onWindowCreated?()
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(harness.model.state.currentSpace.windowIDs.contains("new"))
+    }
+
     /// Holding a file and switching windows to drop it: the held button was taken for a
     /// title-bar drag, so the slide stopped on its first frame and layout waited for the
     /// drop (2026-10-25T12:30:37Z, 2026-10-26T03:29:45Z). A title-bar drag still stops it.

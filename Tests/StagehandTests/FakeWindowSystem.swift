@@ -16,6 +16,7 @@ final class FakeWindowSystem: WindowManaging {
     }
 
     var onChange: (() -> Void)?
+    var onWindowCreated: (() -> Void)?
     var onFrameChange: ((String, CGRect) -> Void)?
     var onFocusedWindowChange: ((String) -> Void)?
     var wantsObservedFocus: (() -> Bool)?
@@ -110,8 +111,15 @@ final class FakeWindowSystem: WindowManaging {
     var staleScansRemaining = 0
     private(set) var offMainScans = 0
 
+    /// Runs inside an off-main scan, as a notification arriving during the read would.
+    var duringOffMainScan: (() -> Void)?
+
     func scanWindowsOffMain() async -> [WindowRecord]? {
         offMainScans += 1
+        if let hook = duringOffMainScan {
+            duringOffMainScan = nil
+            hook()
+        }
         await Task.yield()
         guard staleScansRemaining == 0 else {
             staleScansRemaining -= 1

@@ -157,6 +157,11 @@ final class StagehandModel: ObservableObject {
     var motionBackingScaleFactor: CGFloat = 1
     let emptySpace: any EmptySpacePresenting
     var refreshTask: Task<Void, Never>?
+    /// Which refresh task is reading windows right now, and whether a change arrived
+    /// during that read, so it scans once more instead of being cancelled.
+    var refreshGeneration = 0
+    var refreshScanningGeneration: Int?
+    var refreshRescanRequested = false
     /// Refresh attempts (busy waits and stale scans together) before the loop
     /// gives up and logs refresh_starved.
     var refreshRetryLimit = 60
@@ -391,6 +396,9 @@ final class StagehandModel: ObservableObject {
         updateShortcutHints()
         input.onStatusChange = { [weak self] in self?.updateInputStatus() }
         windowSystem.onChange = { [weak self] in self?.scheduleRefresh() }
+        // A new window is what a launch waits for; moves and resizes come in bursts
+        // and keep the debounce.
+        windowSystem.onWindowCreated = { [weak self] in self?.scheduleRefresh(immediately: true) }
         windowSystem.onApplicationTerminated = { [weak self] pid in
             self?.applicationTerminated(pid: pid)
         }
