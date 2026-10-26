@@ -139,6 +139,8 @@ final class StagehandModel: ObservableObject {
     let overlays: any NavigationPresenting
     let diagnostics: DiagnosticLogger
     let ribbonMotion: RibbonMotion
+    /// Whether a held left button is carrying a drag-and-drop or moving a window.
+    let pointer: PointerDragTracker
     var presentationFrames: [String: CGRect]?
     var gestureBase: [String: CGRect]? {
         didSet { gesturePreviewCache = nil }
@@ -311,6 +313,7 @@ final class StagehandModel: ObservableObject {
         desktopScope: DesktopScope = DesktopScope(),
         focusGate: FocusInputGate = FocusInputGate(),
         ribbonMotion: RibbonMotion = RibbonMotion(),
+        pointer: PointerDragTracker = PointerDragTracker(),
         layoutStore: WorkspaceLayoutStore? = nil,
         persistence: Persistence = .standard
     ) {
@@ -324,6 +327,7 @@ final class StagehandModel: ObservableObject {
         self.desktopScope = desktopScope
         self.focusGate = focusGate
         self.ribbonMotion = ribbonMotion
+        self.pointer = pointer
         self.overlays = overlays
         let defaults = UserDefaults.standard
         let shortcutLoad = ShortcutBinding.loadReportingIssues(from: defaults)
@@ -746,6 +750,7 @@ final class StagehandModel: ObservableObject {
         input.shortcutSwipesEnabled = shortcutSwipesEnabled
         focusGate.start()
         input.start()
+        pointer.start()
         updateInputStatus()
         diagnostics.record("started", details: workspaceDetails())
         enqueue(.refresh)
@@ -791,6 +796,7 @@ final class StagehandModel: ObservableObject {
         focusGate.cancelAll()
         focusGate.stop()
         input.stop()
+        pointer.stop()
         focusBorder.reset()
         overlays.hide()
         emptySpace.hide()

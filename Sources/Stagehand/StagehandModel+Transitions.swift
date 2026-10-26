@@ -196,7 +196,7 @@ extension StagehandModel {
             "previousSpace": String(previousState.activeSpaceIndex + 1),
             "reduceMotion": String(reduceMotion),
             "slideEnabled": String(canSlide)
-        ])
+        ].merging(pointerDetails()) { current, _ in current })
     }
 
     /// Records a finished change, or pauses and restores after a failure.
@@ -772,6 +772,12 @@ extension StagehandModel {
         }
         if gestureBase == nil, NSEvent.pressedMouseButtons & 1 != 0 {
             // A real pointer interaction takes over from decorative settling.
+            if diagnostics.isEnabled {
+                // Logged because the slide then ends without ribbon_animation_completed.
+                diagnostics.record("ribbon_motion_yielded_to_pointer", details: [
+                    "focusedWindowID": state.focusedWindowID ?? "none"
+                ].merging(pointerDetails()) { current, _ in current })
+            }
             presentationFrames = ribbonMotion.frames
             ribbonMotion.cancel()
             scheduleRefresh()

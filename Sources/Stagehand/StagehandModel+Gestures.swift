@@ -13,6 +13,12 @@ extension StagehandModel {
         gestureUnwritable.removeAll()
     }
 
+    /// Whether the left button is held and, if so, whether it carries a drag-and-drop.
+    func pointerDetails() -> [String: String] {
+        let held = pointer.isButtonDown
+        return ["pointerHeld": String(held), "dragAndDrop": String(held && pointer.isDragAndDrop)]
+    }
+
     func handleGesture(_ event: GestureNavigationEvent) {
         if traceGestures {
             switch event {
@@ -47,7 +53,7 @@ extension StagehandModel {
                         "observedFocusedWindowID": windowSystem.lastObservedFocusedWindowID ?? "none",
                         "preparedWindowCount": String(gesturePrepared.count),
                         "trackedWindowCount": String(frames.count)
-                    ])
+                    ].merging(pointerDetails()) { current, _ in current })
                 }
                 overlays.updateBorder(frame: .zero, visible: false)
                 previewGesture(displacement: displacement)
@@ -84,6 +90,7 @@ extension StagehandModel {
             // Recorded after the action this release resolves to has been queued, so
             // the log analyzer pairs the swipe with its own action.
             let logicalFocus = state.focusedWindowID ?? "none"
+            let pointerAtRelease = pointerDetails()
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.diagnostics.record("gesture_motion_resolved", details: [
@@ -92,7 +99,7 @@ extension StagehandModel {
                     "observedFocusedWindowID": self.windowSystem.lastObservedFocusedWindowID ?? "none",
                     "resolvedAction": resolvedAction.map { String(describing: $0) } ?? "none",
                     "velocity": String(velocity)
-                ])
+                ].merging(pointerAtRelease) { current, _ in current })
             }
         }
         gestureAxis = nil
