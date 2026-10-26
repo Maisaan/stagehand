@@ -294,9 +294,14 @@ final class NavigationOverlays {
         if hud.frame != geometry.panelFrame || container.attachedToNotch != geometry.attachedToNotch {
             hudModel.attachedToNotch = geometry.attachedToNotch
             container.attachedToNotch = geometry.attachedToNotch
-            MainThreadActivity.during("hudWindow setFrame") { hud.setFrame(geometry.panelFrame, display: true) }
+            // The same synchronous resize, layout, and draw as setFrame(display: true),
+            // timed separately: "hudWindow setFrame" was 9 s of stalls on 2026-10-26 and
+            // the label could not say whether WindowServer, SwiftUI, or drawing cost it.
+            // Layout must finish here: the enter animation reads the bar's final bounds.
+            MainThreadActivity.during("hudWindow setFrame") { hud.setFrame(geometry.panelFrame, display: false) }
             container.needsLayout = true
             MainThreadActivity.during("hudWindow layout") { container.layoutSubtreeIfNeeded() }
+            MainThreadActivity.during("hudWindow display") { hud.displayIfNeeded() }
         }
         let wasVisible = hud.isVisible
         let wasExiting = hudIsExiting
@@ -423,7 +428,11 @@ final class HUDContainerView: NSView {
     }
 
     convenience init(model: NavigationHUDModel) {
-        self.init(hostingView: FirstMouseHostingView(rootView: NavigationHUD(model: model)))
+        let hosting = FirstMouseHostingView(rootView: NavigationHUD(model: model))
+        // The container sizes the hosting view by frame and never asks for its fitting
+        // size, so SwiftUI's minimum, intrinsic, and maximum measurements are wasted work.
+        hosting.sizingOptions = []
+        self.init(hostingView: hosting)
     }
 
     init(hostingView: NSView, anchoredToBottom: Bool = false) {
@@ -605,14 +614,30 @@ final class BorderView: NSView {
     }
 }
 
+/// App icons by bundle identifier. Each body evaluation looked the app up with
+/// LaunchServices and loaded a fresh icon (Chrome: ~73 ms cold, measured 2026-10-26),
+/// on the main thread, for every chip the app bar redrew.
+@MainActor
+enum AppIconCache {
+    private static var icons: [String: NSImage?] = [:]
+
+    static func icon(for bundleIdentifier: String) -> NSImage? {
+        if let cached = icons[bundleIdentifier] { return cached }
+        let icon = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
+            .map { NSWorkspace.shared.icon(forFile: $0.path) }
+        icons[bundleIdentifier] = icon
+        return icon
+    }
+}
+
 struct AppIcon: View {
     let bundleIdentifier: String
     var size: CGFloat = 28
 
     var body: some View {
         Group {
-            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) {
-                Image(nsImage: NSWorkspace.shared.icon(forFile: url.path)).resizable()
+            if let icon = AppIconCache.icon(for: bundleIdentifier) {
+                Image(nsImage: icon).resizable()
             } else {
                 PhosphorIcon(.appWindow)
                     .padding(4)

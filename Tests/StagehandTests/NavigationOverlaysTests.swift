@@ -134,3 +134,12 @@ import StagehandPlatform
     }
     #expect(!panel.isVisible)
 }
+
+/// App bar chips look their app's icon up once, not on every redraw.
+@MainActor
+@Test func appIconsAreLookedUpOnce() {
+    let first = AppIconCache.icon(for: "com.apple.finder")
+    #expect(first != nil)
+    #expect(AppIconCache.icon(for: "com.apple.finder") === first)
+    #expect(AppIconCache.icon(for: "invalid.stagehand.none") == nil)
+}
