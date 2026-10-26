@@ -378,6 +378,9 @@ final class StagehandModel: ObservableObject {
             guard let self, self.isRunning, !self.isSuspended else { return false }
             return self.desktopScope.refresh() == .home
         }
+        pointer.onDragAndDropEnded = { [weak self] details in
+            self?.diagnostics.record("drag_and_drop_ended", details: details)
+        }
         overlays.pointerCarriesDrop = { [weak self] in
             guard let self else { return false }
             return self.pointer.isButtonDown && self.pointer.isDragAndDrop

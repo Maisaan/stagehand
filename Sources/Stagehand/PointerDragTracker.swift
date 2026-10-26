@@ -1,4 +1,5 @@
 import AppKit
+import StagehandPlatform
 
 /// Tells a drag-and-drop (a file, text, or a link carried to another window) apart from
 /// the other things a held left button does: a title-bar drag, a resize, a selection.
@@ -16,13 +17,54 @@ final class PointerDragTracker {
     /// The drag pasteboard's count when the current press began, or nil.
     private var pressBaseline: Int?
     private var pressCarriesDrop = false
+    private let now: () -> TimeInterval
+    private let heldClickTravel: () -> Double
+    private let dockEventsWithheld: () -> Int
+    /// The current press, for the summary logged when a drag-and-drop ends.
+    private var press: PressRecord?
+
+    /// Whether the pointer kept moving while the drag was carried. macOS can stop sending
+    /// pointer events for a held click once it takes the fingers beside it for a gesture
+    /// of its own; the held finger's travel during the longest gap tells that apart from
+    /// a finger that was resting.
+    private struct PressRecord {
+        let began: TimeInterval
+        let dockEventsAtStart: Int
+        var dragEvents = 0
+        var lastDrag: TimeInterval
+        var travelAtLastDrag: Double
+        var longestGap: TimeInterval = 0
+        var travelDuringLongestGap: Double = 0
+
+        mutating func pointerMoved(at time: TimeInterval, travel: Double) {
+            closeGap(at: time, travel: travel)
+            dragEvents += 1
+            lastDrag = time
+            travelAtLastDrag = travel
+        }
+
+        mutating func closeGap(at time: TimeInterval, travel: Double) {
+            guard time - lastDrag > longestGap else { return }
+            longestGap = time - lastDrag
+            travelDuringLongestGap = travel - travelAtLastDrag
+        }
+    }
+
+    /// Called with the summary of each press that carried a drag-and-drop, as it ends.
+    var onDragAndDropEnded: (([String: String]) -> Void)?
 
     private static let dragPasteboard = NSPasteboard(name: .drag)
 
     init(buttonDown: @escaping () -> Bool = { NSEvent.pressedMouseButtons & 1 != 0 },
-         dragChangeCount: @escaping () -> Int = { PointerDragTracker.dragPasteboard.changeCount }) {
+         dragChangeCount: @escaping () -> Int = { PointerDragTracker.dragPasteboard.changeCount },
+         now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         heldClickTravel: @escaping () -> Double = { InputController.heldClickTravel() },
+         dockEventsWithheld: @escaping () -> Int = { InputController.withheldDockControlEventCount() }) {
         self.buttonDown = buttonDown
         self.dragChangeCount = dragChangeCount
+        self.now = now
+        self.heldClickTravel = heldClickTravel
+        self.dockEventsWithheld = dockEventsWithheld
     }
 
     var isButtonDown: Bool { buttonDown() }
@@ -58,6 +100,18 @@ final class PointerDragTracker {
             self?.pressEnded()
             return event
         }) { monitors.append(monitor) }
+        let dragged: NSEvent.EventTypeMask = [.leftMouseDragged]
+        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: dragged, handler: { [weak self] _ in
+            MainActor.assumeIsolated { self?.pointerDragged() }
+        }) { monitors.append(monitor) }
+        if let monitor = NSEvent.addLocalMonitorForEvents(matching: dragged, handler: { [weak self] event in
+            self?.pointerDragged()
+            return event
+        }) { monitors.append(monitor) }
+    }
+
+    func pointerDragged() {
+        press?.pointerMoved(at: now(), travel: heldClickTravel())
     }
 
     func stop() {
@@ -69,9 +123,25 @@ final class PointerDragTracker {
     func pressBegan(inStagehand: Bool) {
         pressCarriesDrop = false
         pressBaseline = inStagehand ? nil : dragChangeCount()
+        let time = now()
+        press = PressRecord(began: time, dockEventsAtStart: dockEventsWithheld(),
+                            lastDrag: time, travelAtLastDrag: heldClickTravel())
     }
 
     func pressEnded() {
+        if pressCarriesDrop, var press {
+            let time = now()
+            press.closeGap(at: time, travel: heldClickTravel())
+            onDragAndDropEnded?([
+                "durationMilliseconds": String(Int((time - press.began) * 1_000)),
+                "pointerDragEvents": String(press.dragEvents),
+                "longestPointerGapMilliseconds": String(Int(press.longestGap * 1_000)),
+                // Thousandths of the trackpad's width.
+                "heldFingerTravelDuringGap": String(Int(press.travelDuringLongestGap * 1_000)),
+                "dockControlEventsWithheld": String(dockEventsWithheld() - press.dockEventsAtStart)
+            ])
+        }
+        press = nil
         pressCarriesDrop = false
         pressBaseline = nil
     }

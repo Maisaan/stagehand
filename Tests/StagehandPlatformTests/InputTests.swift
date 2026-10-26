@@ -1051,3 +1051,20 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     #expect(!withheld(.dockControl, at: 2.051))
     #expect(withheld(.liveBegan, at: 2.051))
 }
+
+@Test func aHeldClickFingersTravelIsMeasured() {
+    var state = enabledCallbackState()
+    var frame: Int32 = 1
+    func feed(_ contacts: [GestureContact], at time: Double, buttonDown: Bool) {
+        _ = state.process(contacts: contacts, touches: touches(contacts, frame: frame), rawCount: Int32(contacts.count),
+                          flags: [], timestamp: time, now: time, buttonDown: buttonDown)
+        frame += 1
+    }
+    feed([GestureContact(id: 9, x: 0.5, y: 0.1)], at: 1, buttonDown: false)
+    feed([GestureContact(id: 9, x: 0.5, y: 0.1)], at: 1.01, buttonDown: true)
+    feed([GestureContact(id: 9, x: 0.53, y: 0.14)], at: 1.02, buttonDown: true)
+    #expect(abs(state.heldClickTravel - 0.05) < 0.0001)
+    // Fingers that are not the held click do not count.
+    feed([GestureContact(id: 9, x: 0.53, y: 0.14)] + contacts(dx: 0.2), at: 1.03, buttonDown: true)
+    #expect(abs(state.heldClickTravel - 0.05) < 0.0001)
+}

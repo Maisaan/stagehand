@@ -241,6 +241,10 @@ struct GestureCallbackState {
     var previousContactIDs: Set<Int32> = []
     /// Dock gesture events withheld beside a held click since gestures started.
     var withheldDockControlEvents = 0
+    /// How far held-click fingers have moved since gestures started, in trackpad widths.
+    /// Diagnostics compare it with the pointer events macOS sends during a drag.
+    var heldClickTravel: Double = 0
+    var heldClickPositions: [Int32: (x: Double, y: Double)] = [:]
     var recognizer = NavigationGestureRecognizer()
     var ownership = GestureInputOwnership()
     var frameValidator = GestureFrameValidator()
@@ -424,7 +428,17 @@ extension GestureCallbackState {
         }
         buttonWasDown = buttonDown
         previousContactIDs = ids
-        guard !heldClickContactIDs.isEmpty else { return contacts }
+        guard !heldClickContactIDs.isEmpty else {
+            heldClickPositions.removeAll()
+            return contacts
+        }
+        for contact in contacts where heldClickContactIDs.contains(contact.id) {
+            if let previous = heldClickPositions[contact.id] {
+                heldClickTravel += hypot(contact.x - previous.x, contact.y - previous.y)
+            }
+            heldClickPositions[contact.id] = (contact.x, contact.y)
+        }
+        heldClickPositions = heldClickPositions.filter { heldClickContactIDs.contains($0.key) }
         return contacts.filter { !heldClickContactIDs.contains($0.id) }
     }
 }
@@ -566,6 +580,11 @@ final class GestureMonitor {
     /// Dock gesture events withheld beside a held click since gestures last started.
     nonisolated static func withheldDockControlEventCount() -> Int {
         gestureCallbackState.withLock { $0.withheldDockControlEvents }
+    }
+
+    /// How far held-click fingers have moved since gestures last started, in trackpad widths.
+    nonisolated static func heldClickTravel() -> Double {
+        gestureCallbackState.withLock { $0.heldClickTravel }
     }
 
     func cancelGestureSequence() {

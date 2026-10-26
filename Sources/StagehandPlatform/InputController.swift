@@ -164,6 +164,11 @@ public final class InputController {
         GestureMonitor.withheldDockControlEventCount()
     }
 
+    /// How far held-click fingers have moved since gestures last started, in trackpad widths.
+    nonisolated public static func heldClickTravel() -> Double {
+        GestureMonitor.heldClickTravel()
+    }
+
     /// Safe from any thread, for the keyboard tap's routing decision. Gesture state is
     /// process-wide, so this does not need the controller instance.
     nonisolated public static func hasPendingGestureCompletion() -> Bool {
