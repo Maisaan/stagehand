@@ -184,6 +184,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if let launchFinishedMilliseconds { timing["launchFinishedMilliseconds"] = String(launchFinishedMilliseconds) }
             if let modelInitMilliseconds { timing["modelInitMilliseconds"] = String(modelInitMilliseconds) }
             model.diagnostics.record("launch_timing", details: timing)
+            recordLaunchWindowOrder(model)
+        }
+    }
+
+    /// Whether the focused window ended up in front once the launch layout settled. On
+    /// 2026-10-26 16:42 local a neighbor (Finder) stayed drawn over the focused window's
+    /// overlapping edge after launch; this records the stacking to catch it again. The
+    /// window list is read off the main thread, once per launch.
+    private func recordLaunchWindowOrder(_ model: StagehandModel) {
+        Task { @MainActor [weak model] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let model, model.isRunning, model.diagnostics.isEnabled,
+                  let focusedID = model.state.focusedWindowID else { return }
+            let focusedNumber = model.windowSystem.windowNumber(for: focusedID)
+            let front = await Task.detached { Self.frontWindows(limit: 3) }.value
+            model.diagnostics.record("launch_window_order", details: [
+                "front": front.map { "\($0.owner)#\($0.number)" }.joined(separator: " > "),
+                "focusedWindowID": focusedID,
+                "focusedIsFrontmost": String(front.first.map { UInt32($0.number) == focusedNumber } ?? false)
+            ])
+        }
+    }
+
+    /// The frontmost normal windows on screen, front to back.
+    nonisolated private static func frontWindows(limit: Int) -> [(owner: String, number: Int)] {
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] ?? []
+        return list.lazy.filter { ($0[kCGWindowLayer as String] as? Int) == 0 }.prefix(limit).map {
+            (($0[kCGWindowOwnerName as String] as? String) ?? "?", ($0[kCGWindowNumber as String] as? Int) ?? 0)
         }
     }
 
