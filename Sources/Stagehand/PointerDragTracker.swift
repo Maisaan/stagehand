@@ -20,7 +20,6 @@ final class PointerDragTracker {
     private let now: () -> TimeInterval
     private let heldClickTravel: () -> Double
     private let dockEventsWithheld: () -> Int
-    private let dockPhases: () -> [Int64: Int]
     private let syntheticPointerEvents: () -> Int
     /// The current press, for the summary logged when a drag-and-drop ends.
     private var press: PressRecord?
@@ -32,7 +31,6 @@ final class PointerDragTracker {
     private struct PressRecord {
         let began: TimeInterval
         let dockEventsAtStart: Int
-        let dockPhasesAtStart: [Int64: Int]
         let syntheticPointerEventsAtStart: Int
         var synthesisAtStart = SyntheticPointerStats()
         var dragEvents = 0
@@ -75,9 +73,7 @@ final class PointerDragTracker {
          now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          heldClickTravel: @escaping () -> Double = { InputController.heldClickTravel() },
          dockEventsWithheld: @escaping () -> Int = { InputController.withheldDockControlEventCount() },
-         dockPhases: @escaping () -> [Int64: Int] = { InputController.dockPhaseCounts() },
          syntheticPointerEvents: @escaping () -> Int = { InputController.syntheticPointerEventCount() }) {
-        self.dockPhases = dockPhases
         self.syntheticPointerEvents = syntheticPointerEvents
         self.buttonDown = buttonDown
         self.dragChangeCount = dragChangeCount
@@ -149,7 +145,7 @@ final class PointerDragTracker {
         pressBaseline = inStagehand ? nil : dragChangeCount()
         let time = now()
         let synthesisAtStart = InputController.syntheticPointerStats(reset: true)
-        press = PressRecord(began: time, dockEventsAtStart: dockEventsWithheld(), dockPhasesAtStart: dockPhases(),
+        press = PressRecord(began: time, dockEventsAtStart: dockEventsWithheld(),
                             syntheticPointerEventsAtStart: syntheticPointerEvents(),
                             lastDrag: time, travelAtLastDrag: heldClickTravel())
         press?.synthesisAtStart = synthesisAtStart
@@ -170,13 +166,6 @@ final class PointerDragTracker {
                 // Thousandths of the trackpad's width.
                 "heldFingerTravelDuringGap": String(Int(press.travelDuringLongestGap * 1_000)),
                 "dockControlEventsWithheld": String(dockEventsWithheld() - press.dockEventsAtStart),
-                // Dock gesture events seen beside the held click, by phase: 1 began,
-                // 2 changed, 4 ended, 8 cancelled.
-                "dockPhases": dockPhases().sorted { $0.key < $1.key }.compactMap { phase, count in
-                    let delta = count - (press.dockPhasesAtStart[phase] ?? 0)
-                    return delta > 0 ? "\(phase):\(delta)" : nil
-                }.joined(separator: " "),
-                "dockHandling": InputController.dockSwipeHandling,
                 // Pointer drags Stagehand posted while macOS had the touch locked, and
                 // how many of them came back through the event monitor.
                 "syntheticPointerEvents": String(syntheticPointerEvents() - press.syntheticPointerEventsAtStart),

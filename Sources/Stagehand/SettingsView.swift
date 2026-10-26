@@ -1108,6 +1108,7 @@ final class HexColorTextField: InsetTextField, NSTextFieldDelegate {
         display(color)
     }
 
+    // periphery:ignore:parameters coder - AppKit requires this initializer; it is never used.
     required init?(coder: NSCoder) { return nil }
 
     isolated deinit {

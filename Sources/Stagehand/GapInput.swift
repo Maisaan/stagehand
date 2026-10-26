@@ -145,6 +145,7 @@ final class GapTextField: InsetTextField, NSTextFieldDelegate {
         displayValue(committedValue)
     }
 
+    // periphery:ignore:parameters coder - AppKit requires this initializer; it is never used.
     required init?(coder: NSCoder) { return nil }
 
     isolated deinit {

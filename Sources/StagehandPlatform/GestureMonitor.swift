@@ -50,12 +50,6 @@ enum SuppressibleInputEvent: Equatable, Sendable {
     case gesture
     /// The Dock's own gestures, among them its swipe between Spaces and full-screen apps.
     case dockControl
-
-    static let live = SuppressibleInputEvent.scroll(phase: 2, momentumPhase: 0)
-    static let liveBegan = SuppressibleInputEvent.scroll(phase: 1, momentumPhase: 0)
-    static let momentumBegan = SuppressibleInputEvent.scroll(phase: 0, momentumPhase: 1)
-    static let momentum = SuppressibleInputEvent.scroll(phase: 0, momentumPhase: 2)
-    static let momentumEnded = SuppressibleInputEvent.scroll(phase: 0, momentumPhase: 3)
 }
 
 /// Decides which app-bound input a trackpad contact sequence owns.
@@ -159,29 +153,6 @@ let suppressibleEventTypeMask: CGEventMask = [
 /// named in https://github.com/jurplel/InstantSpaceSwitcher/blob/main/Sources/ISS/ISS.c,
 /// which intercepts them with a session event tap like this one.
 let dockControlEventType: UInt32 = 30
-/// kCGEventGesturePhase and its alias on Dock gesture events, and the cancelled phase
-/// (kCGSGesturePhaseCancelled), from the same source.
-let gesturePhaseField = CGEventField(rawValue: 132)!
-let gesturePhaseAliasField = CGEventField(rawValue: 134)!
-let cancelledGesturePhase: Int64 = 8
-
-/// How Dock gesture events beside a held click are handled. An experiment while the
-/// pointer freeze after a second swipe in one drag is diagnosed: withholding them stops
-/// macOS's Space swipe but the pointer then freezes for about 4 s; passing them lets the
-/// Space swipe run. Hidden preference, read live so it can change without a restart.
-enum DockSwipeHandling: String, Sendable {
-    case withhold, pass, cancel
-    static let preferenceKey = "StagehandDockSwipeBesideHeldClick"
-    static var current: DockSwipeHandling {
-        UserDefaults.standard.string(forKey: preferenceKey).flatMap(DockSwipeHandling.init(rawValue:)) ?? .withhold
-    }
-}
-
-enum DockEventDecision: Equatable, Sendable {
-    case pass, drop
-    /// Pass the event with its phase rewritten to cancelled, so the Dock ends its gesture.
-    case cancel
-}
 
 /// Rejects contact frames that cannot have come from a working trackpad. The private
 /// framework has no contract; after a macOS update it may report garbage with the right
@@ -269,10 +240,6 @@ struct GestureCallbackState {
     /// How far held-click fingers have moved since gestures started, in trackpad widths.
     /// Diagnostics compare it with the pointer events macOS sends during a drag.
     var heldClickTravel: Double = 0
-    /// Dock gesture event phases seen beside a held click since gestures started.
-    var dockPhaseCounts: [Int64: Int] = [:]
-    /// The Dock's gesture beside this held-click swipe was already cancelled.
-    var dockGestureCancelled = false
     var previousFilteredCount = 0
     /// macOS took the held click and the fingers beside it for its own four-finger
     /// gesture during this press. Its trackpad handling then stops moving the pointer for
@@ -535,31 +502,19 @@ extension GestureCallbackState {
     /// Spaces, which freezes the pointer and the carried item until it gives up. While a
     /// held click is left out and Stagehand owns the other fingers, the Dock's gesture
     /// events are withheld too. Four fingers with no held click stay macOS's swipe.
+    /// Passing them instead ran the Space swipe, and passing the first as cancelled made
+    /// the Dock follow the held finger (4e4ce6a, 2026-10-26); neither freed the pointer,
+    /// which macOS locks either way.
     mutating func suppress(_ kind: SuppressibleInputEvent, now: TimeInterval) -> Bool {
         guard enabled else { return false }
         guard case .dockControl = kind else { return ownership.suppress(kind, now: now) }
-        return dockDecision(phase: 0, now: now, handling: .withhold) == .drop
-    }
-
-    /// One Dock gesture event: passed unless a held click is left out and Stagehand owns
-    /// the other fingers (or just lifted them); then handled as `handling` says.
-    mutating func dockDecision(phase: Int64, now: TimeInterval, handling: DockSwipeHandling) -> DockEventDecision {
-        if enabled, !heldClickContactIDs.isEmpty { pointerLockedBesideHeldClick = true }
-        guard enabled, !heldClickContactIDs.isEmpty, ownership.suppress(.gesture, now: now) else { return .pass }
-        dockPhaseCounts[phase, default: 0] += 1
-        if traceGestures { NSLog("[DEBUG-gesture] dock gesture phase=%lld beside a held click: %@", phase, handling.rawValue) }
-        switch handling {
-        case .pass:
-            return .pass
-        case .withhold:
-            withheldDockControlEvents &+= 1
-            return .drop
-        case .cancel:
-            withheldDockControlEvents &+= 1
-            guard !dockGestureCancelled else { return .drop }
-            dockGestureCancelled = true
-            return .cancel
-        }
+        guard !heldClickContactIDs.isEmpty else { return false }
+        // A Dock gesture beside a held click means macOS has locked the touch.
+        pointerLockedBesideHeldClick = true
+        guard ownership.suppress(.gesture, now: now) else { return false }
+        withheldDockControlEvents &+= 1
+        if traceGestures { NSLog("[DEBUG-gesture] dock gesture withheld beside a held click") }
+        return true
     }
 
     /// The pointer move Stagehand makes for macOS in this frame, in points (CG direction),
@@ -627,8 +582,6 @@ extension GestureCallbackState {
         }
         heldClickPositions = heldClickPositions.filter { heldClickContactIDs.contains($0.key) }
         let filtered = contacts.filter { !heldClickContactIDs.contains($0.id) }
-        // New fingers beside the held click start a new sequence for the Dock too.
-        if previousFilteredCount == 0, !filtered.isEmpty { dockGestureCancelled = false }
         previousFilteredCount = filtered.count
         return filtered
     }
@@ -784,11 +737,6 @@ final class GestureMonitor {
         gestureCallbackState.withLock { $0.heldClickTravel }
     }
 
-    /// Dock gesture event phases seen beside a held click since gestures last started.
-    nonisolated static func dockPhaseCounts() -> [Int64: Int] {
-        gestureCallbackState.withLock { $0.dockPhaseCounts }
-    }
-
     /// Pointer drags Stagehand posted for a held click since gestures last started.
     nonisolated static func syntheticPointerEventCount() -> Int {
         gestureCallbackState.withLock { $0.syntheticStats.posts }
@@ -849,23 +797,6 @@ private let inputTapCallback: CGEventTapCallBack = { _, type, event, context in
             }
         }
         return Unmanaged.passUnretained(event)
-    }
-    if kind == .dockControl {
-        let phase = event.getIntegerValueField(gesturePhaseField)
-        let handling = DockSwipeHandling.current
-        let decision = gestureCallbackState.withLock { state in
-            state.dockDecision(phase: phase, now: now, handling: handling)
-        }
-        switch decision {
-        case .pass:
-            return Unmanaged.passUnretained(event)
-        case .drop:
-            return nil
-        case .cancel:
-            event.setIntegerValueField(gesturePhaseField, value: cancelledGesturePhase)
-            event.setIntegerValueField(gesturePhaseAliasField, value: cancelledGesturePhase)
-            return Unmanaged.passUnretained(event)
-        }
     }
     let suppress = gestureCallbackState.withLock { state in
         state.suppress(kind, now: now)

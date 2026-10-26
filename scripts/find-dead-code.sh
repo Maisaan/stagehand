@@ -14,7 +14,7 @@ swift build --build-tests --scratch-path "$scratch" \
     || { echo "Build failed; see $scratch.build.log" >&2; exit 1; }
 scan() {
     periphery scan --skip-build --index-store-path "$scratch/out" \
-        --retain-codable-properties --quiet "$@" \
+        --retain-codable-properties --retain-assign-only-properties --quiet "$@" \
         | sed -E "s#^$PWD/##"
 }
 echo "== unused, tests counted as users"

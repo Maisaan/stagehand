@@ -9,7 +9,6 @@ import Foundation
 /// it reaches `rotationSize`.
 @MainActor
 final class DiagnosticLogger {
-    static let preferenceKey = PreferenceKey.diagnosticLoggingEnabled
     static let retentionDuration: TimeInterval = 24 * 60 * 60
     static let defaultPruneInterval: Duration = .seconds(60 * 60)
     static let defaultRotationSize = 5 * 1024 * 1024

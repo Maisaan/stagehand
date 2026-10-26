@@ -9,6 +9,7 @@ application.delegate = delegate
 /// the process without applicationWillTerminate, leaving windows parked
 /// offscreen. Route those signals through the normal termination path so the
 /// frames captured at Start are restored. The sources must outlive this scope.
+// periphery:ignore - held so the signal sources stay alive.
 let terminationSignalSources: [DispatchSourceSignal] = [SIGTERM, SIGINT, SIGHUP].map { number in
     signal(number, SIG_IGN)
     let source = DispatchSource.makeSignalSource(signal: number, queue: .main)

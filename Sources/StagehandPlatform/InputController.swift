@@ -25,7 +25,6 @@ public final class InputController {
     /// `defaults write com.example.Stagehand StagehandDisableTrackpadGestures -bool YES` keeps
     /// the private MultitouchSupport framework from loading, as a recovery switch after a
     /// macOS update.
-    public static let disableTrackpadGesturesPreferenceKey = GestureMonitor.disablePreferenceKey
 
     private var isRunning = false
     private var eventHandler: EventHandlerRef?
@@ -169,11 +168,6 @@ public final class InputController {
         GestureMonitor.heldClickTravel()
     }
 
-    /// Dock gesture event phases seen beside a held click since gestures last started.
-    nonisolated public static func dockPhaseCounts() -> [Int64: Int] {
-        GestureMonitor.dockPhaseCounts()
-    }
-
     /// Pointer drags Stagehand posted for a held click since gestures last started.
     nonisolated public static func syntheticPointerEventCount() -> Int {
         GestureMonitor.syntheticPointerEventCount()
@@ -187,8 +181,6 @@ public final class InputController {
     /// The source user data on pointer events Stagehand posts.
     nonisolated public static var syntheticPointerTag: Int64 { StagehandPlatform.syntheticPointerTag }
 
-    /// The hidden setting for Dock gestures beside a held click: withhold, pass, or cancel.
-    nonisolated public static var dockSwipeHandling: String { DockSwipeHandling.current.rawValue }
 
     /// Safe from any thread, for the keyboard tap's routing decision. Gesture state is
     /// process-wide, so this does not need the controller instance.

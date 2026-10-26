@@ -93,9 +93,3 @@ public protocol InputControlling: AnyObject {
 
 extension InputController: InputControlling {}
 
-public extension WindowManaging {
-    @discardableResult
-    func park(windowID: String, preferredSide: WindowParkingSide? = nil) -> Bool {
-        park(windowID: windowID, preferredSide: preferredSide, remnantWidth: WindowTuning.parkedRemnantWidth)
-    }
-}
