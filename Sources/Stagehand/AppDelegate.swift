@@ -174,9 +174,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self?.model?.refreshLaunchAtLogin()
             }
         }
+        let lastSessionEnd = StagehandModel.lastSessionEnd
         let interrupted = model.recoverInterruptedSession()
         if !UserDefaults.standard.bool(forKey: Self.onboardingCompleteKey) {
             openOnboarding()
+        } else if model.accessibilityGranted, interrupted, lastSessionEnd == "application_termination" {
+            // The previous session ended by quitting, so this launch would have started;
+            // it was only waiting for windows the quit could not reach (another Space,
+            // the lock screen). Start once they are back. After a pause or a crash,
+            // Stagehand stays paused as before.
+            model.startAfterRecovery = true
+            model.finishRecoveryIfReady()
         } else if model.accessibilityGranted && !interrupted {
             let startBegan = Date()
             model.start()

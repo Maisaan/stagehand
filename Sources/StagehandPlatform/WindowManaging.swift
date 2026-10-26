@@ -42,6 +42,8 @@ public protocol WindowManaging: AnyObject {
     func recoverInterruptedSession() -> Bool
     @discardableResult func start() -> [WindowRecord]
     func stop()
+    /// Pause or quit while the user is away from this Desktop: restore once, no retries.
+    func stop(windowsReachable: Bool)
     func scanWindows() -> [WindowRecord]
     /// Reads off the main thread; nil when windows changed during the read.
     func scanWindowsOffMain() async -> [WindowRecord]?

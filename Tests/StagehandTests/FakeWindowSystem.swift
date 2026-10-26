@@ -88,11 +88,28 @@ final class FakeWindowSystem: WindowManaging {
 
     func registerOwnWindow(window: NSWindow) -> String { "native" }
     func requestAccessibilityPermission() {}
-    func recoverInterruptedSession() -> Bool { false }
+    /// Pending recovery clears on the next attempt once the windows can be reached again.
+    var recoveryReachable = false
+    private(set) var recoveryAttempts = 0
+    func recoverInterruptedSession() -> Bool {
+        recoveryAttempts += 1
+        let interrupted = hasPendingRecovery
+        if recoveryReachable {
+            hasPendingRecovery = false
+            pendingRecoveryWindowIDs.removeAll()
+        }
+        return interrupted
+    }
 
     func start() -> [WindowRecord] {
         started = true
         return scanWindows()
+    }
+
+    private(set) var stopsWhileAway = 0
+    func stop(windowsReachable: Bool) {
+        if !windowsReachable { stopsWhileAway += 1 }
+        stop()
     }
 
     func stop() {

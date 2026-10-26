@@ -573,14 +573,19 @@ public final class WindowSystem {
         if !removedIDs.isEmpty { onApplicationTerminated?(pid) }
     }
 
-    public func stop() {
+    public func stop() { stop(windowsReachable: true) }
+
+    /// `windowsReachable` false: the user is away from this Desktop (another Space, the
+    /// lock screen), where no window can be read or moved. Restoring is tried once and
+    /// left to the journal, without the retries' main-thread waits.
+    public func stop(windowsReachable: Bool) {
         started = false
         applicationInventoryTask?.cancel()
         applicationInventoryTask = nil
         inventoryPaused = false
         lastApplicationInventory = nil
         launchDiscovery.cancelAll()
-        restoreAll()
+        restoreAll(retrying: windowsReachable)
         // A subsequent Start can happen on a different native Desktop. Keep
         // stable identities, but admit only its visible windows again.
         for id in Array(windows.keys) {
@@ -1287,7 +1292,7 @@ public final class WindowSystem {
     /// Call on pause/quit, before releasing tracking, to return windows to their original positions.
     /// A window that cannot be put back keeps its journal record and is reported through
     /// `pendingRecoveryWindowIDs`, so the model can warn and a later pass can retry.
-    public func restoreAll() {
+    public func restoreAll(retrying: Bool = true) {
         nativeWindows.restoreAll()
         var failed = Set<String>()
         for id in Array(windows.keys) where returnToOriginalFrame(windowID: id) == .failed {
@@ -1295,7 +1300,7 @@ public final class WindowSystem {
         }
         // A busy app answers a later request; a bounded retry covers the common
         // case without holding pause or quit for long.
-        for delay in WindowTuning.restoreRetryDelaysMilliseconds where !failed.isEmpty {
+        for delay in WindowTuning.restoreRetryDelaysMilliseconds where retrying && !failed.isEmpty {
             MainThreadActivity.during("restoreAll wait") { Thread.sleep(forTimeInterval: Double(delay) / 1_000) }
             failed = failed.filter { returnToOriginalFrame(windowID: $0) == .failed }
         }

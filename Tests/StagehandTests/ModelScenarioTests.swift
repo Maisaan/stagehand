@@ -26,6 +26,67 @@ struct ModelScenarioTests {
         #expect(harness.events("automatic_pause").isEmpty)
     }
 
+    /// Quitting while away from the Desktop (2026-10-26 11:56Z, behind the lock screen)
+    /// could restore no window, and nothing tried again until Start: seven windows stayed
+    /// parked. The quit now restores once without retries, records how the session ended,
+    /// and the paused model retries recovery when the user is back, then starts only if
+    /// the session ended by quitting.
+    @Test func recoveryLeftByAQuitWhileAwayIsRetriedOnReturnAndThenStarts() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer {
+            harness.model.disarmRecoveryWatch()
+            harness.cleanUp()
+        }
+        harness.model.start()
+        await harness.settle()
+        harness.desktop.id = nil
+        harness.model.nativeDesktopChanged()
+        #expect(harness.model.isSuspended)
+        harness.windows.hasPendingRecovery = true
+        harness.windows.pendingRecoveryWindowIDs = ["a", "b"]
+        harness.model.stop(reason: "application_termination", automatic: false)
+        #expect(harness.windows.stopsWhileAway == 1)
+        #expect(StagehandModel.lastSessionEnd == "application_termination")
+        #expect(harness.events("restore_deferred").count == 1)
+        #expect(harness.model.recoveryWatchTask != nil)
+
+        // Still away: nothing recovers, nothing starts.
+        harness.model.startAfterRecovery = true
+        harness.model.retryRecovery(trigger: "test")
+        #expect(!harness.model.isRunning)
+
+        // Back on the Desktop: recovery completes and Stagehand starts.
+        harness.desktop.id = 1
+        harness.windows.recoveryReachable = true
+        harness.model.retryRecovery(trigger: "test")
+        await harness.settle()
+        #expect(harness.model.isRunning)
+        #expect(harness.model.recoveryWatchTask == nil)
+        #expect(harness.events("recovery_completed_start").count == 1)
+        #expect(StagehandModel.lastSessionEnd == nil)
+    }
+
+    /// After a pause, recovery on return puts the windows back but Stagehand stays paused.
+    @Test func recoveryAfterAPauseWhileAwayDoesNotStart() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer {
+            UserDefaults.standard.removeObject(forKey: StagehandModel.lastSessionEndKey)
+            harness.model.disarmRecoveryWatch()
+            harness.cleanUp()
+        }
+        harness.model.start()
+        await harness.settle()
+        harness.windows.hasPendingRecovery = true
+        harness.windows.pendingRecoveryWindowIDs = ["a"]
+        harness.model.stop(reason: "manual", automatic: false)
+        #expect(harness.model.recoveryWatchTask != nil)
+        harness.windows.recoveryReachable = true
+        harness.model.retryRecovery(trigger: "test")
+        #expect(!harness.windows.hasPendingRecovery)
+        #expect(harness.model.recoveryWatchTask == nil)
+        #expect(!harness.model.isRunning)
+    }
+
     /// A change arriving while a refresh reads windows used to cancel that read and wait
     /// out the 100 ms debounce again (a launch on 2026-10-26 lost ~110 ms and a scan).
     /// Now the read is applied and one more scan follows at once.

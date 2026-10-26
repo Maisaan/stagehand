@@ -157,6 +157,17 @@ final class StagehandModel: ObservableObject {
     var motionBackingScaleFactor: CGFloat = 1
     let emptySpace: any EmptySpacePresenting
     var refreshTask: Task<Void, Never>?
+    /// While paused with window recovery pending: notification tokens and a fallback
+    /// timer that retry it when the user returns to the windows' Desktop.
+    var recoveryWatchTokens: [(center: NotificationCenter, token: NSObjectProtocol)] = []
+    var recoveryWatchTask: Task<Void, Never>?
+    /// Start once pending recovery completes: set at launch when the previous session
+    /// ended by quitting, the case in which launch would have started.
+    var startAfterRecovery = false
+    /// How the last session ended: a pause or quit reason, written by stop and cleared by
+    /// start, so a crash leaves none. Read at launch to decide startAfterRecovery.
+    static let lastSessionEndKey = "StagehandLastSessionEnd"
+    static var lastSessionEnd: String? { UserDefaults.standard.string(forKey: lastSessionEndKey) }
     /// Which refresh task is reading windows right now, and whether a change arrived
     /// during that read, so it scans once more instead of being cancelled.
     var refreshGeneration = 0
@@ -681,6 +692,7 @@ final class StagehandModel: ObservableObject {
     func recoverInterruptedSession() -> Bool {
         guard accessibilityGranted else { return false }
         let interrupted = windowSystem.recoverInterruptedSession()
+        if !isRunning, windowSystem.hasPendingRecovery { armRecoveryWatch() }
         if interrupted {
             diagnostics.record("crash_recovery", details: [
                 "pending": String(windowSystem.hasPendingRecovery),
@@ -764,6 +776,10 @@ final class StagehandModel: ObservableObject {
             focusHistory.record(windowID: focused)
         }
         isRunning = true
+        // Running again: no earlier session end applies, and nothing is left to watch for.
+        UserDefaults.standard.removeObject(forKey: Self.lastSessionEndKey)
+        startAfterRecovery = false
+        disarmRecoveryWatch()
         recoveryInProgress = automaticRecovery
         isSuspended = false
         state.isPaused = false
@@ -793,6 +809,10 @@ final class StagehandModel: ObservableObject {
             automatic ? "automatic_pause" : "paused",
             details: context
         )
+        // Away from this Desktop, no window can be read or moved: restore once and let the
+        // journal and the recovery watch put them back on return.
+        let windowsReachable = !isSuspended
+        UserDefaults.standard.set(reason, forKey: Self.lastSessionEndKey)
         isRunning = false
         isSuspended = false
         state = workspaceRestoration.pause(state: state, windowIDs: windows.map(\.id),
@@ -821,7 +841,14 @@ final class StagehandModel: ObservableObject {
         focusBorder.reset()
         overlays.hide()
         emptySpace.hide()
-        windowSystem.stop()
+        windowSystem.stop(windowsReachable: windowsReachable)
+        if windowSystem.hasPendingRecovery {
+            diagnostics.record("restore_deferred", details: [
+                "windowsReachable": String(windowsReachable),
+                "pendingIDs": windowSystem.pendingRecoveryWindowIDs.sorted().joined(separator: ",")
+            ])
+            armRecoveryWatch()
+        }
         lastAppliedFrames.removeAll()
         knownFrames.removeAll()
         recoveryInProgress = false
@@ -1233,3 +1260,71 @@ final class StagehandModel: ObservableObject {
         enqueue(.preferences)
     }
 }
+
+/// Window recovery that has to wait for the user to come back. Accessibility reaches only
+/// the current Space's windows: a pause or quit while the user is on another Space or the
+/// lock screen cannot put windows back, and before this nothing tried again until Start
+/// (2026-10-26 11:56Z: seven windows stayed parked at the screen edges).
+extension StagehandModel {
+    func armRecoveryWatch() {
+        guard recoveryWatchTask == nil else { return }
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.activeSpaceDidChangeNotification, NSWorkspace.sessionDidBecomeActiveNotification,
+                     NSWorkspace.didWakeNotification] {
+            let token = workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.retryRecovery(trigger: name.rawValue) }
+            }
+            recoveryWatchTokens.append((workspace, token))
+        }
+        let distributed = DistributedNotificationCenter.default()
+        let unlock = distributed.addObserver(forName: NSNotification.Name("com.apple.screenIsUnlocked"),
+                                             object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.retryRecovery(trigger: "screenIsUnlocked") }
+        }
+        recoveryWatchTokens.append((distributed, unlock))
+        recoveryWatchTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                self?.retryRecovery(trigger: "timer")
+            }
+        }
+    }
+
+    func disarmRecoveryWatch() {
+        for (center, token) in recoveryWatchTokens { center.removeObserver(token) }
+        recoveryWatchTokens.removeAll()
+        recoveryWatchTask?.cancel()
+        recoveryWatchTask = nil
+    }
+
+    func retryRecovery(trigger: String) {
+        guard !isRunning else {
+            disarmRecoveryWatch()
+            return
+        }
+        let pendingBefore = windowSystem.pendingRecoveryWindowIDs.count
+        _ = windowSystem.recoverInterruptedSession()
+        let pendingAfter = windowSystem.pendingRecoveryWindowIDs.count
+        if pendingAfter != pendingBefore || pendingAfter == 0 {
+            diagnostics.record("recovery_retry", details: [
+                "trigger": trigger, "pendingBefore": String(pendingBefore), "pendingAfter": String(pendingAfter)
+            ])
+        }
+        finishRecoveryIfReady()
+    }
+
+    /// Once nothing is pending: stop watching, and start if launch was waiting for it.
+    func finishRecoveryIfReady() {
+        guard !windowSystem.hasPendingRecovery else { return }
+        disarmRecoveryWatch()
+        if warning?.hasPrefix("Stagehand found an earlier window session") == true
+            || warning?.hasPrefix("Stagehand couldn't restore every window") == true {
+            warning = nil
+        }
+        guard startAfterRecovery, !isRunning, accessibilityGranted else { return }
+        startAfterRecovery = false
+        diagnostics.record("recovery_completed_start")
+        start()
+    }
+}
+
