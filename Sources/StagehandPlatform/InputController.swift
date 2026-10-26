@@ -174,6 +174,11 @@ public final class InputController {
         GestureMonitor.dockPhaseCounts()
     }
 
+    /// Pointer drags Stagehand posted for a held click since gestures last started.
+    nonisolated public static func syntheticPointerEventCount() -> Int {
+        GestureMonitor.syntheticPointerEventCount()
+    }
+
     /// The hidden setting for Dock gestures beside a held click: withhold, pass, or cancel.
     nonisolated public static var dockSwipeHandling: String { DockSwipeHandling.current.rawValue }
 

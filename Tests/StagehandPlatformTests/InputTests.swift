@@ -306,11 +306,13 @@ private func enabledCallbackState(unmodified: Bool = true, shortcut: Bool = fals
 }
 
 @Test func inputTapMaskCoversScrollAndTheGestureFamily() {
-    for type: UInt32 in [CGEventType.scrollWheel.rawValue, 19, 20, 29, 30, 31] {
+    // Left-mouse drags are seen only to tell macOS's from Stagehand's, and always passed.
+    for type: UInt32 in [CGEventType.scrollWheel.rawValue, 19, 20, 29, 30, 31,
+                         CGEventType.leftMouseDragged.rawValue] {
         #expect(suppressibleEventTypeMask & (CGEventMask(1) << CGEventMask(type)) != 0, "type \(type)")
     }
     for type: UInt32 in [CGEventType.keyDown.rawValue, CGEventType.leftMouseDown.rawValue,
-                         CGEventType.leftMouseDragged.rawValue, CGEventType.mouseMoved.rawValue] {
+                         CGEventType.leftMouseUp.rawValue, CGEventType.mouseMoved.rawValue] {
         #expect(suppressibleEventTypeMask & (CGEventMask(1) << CGEventMask(type)) == 0, "type \(type)")
     }
 }
@@ -1096,4 +1098,43 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     feed([held] + contacts(), at: 1.5, buttonDown: true)
     #expect(decide(.cancel, phase: 1, at: 1.501) == .cancel)
     #expect(state.dockPhaseCounts[1] == 2)
+}
+
+/// Once macOS takes the held click and the fingers beside it for its own four-finger
+/// gesture, it stops moving the pointer until every finger lifts; the held finger lifts
+/// only at the drop. Stagehand then moves the pointer from the held finger itself, only
+/// while that finger is alone and macOS sends no real drags.
+@Test func aLockedHeldClickMovesThePointerOnlyWhileMacOSDoesNot() {
+    var state = enabledCallbackState()
+    state.heldDragPointsPerPadWidth = 1_000
+    var frame: Int32 = 1
+    func feed(_ contacts: [GestureContact], at time: Double, buttonDown: Bool = true) -> (dx: Double, dy: Double)? {
+        _ = state.process(contacts: contacts, touches: touches(contacts, frame: frame), rawCount: Int32(contacts.count),
+                          flags: [], timestamp: time, now: time, buttonDown: buttonDown)
+        frame += 1
+        return state.takeHeldClickPointerMove(now: time, buttonDown: buttonDown)
+    }
+    func held(_ x: Double, _ y: Double) -> GestureContact { GestureContact(id: 9, x: x, y: y) }
+    _ = feed([held(0.5, 0.2)], at: 1, buttonDown: false)
+    _ = feed([held(0.5, 0.2)], at: 1.01)
+    // Not locked yet: macOS moves the pointer itself.
+    #expect(feed([held(0.51, 0.2)], at: 1.02) == nil)
+    _ = feed([held(0.51, 0.2)] + contacts(), at: 1.03)
+    _ = state.dockDecision(phase: 1, now: 1.031, handling: .withhold)
+    #expect(state.pointerLockedBesideHeldClick)
+    // The swipe fingers are still down.
+    #expect(feed([held(0.52, 0.2)] + contacts(dx: -0.05), at: 1.05) == nil)
+    _ = feed([held(0.52, 0.2)], at: 1.1)
+    // Alone and locked: right on the pad is right on screen, up on the pad is up on screen.
+    let move = feed([held(0.53, 0.21)], at: 1.11)
+    #expect(move.map { abs($0.dx - 10) < 0.001 && abs($0.dy + 10 * trackpadAspect) < 0.001 } == true)
+    #expect(feed([held(0.53, 0.21)], at: 1.12) == nil)
+    // A real drag from macOS stops Stagehand's moves.
+    state.lastRealPointerDrag = 1.125
+    #expect(feed([held(0.54, 0.21)], at: 1.13) == nil)
+    #expect(feed([held(0.55, 0.21)], at: 1.2) != nil)
+    #expect(state.syntheticPointerEvents == 2)
+    // The drop ends the lock.
+    #expect(feed([held(0.56, 0.21)], at: 1.3, buttonDown: false) == nil)
+    #expect(!state.pointerLockedBesideHeldClick)
 }

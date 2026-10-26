@@ -21,6 +21,7 @@ final class PointerDragTracker {
     private let heldClickTravel: () -> Double
     private let dockEventsWithheld: () -> Int
     private let dockPhases: () -> [Int64: Int]
+    private let syntheticPointerEvents: () -> Int
     /// The current press, for the summary logged when a drag-and-drop ends.
     private var press: PressRecord?
 
@@ -32,6 +33,7 @@ final class PointerDragTracker {
         let began: TimeInterval
         let dockEventsAtStart: Int
         let dockPhasesAtStart: [Int64: Int]
+        let syntheticPointerEventsAtStart: Int
         var dragEvents = 0
         var lastDrag: TimeInterval
         var travelAtLastDrag: Double
@@ -62,8 +64,10 @@ final class PointerDragTracker {
          now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          heldClickTravel: @escaping () -> Double = { InputController.heldClickTravel() },
          dockEventsWithheld: @escaping () -> Int = { InputController.withheldDockControlEventCount() },
-         dockPhases: @escaping () -> [Int64: Int] = { InputController.dockPhaseCounts() }) {
+         dockPhases: @escaping () -> [Int64: Int] = { InputController.dockPhaseCounts() },
+         syntheticPointerEvents: @escaping () -> Int = { InputController.syntheticPointerEventCount() }) {
         self.dockPhases = dockPhases
+        self.syntheticPointerEvents = syntheticPointerEvents
         self.buttonDown = buttonDown
         self.dragChangeCount = dragChangeCount
         self.now = now
@@ -129,10 +133,15 @@ final class PointerDragTracker {
         pressBaseline = inStagehand ? nil : dragChangeCount()
         let time = now()
         press = PressRecord(began: time, dockEventsAtStart: dockEventsWithheld(), dockPhasesAtStart: dockPhases(),
+                            syntheticPointerEventsAtStart: syntheticPointerEvents(),
                             lastDrag: time, travelAtLastDrag: heldClickTravel())
     }
 
     func pressEnded() {
+        // A press nothing asked about during it still gets its summary.
+        if !pressCarriesDrop, press != nil, let pressBaseline, dragChangeCount() != pressBaseline {
+            pressCarriesDrop = true
+        }
         if pressCarriesDrop, var press {
             let time = now()
             press.closeGap(at: time, travel: heldClickTravel())
@@ -149,7 +158,9 @@ final class PointerDragTracker {
                     let delta = count - (press.dockPhasesAtStart[phase] ?? 0)
                     return delta > 0 ? "\(phase):\(delta)" : nil
                 }.joined(separator: " "),
-                "dockHandling": InputController.dockSwipeHandling
+                "dockHandling": InputController.dockSwipeHandling,
+                // Pointer drags Stagehand posted while macOS had the touch locked.
+                "syntheticPointerEvents": String(syntheticPointerEvents() - press.syntheticPointerEventsAtStart)
             ])
         }
         press = nil

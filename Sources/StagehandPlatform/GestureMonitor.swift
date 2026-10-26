@@ -149,7 +149,9 @@ let suppressibleEventTypeMask: CGEventMask = [
     UInt32(NSEvent.EventType.endGesture.rawValue),
     UInt32(NSEvent.EventType.gesture.rawValue),
     UInt32(NSEvent.EventType.swipe.rawValue),
-    dockControlEventType
+    dockControlEventType,
+    // Passed through untouched; seen only to tell real pointer drags from Stagehand's own.
+    CGEventType.leftMouseDragged.rawValue
 ].reduce(0) { $0 | (CGEventMask(1) << CGEventMask($1)) }
 
 /// kCGSEventDockControl: the events WindowServer sends the Dock for its trackpad gestures,
@@ -272,6 +274,17 @@ struct GestureCallbackState {
     /// The Dock's gesture beside this held-click swipe was already cancelled.
     var dockGestureCancelled = false
     var previousFilteredCount = 0
+    /// macOS took the held click and the fingers beside it for its own four-finger
+    /// gesture during this press. Its trackpad handling then stops moving the pointer for
+    /// the whole touch until every finger lifts, and the held finger does not lift until
+    /// the drop (SkyLight SystemGestures, 2026-10-26; with Stagehand's gestures off too).
+    var pointerLockedBesideHeldClick = false
+    var lastRealPointerDrag: TimeInterval = 0
+    /// The held finger's movement in the last frame, in trackpad widths and heights.
+    var heldClickFrameDelta: (x: Double, y: Double) = (0, 0)
+    /// Pointer points per trackpad width for moves Stagehand makes on macOS's behalf.
+    var heldDragPointsPerPadWidth: Double = 1_800
+    var syntheticPointerEvents = 0
     var heldClickPositions: [Int32: (x: Double, y: Double)] = [:]
     var recognizer = NavigationGestureRecognizer()
     var ownership = GestureInputOwnership()
@@ -309,12 +322,43 @@ private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
     let flags = CGEventSource.flagsState(.combinedSessionState)
     let buttonDown = CGEventSource.buttonState(.combinedSessionState, button: .left)
     let now = ProcessInfo.processInfo.systemUptime
-    let delivery = gestureCallbackState.withLock { state in
-        state.process(contacts: snapshot, touches: frameTouches, rawCount: count, flags: flags,
-                      timestamp: timestamp, now: now, buttonDown: buttonDown)
+    let (delivery, move) = gestureCallbackState.withLock { state in
+        (state.process(contacts: snapshot, touches: frameTouches, rawCount: count, flags: flags,
+                       timestamp: timestamp, now: now, buttonDown: buttonDown),
+         state.takeHeldClickPointerMove(now: now, buttonDown: buttonDown))
     }
     delivery?()
+    if let move { postHeldClickDrag(dx: move.dx, dy: move.dy) }
     return 0
+}
+
+/// Real drags arriving within this long stop Stagehand's own pointer moves.
+let syntheticPointerHoldoff: TimeInterval = 0.05
+/// Height over width of a MacBook trackpad, about 10 by 16 cm.
+let trackpadAspect = 0.62
+/// Marks pointer events Stagehand posts, so the input tap does not count them as real.
+let syntheticPointerTag: Int64 = 0x5354_4844 // "STHD"
+nonisolated(unsafe) private let syntheticPointerSource: CGEventSource? = {
+    let source = CGEventSource(stateID: .hidSystemState)
+    source?.userData = syntheticPointerTag
+    return source
+}()
+
+/// Moves the pointer, and the item a held click is carrying, by a drag Stagehand posts.
+/// Called on the MultitouchSupport thread; CGEvent posting is thread-safe.
+private func postHeldClickDrag(dx: Double, dy: Double) {
+    guard let current = CGEvent(source: nil)?.location else { return }
+    var count: UInt32 = 0
+    var displays = [CGDirectDisplayID](repeating: 0, count: 8)
+    guard CGGetActiveDisplayList(8, &displays, &count) == .success, count > 0 else { return }
+    let bounds = displays.prefix(Int(count)).map { CGDisplayBounds($0) }.reduce(CGRect.null) { $0.union($1) }
+    let target = CGPoint(x: min(max(current.x + dx, bounds.minX), bounds.maxX - 1),
+                         y: min(max(current.y + dy, bounds.minY), bounds.maxY - 1))
+    guard let event = CGEvent(mouseEventSource: syntheticPointerSource, mouseType: .leftMouseDragged,
+                              mouseCursorPosition: target, mouseButton: .left) else { return }
+    event.setIntegerValueField(.mouseEventDeltaX, value: Int64((target.x - current.x).rounded()))
+    event.setIntegerValueField(.mouseEventDeltaY, value: Int64((target.y - current.y).rounded()))
+    event.post(tap: .cghidEventTap)
 }
 
 extension GestureCallbackState {
@@ -438,6 +482,7 @@ extension GestureCallbackState {
     /// One Dock gesture event: passed unless a held click is left out and Stagehand owns
     /// the other fingers (or just lifted them); then handled as `handling` says.
     mutating func dockDecision(phase: Int64, now: TimeInterval, handling: DockSwipeHandling) -> DockEventDecision {
+        if enabled, !heldClickContactIDs.isEmpty { pointerLockedBesideHeldClick = true }
         guard enabled, !heldClickContactIDs.isEmpty, ownership.suppress(.gesture, now: now) else { return .pass }
         dockPhaseCounts[phase, default: 0] += 1
         if traceGestures { NSLog("[DEBUG-gesture] dock gesture phase=%lld beside a held click: %@", phase, handling.rawValue) }
@@ -453,6 +498,21 @@ extension GestureCallbackState {
             dockGestureCancelled = true
             return .cancel
         }
+    }
+
+    /// The pointer move Stagehand makes for macOS in this frame, in points (CG direction),
+    /// or nil. Only while macOS has the touch locked for its own gesture, only the held
+    /// finger is down, and macOS has sent no real drag recently: once it moves the pointer
+    /// again, Stagehand stops within one frame, so the two never move it together.
+    mutating func takeHeldClickPointerMove(now: TimeInterval, buttonDown: Bool) -> (dx: Double, dy: Double)? {
+        guard enabled, buttonDown, pointerLockedBesideHeldClick, !heldClickContactIDs.isEmpty,
+              previousFilteredCount == 0, now - lastRealPointerDrag > syntheticPointerHoldoff,
+              heldClickFrameDelta.x != 0 || heldClickFrameDelta.y != 0 else { return nil }
+        syntheticPointerEvents &+= 1
+        // MultitouchSupport y grows upward; CG y grows downward. A trackpad is wider than
+        // it is tall, so a height is a smaller distance than a width.
+        return (heldClickFrameDelta.x * heldDragPointsPerPadWidth,
+                -heldClickFrameDelta.y * heldDragPointsPerPadWidth * trackpadAspect)
     }
 
     /// Leaves out the finger holding a click. It must have been touching in the frame
@@ -473,13 +533,18 @@ extension GestureCallbackState {
         }
         buttonWasDown = buttonDown
         previousContactIDs = ids
+        heldClickFrameDelta = (0, 0)
+        if !buttonDown { pointerLockedBesideHeldClick = false }
         guard !heldClickContactIDs.isEmpty else {
             heldClickPositions.removeAll()
+            pointerLockedBesideHeldClick = false
             return contacts
         }
         for contact in contacts where heldClickContactIDs.contains(contact.id) {
             if let previous = heldClickPositions[contact.id] {
                 heldClickTravel += hypot(contact.x - previous.x, contact.y - previous.y)
+                heldClickFrameDelta.x += contact.x - previous.x
+                heldClickFrameDelta.y += contact.y - previous.y
             }
             heldClickPositions[contact.id] = (contact.x, contact.y)
         }
@@ -546,6 +611,11 @@ final class GestureMonitor {
             return "Stagehand couldn't find a built-in trackpad. Keyboard shortcuts still work."
         }
         self.device = device
+        // Pointer distance for one trackpad width when Stagehand moves the pointer for a
+        // held click. Hidden preference StagehandHeldDragPointsPerPadWidth, else 1.25
+        // widths of the main display.
+        let heldDragPointsPerPadWidth = (UserDefaults.standard.object(forKey: "StagehandHeldDragPointsPerPadWidth") as? Double)
+            ?? 1.25 * Double(CGDisplayBounds(CGMainDisplayID()).width)
         let activeGeneration = generation
         gestureCallbackState.withLock { state in
             state = GestureCallbackState()
@@ -555,6 +625,7 @@ final class GestureMonitor {
             state.shortcutEnabled = shortcutEnabled
             state.shortcutBindings = shortcutBindings
             state.reverseShortcutDirection = reverseShortcutDirection
+            state.heldDragPointsPerPadWidth = heldDragPointsPerPadWidth
             state.scheduleDelivery = { [weak self] in
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isRunning, self.generation == activeGeneration else { return }
@@ -641,6 +712,11 @@ final class GestureMonitor {
         gestureCallbackState.withLock { $0.dockPhaseCounts }
     }
 
+    /// Pointer drags Stagehand posted for a held click since gestures last started.
+    nonisolated static func syntheticPointerEventCount() -> Int {
+        gestureCallbackState.withLock { $0.syntheticPointerEvents }
+    }
+
     func cancelGestureSequence() {
         if traceGestures { NSLog("[DEBUG-gesture] sequence interrupted by app") }
         gestureCallbackState.withLock { state in
@@ -676,6 +752,12 @@ private let inputTapCallback: CGEventTapCallBack = { _, type, event, context in
         .gesture
     }
     let now = ProcessInfo.processInfo.systemUptime
+    if type == .leftMouseDragged {
+        if event.getIntegerValueField(.eventSourceUserData) != syntheticPointerTag {
+            gestureCallbackState.withLock { $0.lastRealPointerDrag = now }
+        }
+        return Unmanaged.passUnretained(event)
+    }
     if kind == .dockControl {
         let phase = event.getIntegerValueField(gesturePhaseField)
         let handling = DockSwipeHandling.current
