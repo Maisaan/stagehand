@@ -26,6 +26,40 @@ struct ModelScenarioTests {
         #expect(harness.events("automatic_pause").isEmpty)
     }
 
+    /// A swipe preview retried a refused first move on every display tick. For a closing
+    /// window, or one whose app is not answering, each try is a main-thread round trip.
+    /// A refusal that can still be read keeps its per-tick retry.
+    @Test func aSwipePreviewStopsRetryingAWindowItCannotRead() async throws {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        let available = try #require(harness.model.availableFrame)
+        let base = harness.model.navigationFrames()
+        let preview = { (displacement: Double) in
+            _ = harness.model.gesturePreviewFrames(from: base, availableFrame: available,
+                                                   displacement: displacement)
+        }
+        func writes(to id: String) -> Int { harness.windows.setFrameCalls.filter { $0 == id }.count }
+
+        harness.model.gestureBase = base
+        harness.model.gesturePrepared = ["a"]
+        harness.windows.refusesFrames = ["b"]
+        harness.windows.unreadableFrames = ["b"]
+        let startup = writes(to: "b")
+        for displacement in [-0.05, -0.06, -0.07] { preview(displacement) }
+        #expect(writes(to: "b") - startup == 1)
+
+        harness.model.resetGestureTracking()
+        harness.model.gestureBase = base
+        harness.model.gesturePrepared = ["a"]
+        harness.windows.unreadableFrames = []
+        let before = writes(to: "b")
+        for displacement in [-0.05, -0.06, -0.07] { preview(displacement) }
+        #expect(writes(to: "b") - before == 3)
+        harness.model.resetGestureTracking()
+    }
+
     /// Every frame read is a synchronous round trip to an app, on the main thread.
     /// A slide starts from the frames Stagehand wrote or scanned and reads a frame
     /// back only once, after activation, when the app may have resized its window.

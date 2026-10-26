@@ -146,6 +146,9 @@ final class StagehandModel: ObservableObject {
     /// The last complete preview. Resting fingers repeat a displacement every display tick.
     var gesturePreviewCache: (displacement: Double, frames: [String: CGRect])?
     var gesturePrepared: Set<String> = []
+    /// Windows whose first preview move was refused and whose frame could not be read:
+    /// closing, or their app is not answering. The preview stops retrying them.
+    var gestureUnwritable: Set<String> = []
     var gestureAxis: GestureAxis?
     var motionWrittenPositions: [String: CGPoint] = [:]
     var motionBackingScaleFactor: CGFloat = 1

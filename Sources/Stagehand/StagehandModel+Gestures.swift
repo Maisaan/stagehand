@@ -10,6 +10,7 @@ extension StagehandModel {
         gestureBase = nil
         gestureAxis = nil
         gesturePrepared.removeAll()
+        gestureUnwritable.removeAll()
     }
 
     func handleGesture(_ event: GestureNavigationEvent) {
@@ -33,6 +34,7 @@ extension StagehandModel {
                 gestureBase = frames
                 presentationFrames = frames.filter { $0.value.intersects(availableFrame ?? .zero) }
                 gesturePrepared = Set(presentationFrames?.keys.map { $0 } ?? [])
+                gestureUnwritable.removeAll()
                 motionBackingScaleFactor = builtInScreen?.backingScaleFactor ?? 1
                 motionWrittenPositions = presentationFrames?.mapValues {
                     RibbonMotion.pixelAligned($0.origin, backingScaleFactor: motionBackingScaleFactor)
@@ -142,10 +144,12 @@ extension StagehandModel {
                                               configuration: ribbonAnimationConfiguration)
         var frames: [String: CGRect] = [:]
         for (id, shifted) in preview {
-            guard shifted.intersects(availableFrame) || gesturePrepared.contains(id) else { continue }
+            guard shifted.intersects(availableFrame) || gesturePrepared.contains(id),
+                  !gestureUnwritable.contains(id) else { continue }
             if !gesturePrepared.contains(id) {
                 let parkedBefore = diagnostics.isEnabled ? windowSystem.isParked(windowID: id) : false
                 let frameWritten = windowSystem.setFrame(windowID: id, frame: shifted)
+                let refusedFrame = frameWritten ? nil : windowSystem.observedFrame(windowID: id)
                 if diagnostics.isEnabled {
                     // The frame the gesture started from, and the written frame, which
                     // setFrame verified to within a point. Only a refused write is read back.
@@ -154,7 +158,7 @@ extension StagehandModel {
                         windowID: id,
                         requestedFrame: shifted,
                         beforeFrame: base[id],
-                        actualFrame: frameWritten ? shifted : windowSystem.observedFrame(windowID: id),
+                        actualFrame: frameWritten ? shifted : refusedFrame,
                         details: [
                             "displacement": String(displacement),
                             "frameWriteAccepted": String(frameWritten),
@@ -166,8 +170,14 @@ extension StagehandModel {
                     )
                 }
                 guard frameWritten else {
-                    // Retry this window's first move on the next tick.
-                    complete = false
+                    // Retry this window's first move on the next tick, unless it cannot be
+                    // read: it is closing or its app is not answering, and each try would be
+                    // another main-thread round trip to that app.
+                    if refusedFrame == nil {
+                        gestureUnwritable.insert(id)
+                    } else {
+                        complete = false
+                    }
                     continue
                 }
                 gesturePrepared.insert(id)

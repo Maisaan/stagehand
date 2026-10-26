@@ -142,6 +142,7 @@ final class FakeWindowSystem: WindowManaging {
 
     func observedFrame(windowID: String) -> CGRect? {
         observedFrameReads += 1
+        guard !unreadableFrames.contains(windowID) else { return nil }
         return windows[windowID]?.frame
     }
     func windowNumber(for windowID: String) -> CGWindowID? { nil }
@@ -169,8 +170,15 @@ final class FakeWindowSystem: WindowManaging {
 
     func motionWriteStatistics(reset: Bool, focusedWindowID: String?) -> [String: String] { [:] }
 
+    /// Windows whose frame writes are refused, and whose frames cannot be read back,
+    /// like a closing window or one whose app is not answering.
+    var refusesFrames: Set<String> = []
+    var unreadableFrames: Set<String> = []
+    private(set) var setFrameCalls: [String] = []
+
     func setFrame(windowID: String, frame: CGRect) -> Bool {
-        guard let window = windows[windowID], !window.minimized else { return false }
+        setFrameCalls.append(windowID)
+        guard let window = windows[windowID], !window.minimized, !refusesFrames.contains(windowID) else { return false }
         windows[windowID]?.restoreFrame = nil
         windows[windowID]?.frame = frame
         return true
