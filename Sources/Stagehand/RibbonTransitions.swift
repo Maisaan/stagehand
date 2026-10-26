@@ -282,7 +282,12 @@ func commitRibbonPositions(
 ) -> [RibbonPositionWriteFailure] {
     frames.compactMap { windowID, frame in
         let position = RibbonMotion.pixelAligned(frame.origin, backingScaleFactor: backingScaleFactor)
-        if let actual = observedFrame(windowID), ribbonPositionMatches(actual.origin, position) { return nil }
+        guard let before = observedFrame(windowID) else {
+            // A window that cannot be read is closing or its app is not answering;
+            // a write would wait on the same app. The caller does not retry it.
+            return RibbonPositionWriteFailure(windowID: windowID, requestedFrame: frame, actualFrame: nil)
+        }
+        if ribbonPositionMatches(before.origin, position) { return nil }
         _ = setPosition(windowID, position)
         let actual = observedFrame(windowID)
         guard actual.map({ ribbonPositionMatches($0.origin, position) }) != true else { return nil }

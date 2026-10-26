@@ -835,6 +835,12 @@ extension StagehandModel {
             setPosition: { windowSystem.setPosition(windowID: $0, position: $1) },
             observedFrame: { windowSystem.observedFrame(windowID: $0) }
         )
+        var attempts = 1
+        // Only a window that answered with the wrong position is tried again. One that
+        // cannot be read (closing, or its app not answering) would cost a main-thread
+        // round trip per try; parking defers the same case, and the refresh places it.
+        var unreadable = commitFailures.filter { $0.actualFrame == nil }
+        commitFailures.removeAll { $0.actualFrame == nil }
         for delay in [8, 24, 56] where !commitFailures.isEmpty {
             do { try await Task.sleep(for: .milliseconds(delay)) }
             catch { return false }
@@ -848,14 +854,17 @@ extension StagehandModel {
                 setPosition: { windowSystem.setPosition(windowID: $0, position: $1) },
                 observedFrame: { windowSystem.observedFrame(windowID: $0) }
             )
+            attempts += 1
+            unreadable += commitFailures.filter { $0.actualFrame == nil }
+            commitFailures.removeAll { $0.actualFrame == nil }
         }
-        if let failure = commitFailures.first {
+        if let failure = commitFailures.first ?? unreadable.first {
             recordWindowGeometry(
                 event: "ribbon_position_commit_failed",
                 windowID: failure.windowID,
                 requestedFrame: failure.requestedFrame,
                 actualFrame: failure.actualFrame,
-                details: ["attempts": "4"]
+                details: ["attempts": String(attempts), "frameUnreadable": String(failure.actualFrame == nil)]
             )
             // Motion ends here without pausing. Rewrite the ribbon with verified frame
             // writes and parking so no window stays outside its slot.
