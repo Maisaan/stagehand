@@ -139,6 +139,8 @@ final class StagehandModel: ObservableObject {
     let overlays: any NavigationPresenting
     let diagnostics: DiagnosticLogger
     let ribbonMotion: RibbonMotion
+    /// Whether a held left button is carrying a drag-and-drop or moving a window.
+    let pointer: PointerDragTracker
     var presentationFrames: [String: CGRect]?
     var gestureBase: [String: CGRect]? {
         didSet { gesturePreviewCache = nil }
@@ -146,6 +148,9 @@ final class StagehandModel: ObservableObject {
     /// The last complete preview. Resting fingers repeat a displacement every display tick.
     var gesturePreviewCache: (displacement: Double, frames: [String: CGRect])?
     var gesturePrepared: Set<String> = []
+    /// Windows whose first preview move was refused and whose frame could not be read:
+    /// closing, or their app is not answering. The preview stops retrying them.
+    var gestureUnwritable: Set<String> = []
     var gestureAxis: GestureAxis?
     var motionWrittenPositions: [String: CGPoint] = [:]
     var motionBackingScaleFactor: CGFloat = 1
@@ -308,6 +313,7 @@ final class StagehandModel: ObservableObject {
         desktopScope: DesktopScope = DesktopScope(),
         focusGate: FocusInputGate = FocusInputGate(),
         ribbonMotion: RibbonMotion = RibbonMotion(),
+        pointer: PointerDragTracker = PointerDragTracker(),
         layoutStore: WorkspaceLayoutStore? = nil,
         persistence: Persistence = .standard
     ) {
@@ -321,6 +327,7 @@ final class StagehandModel: ObservableObject {
         self.desktopScope = desktopScope
         self.focusGate = focusGate
         self.ribbonMotion = ribbonMotion
+        self.pointer = pointer
         self.overlays = overlays
         let defaults = UserDefaults.standard
         let shortcutLoad = ShortcutBinding.loadReportingIssues(from: defaults)
@@ -370,6 +377,10 @@ final class StagehandModel: ObservableObject {
         overlays.canRevealNavigation = { [weak self] in
             guard let self, self.isRunning, !self.isSuspended else { return false }
             return self.desktopScope.refresh() == .home
+        }
+        overlays.pointerCarriesDrop = { [weak self] in
+            guard let self else { return false }
+            return self.pointer.isButtonDown && self.pointer.isDragAndDrop
         }
         overlays.setBorderColor(focusBorderColor)
         updateShortcutHints()
@@ -743,6 +754,7 @@ final class StagehandModel: ObservableObject {
         input.shortcutSwipesEnabled = shortcutSwipesEnabled
         focusGate.start()
         input.start()
+        pointer.start()
         updateInputStatus()
         diagnostics.record("started", details: workspaceDetails())
         enqueue(.refresh)
@@ -788,6 +800,7 @@ final class StagehandModel: ObservableObject {
         focusGate.cancelAll()
         focusGate.stop()
         input.stop()
+        pointer.stop()
         focusBorder.reset()
         overlays.hide()
         emptySpace.hide()
@@ -1138,7 +1151,8 @@ final class StagehandModel: ObservableObject {
                 focusGate.stop()
                 input.stop()
                 focusBorder.reset()
-                overlays.hide()
+                // Resume returns to this Desktop; keep the panels instead of rebuilding them.
+                overlays.suspend()
                 emptySpace.hide()
                 updateInputStatus()
                 onStateChange?()

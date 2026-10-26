@@ -142,6 +142,7 @@ final class FakeWindowSystem: WindowManaging {
 
     func observedFrame(windowID: String) -> CGRect? {
         observedFrameReads += 1
+        guard !unreadableFrames.contains(windowID) else { return nil }
         return windows[windowID]?.frame
     }
     func windowNumber(for windowID: String) -> CGWindowID? { nil }
@@ -169,8 +170,15 @@ final class FakeWindowSystem: WindowManaging {
 
     func motionWriteStatistics(reset: Bool, focusedWindowID: String?) -> [String: String] { [:] }
 
+    /// Windows whose frame writes are refused, and whose frames cannot be read back,
+    /// like a closing window or one whose app is not answering.
+    var refusesFrames: Set<String> = []
+    var unreadableFrames: Set<String> = []
+    private(set) var setFrameCalls: [String] = []
+
     func setFrame(windowID: String, frame: CGRect) -> Bool {
-        guard let window = windows[windowID], !window.minimized else { return false }
+        setFrameCalls.append(windowID)
+        guard let window = windows[windowID], !window.minimized, !refusesFrames.contains(windowID) else { return false }
         windows[windowID]?.restoreFrame = nil
         windows[windowID]?.frame = frame
         return true
@@ -213,6 +221,33 @@ final class FakeWindowSystem: WindowManaging {
     }
 }
 
+/// The left button and the drag pasteboard, as PointerDragTracker sees them.
+@MainActor
+final class FakePointer {
+    var buttonDown = false
+    var dragChangeCount = 10
+    lazy var tracker = PointerDragTracker(buttonDown: { [unowned self] in buttonDown },
+                                          dragChangeCount: { [unowned self] in dragChangeCount })
+
+    /// Holds the button over another app and starts a drag session.
+    func beginDragAndDrop() {
+        buttonDown = true
+        tracker.pressBegan(inStagehand: false)
+        dragChangeCount += 1
+    }
+
+    /// Holds the button over another app without a drag session: a title-bar drag.
+    func beginWindowDrag() {
+        buttonDown = true
+        tracker.pressBegan(inStagehand: false)
+    }
+
+    func release() {
+        buttonDown = false
+        tracker.pressEnded()
+    }
+}
+
 @MainActor
 final class FakeInput: InputControlling {
     var onAction: ((NavigationAction) -> Void)?
@@ -249,9 +284,11 @@ final class FakeOverlays: NavigationPresenting {
     var onRemoveWindow: ((String) -> Void)?
     var onReorderWindow: ((String, Int) -> Void)?
     var canRevealNavigation: (() -> Bool)?
+    var pointerCarriesDrop: (() -> Bool)?
     private(set) var shortcutHintToggles = 0
     private(set) var warnings: [String] = []
     private(set) var borderFrame: CGRect?
+    var suspensions = 0
     /// Each time the border appeared (true) or disappeared (false).
     var borderVisibility: [Bool] = []
 
@@ -269,6 +306,10 @@ final class FakeOverlays: NavigationPresenting {
     func hide() {
         if borderFrame != nil { borderVisibility.append(false) }
         borderFrame = nil
+    }
+    func suspend() {
+        suspensions += 1
+        hide()
     }
 }
 
@@ -289,6 +330,7 @@ struct ModelHarness {
     let model: StagehandModel
     let windows: FakeWindowSystem
     let overlays: FakeOverlays
+    let pointer = FakePointer()
     let logURL: URL
     let postedEvents: () -> Int
 
@@ -323,6 +365,7 @@ struct ModelHarness {
             desktopScope: DesktopScope(currentDesktopID: { desktop.id }),
             focusGate: gate,
             ribbonMotion: RibbonMotion(frameDriver: ImmediateFrameDriver()),
+            pointer: pointer.tracker,
             layoutStore: layoutStore
         )
         // Tests lay out on the first screen; a desktop Mac has no built-in display.

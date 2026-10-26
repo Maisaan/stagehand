@@ -297,8 +297,10 @@ extension StagehandModel {
             state.focus(windowID: focused)
         }
         // Do not fight a title-bar drag or resize. Observe the window while the
-        // mouse is held, then apply its drop to the ribbon after mouse-up.
-        if NSEvent.pressedMouseButtons & 1 != 0 {
+        // mouse is held, then apply its drop to the ribbon after mouse-up. A
+        // drag-and-drop moves no window, so the ribbon follows it as usual.
+        let dragAndDrop = pointer.isButtonDown && pointer.isDragAndDrop
+        if pointer.isButtonDown, !dragAndDrop {
             if pointerInteraction == nil, let focused = focusedWindow, let frame = availableFrame {
                 pointerInteraction = PointerInteraction(
                     windowID: focused.id,
@@ -314,9 +316,11 @@ extension StagehandModel {
             scheduleRefresh()
             return
         }
-        let interaction = pointerInteraction
+        // A deferral begun earlier in this press, before its drag session started,
+        // keeps its pending layout but has no window drop to apply.
+        let interaction = dragAndDrop ? nil : pointerInteraction
+        var needsLayout = pointerInteraction?.needsLayout ?? false
         pointerInteraction = nil
-        var needsLayout = interaction?.needsLayout ?? false
         if let availableFrame {
             let activeWindowIDs = Set(state.currentSpace.windowIDs)
             if let reappeared = current.first(where: { window in

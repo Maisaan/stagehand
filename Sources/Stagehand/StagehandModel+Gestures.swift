@@ -10,6 +10,13 @@ extension StagehandModel {
         gestureBase = nil
         gestureAxis = nil
         gesturePrepared.removeAll()
+        gestureUnwritable.removeAll()
+    }
+
+    /// Whether the left button is held and, if so, whether it carries a drag-and-drop.
+    func pointerDetails() -> [String: String] {
+        let held = pointer.isButtonDown
+        return ["pointerHeld": String(held), "dragAndDrop": String(held && pointer.isDragAndDrop)]
     }
 
     func handleGesture(_ event: GestureNavigationEvent) {
@@ -25,6 +32,11 @@ extension StagehandModel {
         switch event {
         case .began(let axis, let displacement, let mode):
             guard desktopScope.refresh() == .home else { return }
+            if pointerHoldsAWindow() {
+                // The release then finds no axis and does nothing; log the swipe here.
+                recordGestureIgnoredForPointer(displacement: displacement, recognizerAction: nil)
+                return
+            }
             gestureAxis = axis
             if mode == .plain, !changes.isProcessing, axis == .horizontal,
                !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
@@ -33,6 +45,7 @@ extension StagehandModel {
                 gestureBase = frames
                 presentationFrames = frames.filter { $0.value.intersects(availableFrame ?? .zero) }
                 gesturePrepared = Set(presentationFrames?.keys.map { $0 } ?? [])
+                gestureUnwritable.removeAll()
                 motionBackingScaleFactor = builtInScreen?.backingScaleFactor ?? 1
                 motionWrittenPositions = presentationFrames?.mapValues {
                     RibbonMotion.pixelAligned($0.origin, backingScaleFactor: motionBackingScaleFactor)
@@ -45,7 +58,7 @@ extension StagehandModel {
                         "observedFocusedWindowID": windowSystem.lastObservedFocusedWindowID ?? "none",
                         "preparedWindowCount": String(gesturePrepared.count),
                         "trackedWindowCount": String(frames.count)
-                    ])
+                    ].merging(pointerDetails()) { current, _ in current })
                 }
                 overlays.updateBorder(frame: .zero, visible: false)
                 previewGesture(displacement: displacement)
@@ -62,8 +75,31 @@ extension StagehandModel {
         }
     }
 
+    /// A held button that is not carrying a drag-and-drop is moving or resizing a window,
+    /// or selecting. A swipe then would slide windows under that drag, so it is ignored.
+    /// Before this, such a swipe switched windows and the slide stopped on its first frame.
+    func pointerHoldsAWindow() -> Bool {
+        pointer.isButtonDown && !pointer.isDragAndDrop
+    }
+
+    private func recordGestureIgnoredForPointer(displacement: Double, recognizerAction: NavigationAction?) {
+        guard diagnostics.isEnabled else { return }
+        diagnostics.record("gesture_ignored_for_pointer", details: [
+            "displacement": String(displacement),
+            "focusedWindowID": state.focusedWindowID ?? "none",
+            "recognizerAction": recognizerAction.map { String(describing: $0) } ?? "none"
+        ].merging(pointerDetails()) { current, _ in current })
+    }
+
     func finishGesture(axis: GestureAxis, displacement: Double, velocity: Double,
                                recognizerAction: NavigationAction?, mode: GestureMode) {
+        if pointerHoldsAWindow() {
+            // Also a swipe whose fingers pressed the pad before release: before, it switched.
+            gestureAxis = nil
+            recordGestureIgnoredForPointer(displacement: displacement, recognizerAction: recognizerAction)
+            restoreGesturePreview()
+            return
+        }
         let resolvedAction: NavigationAction?
         if mode == .plain, axis == .horizontal, let gestureBase, let availableFrame {
             resolvedAction = RibbonMotion.horizontalCompletionAction(
@@ -82,6 +118,7 @@ extension StagehandModel {
             // Recorded after the action this release resolves to has been queued, so
             // the log analyzer pairs the swipe with its own action.
             let logicalFocus = state.focusedWindowID ?? "none"
+            let pointerAtRelease = pointerDetails()
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.diagnostics.record("gesture_motion_resolved", details: [
@@ -90,7 +127,7 @@ extension StagehandModel {
                     "observedFocusedWindowID": self.windowSystem.lastObservedFocusedWindowID ?? "none",
                     "resolvedAction": resolvedAction.map { String(describing: $0) } ?? "none",
                     "velocity": String(velocity)
-                ])
+                ].merging(pointerAtRelease) { current, _ in current })
             }
         }
         gestureAxis = nil
@@ -142,10 +179,12 @@ extension StagehandModel {
                                               configuration: ribbonAnimationConfiguration)
         var frames: [String: CGRect] = [:]
         for (id, shifted) in preview {
-            guard shifted.intersects(availableFrame) || gesturePrepared.contains(id) else { continue }
+            guard shifted.intersects(availableFrame) || gesturePrepared.contains(id),
+                  !gestureUnwritable.contains(id) else { continue }
             if !gesturePrepared.contains(id) {
                 let parkedBefore = diagnostics.isEnabled ? windowSystem.isParked(windowID: id) : false
                 let frameWritten = windowSystem.setFrame(windowID: id, frame: shifted)
+                let refusedFrame = frameWritten ? nil : windowSystem.observedFrame(windowID: id)
                 if diagnostics.isEnabled {
                     // The frame the gesture started from, and the written frame, which
                     // setFrame verified to within a point. Only a refused write is read back.
@@ -154,7 +193,7 @@ extension StagehandModel {
                         windowID: id,
                         requestedFrame: shifted,
                         beforeFrame: base[id],
-                        actualFrame: frameWritten ? shifted : windowSystem.observedFrame(windowID: id),
+                        actualFrame: frameWritten ? shifted : refusedFrame,
                         details: [
                             "displacement": String(displacement),
                             "frameWriteAccepted": String(frameWritten),
@@ -166,8 +205,14 @@ extension StagehandModel {
                     )
                 }
                 guard frameWritten else {
-                    // Retry this window's first move on the next tick.
-                    complete = false
+                    // Retry this window's first move on the next tick, unless it cannot be
+                    // read: it is closing or its app is not answering, and each try would be
+                    // another main-thread round trip to that app.
+                    if refusedFrame == nil {
+                        gestureUnwritable.insert(id)
+                    } else {
+                        complete = false
+                    }
                     continue
                 }
                 gesturePrepared.insert(id)

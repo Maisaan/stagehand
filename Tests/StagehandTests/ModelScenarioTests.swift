@@ -26,6 +26,124 @@ struct ModelScenarioTests {
         #expect(harness.events("automatic_pause").isEmpty)
     }
 
+    /// Holding a file and switching windows to drop it: the held button was taken for a
+    /// title-bar drag, so the slide stopped on its first frame and layout waited for the
+    /// drop (2026-10-25T12:30:37Z, 2026-10-26T03:29:45Z). A title-bar drag still stops it.
+    @Test func aSwitchDuringADragAndDropSlidesButOneDuringAWindowDragYields() async {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+
+        harness.pointer.beginDragAndDrop()
+        harness.model.navigate(.focusNext)
+        await harness.settle()
+        #expect(harness.model.state.focusedWindowID == "b")
+        #expect(harness.events("ribbon_animation_completed").count == 1)
+        #expect(harness.events("ribbon_motion_yielded_to_pointer").isEmpty)
+        harness.pointer.release()
+
+        harness.pointer.beginWindowDrag()
+        harness.model.navigate(.focusNext)
+        await harness.settle(timeout: .milliseconds(500))
+        #expect(harness.events("ribbon_motion_yielded_to_pointer").count == 1)
+        #expect(harness.events("ribbon_animation_completed").count == 1)
+        harness.pointer.release()
+        await harness.settle()
+        #expect(harness.events("automatic_pause").isEmpty)
+    }
+
+    /// A swipe while the button holds a window would slide windows under that drag, so it
+    /// is ignored, including a release the keyboard tap claims before its began arrives.
+    /// The same swipe while carrying a drag-and-drop switches.
+    @Test func aSwipeIsIgnoredDuringAWindowDragButSwitchesDuringADragAndDrop() async {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        let swipe = {
+            harness.model.handleGesture(.began(axis: .horizontal, displacement: -0.02, mode: .plain))
+            harness.model.handleGesture(.ended(displacement: -0.2, velocity: -1.5, action: .focusNext, mode: .plain))
+        }
+
+        harness.pointer.beginWindowDrag()
+        swipe()
+        harness.model.finishGesture(axis: .horizontal, displacement: -0.2, velocity: -1.5,
+                                    recognizerAction: .focusNext, mode: .plain)
+        await harness.settle(timeout: .milliseconds(500))
+        #expect(harness.model.state.focusedWindowID == "a")
+        // Once at the swipe's began, once for the release the keyboard tap claimed.
+        #expect(harness.events("gesture_ignored_for_pointer").count == 2)
+        harness.pointer.release()
+        await harness.settle()
+
+        harness.pointer.beginDragAndDrop()
+        swipe()
+        await harness.settle()
+        #expect(harness.model.state.focusedWindowID == "b")
+        harness.pointer.release()
+    }
+
+    /// A refresh during a title-bar drag defers its layout to mouse-up. If a drag session
+    /// starts later in the same press, the next refresh lays out and keeps that pending
+    /// layout, but does not apply the deferral as a window drop.
+    @Test func aDragAndDropKeepsAPendingLayoutButAppliesNoWindowDrop() async {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        let order = harness.model.state.currentSpace.windowIDs
+
+        harness.pointer.beginWindowDrag()
+        harness.model.pointerInteraction = StagehandModel.PointerInteraction(
+            windowID: "a", placements: [], needsLayout: true)
+        harness.model.refreshWindows()
+        #expect(harness.model.pointerInteraction != nil)
+
+        harness.pointer.dragChangeCount += 1
+        let refreshes = harness.events("change_completed").count
+        harness.model.refreshWindows()
+        await harness.settle()
+        #expect(harness.model.pointerInteraction == nil)
+        #expect(harness.events("change_completed").count > refreshes)
+        #expect(harness.model.state.currentSpace.windowIDs == order)
+        harness.pointer.release()
+    }
+
+    /// A swipe preview retried a refused first move on every display tick. For a closing
+    /// window, or one whose app is not answering, each try is a main-thread round trip.
+    /// A refusal that can still be read keeps its per-tick retry.
+    @Test func aSwipePreviewStopsRetryingAWindowItCannotRead() async throws {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        let available = try #require(harness.model.availableFrame)
+        let base = harness.model.navigationFrames()
+        let preview = { (displacement: Double) in
+            _ = harness.model.gesturePreviewFrames(from: base, availableFrame: available,
+                                                   displacement: displacement)
+        }
+        func writes(to id: String) -> Int { harness.windows.setFrameCalls.filter { $0 == id }.count }
+
+        harness.model.gestureBase = base
+        harness.model.gesturePrepared = ["a"]
+        harness.windows.refusesFrames = ["b"]
+        harness.windows.unreadableFrames = ["b"]
+        let startup = writes(to: "b")
+        for displacement in [-0.05, -0.06, -0.07] { preview(displacement) }
+        #expect(writes(to: "b") - startup == 1)
+
+        harness.model.resetGestureTracking()
+        harness.model.gestureBase = base
+        harness.model.gesturePrepared = ["a"]
+        harness.windows.unreadableFrames = []
+        let before = writes(to: "b")
+        for displacement in [-0.05, -0.06, -0.07] { preview(displacement) }
+        #expect(writes(to: "b") - before == 3)
+        harness.model.resetGestureTracking()
+    }
+
     /// Every frame read is a synchronous round trip to an app, on the main thread.
     /// A slide starts from the frames Stagehand wrote or scanned and reads a frame
     /// back only once, after activation, when the app may have resized its window.

@@ -81,6 +81,7 @@ final class NavigationOverlays {
     var onRemoveWindow: ((String) -> Void)?
     var onReorderWindow: ((String, Int) -> Void)?
     var canRevealNavigation: (() -> Bool)?
+    var pointerCarriesDrop: (() -> Bool)?
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
     private var hoverFrame: CGRect?
@@ -243,6 +244,11 @@ final class NavigationOverlays {
     }
 
     private func pointerMoved(to point: CGPoint) {
+        // Shown during another app's drag-and-drop, the bar ignored the pointer; take it
+        // back once the drop is over.
+        if let hud, hud.ignoresMouseEvents, hudModel.warning == nil, NSEvent.pressedMouseButtons == 0 {
+            hud.ignoresMouseEvents = false
+        }
         let insideTrigger = hoverFrame?.contains(point) == true
         let insideBar = hud?.isVisible == true && hudModel.warning == nil && contentFrame?.contains(point) == true
         let inside = insideTrigger || insideBar
@@ -261,7 +267,7 @@ final class NavigationOverlays {
     private func presentHUD(dismissAfter: Duration) {
         guard let screen = NSScreen.managedDisplay else { return }
         let hud = hudPanel()
-        hud.ignoresMouseEvents = hudModel.warning != nil
+        hud.ignoresMouseEvents = hudModel.warning != nil || pointerCarriesDrop?() == true
         guard let container = hud.contentView as? HUDContainerView else { return }
         hudModel.reduceMotion = reduceMotion()
         let warningHeight = hudModel.warning.map { message in
@@ -350,6 +356,21 @@ final class NavigationOverlays {
     }
 
     func hide() {
+        suspend()
+        MainThreadActivity.during("overlays close") {
+            border?.close()
+            hud?.close()
+        }
+        // Recreate on the next presentation so an explicit Start on a different native
+        // Desktop binds the panels there without making them visible on every Desktop.
+        border = nil
+        hud = nil
+    }
+
+    /// Hides the overlays but keeps their panels for a resume, which always returns to
+    /// the Desktop they were created on. A new HUD panel lays out and draws its content
+    /// synchronously on first presentation, a 60-260 ms main-thread stall after unlock.
+    func suspend() {
         if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
         if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
         globalMouseMonitor = nil
@@ -365,16 +386,10 @@ final class NavigationOverlays {
         hudGeneration &+= 1
         hudIsExiting = false
         shortcutHints.hide()
-        MainThreadActivity.during("overlays close") {
+        MainThreadActivity.during("overlays orderOut") {
             border?.orderOut(nil)
             hud?.orderOut(nil)
-            border?.close()
-            hud?.close()
         }
-        // Recreate on the next presentation so an explicit Start on a different native
-        // Desktop binds the panels there without making them visible on every Desktop.
-        border = nil
-        hud = nil
     }
 
     func showWarning(_ message: String) {

@@ -221,6 +221,12 @@ struct GestureCallbackState {
     var shortcutModifiers: UInt32?
     var shortcutAxis: GestureAxis?
     var ignoredUntilLift = false
+    /// Contacts that were touching before the left button went down, with no swipe under
+    /// way: the finger holding a click, as when carrying a file to drop. They are left out
+    /// of recognition and input ownership until each lifts, so the other fingers can swipe.
+    var heldClickContactIDs: Set<Int32> = []
+    var buttonWasDown = false
+    var previousContactIDs: Set<Int32> = []
     var recognizer = NavigationGestureRecognizer()
     var ownership = GestureInputOwnership()
     var frameValidator = GestureFrameValidator()
@@ -255,10 +261,11 @@ private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
     let snapshot = contacts
     let frameTouches = touches
     let flags = CGEventSource.flagsState(.combinedSessionState)
+    let buttonDown = CGEventSource.buttonState(.combinedSessionState, button: .left)
     let now = ProcessInfo.processInfo.systemUptime
     let delivery = gestureCallbackState.withLock { state in
         state.process(contacts: snapshot, touches: frameTouches, rawCount: count, flags: flags,
-                      timestamp: timestamp, now: now)
+                      timestamp: timestamp, now: now, buttonDown: buttonDown)
     }
     delivery?()
     return 0
@@ -267,9 +274,9 @@ private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
 extension GestureCallbackState {
     /// Handle one contact frame. Returns the delivery closure to run outside the lock when
     /// main-actor delivery needs scheduling. `now` is the uptime the input tap compares against.
-    mutating func process(contacts snapshot: [GestureContact], touches frameTouches: [GestureFrameValidator.Touch],
+    mutating func process(contacts touching: [GestureContact], touches frameTouches: [GestureFrameValidator.Touch],
                           rawCount count: Int32, flags: CGEventFlags, timestamp: Double,
-                          now: TimeInterval) -> (@Sendable () -> Void)? {
+                          now: TimeInterval, buttonDown: Bool = false) -> (@Sendable () -> Void)? {
         guard enabled else { return nil }
         guard frameValidator.accept(timestamp: timestamp, touches: frameTouches) else {
             // Drop the frame and any gesture it was part of. Enough corrupt frames in a
@@ -290,6 +297,8 @@ extension GestureCallbackState {
             deliveryScheduled = true
             return scheduleDelivery
         }
+        // After validation: a corrupt frame's contact IDs must not drop the held click.
+        let snapshot = excludingHeldClick(from: touching, buttonDown: buttonDown)
         if ignoredUntilLift {
             if snapshot.isEmpty { ignoredUntilLift = false }
             ownership.observe(contactCount: snapshot.count, fingerCount: recognizer.fingerCount,
@@ -350,6 +359,7 @@ extension GestureCallbackState {
             shortcutAxis = nil
         }
         if traceGestures, let event {
+            if !heldClickContactIDs.isEmpty { NSLog("[DEBUG-gesture] held click excluded: %d", heldClickContactIDs.count) }
             switch event {
             case .changed: break
             default:
@@ -362,6 +372,30 @@ extension GestureCallbackState {
         guard !deliveryScheduled else { return nil }
         deliveryScheduled = true
         return scheduleDelivery
+    }
+}
+
+extension GestureCallbackState {
+    /// Leaves out the finger holding a click. It must have been touching in the frame
+    /// before the button went down, and fewer fingers than a swipe were down, with no
+    /// swipe under way: a swipe that presses the pad keeps its fingers, and fingers that
+    /// land while a mouse button is already held are new in that frame.
+    mutating func excludingHeldClick(from contacts: [GestureContact], buttonDown: Bool) -> [GestureContact] {
+        let ids = Set(contacts.map(\.id))
+        heldClickContactIDs.formIntersection(ids)
+        if buttonDown, !buttonWasDown, !recognizer.hasContactSequence {
+            if contacts.count < recognizer.fingerCount {
+                heldClickContactIDs = ids.intersection(previousContactIDs)
+            } else if traceGestures {
+                // The swipe fingers were down before the click: nothing is left out, and
+                // the extra contact keeps a swipe from beginning, as before.
+                NSLog("[DEBUG-gesture] click with %d contacts down; no held click left out", contacts.count)
+            }
+        }
+        buttonWasDown = buttonDown
+        previousContactIDs = ids
+        guard !heldClickContactIDs.isEmpty else { return contacts }
+        return contacts.filter { !heldClickContactIDs.contains($0.id) }
     }
 }
 

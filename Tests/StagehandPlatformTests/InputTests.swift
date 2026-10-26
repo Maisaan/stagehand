@@ -939,3 +939,80 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     gate.commitTransfer(token: token, processIdentifier: 5)
     #expect(posted == 1)
 }
+
+/// Carrying a file: one finger holds a click while three others swipe. The held finger
+/// made four contacts, more than a three-finger swipe, so the swipe never began.
+@Test func aHeldClickIsLeftOutSoTheOtherFingersCanSwipe() {
+    var state = enabledCallbackState()
+    var frame: Int32 = 1
+    func feed(_ contacts: [GestureContact], at time: Double, buttonDown: Bool) {
+        _ = state.process(contacts: contacts, touches: touches(contacts, frame: frame), rawCount: Int32(contacts.count),
+                          flags: [], timestamp: time, now: time, buttonDown: buttonDown)
+        frame += 1
+    }
+    let held = GestureContact(id: 9, x: 0.5, y: 0.1)
+    func swipe(from start: Double) -> [GestureNavigationEvent] {
+        feed([held] + contacts(), at: start, buttonDown: true)
+        feed([held] + contacts(dx: -0.05), at: start + 0.05, buttonDown: true)
+        feed([held] + contacts(dx: -0.12), at: start + 0.1, buttonDown: true)
+        feed([held], at: start + 0.15, buttonDown: true)
+        return state.pendingEvents.drain()
+    }
+    feed([held], at: 1, buttonDown: false)
+    feed([held], at: 1.01, buttonDown: true)
+    #expect(state.heldClickContactIDs == [9])
+
+    let first = swipe(from: 1.1)
+    #expect(first.contains { if case .began(.horizontal, _, .plain) = $0 { true } else { false } })
+    #expect(first.contains { if case .ended(_, _, .focusNext?, .plain) = $0 { true } else { false } })
+    // The press carries on, and so does the next swipe; a drop does not cancel it.
+    let second = swipe(from: 2)
+    #expect(second.contains { if case .ended(_, _, .focusNext?, .plain) = $0 { true } else { false } })
+    feed([held] + contacts(), at: 3, buttonDown: false)
+    #expect(state.heldClickContactIDs == [9])
+    feed([], at: 3.1, buttonDown: false)
+    #expect(state.heldClickContactIDs.isEmpty)
+}
+
+/// A swipe that presses the pad partway keeps its fingers, and fingers that land while
+/// a mouse button is already held are not taken for a held click.
+@Test func onlyAFingerAlreadyTouchingBeforeThePressIsAHeldClick() {
+    var state = enabledCallbackState()
+    var frame: Int32 = 1
+    func feed(_ contacts: [GestureContact], at time: Double, buttonDown: Bool) {
+        _ = state.process(contacts: contacts, touches: touches(contacts, frame: frame), rawCount: Int32(contacts.count),
+                          flags: [], timestamp: time, now: time, buttonDown: buttonDown)
+        frame += 1
+    }
+    feed(contacts(), at: 1, buttonDown: false)
+    feed(contacts(dx: -0.05), at: 1.05, buttonDown: false)
+    feed(contacts(dx: -0.08), at: 1.08, buttonDown: true)
+    #expect(state.heldClickContactIDs.isEmpty)
+    feed([], at: 1.1, buttonDown: true)
+    #expect(state.pendingEvents.drain().contains { if case .ended(_, _, .focusNext?, _) = $0 { true } else { false } })
+
+    // A mouse held with no fingers down sends no frames: the last frame had the button
+    // up, and the first landing frame sees it down. Fingers land one at a time.
+    feed([], at: 1.9, buttonDown: false)
+    feed(Array(contacts().prefix(1)), at: 2, buttonDown: true)
+    feed(contacts(), at: 2.01, buttonDown: true)
+    #expect(state.heldClickContactIDs.isEmpty)
+    feed(contacts(dx: -0.12), at: 2.1, buttonDown: true)
+    feed([], at: 2.15, buttonDown: true)
+    #expect(state.pendingEvents.drain().contains { if case .ended(_, _, .focusNext?, _) = $0 { true } else { false } })
+}
+
+/// A held click and a two-finger scroll are three contacts. Stagehand used to own them
+/// as a three-finger sequence and withhold the scroll; the held click no longer counts.
+@Test func aHeldClickDoesNotMakeATwoFingerScrollStagehands() {
+    var state = enabledCallbackState()
+    let held = GestureContact(id: 9, x: 0.5, y: 0.1)
+    let scroll = Array(contacts().prefix(2))
+    _ = state.process(contacts: [held], touches: touches([held], frame: 1), rawCount: 1,
+                      flags: [], timestamp: 1, now: 1, buttonDown: false)
+    _ = state.process(contacts: [held], touches: touches([held], frame: 2), rawCount: 1,
+                      flags: [], timestamp: 1.01, now: 1.01, buttonDown: true)
+    _ = state.process(contacts: [held] + scroll, touches: touches([held] + scroll, frame: 3), rawCount: 3,
+                      flags: [], timestamp: 1.02, now: 1.02, buttonDown: true)
+    #expect(!suppressed(&state.ownership, .liveBegan, now: 1.021))
+}

@@ -196,7 +196,7 @@ extension StagehandModel {
             "previousSpace": String(previousState.activeSpaceIndex + 1),
             "reduceMotion": String(reduceMotion),
             "slideEnabled": String(canSlide)
-        ])
+        ].merging(pointerDetails()) { current, _ in current })
     }
 
     /// Records a finished change, or pauses and restores after a failure.
@@ -770,8 +770,15 @@ extension StagehandModel {
             if isRunning { nativeDesktopChanged() }
             return
         }
-        if gestureBase == nil, NSEvent.pressedMouseButtons & 1 != 0 {
-            // A real pointer interaction takes over from decorative settling.
+        if gestureBase == nil, pointer.isButtonDown, !pointer.isDragAndDrop {
+            // A real pointer interaction takes over from decorative settling. A
+            // drag-and-drop moves no window, so a switch made during one keeps sliding.
+            if diagnostics.isEnabled {
+                // Logged because the slide then ends without ribbon_animation_completed.
+                diagnostics.record("ribbon_motion_yielded_to_pointer", details: [
+                    "focusedWindowID": state.focusedWindowID ?? "none"
+                ].merging(pointerDetails()) { current, _ in current })
+            }
             presentationFrames = ribbonMotion.frames
             ribbonMotion.cancel()
             scheduleRefresh()
@@ -835,6 +842,12 @@ extension StagehandModel {
             setPosition: { windowSystem.setPosition(windowID: $0, position: $1) },
             observedFrame: { windowSystem.observedFrame(windowID: $0) }
         )
+        var attempts = 1
+        // Only a window that answered with the wrong position is tried again. One that
+        // cannot be read (closing, or its app not answering) would cost a main-thread
+        // round trip per try; parking defers the same case, and the refresh places it.
+        var unreadable = commitFailures.filter { $0.actualFrame == nil }
+        commitFailures.removeAll { $0.actualFrame == nil }
         for delay in [8, 24, 56] where !commitFailures.isEmpty {
             do { try await Task.sleep(for: .milliseconds(delay)) }
             catch { return false }
@@ -848,14 +861,17 @@ extension StagehandModel {
                 setPosition: { windowSystem.setPosition(windowID: $0, position: $1) },
                 observedFrame: { windowSystem.observedFrame(windowID: $0) }
             )
+            attempts += 1
+            unreadable += commitFailures.filter { $0.actualFrame == nil }
+            commitFailures.removeAll { $0.actualFrame == nil }
         }
-        if let failure = commitFailures.first {
+        if let failure = commitFailures.first ?? unreadable.first {
             recordWindowGeometry(
                 event: "ribbon_position_commit_failed",
                 windowID: failure.windowID,
                 requestedFrame: failure.requestedFrame,
                 actualFrame: failure.actualFrame,
-                details: ["attempts": "4"]
+                details: ["attempts": String(attempts), "frameUnreadable": String(failure.actualFrame == nil)]
             )
             // Motion ends here without pausing. Rewrite the ribbon with verified frame
             // writes and parking so no window stays outside its slot.

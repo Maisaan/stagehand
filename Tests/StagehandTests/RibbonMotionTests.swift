@@ -217,6 +217,20 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
         observedFrame: { _ in target.offsetBy(dx: -20, dy: 0) }
     )
     #expect(rejectedDespiteSetter.map(\.windowID) == ["a"])
+
+    // A closing window, or one whose app is not answering, is not written to.
+    var unreadableWrites = 0
+    let unreadable = commitRibbonPositions(
+        frames: ["a": target],
+        backingScaleFactor: 2,
+        setPosition: { _, _ in
+            unreadableWrites += 1
+            return true
+        },
+        observedFrame: { _ in nil }
+    )
+    #expect(unreadableWrites == 0)
+    #expect(unreadable == [RibbonPositionWriteFailure(windowID: "a", requestedFrame: target, actualFrame: nil)])
 }
 
 @MainActor @Test func unavailableParkingDefersButReadableFailureStops() async {
