@@ -31,7 +31,12 @@ extension StagehandModel {
         guard isRunning, !isSuspended else { return }
         switch event {
         case .began(let axis, let displacement, let mode):
-            guard desktopScope.refresh() == .home, !pointerHoldsAWindow() else { return }
+            guard desktopScope.refresh() == .home else { return }
+            if pointerHoldsAWindow() {
+                // The release then finds no axis and does nothing; log the swipe here.
+                recordGestureIgnoredForPointer(displacement: displacement, recognizerAction: nil)
+                return
+            }
             gestureAxis = axis
             if mode == .plain, !changes.isProcessing, axis == .horizontal,
                !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
@@ -77,17 +82,21 @@ extension StagehandModel {
         pointer.isButtonDown && !pointer.isDragAndDrop
     }
 
+    private func recordGestureIgnoredForPointer(displacement: Double, recognizerAction: NavigationAction?) {
+        guard diagnostics.isEnabled else { return }
+        diagnostics.record("gesture_ignored_for_pointer", details: [
+            "displacement": String(displacement),
+            "focusedWindowID": state.focusedWindowID ?? "none",
+            "recognizerAction": recognizerAction.map { String(describing: $0) } ?? "none"
+        ].merging(pointerDetails()) { current, _ in current })
+    }
+
     func finishGesture(axis: GestureAxis, displacement: Double, velocity: Double,
                                recognizerAction: NavigationAction?, mode: GestureMode) {
         if pointerHoldsAWindow() {
+            // Also a swipe whose fingers pressed the pad before release: before, it switched.
             gestureAxis = nil
-            if diagnostics.isEnabled {
-                diagnostics.record("gesture_ignored_for_pointer", details: [
-                    "displacement": String(displacement),
-                    "focusedWindowID": state.focusedWindowID ?? "none",
-                    "recognizerAction": recognizerAction.map { String(describing: $0) } ?? "none"
-                ].merging(pointerDetails()) { current, _ in current })
-            }
+            recordGestureIgnoredForPointer(displacement: displacement, recognizerAction: recognizerAction)
             restoreGesturePreview()
             return
         }

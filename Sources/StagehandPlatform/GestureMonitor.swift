@@ -278,7 +278,6 @@ extension GestureCallbackState {
                           rawCount count: Int32, flags: CGEventFlags, timestamp: Double,
                           now: TimeInterval, buttonDown: Bool = false) -> (@Sendable () -> Void)? {
         guard enabled else { return nil }
-        let snapshot = excludingHeldClick(from: touching, buttonDown: buttonDown)
         guard frameValidator.accept(timestamp: timestamp, touches: frameTouches) else {
             // Drop the frame and any gesture it was part of. Enough corrupt frames in a
             // row mean the private data layout no longer matches; stop trusting it.
@@ -298,6 +297,8 @@ extension GestureCallbackState {
             deliveryScheduled = true
             return scheduleDelivery
         }
+        // After validation: a corrupt frame's contact IDs must not drop the held click.
+        let snapshot = excludingHeldClick(from: touching, buttonDown: buttonDown)
         if ignoredUntilLift {
             if snapshot.isEmpty { ignoredUntilLift = false }
             ownership.observe(contactCount: snapshot.count, fingerCount: recognizer.fingerCount,
@@ -382,8 +383,14 @@ extension GestureCallbackState {
     mutating func excludingHeldClick(from contacts: [GestureContact], buttonDown: Bool) -> [GestureContact] {
         let ids = Set(contacts.map(\.id))
         heldClickContactIDs.formIntersection(ids)
-        if buttonDown, !buttonWasDown, !recognizer.hasContactSequence, contacts.count < recognizer.fingerCount {
-            heldClickContactIDs = ids.intersection(previousContactIDs)
+        if buttonDown, !buttonWasDown, !recognizer.hasContactSequence {
+            if contacts.count < recognizer.fingerCount {
+                heldClickContactIDs = ids.intersection(previousContactIDs)
+            } else if traceGestures {
+                // The swipe fingers were down before the click: nothing is left out, and
+                // the extra contact keeps a swipe from beginning, as before.
+                NSLog("[DEBUG-gesture] click with %d contacts down; no held click left out", contacts.count)
+            }
         }
         buttonWasDown = buttonDown
         previousContactIDs = ids

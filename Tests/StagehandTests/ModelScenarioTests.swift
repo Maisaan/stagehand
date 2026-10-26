@@ -72,7 +72,8 @@ struct ModelScenarioTests {
                                     recognizerAction: .focusNext, mode: .plain)
         await harness.settle(timeout: .milliseconds(500))
         #expect(harness.model.state.focusedWindowID == "a")
-        #expect(harness.events("gesture_ignored_for_pointer").count == 1)
+        // Once at the swipe's began, once for the release the keyboard tap claimed.
+        #expect(harness.events("gesture_ignored_for_pointer").count == 2)
         harness.pointer.release()
         await harness.settle()
 
@@ -80,6 +81,32 @@ struct ModelScenarioTests {
         swipe()
         await harness.settle()
         #expect(harness.model.state.focusedWindowID == "b")
+        harness.pointer.release()
+    }
+
+    /// A refresh during a title-bar drag defers its layout to mouse-up. If a drag session
+    /// starts later in the same press, the next refresh lays out and keeps that pending
+    /// layout, but does not apply the deferral as a window drop.
+    @Test func aDragAndDropKeepsAPendingLayoutButAppliesNoWindowDrop() async {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        let order = harness.model.state.currentSpace.windowIDs
+
+        harness.pointer.beginWindowDrag()
+        harness.model.pointerInteraction = StagehandModel.PointerInteraction(
+            windowID: "a", placements: [], needsLayout: true)
+        harness.model.refreshWindows()
+        #expect(harness.model.pointerInteraction != nil)
+
+        harness.pointer.dragChangeCount += 1
+        let refreshes = harness.events("change_completed").count
+        harness.model.refreshWindows()
+        await harness.settle()
+        #expect(harness.model.pointerInteraction == nil)
+        #expect(harness.events("change_completed").count > refreshes)
+        #expect(harness.model.state.currentSpace.windowIDs == order)
         harness.pointer.release()
     }
 

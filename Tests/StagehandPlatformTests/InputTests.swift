@@ -991,7 +991,9 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     feed([], at: 1.1, buttonDown: true)
     #expect(state.pendingEvents.drain().contains { if case .ended(_, _, .focusNext?, _) = $0 { true } else { false } })
 
-    // A mouse held with no fingers down sends no frames; fingers land one at a time.
+    // A mouse held with no fingers down sends no frames: the last frame had the button
+    // up, and the first landing frame sees it down. Fingers land one at a time.
+    feed([], at: 1.9, buttonDown: false)
     feed(Array(contacts().prefix(1)), at: 2, buttonDown: true)
     feed(contacts(), at: 2.01, buttonDown: true)
     #expect(state.heldClickContactIDs.isEmpty)
