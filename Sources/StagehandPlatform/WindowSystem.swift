@@ -147,6 +147,44 @@ public final class WindowSystem {
         var isAdmitted = true
         var missedScans = 0
         var observationComplete = false
+        /// The last parking request that verified this window at the side, and with what.
+        /// Cleared by its move, resize, or minimize notifications.
+        var parkCheck: ParkCheck?
+    }
+
+    struct ParkCheck: Equatable {
+        var at: TimeInterval
+        var side: WindowParkingSide?
+        var remnantWidth: CGFloat
+    }
+
+    /// How long a parked window verified at the side is trusted without reading it again,
+    /// when no notification says it moved: a backstop for apps that move windows silently.
+    nonisolated static let parkCheckLifetime: TimeInterval = 30
+
+    /// Whether a parking request for a window already at the side can skip its reads.
+    /// Each layout made up to three parking rounds, and each read the minimized state and
+    /// frame of every parked window and verified it again: ~45 main-thread round trips
+    /// to other apps per switch (2026-10-26 launch trace). e31ae1f added the read because
+    /// a parked window can come back onscreen; its move notification now says so.
+    nonisolated static func canSkipParkCheck(isParked: Bool, observationComplete: Bool, check: ParkCheck?,
+                                             side: WindowParkingSide?, remnantWidth: CGFloat,
+                                             now: TimeInterval) -> Bool {
+        guard isParked, observationComplete, let check else { return false }
+        return check.side == side && check.remnantWidth == remnantWidth && now - check.at < parkCheckLifetime
+    }
+
+    /// A move, resize, or (de)minimize notification: the window may no longer be where
+    /// parking last verified it. Matched by element identity, which needs no call to the
+    /// app; failing that, every window of its app is checked again.
+    private func invalidateParkCheck(for element: AXUIElement) {
+        if let id = windows.first(where: { CFEqual($0.value.element, element) })?.key {
+            windows[id]?.parkCheck = nil
+            return
+        }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success else { return }
+        for id in Array(windows.keys) where windows[id]?.record.pid == pid { windows[id]?.parkCheck = nil }
     }
 
     private struct OwnedWindow {
@@ -1172,6 +1210,11 @@ public final class WindowSystem {
                      remnantWidth: CGFloat = WindowTuning.parkedRemnantWidth) -> Bool {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.park(windowID: windowID) }
         guard let tracked = windows[windowID] else { return false }
+        let now = ProcessInfo.processInfo.systemUptime
+        if Self.canSkipParkCheck(isParked: tracked.parking.isParked, observationComplete: tracked.observationComplete,
+                                 check: tracked.parkCheck, side: preferredSide, remnantWidth: remnantWidth, now: now) {
+            return true
+        }
         motionWriter.settle(pid: tracked.record.pid)
         // AX can move a parked window back onscreen after our last frame read.
         // Check its physical position on every parking request.
@@ -1202,6 +1245,8 @@ public final class WindowSystem {
         },
                                    readFrame: { self.readFrame(tracked.element) })
         windows[windowID]?.parking = parking
+        windows[windowID]?.parkCheck = success
+            ? ParkCheck(at: now, side: preferredSide, remnantWidth: remnantWidth) : nil
         if focusDiagnosticsEnabled {
             // A parked window was verified by the write's readback; read back only a refusal.
             let actual = success ? "verified" : String(describing: self.readFrame(tracked.element))
@@ -1893,6 +1938,10 @@ public final class WindowSystem {
                         var pid: pid_t = 0
                         _ = AXUIElementGetPid(changedWindow, &pid)
                         logger.notice("Discovery t=\(ProcessInfo.processInfo.systemUptime, privacy: .public) AX=\(name, privacy: .public) pid=\(pid, privacy: .public)")
+                    }
+                    if name == kAXMovedNotification || name == kAXResizedNotification
+                        || name == kAXWindowMiniaturizedNotification || name == kAXWindowDeminiaturizedNotification {
+                        owner.invalidateParkCheck(for: changedWindow)
                     }
                     if let availabilityChange = windowAvailabilityChange(for: name),
                        let id = owner.directTrackedWindowID(matching: changedWindow) {
