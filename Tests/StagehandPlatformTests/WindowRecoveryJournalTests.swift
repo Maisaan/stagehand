@@ -180,27 +180,39 @@ import Testing
 }
 
 /// Accessibility lists only the current Space's windows, so a window in native full
-/// screen is missing from its app's list. It read as "maybe published late" and blocked
-/// every Start until the app quit (1Password, 2026-10-26). WindowServer's Space types tell
-/// it apart: only a window on full-screen Spaces alone is macOS's.
-@Test func aWindowMissingBecauseItIsInFullScreenIsNotAbsent() {
-    let elements = [AXUIElementCreateApplication(1)]
-    func search(_ types: [Int32]?) -> WindowSystem.RecoverySearch {
-        WindowSystem.recoveryMatch(elements, numbers: [5], target: 9, identityAvailable: true,
-                                   targetSpaceTypes: { types })
-    }
-    if case .fullScreen = search([NativeSpaces.fullScreenSpaceType]) {} else { Issue.record("Full screen") }
-    if case .absent = search([0]) {} else { Issue.record("A window on another Desktop stays absent") }
-    if case .absent = search([0, NativeSpaces.fullScreenSpaceType]) {} else { Issue.record("Not only full screen") }
-    if case .absent = search([]) {} else { Issue.record("A window WindowServer does not have is absent") }
-    if case .absent = search(nil) {} else { Issue.record("No answer is not evidence of full screen") }
+/// screen, or on a Desktop the user is not on, is missing from its app's list. It read as
+/// "maybe published late": a full-screen window blocked every Start until its app quit
+/// (1Password, 2026-10-26), and a second Start while away would have deleted the records
+/// of windows that were only unreachable. WindowServer's Spaces tell them apart.
+@Test func aWindowMissingFromTheListIsPlacedByItsSpaces() {
+    typealias Space = NativeSpaces.Space
+    let desktop = Space(id: 1, type: 0), other = Space(id: 7, type: 0)
+    let fullScreen = Space(id: 1384, type: NativeSpaces.fullScreenSpaceType)
+    #expect(NativeSpaces.placement(of: [fullScreen], activeSpace: 1) == .fullScreen)
+    #expect(NativeSpaces.placement(of: [desktop], activeSpace: 1384) == .otherSpace)
+    #expect(NativeSpaces.placement(of: [other, fullScreen], activeSpace: 1) == .otherSpace)
+    #expect(NativeSpaces.placement(of: [desktop], activeSpace: 1) == .currentSpace)
+    #expect(NativeSpaces.placement(of: [], activeSpace: 1) == .nowhere)
+    #expect(NativeSpaces.placement(of: nil, activeSpace: 1) == .unknown)
+    #expect(NativeSpaces.placement(of: [desktop], activeSpace: nil) == .unknown)
 
+    let elements = [AXUIElementCreateApplication(1)]
+    func search(_ placement: NativeSpaces.Placement) -> WindowSystem.RecoverySearch {
+        WindowSystem.recoveryMatch(elements, numbers: [5], target: 9, identityAvailable: true,
+                                   targetPlacement: { placement })
+    }
+    if case .fullScreen = search(.fullScreen) {} else { Issue.record("Full screen") }
+    if case .onOtherSpace = search(.otherSpace) {} else { Issue.record("On another Space") }
+    for placement in [NativeSpaces.Placement.currentSpace, .nowhere, .unknown] {
+        if case .absent = search(placement) {} else { Issue.record("\(placement) stays absent") }
+    }
     var asked = false
     _ = WindowSystem.recoveryMatch(elements, numbers: [9], target: 9, identityAvailable: true,
-                                   targetSpaceTypes: { asked = true; return nil })
+                                   targetPlacement: { asked = true; return .unknown })
     #expect(!asked)
     // A window that does not exist is on no Space.
-    #expect(!NativeSpaces.isInFullScreen(spaceTypes: NativeSpaces.spaceTypes(UInt32.max)))
+    #expect(NativeSpaces.placement(of: NativeSpaces.spaces(windowNumber: UInt32.max),
+                                   activeSpace: NativeSpaces.activeSpace()) != .otherSpace)
 }
 
 private func journalFixture() throws -> (directory: URL, url: URL, record: WindowRecoveryRecord) {

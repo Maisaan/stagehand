@@ -88,7 +88,7 @@ public final class DesktopScope {
     }
 }
 
-private enum NativeUserSessionReader {
+enum NativeUserSessionReader {
     static func isActive() -> Bool {
         guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
         return (session["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue != true
