@@ -1068,3 +1068,32 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     feed([GestureContact(id: 9, x: 0.53, y: 0.14)] + contacts(dx: 0.2), at: 1.03, buttonDown: true)
     #expect(abs(state.heldClickTravel - 0.05) < 0.0001)
 }
+
+/// Cancel mode passes the Dock one cancelled event per swipe beside the held click and
+/// drops the rest; pass mode lets everything through; nothing changes without a held click.
+@Test func dockGestureHandlingBesideAHeldClick() {
+    var state = enabledCallbackState()
+    var frame: Int32 = 1
+    func feed(_ contacts: [GestureContact], at time: Double, buttonDown: Bool) {
+        _ = state.process(contacts: contacts, touches: touches(contacts, frame: frame), rawCount: Int32(contacts.count),
+                          flags: [], timestamp: time, now: time, buttonDown: buttonDown)
+        frame += 1
+    }
+    func decide(_ handling: DockSwipeHandling, phase: Int64 = 2, at time: Double) -> DockEventDecision {
+        state.dockDecision(phase: phase, now: time, handling: handling)
+    }
+    let held = GestureContact(id: 9, x: 0.5, y: 0.1)
+    feed([held], at: 1, buttonDown: false)
+    feed([held], at: 1.01, buttonDown: true)
+    #expect(decide(.cancel, at: 1.011) == .pass)
+    feed([held] + contacts(), at: 1.02, buttonDown: true)
+    #expect(decide(.cancel, phase: 1, at: 1.021) == .cancel)
+    #expect(decide(.cancel, at: 1.022) == .drop)
+    #expect(decide(.pass, at: 1.023) == .pass)
+    #expect(decide(.withhold, at: 1.024) == .drop)
+    // The second swipe of the same press gets its own cancel.
+    feed([held], at: 1.1, buttonDown: true)
+    feed([held] + contacts(), at: 1.5, buttonDown: true)
+    #expect(decide(.cancel, phase: 1, at: 1.501) == .cancel)
+    #expect(state.dockPhaseCounts[1] == 2)
+}

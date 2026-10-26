@@ -157,6 +157,29 @@ let suppressibleEventTypeMask: CGEventMask = [
 /// named in https://github.com/jurplel/InstantSpaceSwitcher/blob/main/Sources/ISS/ISS.c,
 /// which intercepts them with a session event tap like this one.
 let dockControlEventType: UInt32 = 30
+/// kCGEventGesturePhase and its alias on Dock gesture events, and the cancelled phase
+/// (kCGSGesturePhaseCancelled), from the same source.
+let gesturePhaseField = CGEventField(rawValue: 132)!
+let gesturePhaseAliasField = CGEventField(rawValue: 134)!
+let cancelledGesturePhase: Int64 = 8
+
+/// How Dock gesture events beside a held click are handled. An experiment while the
+/// pointer freeze after a second swipe in one drag is diagnosed: withholding them stops
+/// macOS's Space swipe but the pointer then freezes for about 4 s; passing them lets the
+/// Space swipe run. Hidden preference, read live so it can change without a restart.
+enum DockSwipeHandling: String, Sendable {
+    case withhold, pass, cancel
+    static let preferenceKey = "StagehandDockSwipeBesideHeldClick"
+    static var current: DockSwipeHandling {
+        UserDefaults.standard.string(forKey: preferenceKey).flatMap(DockSwipeHandling.init(rawValue:)) ?? .withhold
+    }
+}
+
+enum DockEventDecision: Equatable, Sendable {
+    case pass, drop
+    /// Pass the event with its phase rewritten to cancelled, so the Dock ends its gesture.
+    case cancel
+}
 
 /// Rejects contact frames that cannot have come from a working trackpad. The private
 /// framework has no contract; after a macOS update it may report garbage with the right
@@ -244,6 +267,11 @@ struct GestureCallbackState {
     /// How far held-click fingers have moved since gestures started, in trackpad widths.
     /// Diagnostics compare it with the pointer events macOS sends during a drag.
     var heldClickTravel: Double = 0
+    /// Dock gesture event phases seen beside a held click since gestures started.
+    var dockPhaseCounts: [Int64: Int] = [:]
+    /// The Dock's gesture beside this held-click swipe was already cancelled.
+    var dockGestureCancelled = false
+    var previousFilteredCount = 0
     var heldClickPositions: [Int32: (x: Double, y: Double)] = [:]
     var recognizer = NavigationGestureRecognizer()
     var ownership = GestureInputOwnership()
@@ -404,10 +432,27 @@ extension GestureCallbackState {
     mutating func suppress(_ kind: SuppressibleInputEvent, now: TimeInterval) -> Bool {
         guard enabled else { return false }
         guard case .dockControl = kind else { return ownership.suppress(kind, now: now) }
-        guard !heldClickContactIDs.isEmpty, ownership.suppress(.gesture, now: now) else { return false }
-        withheldDockControlEvents &+= 1
-        if traceGestures { NSLog("[DEBUG-gesture] dock gesture withheld beside a held click") }
-        return true
+        return dockDecision(phase: 0, now: now, handling: .withhold) == .drop
+    }
+
+    /// One Dock gesture event: passed unless a held click is left out and Stagehand owns
+    /// the other fingers (or just lifted them); then handled as `handling` says.
+    mutating func dockDecision(phase: Int64, now: TimeInterval, handling: DockSwipeHandling) -> DockEventDecision {
+        guard enabled, !heldClickContactIDs.isEmpty, ownership.suppress(.gesture, now: now) else { return .pass }
+        dockPhaseCounts[phase, default: 0] += 1
+        if traceGestures { NSLog("[DEBUG-gesture] dock gesture phase=%lld beside a held click: %@", phase, handling.rawValue) }
+        switch handling {
+        case .pass:
+            return .pass
+        case .withhold:
+            withheldDockControlEvents &+= 1
+            return .drop
+        case .cancel:
+            withheldDockControlEvents &+= 1
+            guard !dockGestureCancelled else { return .drop }
+            dockGestureCancelled = true
+            return .cancel
+        }
     }
 
     /// Leaves out the finger holding a click. It must have been touching in the frame
@@ -439,7 +484,11 @@ extension GestureCallbackState {
             heldClickPositions[contact.id] = (contact.x, contact.y)
         }
         heldClickPositions = heldClickPositions.filter { heldClickContactIDs.contains($0.key) }
-        return contacts.filter { !heldClickContactIDs.contains($0.id) }
+        let filtered = contacts.filter { !heldClickContactIDs.contains($0.id) }
+        // New fingers beside the held click start a new sequence for the Dock too.
+        if previousFilteredCount == 0, !filtered.isEmpty { dockGestureCancelled = false }
+        previousFilteredCount = filtered.count
+        return filtered
     }
 }
 
@@ -587,6 +636,11 @@ final class GestureMonitor {
         gestureCallbackState.withLock { $0.heldClickTravel }
     }
 
+    /// Dock gesture event phases seen beside a held click since gestures last started.
+    nonisolated static func dockPhaseCounts() -> [Int64: Int] {
+        gestureCallbackState.withLock { $0.dockPhaseCounts }
+    }
+
     func cancelGestureSequence() {
         if traceGestures { NSLog("[DEBUG-gesture] sequence interrupted by app") }
         gestureCallbackState.withLock { state in
@@ -622,6 +676,23 @@ private let inputTapCallback: CGEventTapCallBack = { _, type, event, context in
         .gesture
     }
     let now = ProcessInfo.processInfo.systemUptime
+    if kind == .dockControl {
+        let phase = event.getIntegerValueField(gesturePhaseField)
+        let handling = DockSwipeHandling.current
+        let decision = gestureCallbackState.withLock { state in
+            state.dockDecision(phase: phase, now: now, handling: handling)
+        }
+        switch decision {
+        case .pass:
+            return Unmanaged.passUnretained(event)
+        case .drop:
+            return nil
+        case .cancel:
+            event.setIntegerValueField(gesturePhaseField, value: cancelledGesturePhase)
+            event.setIntegerValueField(gesturePhaseAliasField, value: cancelledGesturePhase)
+            return Unmanaged.passUnretained(event)
+        }
+    }
     let suppress = gestureCallbackState.withLock { state in
         state.suppress(kind, now: now)
     }

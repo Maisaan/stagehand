@@ -20,6 +20,7 @@ final class PointerDragTracker {
     private let now: () -> TimeInterval
     private let heldClickTravel: () -> Double
     private let dockEventsWithheld: () -> Int
+    private let dockPhases: () -> [Int64: Int]
     /// The current press, for the summary logged when a drag-and-drop ends.
     private var press: PressRecord?
 
@@ -30,6 +31,7 @@ final class PointerDragTracker {
     private struct PressRecord {
         let began: TimeInterval
         let dockEventsAtStart: Int
+        let dockPhasesAtStart: [Int64: Int]
         var dragEvents = 0
         var lastDrag: TimeInterval
         var travelAtLastDrag: Double
@@ -59,7 +61,9 @@ final class PointerDragTracker {
          dragChangeCount: @escaping () -> Int = { PointerDragTracker.dragPasteboard.changeCount },
          now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          heldClickTravel: @escaping () -> Double = { InputController.heldClickTravel() },
-         dockEventsWithheld: @escaping () -> Int = { InputController.withheldDockControlEventCount() }) {
+         dockEventsWithheld: @escaping () -> Int = { InputController.withheldDockControlEventCount() },
+         dockPhases: @escaping () -> [Int64: Int] = { InputController.dockPhaseCounts() }) {
+        self.dockPhases = dockPhases
         self.buttonDown = buttonDown
         self.dragChangeCount = dragChangeCount
         self.now = now
@@ -124,7 +128,7 @@ final class PointerDragTracker {
         pressCarriesDrop = false
         pressBaseline = inStagehand ? nil : dragChangeCount()
         let time = now()
-        press = PressRecord(began: time, dockEventsAtStart: dockEventsWithheld(),
+        press = PressRecord(began: time, dockEventsAtStart: dockEventsWithheld(), dockPhasesAtStart: dockPhases(),
                             lastDrag: time, travelAtLastDrag: heldClickTravel())
     }
 
@@ -138,7 +142,14 @@ final class PointerDragTracker {
                 "longestPointerGapMilliseconds": String(Int(press.longestGap * 1_000)),
                 // Thousandths of the trackpad's width.
                 "heldFingerTravelDuringGap": String(Int(press.travelDuringLongestGap * 1_000)),
-                "dockControlEventsWithheld": String(dockEventsWithheld() - press.dockEventsAtStart)
+                "dockControlEventsWithheld": String(dockEventsWithheld() - press.dockEventsAtStart),
+                // Dock gesture events seen beside the held click, by phase: 1 began,
+                // 2 changed, 4 ended, 8 cancelled.
+                "dockPhases": dockPhases().sorted { $0.key < $1.key }.compactMap { phase, count in
+                    let delta = count - (press.dockPhasesAtStart[phase] ?? 0)
+                    return delta > 0 ? "\(phase):\(delta)" : nil
+                }.joined(separator: " "),
+                "dockHandling": InputController.dockSwipeHandling
             ])
         }
         press = nil

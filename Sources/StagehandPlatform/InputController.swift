@@ -169,6 +169,14 @@ public final class InputController {
         GestureMonitor.heldClickTravel()
     }
 
+    /// Dock gesture event phases seen beside a held click since gestures last started.
+    nonisolated public static func dockPhaseCounts() -> [Int64: Int] {
+        GestureMonitor.dockPhaseCounts()
+    }
+
+    /// The hidden setting for Dock gestures beside a held click: withhold, pass, or cancel.
+    nonisolated public static var dockSwipeHandling: String { DockSwipeHandling.current.rawValue }
+
     /// Safe from any thread, for the keyboard tap's routing decision. Gesture state is
     /// process-wide, so this does not need the controller instance.
     nonisolated public static func hasPendingGestureCompletion() -> Bool {
