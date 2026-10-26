@@ -288,6 +288,11 @@ public final class WindowSystem {
             case .unavailable:
                 foundInterruptedWindow = true
                 continue
+            case .fullScreen:
+                // macOS owns it, as when AXFullScreen reads true below. Waiting for a
+                // second inventory blocked every Start until the app quit.
+                forgetRecovery(windowID: record.windowID)
+                continue
             case .absent:
                 // Some apps publish their AX window list late after Stagehand launches.
                 // Require a second complete inventory before treating a window as closed.
@@ -325,6 +330,8 @@ public final class WindowSystem {
         case found(AXUIElement)
         /// The window is confirmed gone from its app's window list.
         case absent
+        /// Missing from the list because it is in native full screen, on a Space of its own.
+        case fullScreen
         /// The app did not answer, or window identities cannot be read at all, so
         /// absence is not established and the record must be kept.
         case unavailable
@@ -336,17 +343,22 @@ public final class WindowSystem {
             return .unavailable
         }
         return Self.recoveryMatch(elements, numbers: elements.map { windowNumber($0) },
-                                  target: record.windowNumber, identityAvailable: Self.windowIdentityAvailable)
+                                  target: record.windowNumber, identityAvailable: Self.windowIdentityAvailable,
+                                  targetSpaceTypes: { NativeSpaces.spaceTypes(record.windowNumber) })
     }
 
     /// Without _AXUIElementGetWindow every lookup is nil, which must not read as
     /// "every journaled window has closed".
     nonisolated static var windowIdentityAvailable: Bool { AccessibilityWindowNumber.function != nil }
 
+    /// `targetSpaceTypes` is asked only when the window is missing from the list.
     nonisolated static func recoveryMatch(_ elements: [AXUIElement], numbers: [CGWindowID?],
-                                          target: CGWindowID, identityAvailable: Bool) -> RecoverySearch {
+                                          target: CGWindowID, identityAvailable: Bool,
+                                          targetSpaceTypes: () -> [Int32]? = { nil }) -> RecoverySearch {
         guard identityAvailable else { return .unavailable }
-        guard let index = numbers.firstIndex(where: { $0 == target }) else { return .absent }
+        guard let index = numbers.firstIndex(where: { $0 == target }) else {
+            return NativeSpaces.isInFullScreen(spaceTypes: targetSpaceTypes()) ? .fullScreen : .absent
+        }
         return .found(elements[index])
     }
 
@@ -390,7 +402,7 @@ public final class WindowSystem {
             } else {
                 switch recoveryElement(for: record) {
                 case .found(let match): element = match
-                case .absent: forgetRecovery(windowID: id); continue
+                case .absent, .fullScreen: forgetRecovery(windowID: id); continue
                 case .unavailable: continue
                 }
             }

@@ -179,6 +179,30 @@ import Testing
     }
 }
 
+/// Accessibility lists only the current Space's windows, so a window in native full
+/// screen is missing from its app's list. It read as "maybe published late" and blocked
+/// every Start until the app quit (1Password, 2026-10-26). WindowServer's Space types tell
+/// it apart: only a window on full-screen Spaces alone is macOS's.
+@Test func aWindowMissingBecauseItIsInFullScreenIsNotAbsent() {
+    let elements = [AXUIElementCreateApplication(1)]
+    func search(_ types: [Int32]?) -> WindowSystem.RecoverySearch {
+        WindowSystem.recoveryMatch(elements, numbers: [5], target: 9, identityAvailable: true,
+                                   targetSpaceTypes: { types })
+    }
+    if case .fullScreen = search([NativeSpaces.fullScreenSpaceType]) {} else { Issue.record("Full screen") }
+    if case .absent = search([0]) {} else { Issue.record("A window on another Desktop stays absent") }
+    if case .absent = search([0, NativeSpaces.fullScreenSpaceType]) {} else { Issue.record("Not only full screen") }
+    if case .absent = search([]) {} else { Issue.record("A window WindowServer does not have is absent") }
+    if case .absent = search(nil) {} else { Issue.record("No answer is not evidence of full screen") }
+
+    var asked = false
+    _ = WindowSystem.recoveryMatch(elements, numbers: [9], target: 9, identityAvailable: true,
+                                   targetSpaceTypes: { asked = true; return nil })
+    #expect(!asked)
+    // A window that does not exist is on no Space.
+    #expect(!NativeSpaces.isInFullScreen(spaceTypes: NativeSpaces.spaceTypes(UInt32.max)))
+}
+
 private func journalFixture() throws -> (directory: URL, url: URL, record: WindowRecoveryRecord) {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
