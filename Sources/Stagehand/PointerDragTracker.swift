@@ -7,7 +7,7 @@ import StagehandPlatform
 /// Starting a drag session gives AppKit's drag pasteboard a new change count; nothing
 /// else writes it. The count is sampled as each press begins, and a press counts as a
 /// drag-and-drop once the count differs. A press whose start Stagehand did not see, or
-/// one that began in Stagehand's own windows (the app bar's reorder drag), never counts:
+/// one that began in Stagehand's own windows (a reorder in Settings), never counts:
 /// a missed event keeps the title-bar behavior instead of fighting a window drag.
 @MainActor
 final class PointerDragTracker {

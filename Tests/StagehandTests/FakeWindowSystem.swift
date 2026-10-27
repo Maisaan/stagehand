@@ -310,7 +310,6 @@ final class FakeOverlays: NavigationPresenting {
     var onSelectSpace: ((Int) -> Void)?
     var onShareWindow: ((String, Int) -> Void)?
     var onRemoveWindow: ((String) -> Void)?
-    var onReorderWindow: ((String, Int) -> Void)?
     var canRevealNavigation: (() -> Bool)?
     var pointerCarriesDrop: (() -> Bool)?
     private(set) var shortcutHintToggles = 0

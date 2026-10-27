@@ -10,7 +10,6 @@ protocol NavigationPresenting: AnyObject {
     var onSelectSpace: ((Int) -> Void)? { get set }
     var onShareWindow: ((String, Int) -> Void)? { get set }
     var onRemoveWindow: ((String) -> Void)? { get set }
-    var onReorderWindow: ((String, Int) -> Void)? { get set }
     var canRevealNavigation: (() -> Bool)? { get set }
     /// True while the pointer carries another app's drag-and-drop; the app bar then
     /// ignores the pointer so a drop near the notch reaches the window under it.
