@@ -1,7 +1,8 @@
 import AppKit
 import Testing
 @testable import Stagehand
-import StagehandPlatform
+import StagehandCore
+@testable import StagehandPlatform
 
 @MainActor
 @Test func focusBorderStaysBetweenNormalAndFloatingWindows() throws {
@@ -142,4 +143,63 @@ import StagehandPlatform
     #expect(first != nil)
     #expect(AppIconCache.icon(for: "com.apple.finder") === first)
     #expect(AppIconCache.icon(for: "invalid.stagehand.none") == nil)
+}
+
+/// A new window count lays the bar out again inside the same panel instead of resizing it.
+@Test func appBarPanelKeepsItsFrameAcrossWindowCounts() {
+    let screen = CGRect(x: 0, y: 0, width: 1512, height: 982)
+    let visible = CGRect(x: 0, y: 0, width: 1512, height: 944)
+    for notch in [false, true] {
+        func layout(_ count: Int) -> NavigationHUDGeometry {
+            NavigationHUDGeometry.layout(
+                screenFrame: screen, visibleFrame: visible, safeAreaTop: notch ? 38 : 0,
+                auxiliaryLeft: notch ? CGRect(x: 0, y: 944, width: 662, height: 38) : nil,
+                auxiliaryRight: notch ? CGRect(x: 850, y: 944, width: 662, height: 38) : nil,
+                windowCount: count)
+        }
+        let narrow = layout(2)
+        let wide = layout(30)
+        #expect(narrow.panelFrame == wide.panelFrame)
+        #expect(narrow.contentFrame.width < wide.contentFrame.width)
+        #expect(wide.panelFrame.contains(narrow.contentFrame))
+        #expect(narrow.contentFrame.midX == wide.contentFrame.midX)
+    }
+    // A display narrower than the widest bar clamps both to its edges.
+    let small = CGRect(x: 0, y: 0, width: 400, height: 600)
+    func clamped(_ count: Int) -> NavigationHUDGeometry {
+        NavigationHUDGeometry.layout(screenFrame: small, visibleFrame: small, safeAreaTop: 0,
+                                     auxiliaryLeft: nil, auxiliaryRight: nil, windowCount: count)
+    }
+    #expect(clamped(2).panelFrame == clamped(30).panelFrame)
+    #expect(clamped(2).panelFrame.contains(clamped(2).contentFrame))
+    #expect(clamped(30).contentFrame.width == small.width - 32)
+}
+
+/// Accepting mouse events makes a panel catch clicks on its transparent padding, so only
+/// the bar itself takes the pointer.
+@MainActor
+@Test func appBarTakesThePointerOnlyOverTheBar() throws {
+    var pointer = CGPoint(x: -10_000, y: -10_000)
+    let overlays = NavigationOverlays(reduceMotion: { true }, pointerLocation: { pointer })
+    defer { overlays.hide() }
+    let window = WindowRecord(id: "a", appName: "App", title: "a", bundleIdentifier: "test.app", pid: 1,
+                              frame: CGRect(x: 0, y: 0, width: 100, height: 100), isResizable: true)
+    overlays.showNavigation(state: WorkspaceState(spaces: [SpaceState(windowIDs: ["a"], focusedWindowID: "a")]),
+                            windows: [window])
+    let hud = try #require(overlays.hud)
+    #expect(hud.ignoresMouseEvents)
+
+    let bar = hud.frame.insetBy(dx: 0, dy: NavigationHUDGeometry.padding)
+    pointer = CGPoint(x: hud.frame.midX, y: bar.midY)
+    overlays.pointerMoved()
+    #expect(!hud.ignoresMouseEvents)
+
+    // Beside the one-window bar, still inside the panel.
+    pointer = CGPoint(x: hud.frame.minX + 4, y: bar.midY)
+    overlays.pointerMoved()
+    #expect(hud.ignoresMouseEvents)
+
+    pointer = CGPoint(x: hud.frame.midX, y: bar.midY)
+    overlays.showWarning("Stagehand paused")
+    #expect(hud.ignoresMouseEvents)
 }

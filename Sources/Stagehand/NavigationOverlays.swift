@@ -32,11 +32,15 @@ struct NavigationHUDGeometry {
     static let padding: CGFloat = 16
     let contentFrame: CGRect
     let attachedToNotch: Bool
+    /// Navigation keeps the panel at the widest bar's frame, so a new window count, such
+    /// as every switch between Spaces, only lays the bar out again inside it. Resizing the
+    /// panel is a synchronous WindowServer round trip: 150-900 ms stalls under load on
+    /// 2026-10-26, with a fifth of that spent in Stagehand.
+    let panelFrame: CGRect
 
-    var panelFrame: CGRect {
-        let padded = contentFrame.insetBy(dx: -Self.padding, dy: -Self.padding)
-        return CGRect(x: padded.minX, y: padded.minY, width: padded.width,
-                      height: padded.height - (attachedToNotch ? Self.padding : 0))
+    /// The bar inside the panel, in the panel's coordinates.
+    var contentInPanel: CGRect {
+        contentFrame.offsetBy(dx: -panelFrame.minX, dy: -panelFrame.minY)
     }
 
     static func layout(screenFrame: CGRect, visibleFrame: CGRect, safeAreaTop: CGFloat,
@@ -56,13 +60,20 @@ struct NavigationHUDGeometry {
         let limit = max(1, min(maximumWidth, visibleFrame.width - 32))
         let navigationWidth = 60 + CGFloat(max(1, windowCount)) * 36
         let desiredWidth = warningHeight == nil ? navigationWidth : 580
-        let width = min(limit, desiredWidth)
         let height = warningHeight.map { max(72, $0) } ?? 66
         let centerX = notch?.midX ?? screenFrame.midX
-        let left = min(max(centerX - width / 2, visibleFrame.minX + 16), visibleFrame.maxX - 16 - width)
         let top = attached ? (notch?.minY ?? visibleFrame.maxY) : min(visibleFrame.maxY, screenFrame.maxY - safeAreaTop) - 6
-        return Self(contentFrame: CGRect(x: left, y: top - height, width: width, height: height),
-                    attachedToNotch: attached)
+        func frame(width: CGFloat) -> CGRect {
+            let left = min(max(centerX - width / 2, visibleFrame.minX + 16), visibleFrame.maxX - 16 - width)
+            return CGRect(x: left, y: top - height, width: width, height: height)
+        }
+        let contentFrame = frame(width: min(limit, desiredWidth))
+        // Centered and clamped the same way, a narrower bar lies within the widest one.
+        let padded = (warningHeight == nil ? frame(width: limit) : contentFrame)
+            .insetBy(dx: -padding, dy: -padding)
+        return Self(contentFrame: contentFrame, attachedToNotch: attached,
+                    panelFrame: CGRect(x: padded.minX, y: padded.minY, width: padded.width,
+                                       height: padded.height - (attached ? padding : 0)))
     }
 }
 
@@ -89,10 +100,13 @@ final class NavigationOverlays {
     private var pointerKeepsHUDVisible = false
     private var dropTargetKeepsHUDVisible = false
     private let reduceMotion: () -> Bool
+    private let pointerLocation: () -> CGPoint
     private var borderColor = BorderView.defaultColor
 
-    init(reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }) {
+    init(reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion },
+         pointerLocation: @escaping () -> CGPoint = { NSEvent.mouseLocation }) {
         self.reduceMotion = reduceMotion
+        self.pointerLocation = pointerLocation
         shortcutHints = ShortcutHintsRibbon(reduceMotion: reduceMotion)
         hudModel.onFocusWindow = { [weak self] id in self?.onFocusWindow?(id) }
         hudModel.onSelectSpace = { [weak self] index in self?.onSelectSpace?(index) }
@@ -132,6 +146,9 @@ final class NavigationOverlays {
         let panel = OverlayPanel(level: .statusBar)
         panel.contentView = HUDContainerView(model: hudModel)
         panel.hasShadow = false
+        // While the panel takes the pointer, its moves reach the local monitor only if the
+        // panel accepts them; see the container's tracking area.
+        panel.acceptsMouseMovedEvents = true
         hud = panel
         return panel
     }
@@ -225,11 +242,14 @@ final class NavigationOverlays {
 
     private func installMouseMonitors() {
         guard globalMouseMonitor == nil, localMouseMonitor == nil else { return }
-        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] _ in
-            MainActor.assumeIsolated { self?.pointerMoved(to: NSEvent.mouseLocation) }
+        // No move follows a release until the pointer moves, so a press released over the
+        // bar's padding would leave the padding catching the next click.
+        let events: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .leftMouseUp, .rightMouseUp, .otherMouseUp]
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: events) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pointerMoved() }
         }
-        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] event in
-            self?.pointerMoved(to: NSEvent.mouseLocation)
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: events) { [weak self] event in
+            self?.pointerMoved()
             return event
         }
         updateHoverFrame()
@@ -248,11 +268,20 @@ final class NavigationOverlays {
                             height: screen.frame.maxY - geometry.contentFrame.maxY + 4)
     }
 
-    private func pointerMoved(to point: CGPoint) {
-        // Shown during another app's drag-and-drop, the bar ignored the pointer; take it
-        // back once the drop is over.
-        if let hud, hud.ignoresMouseEvents, hudModel.warning == nil, NSEvent.pressedMouseButtons == 0 {
-            hud.ignoresMouseEvents = false
+    /// A panel that accepts mouse events catches every click in its frame, including the
+    /// transparent padding that holds the bar's shadow: on 2026-10-27 a click a few points
+    /// beside the bar never reached the app under it. Only the bar itself takes the pointer,
+    /// and not while it shows a warning or another app's drag-and-drop passes over it.
+    private func hudIgnoresPointer(at point: CGPoint) -> Bool {
+        contentFrame?.contains(point) != true || hudModel.warning != nil || pointerCarriesDrop?() == true
+    }
+
+    func pointerMoved() {
+        let point = pointerLocation()
+        // A press keeps the panel as it was, so a chip dragged off the bar stays with the
+        // bar, and a drag that started elsewhere is not taken over.
+        if let hud, hud.ignoresMouseEvents != hudIgnoresPointer(at: point), NSEvent.pressedMouseButtons == 0 {
+            hud.ignoresMouseEvents.toggle()
         }
         let insideTrigger = hoverFrame?.contains(point) == true
         let insideBar = hud?.isVisible == true && hudModel.warning == nil && contentFrame?.contains(point) == true
@@ -272,7 +301,6 @@ final class NavigationOverlays {
     private func presentHUD(dismissAfter: Duration) {
         guard let screen = NSScreen.managedDisplay else { return }
         let hud = hudPanel()
-        hud.ignoresMouseEvents = hudModel.warning != nil || pointerCarriesDrop?() == true
         guard let container = hud.contentView as? HUDContainerView else { return }
         hudModel.reduceMotion = reduceMotion()
         let warningHeight = hudModel.warning.map { message in
@@ -288,17 +316,22 @@ final class NavigationOverlays {
             auxiliaryLeft: screen.auxiliaryTopLeftArea, auxiliaryRight: screen.auxiliaryTopRightArea,
             windowCount: hudModel.displayedItemCount, warningHeight: warningHeight)
         contentFrame = geometry.contentFrame
+        hud.ignoresMouseEvents = hudIgnoresPointer(at: pointerLocation())
         updateHoverFrame()
         // Successive navigations usually keep the same geometry. Avoid a forced
         // synchronous layout and redraw just as ribbon motion starts.
-        if hud.frame != geometry.panelFrame || container.attachedToNotch != geometry.attachedToNotch {
+        if hud.frame != geometry.panelFrame || container.attachedToNotch != geometry.attachedToNotch
+            || container.contentRect != geometry.contentInPanel {
             hudModel.attachedToNotch = geometry.attachedToNotch
             container.attachedToNotch = geometry.attachedToNotch
+            container.contentRect = geometry.contentInPanel
             // The same synchronous resize, layout, and draw as setFrame(display: true),
             // timed separately: "hudWindow setFrame" was 9 s of stalls on 2026-10-26 and
             // the label could not say whether WindowServer, SwiftUI, or drawing cost it.
             // Layout must finish here: the enter animation reads the bar's final bounds.
-            MainThreadActivity.during("hudWindow setFrame") { hud.setFrame(geometry.panelFrame, display: false) }
+            if hud.frame != geometry.panelFrame {
+                MainThreadActivity.during("hudWindow setFrame") { hud.setFrame(geometry.panelFrame, display: false) }
+            }
             container.needsLayout = true
             MainThreadActivity.during("hudWindow layout") { container.layoutSubtreeIfNeeded() }
             MainThreadActivity.during("hudWindow display") { hud.displayIfNeeded() }
@@ -418,6 +451,8 @@ final class HUDContainerView: NSView {
     let animatedView = NSView()
     let hostingView: NSView
     var attachedToNotch = false
+    /// Where the content sits in the container; nil insets it by the padding on every side.
+    var contentRect: CGRect?
     /// Content at the bottom of the screen grows from and sinks toward its bottom edge.
     let anchoredToBottom: Bool
     private var motionConfiguration = InterfaceAnimationConfiguration.default
@@ -450,7 +485,14 @@ final class HUDContainerView: NSView {
         animatedView.layer?.shadowOpacity = 0.25
         animatedView.layer?.shadowRadius = 12
         animatedView.layer?.shadowOffset = CGSize(width: 0, height: -4)
+        // Accepting mouse events, the panel receives the pointer's moves over its
+        // transparent padding too, which the local monitor needs to let that padding go.
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeAlways, .inVisibleRect],
+                                       owner: self))
     }
+
+    /// The tracking area exists for the local monitor; the moves go no further.
+    override func mouseMoved(with event: NSEvent) {}
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -458,9 +500,10 @@ final class HUDContainerView: NSView {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        animatedView.frame = CGRect(x: Self.padding, y: Self.padding,
-                                    width: max(0, bounds.width - Self.padding * 2),
-                                    height: max(0, bounds.height - Self.padding * (attachedToNotch ? 1 : 2)))
+        animatedView.frame = contentRect ?? CGRect(
+            x: Self.padding, y: Self.padding,
+            width: max(0, bounds.width - Self.padding * 2),
+            height: max(0, bounds.height - Self.padding * (attachedToNotch ? 1 : 2)))
         hostingView.frame = animatedView.bounds
         CATransaction.commit()
     }
