@@ -41,7 +41,6 @@ public protocol WindowManaging: AnyObject {
     func requestAccessibilityPermission()
     func recoverInterruptedSession() -> Bool
     @discardableResult func start() -> [WindowRecord]
-    func stop()
     /// Pause or quit while the user is away from this Desktop: restore once, no retries.
     func stop(windowsReachable: Bool)
     /// Parking requests, skips, and read reasons since the last call; resets them.

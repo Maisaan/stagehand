@@ -110,10 +110,6 @@ final class FakeWindowSystem: WindowManaging {
     private(set) var stopsWhileAway = 0
     func stop(windowsReachable: Bool) {
         if !windowsReachable { stopsWhileAway += 1 }
-        stop()
-    }
-
-    func stop() {
         started = false
         for id in windows.keys {
             windows[id]?.restoreFrame = nil

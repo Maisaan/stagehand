@@ -642,8 +642,6 @@ public final class WindowSystem {
         if !removedIDs.isEmpty { onApplicationTerminated?(pid) }
     }
 
-    public func stop() { stop(windowsReachable: true) }
-
     /// `windowsReachable` false: the user is away from this Desktop (another Space, the
     /// lock screen), where no window can be read or moved. Restoring is tried once and
     /// left to the journal, without the retries' main-thread waits.
