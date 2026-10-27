@@ -12,17 +12,30 @@ import Testing
 /// The runner usually starts behind the terminal or editor that launched it,
 /// so activate first; when macOS refuses, skip rather than report a false
 /// failure. The assertions are unchanged when the process is frontmost.
+///
+/// Activating takes focus from the app the user is working in, and the settings
+/// test activates Finder: a plain `swift test` left Finder in front on 2026-10-27,
+/// which looked like a Stagehand launch focusing the wrong window. Run them on request:
+/// `STAGEHAND_ACTIVATION_TESTS=1 swift test`.
 private let requiresActiveTestProcess = ConditionTrait.enabled(
-    "The test process could not become the active application; run from a frontmost terminal to cover key window behavior."
+    "Set STAGEHAND_ACTIVATION_TESTS=1 to run; these tests take focus and the test process must become the active application."
 ) {
+    guard ProcessInfo.processInfo.environment["STAGEHAND_ACTIVATION_TESTS"] == "1" else { return false }
     await MainActor.run { _ = NSApplication.shared }
     return await testProcessIsActive()
 }
+
+/// The app that was in front before a test activated this process, given focus back afterwards.
+@MainActor private var applicationActiveBeforeTests: NSRunningApplication?
 
 @MainActor
 private func testProcessIsActive(timeout: Duration = .seconds(2)) async -> Bool {
     let app = NSApplication.shared
     if app.activationPolicy() == .prohibited { app.setActivationPolicy(.accessory) }
+    if applicationActiveBeforeTests == nil,
+       let frontmost = NSWorkspace.shared.frontmostApplication, frontmost.processIdentifier != getpid() {
+        applicationActiveBeforeTests = frontmost
+    }
     app.activate(ignoringOtherApps: true)
     let deadline = ContinuousClock.now.advanced(by: timeout)
     let currentPID = ProcessInfo.processInfo.processIdentifier
@@ -154,7 +167,6 @@ func quickControlsPanelTakesFocusWhenPresentedWithoutPopoverChrome() async {
 @MainActor
 @Test(requiresActiveTestProcess)
 func openingSettingsBringsTheAppToTheFrontEveryTime() async throws {
-    let previouslyActiveApplication = NSWorkspace.shared.frontmostApplication
     let finder = try #require(NSRunningApplication.runningApplications(
         withBundleIdentifier: "com.apple.finder"
     ).first)
@@ -162,10 +174,9 @@ func openingSettingsBringsTheAppToTheFrontEveryTime() async throws {
     var settingsWindow: NSWindow?
     defer {
         settingsWindow?.close()
-        if let previouslyActiveApplication,
-           previouslyActiveApplication.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-            previouslyActiveApplication.activate()
-        }
+        // Read once this process was already in front, the frontmost app here is the test
+        // process itself, so the app the user was in comes from before the activation.
+        applicationActiveBeforeTests?.activate()
     }
 
     finder.activate()
