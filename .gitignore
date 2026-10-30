@@ -4,3 +4,11 @@ dist/
 .DS_Store
 *.xcuserstate
 .claude/
+*.p12
+*.pfx
+*.pem
+*.key
+*.cer
+*.mobileprovision
+*.provisionprofile
+*.xcarchive
