@@ -26,6 +26,15 @@ struct WindowFrameTests {
         ) == nil)
     }
 
+    @Test func aSheetStaysCenteredBelowTheTitleBarWhenItsWindowMovesOrResizes() {
+        let placement = WindowSystem.SheetPlacement(
+            sheet: CGRect(x: 150, y: 128, width: 400, height: 700),
+            owner: CGRect(x: 100, y: 100, width: 500, height: 300)
+        )
+        #expect(placement.frame(over: CGRect(x: 1_000, y: 50, width: 800, height: 300))
+            == CGRect(x: 1_200, y: 78, width: 400, height: 700))
+    }
+
     @Test(arguments: [NavigationAction.focusPrevious, .goToSpace(index: 1)], [CGFloat(0), 1])
     func returningToAParkedSharedWindowDoesNotResizeIt(action: NavigationAction, extraWidth: CGFloat) throws {
         let viewport = CGRect(x: 0, y: 40, width: 1000, height: 700)

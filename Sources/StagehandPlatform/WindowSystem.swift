@@ -150,6 +150,8 @@ public final class WindowSystem {
         /// The last parking request that verified this window at the side, and with what.
         /// Cleared by its move, resize, or minimize notifications.
         var parkCheck: ParkCheck?
+        /// The attached sheet the last focus read found in front of this window.
+        var sheet: SheetPlacement?
     }
 
     struct ParkCheck: Equatable {
@@ -658,6 +660,7 @@ public final class WindowSystem {
         for id in Array(windows.keys) {
             windows[id]?.isAdmitted = false
             windows[id]?.observationComplete = false
+            windows[id]?.sheet = nil
         }
         ownedWindows.removeAll()
         let center = NSWorkspace.shared.notificationCenter
@@ -1156,6 +1159,12 @@ public final class WindowSystem {
         return tracked.logicalFrame ?? readFrame(tracked.element)
     }
 
+    /// `frame` grown to cover the window's focused sheet. A sheet can be taller or
+    /// wider than its window, such as Xcode's sign-in sheet over its short Settings window.
+    public func frameIncludingSheet(windowID: String, frame: CGRect) -> CGRect {
+        windows[windowID]?.sheet.map { frame.union($0.frame(over: frame)) } ?? frame
+    }
+
     /// Returns the WindowServer identity captured from Accessibility discovery.
     public func windowNumber(for windowID: String) -> CGWindowID? {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.windowNumber(for: windowID) }
@@ -1579,14 +1588,18 @@ public final class WindowSystem {
     private enum FocusRead: Sendable {
         case none
         case own
-        case external(String?)
+        /// `sheet` is set when the focused element was an attached sheet of the window.
+        case external(String?, sheet: SheetPlacement?)
     }
 
     private func resolveFocus(_ read: FocusRead) -> String? {
         switch read {
-        case .none: nil
-        case .own: nativeWindows.focusedWindowID
-        case .external(let id): id
+        case .none: return nil
+        case .own: return nativeWindows.focusedWindowID
+        case .external(let id, let sheet):
+            // A read that lands on the window itself means its sheet closed.
+            if let id { windows[id]?.sheet = sheet }
+            return id
         }
     }
 
@@ -1624,7 +1637,13 @@ public final class WindowSystem {
         var focusedPID: pid_t = 0
         if AXUIElementGetPid(focusedApp, &focusedPID) == .success, focusedPID == ownPID { return .own }
         guard let focusedWindow = elementAttribute(focusedApp, kAXFocusedWindowAttribute) else { return .none }
-        return .external(trackedWindowID(matching: focusedWindow, in: snapshot))
+        let isSheet = attribute(focusedWindow, kAXRoleAttribute) as? String == kAXSheetRole
+        let id = trackedWindowID(matching: focusedWindow, isSheet: isSheet, in: snapshot)
+        guard isSheet, let id, let owner = snapshot.windows.first(where: { $0.id == id })?.element,
+              let sheetFrame = readFrame(focusedWindow), let ownerFrame = readFrame(owner) else {
+            return .external(id, sheet: nil)
+        }
+        return .external(id, sheet: SheetPlacement(sheet: sheetFrame, owner: ownerFrame))
     }
 
     /// Reports focus changes macOS made, such as a click or Command-Tab. The newly
@@ -2366,7 +2385,12 @@ public final class WindowSystem {
     /// owner of an attached sheet or dialog, or a unique same-geometry equivalent.
     nonisolated private func trackedWindowID(matching element: AXUIElement,
                                              in snapshot: IdentitySnapshot) -> String? {
-        let isSheet = attribute(element, kAXRoleAttribute) as? String == kAXSheetRole
+        trackedWindowID(matching: element, isSheet: attribute(element, kAXRoleAttribute) as? String == kAXSheetRole,
+                        in: snapshot)
+    }
+
+    nonisolated private func trackedWindowID(matching element: AXUIElement, isSheet: Bool,
+                                             in snapshot: IdentitySnapshot) -> String? {
         if !isSheet, let id = directTrackedWindowID(matching: element, in: snapshot) { return id }
         if let owned = snapshot.owned.first(where: { sameWindow($0.element, element) }) {
             return owned.parentID
@@ -2615,6 +2639,25 @@ public final class WindowSystem {
             _ = writePosition(child.element, position: destination)
         }
         return success
+    }
+
+    /// Where an attached sheet sits on its window. AppKit centers a sheet below the
+    /// title bar and moves it with the window, so it is kept relative to the top center.
+    struct SheetPlacement: Equatable, Sendable {
+        let midXOffset: CGFloat
+        let minYOffset: CGFloat
+        let size: CGSize
+
+        init(sheet: CGRect, owner: CGRect) {
+            midXOffset = sheet.midX - owner.midX
+            minYOffset = sheet.minY - owner.minY
+            size = sheet.size
+        }
+
+        func frame(over owner: CGRect) -> CGRect {
+            CGRect(x: owner.midX + midXOffset - size.width / 2, y: owner.minY + minYOffset,
+                   width: size.width, height: size.height)
+        }
     }
 
     static func ownedWindowPosition(

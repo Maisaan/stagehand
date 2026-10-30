@@ -919,7 +919,7 @@ extension StagehandModel {
         refreshShape: Bool = true,
         raiseBorder: Bool = false
     ) {
-        focusBorder.show(windowID: windowID, frame: frame, color: focusBorderColor,
+        focusBorder.show(windowID: windowID, frame: windowSystem.frameIncludingSheet(windowID: windowID, frame: frame), color: focusBorderColor,
                          refreshShape: refreshShape, raise: raiseBorder)
     }
 }

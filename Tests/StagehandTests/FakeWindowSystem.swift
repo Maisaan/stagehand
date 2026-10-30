@@ -167,6 +167,11 @@ final class FakeWindowSystem: WindowManaging {
         guard !unreadableFrames.contains(windowID) else { return nil }
         return windows[windowID]?.frame
     }
+    /// Attached sheets by owner, placed relative to the owner's origin.
+    var sheets: [String: CGRect] = [:]
+    func frameIncludingSheet(windowID: String, frame: CGRect) -> CGRect {
+        sheets[windowID].map { frame.union($0.offsetBy(dx: frame.minX, dy: frame.minY)) } ?? frame
+    }
     func windowNumber(for windowID: String) -> CGWindowID? { nil }
     func isParked(windowID: String) -> Bool { windows[windowID]?.restoreFrame != nil }
 

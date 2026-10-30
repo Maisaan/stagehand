@@ -52,6 +52,8 @@ public protocol WindowManaging: AnyObject {
 
     func frame(windowID: String) -> CGRect?
     func observedFrame(windowID: String) -> CGRect?
+    /// `frame` grown to cover the window's focused attached sheet, if any.
+    func frameIncludingSheet(windowID: String, frame: CGRect) -> CGRect
     func windowNumber(for windowID: String) -> CGWindowID?
     func isParked(windowID: String) -> Bool
     func unavailability(windowID: String) -> WindowUnavailability?

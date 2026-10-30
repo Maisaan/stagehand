@@ -754,6 +754,21 @@ struct ModelScenarioTests {
         #expect(harness.overlays.borderVisibility == [true])
     }
 
+    /// A sheet taller than its window, such as Xcode's sign-in sheet over its
+    /// Settings window, stays inside the border.
+    @Test func theBorderCoversAnAttachedSheet() async throws {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.windows.sheets["a"] = CGRect(x: 40, y: 28, width: 200, height: 2_000)
+        harness.model.start()
+        await harness.settle()
+
+        // The sheet starts 28 points below the window's top and is 2,000 tall.
+        let border = try #require(harness.overlays.borderFrame)
+        #expect(border.height == 2_028)
+        #expect(border.width == harness.windows.frame(windowID: "a")?.width)
+    }
+
     /// Unlocking after a long lock rechecks at once and then every 50 ms for a
     /// short while, instead of waiting for the 5 s backoff check.
     @Test func unlockingRechecksTheDesktopImmediatelyAndQuickly() async {
