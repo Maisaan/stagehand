@@ -2,36 +2,17 @@
 
 > Stagehand is built almost entirely by AI. The code gets plenty of scrutiny, but this is still experimental software.
 
-## Why I built Stagehand
+A scrolling window manager for a MacBook's built-in display, built around the trackpad. Windows sit side by side in a horizontal ribbon; nine spaces stack vertically. Swipe or use Control + Option + arrows to move between them.
 
-Sometimes the built-in MacBook display is the whole setup. The window managers I tried felt aimed at larger external displays or multi-monitor desks. I wanted something designed for the trackpad and limited screen space.
-
-That led to three choices:
-
-- **Use the trackpad first.** Once enabled, three-finger swipes navigate the whole workspace. The same navigation works with Control + Option + arrow keys when the keyboard is more convenient.
-- **Give each axis one job.** Windows run left and right in a ribbon. Stagehand's nine spaces stack above and below, so moving vertically changes spaces.
-- **Keep the app lightweight and self-contained.** The small app bundle uses native Swift, AppKit, and SwiftUI, with no third-party packages or remote services.
-
-Stagehand moves real app windows, so the active app keeps its menus and input. It was inspired by [KiwiDesk](https://github.com/KiwiCanopy/KiwiDesk).
-
-## Status
-
-This project is rough and intended for local testing. It moves real windows, handles keyboard input during focus changes, and depends on private macOS APIs. Start with disposable text and documents.
-
-Do not rely on Stagehand where a missed or misdirected keystroke could cause damage. See [Known limitations](#known-limitations) before running it.
+Stagehand moves real app windows, so apps keep their own menus and input. It is native Swift, AppKit, and SwiftUI with no third-party packages or network access. Inspired by [KiwiDesk](https://github.com/KiwiCanopy/KiwiDesk).
 
 ## Requirements
 
-- macOS 14 or newer
-- Swift 6.2 or newer (Xcode 26 or newer); the sources use `isolated deinit`
-- A MacBook with one built-in display
-- Accessibility permission for the built app
+- macOS 14 or newer, on a MacBook using only its built-in display
+- Swift 6.2 or newer (Xcode 26 or newer)
+- Accessibility permission
 
-The current code was tested with Swift 6.4 and Xcode 27 on Apple silicon.
-
-## Build and install
-
-Clone the repository, then build the app bundle:
+## Install
 
 ```sh
 git clone https://github.com/Maisaan/stagehand.git
@@ -40,122 +21,62 @@ cd stagehand
 open dist/Stagehand.app
 ```
 
-The script creates `dist/Stagehand.app`. It signs with `STAGEHAND_SIGNING_IDENTITY` if set, otherwise with your first Apple Development certificate, otherwise with an ad-hoc signature. A certificate identity keeps the Accessibility grant across rebuilds. An ad-hoc signature changes on every build, so macOS asks for Accessibility again after each replacement.
+The build signs with `STAGEHAND_SIGNING_IDENTITY`, else your first Apple Development certificate, else ad hoc. A certificate keeps the Accessibility grant across rebuilds; an ad-hoc build asks again each time.
 
-## Quick start
+On first launch, grant Accessibility in Setup, quit other window managers, and press **Start Stagehand**. Later launches start automatically.
 
-After setup, Stagehand starts running when you open it if Accessibility is granted.
+Press Control + Option + Escape to pause. Pausing, quitting, and relaunching after a crash restore windows to where they were at Start.
 
-1. Grant Accessibility in the Setup tab.
-2. Restart Stagehand if macOS asks you to.
-3. Quit other window managers so they do not compete for shortcuts or window positions.
-4. Finish setup with **Start Stagehand**. On later launches, it starts automatically.
+## Usage
 
-Press Control + Option + Escape to pause and restore the window frames captured at Start. You can resume from settings or the menu bar item.
-
-Manual pauses and automatic pauses after an error preserve your spaces, window order, shared memberships, and per-space widths for resume. Closed windows are omitted. Windows that are temporarily unavailable regain their saved memberships when Stagehand discovers them again.
-After an automatic pause, Stagehand tries to resume once after 100 ms. If that fails, it stays paused until you press Start. After a crash or forced quit, relaunch Stagehand to restore affected windows to their pre-Start frames; it stays paused so you can choose when to start again.
-
-## Using Stagehand
-
-Stagehand has nine numbered spaces. Each space keeps its own window order, focused window, and widths. Space membership lasts only for the current session.
-
-- Use a numbered shortcut to open an unused space.
-- Use **Move to** to remove a window from its current space.
-- Use **Share with** to show the same live window in more than one space. Each space keeps its own order and width.
-- Use **Remove from this space** to remove one membership. You cannot remove the last membership.
-- Drag a title bar and release to reorder a window.
-- Resize a window to save its width.
-- In Settings > General > Gestures, enable Arrow shortcut swipes to trigger any enabled arrow shortcut with a three-finger swipe. Reverse shortcut swipe direction is on by default: Control + Option + Command + swipe left acts like the right arrow, and swipe up acts like the down arrow. Turn it off to make swipes match the arrow direction. Keyboard shortcuts keep working either way. A downward space move leaves at least one window in its source space. When a space becomes empty after its windows close, later spaces shift down to fill it. Gesture navigation can also be enabled separately for swipes without modifiers.
-
-New windows enter after the current window and keep their original width within Stagehand's 25% to 100% range. Closing a real window removes it from every space. Empty spaces show a Stagehand placeholder so typing cannot reach a hidden app.
-
-### Window layout
-
-The gap accepts values from `-200` to `40` points. Negative values overlap windows and keep the active window on top.
-
-The app bar appears beneath the camera housing, or at the top center on displays without a notch. Hover there or navigate to reveal it. It shows the active app name and window title. Click an app to focus it or the space number to change spaces. Choose or paste a hex color for each space; that color is used for its active-window border and the app bar. The app bar and focus border do not take keyboard focus or reserve screen space.
-
-While the app bar is visible, about 1.5 seconds after a navigation or while the pointer hovers over it, it accepts clicks, including in its shadow margin. On a display without a notch, a menu bar click in the few points directly above the bar can be swallowed until the bar fades. Click again once it has gone.
-
-### Controls
+Each space keeps its own window order, focus, and widths for the session. A window can be shared with several spaces. Drag a window by its title bar to reorder it; resize it to set its width (25% to 100% of the screen).
 
 | Action | Shortcut |
 | --- | --- |
-| Previous or next window | Control + Option + Left or Right |
-| Previous or next space | Control + Option + Up or Down |
-| Reorder focused window | Control + Option + Command + Left or Right |
-| Go to space 1 through 9 | Control + Option + number |
-| Share window with space | Control + Option + Shift + number |
-| Move window and follow | Control + Option + Command + number |
-| Shrink or grow width | Control + Option + - or + |
-| Next or previous width preset | Control + Option + 0, or Shift + 0 |
-| Shrink or grow height | Control + Option + Command + - or + |
-| Pause and restore | Control + Option + Escape |
-| Open settings | Control + Option + comma |
-| Show or hide the shortcut ribbon | Control + Option + Command + / |
+| Previous / next window | ⌃⌥ ← / → |
+| Previous / next space | ⌃⌥ ↑ / ↓ |
+| Move window left / right | ⌃⌥⌘ ← / → |
+| Move window up / down a space | ⌃⌥⌘ ↑ / ↓ |
+| Go to space 1–9 | ⌃⌥ 1–9 |
+| Move window to space 1–9 | ⌃⌥⌘ 1–9 |
+| Share window with space 1–9 | ⌃⌥⇧ 1–9 |
+| Shrink / grow width | ⌃⌥ - / + |
+| Cycle width presets | ⌃⌥ 0, ⌃⌥⇧ 0 |
+| Shrink / grow height | ⌃⌥⌘ - / + |
+| Pause or start | ⌃⌥ Esc |
+| Settings | ⌃⌥ , |
+| Show shortcuts | ⌃⌥⌘ / |
 
-Navigation stops at each end and does not wrap. Width shortcuts stop at the 25% and 100% limits. The preset shortcuts step the active window through the widths listed in Settings > Layout (50%, 75%, and 100% by default) and wrap at the ends.
-These are the defaults. The Controls settings let you turn off, record, or reset each binding, including bindings that use Caps Lock as a modifier.
+Every shortcut can be changed or turned off in Settings > Controls.
 
-### Trackpad gestures
+**Gestures** are off by default; turn them on in Settings > General > Gestures. Three-finger swipes move between windows (left/right) and spaces (up/down). You can keep swiping with two fingers while a third holds a drag-and-drop. Set macOS's own navigation gestures to four fingers to avoid overlap.
 
-Gesture navigation is off on first launch. When enabled, Stagehand uses three-finger swipes.
+The **app bar** appears under the notch (or top center) when you navigate or hover there. It shows the active app and space; click an app or space number to jump to it. Each space can have its own accent color.
 
-- Swipe left or right for the next or previous window.
-- Swipe up or down for the next or previous space.
-- A horizontal drag follows your fingers and commits on release. A short drag settles back.
+## Limitations
 
-Keep macOS navigation gestures set to four fingers so they do not overlap with Stagehand. Three-finger dragging can still conflict. Stagehand reads system preferences as hints and never changes them. Finger landing and lifting edge cases still need testing on real hardware.
-
-## Known limitations
-
-- Stagehand briefly buffers typing during a window switch and sends it to the confirmed destination. macOS does not report whether a posted key event reached a specific window, so this is not a proven zero-loss input system. Failed or expired transfers withhold input and show a warning. Secure Input or a disabled event tap can bypass the protection.
-- Pause and Quit restore the window frames captured at Start. Crash recovery restores windows whose Accessibility window ID and original frame were saved before the exit. It cannot safely identify windows after their app relaunches or if macOS does not provide a window ID.
-- Stagehand parks off-ribbon windows just beyond the left or right display edge instead of minimizing them. Apps that clamp window positions may leave part of an edge visible. If Stagehand cannot confirm parking, it restores the windows and pauses. For an app that keeps more than 64 points of every window on screen, list it under Settings > Layout > Parked edge; its windows may then stay visible up to the width set there, behind the active window, instead of pausing Stagehand.
-- Stagehand manages only the native macOS Desktop where you press Start. It suspends input and layout work on other Desktops. If Desktop identity is temporarily unavailable, Stagehand keeps checking and resumes only after confirming the starting Desktop.
-- Desktop tracking uses a read-only private system API. Gesture support loads Apple's private `MultitouchSupport` framework. Either can break after a macOS update. This build is not intended for App Store distribution.
-- This version intentionally supports one built-in display. It ignores minimized and native-fullscreen windows. Multiple-display and native-fullscreen workflows are not supported.
-
-## Diagnostic logging
-
-Turn on **Diagnostic logging** in Setup to record starts, layout operations, focus checks, navigation and gesture frame transitions, suspensions, and the exact reason for every automatic pause. **Show Log in Finder** reveals `~/Library/Logs/Stagehand/stagehand.log`.
-
-The log uses one JSON object per line and retains the previous 24 hours; expired entries are removed about once an hour, including while logging is off. When the file reaches about 5 MB it is rotated to `stagehand.1.log`, and that file is removed once it has aged out. The files are created readable only by your user account. Entries identify apps by bundle identifier and process ID and windows by their Accessibility window ID. The log excludes app names, window titles, and keyboard input. Buffered input stays in memory and is never logged or written to disk.
+- One built-in display and the macOS Desktop where you pressed Start. Minimized and native full-screen windows are ignored.
+- Hidden windows are parked just past the screen edge. Apps that refuse to move off-screen can be listed under Settings > Layout > Parked edge.
+- Typing during a switch is buffered and replayed into the new window. macOS can't confirm delivery, so don't rely on Stagehand where a misdirected keystroke could do damage.
+- Uses private macOS APIs (Desktop tracking, `MultitouchSupport`) that may break after an update.
 
 ## Development
-
-Run the automated suite:
 
 ```sh
 swift test
 ```
 
-The tests cover workspace state and layout, gesture and shortcut decisions, synthetic input buffering and replay, Desktop identity, focus confirmation, parking, restoration, and final ribbon commits. They do not move your windows, read the trackpad, or type into apps. They cannot prove real app focus, Accessibility behavior, or native view appearance.
+Synthetic tests don't prove real focus or Accessibility behavior. Before trusting a change, run the [live acceptance checks](docs/ACCEPTANCE.md); for performance work see [docs/PERFORMANCE.md](docs/PERFORMANCE.md). Contributor rules are in [AGENTS.md](AGENTS.md).
 
-Render the native settings views without starting window management:
+Turn on **Diagnostic logging** in Setup to write `~/Library/Logs/Stagehand/stagehand.log` (JSON lines, last 24 hours, no app names, window titles, or typed input).
 
-```sh
-dist/Stagehand.app/Contents/MacOS/Stagehand --render-previews dist/previews
-```
-
-Complete [the live acceptance checklist](docs/ACCEPTANCE.md) before trusting Stagehand with everyday work. It covers restoration, real focus and typing, physical gestures, Desktop changes, parking, sizing, and overlays.
-
-For cleanup of runtime window or input code, follow the pre/post live check in [AGENTS.md](AGENTS.md). The automated suite does not replace that check.
-
-The executable also provides `--diagnose-focus`, `--diagnose-start`, `--diagnose-ribbon`, `--diagnose-permissions`, `--diagnose-parking`, `--diagnose-last-close`, and `--diagnose-discovery`. Run installed-app diagnostics through `open` so macOS uses the app's Accessibility grant. Stop or pause the normal Stagehand instance first.
-
-## Project structure
-
-- `Sources/StagehandCore` contains workspace state and layout calculations.
-- `Sources/StagehandPlatform` contains Accessibility control, shortcuts, gestures, and keyboard buffering.
-- `Sources/Stagehand` contains the AppKit lifecycle, SwiftUI settings, orchestration, and overlays.
-- `Tests` mirrors the three source targets.
-- `docs/ACCEPTANCE.md` contains the live test checklist.
-- `scripts/build-app.sh` builds and signs the local app bundle.
+| Path | Contents |
+| --- | --- |
+| `Sources/StagehandCore` | Workspace state and layout math |
+| `Sources/StagehandPlatform` | Accessibility, shortcuts, gestures, input buffering |
+| `Sources/Stagehand` | App lifecycle, settings UI, overlays |
+| `scripts/` | Build, acceptance, benchmark, and log-analysis tools |
 
 ## License
 
-Stagehand is licensed under the [MIT License](LICENSE).
-
-The interface icons are [Phosphor Icons](https://phosphoricons.com), used under the MIT License; see [Sources/Stagehand/Resources/Phosphor/LICENSE](Sources/Stagehand/Resources/Phosphor/LICENSE).
+[MIT](LICENSE). Interface icons are [Phosphor Icons](https://phosphoricons.com) (MIT, see [license](Sources/Stagehand/Resources/Phosphor/LICENSE)).
