@@ -55,6 +55,13 @@ final class PointerDragTracker {
         }
     }
 
+    /// Called with true once a press is found to carry a drag-and-drop, and with false
+    /// when that press ends. Gesture recognition takes fewer fingers beside such a press.
+    var onCarriesDropChanged: ((Bool) -> Void)?
+    private var reportedCarriesDrop = false {
+        didSet { if reportedCarriesDrop != oldValue { onCarriesDropChanged?(reportedCarriesDrop) } }
+    }
+
     /// Called with the summary of each press that carried a drag-and-drop, as it ends.
     var onDragAndDropEnded: (([String: String]) -> Void)?
 
@@ -94,6 +101,7 @@ final class PointerDragTracker {
         if pressCarriesDrop { return true }
         guard let pressBaseline else { return false }
         pressCarriesDrop = dragChangeCount() != pressBaseline
+        if pressCarriesDrop { reportedCarriesDrop = true }
         return pressCarriesDrop
     }
 
@@ -142,6 +150,7 @@ final class PointerDragTracker {
 
     func pressBegan(inStagehand: Bool) {
         pressCarriesDrop = false
+        reportedCarriesDrop = false
         pressBaseline = inStagehand ? nil : dragChangeCount()
         let time = now()
         let synthesisAtStart = InputController.syntheticPointerStats(reset: true)
@@ -175,6 +184,7 @@ final class PointerDragTracker {
         }
         press = nil
         pressCarriesDrop = false
+        reportedCarriesDrop = false
         pressBaseline = nil
     }
 }

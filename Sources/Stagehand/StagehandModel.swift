@@ -392,6 +392,13 @@ final class StagehandModel: ObservableObject {
             guard let self, self.isRunning, !self.isSuspended else { return false }
             return self.desktopScope.refresh() == .home
         }
+        pointer.onCarriesDropChanged = { InputController.setHeldClickCarriesDrop($0) }
+        // Answered every time: a report made before the trackpad saw the button go down
+        // was ignored there, and the tracker reports each press only once.
+        input.onDropCheckRequested = { [weak self] in
+            guard let self, self.pointer.isDragAndDrop else { return }
+            InputController.setHeldClickCarriesDrop(true)
+        }
         pointer.onDragAndDropEnded = { [weak self] details in
             self?.diagnostics.record("drag_and_drop_ended", details: details)
         }

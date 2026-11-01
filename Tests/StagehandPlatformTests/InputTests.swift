@@ -985,6 +985,95 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     #expect(state.heldClickContactIDs.isEmpty)
 }
 
+/// Carrying a file: held finger plus three swiping were four contacts, which macOS took
+/// for its own four-finger gesture and stopped moving the pointer. Beside a held click
+/// that carries a drop, two fingers swipe; three do nothing.
+@Test func aHeldClickCarryingADropSwipesWithTwoFingers() {
+    var state = enabledCallbackState()
+    var frame: Int32 = 1
+    func feed(_ contacts: [GestureContact], at time: Double, buttonDown: Bool = true) {
+        _ = state.process(contacts: contacts, touches: touches(contacts, frame: frame), rawCount: Int32(contacts.count),
+                          flags: [], timestamp: time, now: time, buttonDown: buttonDown)
+        frame += 1
+    }
+    let held = GestureContact(id: 9, x: 0.5, y: 0.1)
+    func swipe(_ count: Int, from start: Double) -> [GestureNavigationEvent] {
+        feed([held] + contacts(count: count), at: start)
+        feed([held] + contacts(count: count, dx: -0.05), at: start + 0.05)
+        feed([held] + contacts(count: count, dx: -0.12), at: start + 0.1)
+        feed([held], at: start + 0.15)
+        return state.pendingEvents.drain()
+    }
+    func switched(_ events: [GestureNavigationEvent]) -> Bool {
+        events.contains { if case .ended(_, _, .focusNext?, .plain) = $0 { true } else { false } }
+    }
+    feed([held], at: 1, buttonDown: false)
+    feed([held], at: 1.01)
+    state.setHeldClickCarriesDrop(true)
+
+    #expect(switched(swipe(2, from: 1.1)))
+    #expect(!switched(swipe(3, from: 2)))
+    #expect(switched(swipe(2, from: 3)))
+    // The drop: the button comes up and the answer is forgotten.
+    feed([held], at: 4, buttonDown: false)
+    #expect(!state.heldClickCarriesDrop)
+    feed([], at: 4.1, buttonDown: false)
+    // A later press is not a drop until the main thread says so again: three fingers.
+    feed([held], at: 5, buttonDown: false)
+    feed([held], at: 5.01)
+    #expect(!switched(swipe(2, from: 5.1)))
+    #expect(switched(swipe(3, from: 6)))
+}
+
+/// Two fingers beside a carried drop are Stagehand's from landing, scroll included.
+@Test func twoFingersBesideACarriedDropAreOwned() {
+    var state = enabledCallbackState()
+    let held = GestureContact(id: 9, x: 0.5, y: 0.1)
+    let two = Array(contacts().prefix(2))
+    _ = state.process(contacts: [held], touches: touches([held], frame: 1), rawCount: 1,
+                      flags: [], timestamp: 1, now: 1, buttonDown: false)
+    _ = state.process(contacts: [held], touches: touches([held], frame: 2), rawCount: 1,
+                      flags: [], timestamp: 1.01, now: 1.01, buttonDown: true)
+    state.setHeldClickCarriesDrop(true)
+    _ = state.process(contacts: [held] + two, touches: touches([held] + two, frame: 3), rawCount: 3,
+                      flags: [], timestamp: 1.02, now: 1.02, buttonDown: true)
+    #expect(suppressed(&state.ownership, .liveBegan, now: 1.021))
+}
+
+/// Fingers landing beside a held click ask the main thread once whether it carries a
+/// drop. Its answer may arrive after they land, and still applies to that swipe.
+@Test func fingersBesideAHeldClickAskOnceAndALateAnswerStillCounts() {
+    var state = enabledCallbackState()
+    var asked = 0
+    state.requestDropCheck = { }
+    var frame: Int32 = 1
+    func feed(_ contacts: [GestureContact], at time: Double, buttonDown: Bool = true) {
+        _ = state.process(contacts: contacts, touches: touches(contacts, frame: frame), rawCount: Int32(contacts.count),
+                          flags: [], timestamp: time, now: time, buttonDown: buttonDown)
+        if state.takeDropCheck() != nil { asked += 1 }
+        frame += 1
+    }
+    let held = GestureContact(id: 9, x: 0.5, y: 0.1)
+    let two = Array(contacts().prefix(2))
+    feed([held], at: 1, buttonDown: false)
+    feed([held], at: 1.01)
+    #expect(asked == 0)
+    feed([held] + two, at: 1.02)
+    feed([held] + two, at: 1.03)
+    #expect(asked == 1)
+    state.setHeldClickCarriesDrop(true)
+    feed([held] + two, at: 1.04)
+    feed([held] + two.map { GestureContact(id: $0.id, x: $0.x - 0.05, y: $0.y) }, at: 1.09)
+    feed([held] + two.map { GestureContact(id: $0.id, x: $0.x - 0.12, y: $0.y) }, at: 1.14)
+    feed([held], at: 1.19)
+    #expect(state.pendingEvents.drain().contains { if case .ended(_, _, .focusNext?, _) = $0 { true } else { false } })
+    #expect(asked == 1)
+    // An answer for a press that already ended is ignored.
+    feed([held], at: 2, buttonDown: false)
+    state.setHeldClickCarriesDrop(true)
+    #expect(!state.heldClickCarriesDrop)
+}
+
 /// A swipe that presses the pad partway keeps its fingers, and fingers that land while
 /// a mouse button is already held are not taken for a held click.
 @Test func onlyAFingerAlreadyTouchingBeforeThePressIsAHeldClick() {

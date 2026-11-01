@@ -88,6 +88,7 @@ public protocol InputControlling: AnyObject {
     var onAction: ((NavigationAction) -> Void)? { get set }
     var onGesture: ((GestureNavigationEvent) -> Void)? { get set }
     var onStatusChange: (() -> Void)? { get set }
+    var onDropCheckRequested: (() -> Void)? { get set }
     var gesturesEnabled: Bool { get set }
     var shortcutSwipesEnabled: Bool { get set }
     var reverseShortcutSwipeDirection: Bool { get set }

@@ -282,6 +282,7 @@ final class FakeInput: InputControlling {
     var onAction: ((NavigationAction) -> Void)?
     var onGesture: ((GestureNavigationEvent) -> Void)?
     var onStatusChange: (() -> Void)?
+    var onDropCheckRequested: (() -> Void)?
     var gesturesEnabled = false
     var shortcutSwipesEnabled = false
     var reverseShortcutSwipeDirection = true

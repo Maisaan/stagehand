@@ -7,6 +7,8 @@ public final class InputController {
     public var onAction: ((NavigationAction) -> Void)?
     public var onGesture: ((GestureNavigationEvent) -> Void)?
     public var onStatusChange: (() -> Void)?
+    /// Called when fingers land beside a held click. Answer with `setHeldClickCarriesDrop`.
+    public var onDropCheckRequested: (() -> Void)?
     /// Answers whether the keyboard tap is consuming navigation chords right now. While it
     /// is, the tap dispatches those actions itself and Carbon must not dispatch them again.
     public var navigationChordsHandledByTap: (() -> Bool)?
@@ -158,6 +160,12 @@ public final class InputController {
         gestures.takePendingGestureCompletion()
     }
 
+    /// Whether the held left button carries a drag-and-drop. Swipes beside a held click
+    /// that does take fewer fingers. Safe from any thread.
+    nonisolated public static func setHeldClickCarriesDrop(_ carries: Bool) {
+        GestureMonitor.setHeldClickCarriesDrop(carries)
+    }
+
     /// Dock gesture events withheld beside a held click since gestures last started.
     nonisolated public static func withheldDockControlEventCount() -> Int {
         GestureMonitor.withheldDockControlEventCount()
@@ -204,6 +212,7 @@ public final class InputController {
                 if let onGesture = self.onGesture { onGesture(event) }
                 else if case .ended(_, _, let action?, _) = event { self.onAction?(action) }
             }
+            gestures.onDropCheckRequested = { [weak self] in self?.onDropCheckRequested?() }
             if let issue = gestures.start(
                 fingerCount: Self.navigationGestureFingerCount,
                 unmodifiedEnabled: gesturesEnabled,

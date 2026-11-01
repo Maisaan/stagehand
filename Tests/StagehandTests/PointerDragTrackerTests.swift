@@ -19,6 +19,28 @@ import Testing
     #expect(!pointer.tracker.isDragAndDrop)
 }
 
+/// Gesture recognition hears once that a press carries a drop, and again when it ends.
+@MainActor
+@Test func aDragAndDropIsReportedToGesturesUntilThePressEnds() {
+    let pointer = FakePointer()
+    var reports: [Bool] = []
+    pointer.tracker.onCarriesDropChanged = { reports.append($0) }
+    pointer.buttonDown = true
+    pointer.tracker.pressBegan(inStagehand: false)
+    #expect(!pointer.tracker.isDragAndDrop)
+    pointer.dragChangeCount += 1
+    #expect(pointer.tracker.isDragAndDrop)
+    #expect(pointer.tracker.isDragAndDrop)
+    #expect(reports == [true])
+    pointer.tracker.pressEnded()
+    #expect(reports == [true, false])
+    // A title-bar drag reports nothing.
+    pointer.tracker.pressBegan(inStagehand: false)
+    #expect(!pointer.tracker.isDragAndDrop)
+    pointer.tracker.pressEnded()
+    #expect(reports == [true, false])
+}
+
 /// A press Stagehand did not see begin, or one that began in its own windows, is never
 /// a drag-and-drop, so a missed event cannot make a window drag look like one.
 @MainActor

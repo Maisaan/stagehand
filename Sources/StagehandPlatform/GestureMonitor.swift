@@ -235,6 +235,16 @@ struct GestureCallbackState {
     var heldClickContactIDs: Set<Int32> = []
     var buttonWasDown = false
     var previousContactIDs: Set<Int32> = []
+    /// The held click carries a drag-and-drop, as the main thread found from the drag
+    /// pasteboard. Swipes beside it then take `heldDropFingerCount` fingers, and the
+    /// two-finger scroll a carried item could otherwise use is Stagehand's. Cleared when
+    /// the button comes up.
+    var heldClickCarriesDrop = false
+    /// Fingers have landed beside a held click not yet known to carry a drop, and the
+    /// main thread has been asked once for this landing to check.
+    var dropCheckRequested = false
+    var dropCheckDue = false
+    var requestDropCheck: (@Sendable () -> Void)?
     /// Dock gesture events withheld beside a held click since gestures started.
     var withheldDockControlEvents = 0
     /// How far held-click fingers have moved since gestures started, in trackpad widths.
@@ -295,12 +305,14 @@ private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
     let flags = CGEventSource.flagsState(.combinedSessionState)
     let buttonDown = CGEventSource.buttonState(.combinedSessionState, button: .left)
     let now = ProcessInfo.processInfo.systemUptime
-    let (delivery, move) = gestureCallbackState.withLock { state in
+    let (delivery, move, dropCheck) = gestureCallbackState.withLock { state in
         (state.process(contacts: snapshot, touches: frameTouches, rawCount: count, flags: flags,
                        timestamp: timestamp, now: now, buttonDown: buttonDown),
-         state.takeHeldClickPointerMove(now: now, buttonDown: buttonDown))
+         state.takeHeldClickPointerMove(now: now, buttonDown: buttonDown),
+         state.takeDropCheck())
     }
     delivery?()
+    dropCheck?()
     if let move {
         let posted = postHeldClickDrag(move)
         gestureCallbackState.withLock { $0.syntheticStats.recordPost(posted) }
@@ -418,12 +430,24 @@ extension GestureCallbackState {
         }
         // After validation: a corrupt frame's contact IDs must not drop the held click.
         let snapshot = excludingHeldClick(from: touching, buttonDown: buttonDown)
+        if snapshot.isEmpty {
+            dropCheckRequested = false
+        } else if buttonDown, !heldClickContactIDs.isEmpty, !heldClickCarriesDrop, !dropCheckRequested {
+            // Only the main thread can read the drag pasteboard. Until it answers, these
+            // fingers count as an ordinary swipe; the recognizer has no origin yet with
+            // fewer fingers than that, so the answer can still change the count.
+            dropCheckRequested = true
+            dropCheckDue = true
+        }
         if ignoredUntilLift {
             if snapshot.isEmpty { ignoredUntilLift = false }
             ownership.observe(contactCount: snapshot.count, fingerCount: recognizer.fingerCount,
                               eligible: false, now: now)
             return nil
         }
+        let carriesDrop = buttonDown && heldClickCarriesDrop && !heldClickContactIDs.isEmpty
+        recognizer.useFingerCount(carriesDrop ? NavigationGestureRecognizer.heldDropFingerCount
+                                              : recognizer.configuredFingerCount)
         let modifiers = ShortcutBinding.carbonModifiers(for: flags)
         if !recognizer.hasContactSequence && snapshot.count >= recognizer.fingerCount {
             shortcutModifiers = shortcutEnabled
@@ -499,7 +523,9 @@ extension GestureCallbackState {
     ///
     /// The held click is still a finger on the trackpad to macOS: with three fingers
     /// swiping beside it, macOS sees four and starts its own four-finger swipe between
-    /// Spaces, which freezes the pointer and the carried item until it gives up. While a
+    /// Spaces, which freezes the pointer and the carried item until it gives up. A held
+    /// click known to carry a drop takes two swiping fingers instead; three still apply
+    /// beside a window drag, and before the main thread has answered. While a
     /// held click is left out and Stagehand owns the other fingers, the Dock's gesture
     /// events are withheld too. Four fingers with no held click stay macOS's swipe.
     /// Passing them instead ran the Space swipe, and passing the first as cancelled made
@@ -515,6 +541,20 @@ extension GestureCallbackState {
         withheldDockControlEvents &+= 1
         if traceGestures { NSLog("[DEBUG-gesture] dock gesture withheld beside a held click") }
         return true
+    }
+
+    /// The main thread's drag-pasteboard check this frame asked for, taken once.
+    mutating func takeDropCheck() -> (@Sendable () -> Void)? {
+        guard dropCheckDue else { return nil }
+        dropCheckDue = false
+        return requestDropCheck
+    }
+
+    /// Record the main thread's answer. Ignored while the button is up: an answer for a
+    /// press that already ended must not carry into the next one.
+    mutating func setHeldClickCarriesDrop(_ carries: Bool) {
+        guard !carries || buttonWasDown else { return }
+        heldClickCarriesDrop = carries
     }
 
     /// The pointer move Stagehand makes for macOS in this frame, in points (CG direction),
@@ -555,7 +595,7 @@ extension GestureCallbackState {
         let ids = Set(contacts.map(\.id))
         heldClickContactIDs.formIntersection(ids)
         if buttonDown, !buttonWasDown, !recognizer.hasContactSequence {
-            if contacts.count < recognizer.fingerCount {
+            if contacts.count < recognizer.configuredFingerCount {
                 heldClickContactIDs = ids.intersection(previousContactIDs)
             } else if traceGestures {
                 // The swipe fingers were down before the click: nothing is left out, and
@@ -566,7 +606,10 @@ extension GestureCallbackState {
         buttonWasDown = buttonDown
         previousContactIDs = ids
         heldClickFrameDelta = (0, 0)
-        if !buttonDown { pointerLockedBesideHeldClick = false }
+        if !buttonDown {
+            pointerLockedBesideHeldClick = false
+            heldClickCarriesDrop = false
+        }
         guard !heldClickContactIDs.isEmpty else {
             heldClickPositions.removeAll()
             pointerLockedBesideHeldClick = false
@@ -593,6 +636,9 @@ final class GestureMonitor {
     static let disablePreferenceKey = "StagehandDisableTrackpadGestures"
 
     var onGesture: ((GestureNavigationEvent) -> Void)?
+    /// Called on main when fingers land beside a held click: check whether it carries a
+    /// drag-and-drop and answer with `setHeldClickCarriesDrop`.
+    var onDropCheckRequested: (() -> Void)?
     /// Called on main after corrupt frames turned gestures off. `start()` keeps returning
     /// the message for the rest of the process.
     var onFailure: ((String) -> Void)?
@@ -656,6 +702,12 @@ final class GestureMonitor {
             state.shortcutBindings = shortcutBindings
             state.reverseShortcutDirection = reverseShortcutDirection
             state.heldDragPointsPerPadWidth = heldDragPointsPerPadWidth
+            state.requestDropCheck = { [weak self] in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.isRunning, self.generation == activeGeneration else { return }
+                    self.onDropCheckRequested?()
+                }
+            }
             state.scheduleDelivery = { [weak self] in
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isRunning, self.generation == activeGeneration else { return }
@@ -725,6 +777,11 @@ final class GestureMonitor {
     /// whose main-queue delivery has not run yet.
     nonisolated static func hasPendingGestureCompletion() -> Bool {
         gestureCallbackState.withLock { $0.enabled && $0.pendingEvents.hasCompletion }
+    }
+
+    /// Whether the held left button carries a drag-and-drop. Safe from any thread.
+    nonisolated static func setHeldClickCarriesDrop(_ carries: Bool) {
+        gestureCallbackState.withLock { $0.setHeldClickCarriesDrop(carries) }
     }
 
     /// Dock gesture events withheld beside a held click since gestures last started.

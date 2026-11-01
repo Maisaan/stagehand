@@ -127,7 +127,11 @@ struct NavigationGestureRecognizer: Sendable {
     /// A slow drag commits at this displacement.
     static let commitDisplacement = 0.075
 
-    let fingerCount: Int
+    /// Fingers a swipe takes when no held click is carrying a drag-and-drop.
+    let configuredFingerCount: Int
+    /// Fingers this contact sequence takes: the configured count, or
+    /// `heldDropFingerCount` beside a held click carrying a drag-and-drop.
+    private(set) var fingerCount: Int
     private var origin: [GestureContact] = []
     private var lastContacts: [GestureContact] = []
     private var lastTime: TimeInterval = 0
@@ -139,7 +143,23 @@ struct NavigationGestureRecognizer: Sendable {
     var isDragging: Bool { axis != nil && !finished }
 
     init(fingerCount: Int = 4) {
-        self.fingerCount = fingerCount == 3 ? 3 : 4
+        configuredFingerCount = fingerCount == 3 ? 3 : 4
+        self.fingerCount = configuredFingerCount
+    }
+
+    /// Fingers swiping beside a held click that carries a drag-and-drop. With the held
+    /// finger, a three-finger swipe made four contacts, which macOS took for its own
+    /// four-finger gesture and stopped moving the pointer until the drop (2026-10-26).
+    /// Two beside the held finger make three, and all of the three-finger gestures in
+    /// macOS must already be off for Stagehand's own swipe.
+    static let heldDropFingerCount = 2
+
+    /// Use `count` fingers for this sequence. Takes effect only before a swipe has an
+    /// origin and while it is not cancelled; a swipe under way keeps its count until lift.
+    mutating func useFingerCount(_ count: Int) {
+        guard count != fingerCount, !hasContactSequence, !finished else { return }
+        self = Self(fingerCount: configuredFingerCount)
+        fingerCount = count
     }
 
     mutating func cancelUntilLift() {
@@ -150,7 +170,7 @@ struct NavigationGestureRecognizer: Sendable {
         guard timestamp.isFinite, timestamp >= lastTime else { return cancel(reason: "timestamp") }
         if contacts.isEmpty {
             let event = finish(timestamp: timestamp)
-            self = Self(fingerCount: fingerCount)
+            self = Self(fingerCount: configuredFingerCount)
             return event
         }
         let previousTimestamp = lastTime
