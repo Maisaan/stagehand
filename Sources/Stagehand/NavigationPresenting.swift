@@ -16,7 +16,8 @@ protocol NavigationPresenting: AnyObject {
     var pointerCarriesDrop: (() -> Bool)? { get set }
 
     func setBorderColor(_ color: NSColor)
-    func updateBorder(frame: CGRect, visible: Bool, cornerRadius: CGFloat?,
+    /// `sheet` is an attached sheet whose silhouette joins the window's outline.
+    func updateBorder(frame: CGRect, sheet: CGRect?, visible: Bool, cornerRadius: CGFloat?,
                       focusChanged: Bool, raiseBorder: Bool)
     func showNavigation(state: WorkspaceState, windows: [WindowRecord])
     func updateNavigation(state: WorkspaceState, windows: [WindowRecord])
@@ -31,7 +32,8 @@ protocol NavigationPresenting: AnyObject {
 
 extension NavigationPresenting {
     func updateBorder(frame: CGRect, visible: Bool) {
-        updateBorder(frame: frame, visible: visible, cornerRadius: nil, focusChanged: false, raiseBorder: false)
+        updateBorder(frame: frame, sheet: nil, visible: visible, cornerRadius: nil,
+                     focusChanged: false, raiseBorder: false)
     }
 }
 

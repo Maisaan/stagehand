@@ -169,8 +169,8 @@ final class FakeWindowSystem: WindowManaging {
     }
     /// Attached sheets by owner, placed relative to the owner's origin.
     var sheets: [String: CGRect] = [:]
-    func frameIncludingSheet(windowID: String, frame: CGRect) -> CGRect {
-        sheets[windowID].map { frame.union($0.offsetBy(dx: frame.minX, dy: frame.minY)) } ?? frame
+    func sheetFrame(windowID: String, over frame: CGRect) -> CGRect? {
+        sheets[windowID]?.offsetBy(dx: frame.minX, dy: frame.minY)
     }
     func windowNumber(for windowID: String) -> CGWindowID? { nil }
     func isParked(windowID: String) -> Bool { windows[windowID]?.restoreFrame != nil }
@@ -317,15 +317,17 @@ final class FakeOverlays: NavigationPresenting {
     private(set) var shortcutHintToggles = 0
     private(set) var warnings: [String] = []
     private(set) var borderFrame: CGRect?
+    private(set) var borderSheet: CGRect?
     var suspensions = 0
     /// Each time the border appeared (true) or disappeared (false).
     var borderVisibility: [Bool] = []
 
     func setBorderColor(_ color: NSColor) {}
-    func updateBorder(frame: CGRect, visible: Bool, cornerRadius: CGFloat?,
+    func updateBorder(frame: CGRect, sheet: CGRect?, visible: Bool, cornerRadius: CGFloat?,
                       focusChanged: Bool, raiseBorder: Bool) {
         if visible != (borderFrame != nil) { borderVisibility.append(visible) }
         borderFrame = visible ? frame : nil
+        borderSheet = visible ? sheet : nil
     }
     func showNavigation(state: WorkspaceState, windows: [WindowRecord]) {}
     func updateNavigation(state: WorkspaceState, windows: [WindowRecord]) {}

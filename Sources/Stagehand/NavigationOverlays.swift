@@ -149,6 +149,7 @@ final class NavigationOverlays {
 
     func updateBorder(
         frame: CGRect,
+        sheet: CGRect? = nil,
         visible: Bool,
         cornerRadius: CGFloat? = nil,
         focusChanged: Bool = false,
@@ -162,14 +163,22 @@ final class NavigationOverlays {
         let borderView = border.contentView as? BorderView
         let radiusChanged = borderView?.cornerRadius != cornerRadius
         borderView?.cornerRadius = cornerRadius
-        let converted = CGRect(x: frame.minX, y: primary.frame.maxY - frame.maxY,
-                               width: frame.width, height: frame.height)
+        let outline = sheet.map { frame.union($0) } ?? frame
+        let converted = CGRect(x: outline.minX, y: primary.frame.maxY - outline.maxY,
+                               width: outline.width, height: outline.height)
+        // Both rectangles in the view's bottom-left coordinates.
+        func local(_ rect: CGRect) -> CGRect {
+            CGRect(x: rect.minX - outline.minX, y: outline.maxY - rect.maxY,
+                   width: rect.width, height: rect.height)
+        }
         // Frame/path changes remain synchronous, including throughout a native live resize.
         // Draw inward so the complete stroke remains visible at display edges.
         // Both are WindowServer round trips, which queue behind a slow window-list call.
         MainThreadActivity.during("borderWindow setFrame") {
             border.setFrame(converted, display: radiusChanged || border.frame.size != converted.size)
         }
+        // After the resize, so the sheet mask covers the panel's new bounds.
+        borderView?.silhouette = sheet.map { (window: local(frame), sheet: local($0)) }
         if !border.isVisible || focusChanged || raiseBorder {
             // Relative ordering does not reliably raise a panel above another app's
             // window. Front ordering is confined to the border's window level.
@@ -600,7 +609,7 @@ final class BorderView: NSView {
     var strokeColor = defaultColor {
         didSet {
             guard oldValue != strokeColor else { return }
-            layer?.borderColor = strokeColor.cgColor
+            applyStrokeColor()
         }
     }
 
@@ -611,15 +620,41 @@ final class BorderView: NSView {
         }
     }
 
+    /// A window and its attached sheet, in view coordinates. When set, the sheet gets its
+    /// own outline and the window's dimmed outline stops at the sheet's edge, instead of
+    /// one rectangle that crosses the empty space beside a sheet hanging past its window.
+    var silhouette: (window: CGRect, sheet: CGRect)? {
+        didSet {
+            guard oldValue?.window != silhouette?.window || oldValue?.sheet != silhouette?.sheet else { return }
+            updateLayerStyle()
+        }
+    }
+
+    /// The window's outline beside a sheet, drawn fainter so the sheet reads as focused.
+    static let sheetOwnerOpacity: CGFloat = 0.45
+    private let ownerOutline = CAShapeLayer()
+    private let ownerMask = CAShapeLayer()
+    private let sheetOutline = CAShapeLayer()
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        wantsLayer = true
-        updateLayerStyle()
+        configureLayers()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
+        configureLayers()
+    }
+
+    private func configureLayers() {
         wantsLayer = true
+        for outline in [ownerOutline, sheetOutline] {
+            outline.fillColor = nil
+            outline.lineWidth = 2
+            layer?.addSublayer(outline)
+        }
+        ownerMask.fillRule = .evenOdd
+        ownerOutline.mask = ownerMask
         updateLayerStyle()
     }
 
@@ -628,13 +663,53 @@ final class BorderView: NSView {
         updateLayerStyle()
     }
 
+    private func applyStrokeColor() {
+        layer?.borderColor = strokeColor.cgColor
+        sheetOutline.strokeColor = strokeColor.cgColor
+        ownerOutline.strokeColor = strokeColor
+            .withAlphaComponent(strokeColor.alphaComponent * Self.sheetOwnerOpacity).cgColor
+    }
+
     private func updateLayerStyle() {
         let nativeRadius = cornerRadius.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
             ?? Self.fallbackCornerRadius
-        layer?.borderColor = strokeColor.cgColor
-        layer?.borderWidth = 2
         layer?.cornerCurve = .continuous
         layer?.cornerRadius = min(nativeRadius, max(0, min(bounds.width, bounds.height) / 2))
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        applyStrokeColor()
+        guard let silhouette else {
+            layer?.borderWidth = 2
+            ownerOutline.path = nil
+            sheetOutline.path = nil
+            return
+        }
+        layer?.borderWidth = 0
+        let paths = Self.sheetOutlines(window: silhouette.window, sheet: silhouette.sheet,
+                                       bounds: bounds, radius: nativeRadius)
+        ownerOutline.frame = bounds
+        ownerMask.frame = bounds
+        sheetOutline.frame = bounds
+        ownerOutline.path = paths.owner
+        ownerMask.path = paths.ownerMask
+        sheetOutline.path = paths.sheet
+    }
+
+    /// Stroke centerlines inset by half the 2-point line so each stroke lies inside its
+    /// window, as the layer border does. `ownerMask` keeps everything outside the sheet,
+    /// so the window's outline never crosses it.
+    static func sheetOutlines(window: CGRect, sheet: CGRect, bounds: CGRect,
+                              radius: CGFloat) -> (owner: CGPath, ownerMask: CGPath, sheet: CGPath) {
+        func rounded(_ rect: CGRect, inset: CGFloat) -> CGPath {
+            let rect = rect.insetBy(dx: inset, dy: inset)
+            let corner = min(max(0, radius - inset), max(0, min(rect.width, rect.height) / 2))
+            return CGPath(roundedRect: rect, cornerWidth: corner, cornerHeight: corner, transform: nil)
+        }
+        let mask = CGMutablePath()
+        mask.addRect(bounds)
+        mask.addPath(rounded(sheet, inset: 0))
+        return (rounded(window, inset: 1), mask, rounded(sheet, inset: 1))
     }
 }
 

@@ -1159,10 +1159,10 @@ public final class WindowSystem {
         return tracked.logicalFrame ?? readFrame(tracked.element)
     }
 
-    /// `frame` grown to cover the window's focused sheet. A sheet can be taller or
-    /// wider than its window, such as Xcode's sign-in sheet over its short Settings window.
-    public func frameIncludingSheet(windowID: String, frame: CGRect) -> CGRect {
-        windows[windowID]?.sheet.map { frame.union($0.frame(over: frame)) } ?? frame
+    /// Where the window's focused sheet sits when the window is at `frame`. A sheet can be
+    /// taller or wider than its window, such as Xcode's sign-in sheet over its short Settings window.
+    public func sheetFrame(windowID: String, over frame: CGRect) -> CGRect? {
+        windows[windowID]?.sheet?.frame(over: frame)
     }
 
     /// Returns the WindowServer identity captured from Accessibility discovery.

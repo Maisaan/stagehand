@@ -763,10 +763,9 @@ struct ModelScenarioTests {
         harness.model.start()
         await harness.settle()
 
-        // The sheet starts 28 points below the window's top and is 2,000 tall.
         let border = try #require(harness.overlays.borderFrame)
-        #expect(border.height == 2_028)
-        #expect(border.width == harness.windows.frame(windowID: "a")?.width)
+        #expect(harness.overlays.borderSheet
+            == CGRect(x: border.minX + 40, y: border.minY + 28, width: 200, height: 2_000))
     }
 
     /// Unlocking after a long lock rechecks at once and then every 50 ms for a

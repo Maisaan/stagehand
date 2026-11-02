@@ -203,3 +203,20 @@ import StagehandCore
     overlays.showWarning("Stagehand paused")
     #expect(hud.ignoresMouseEvents)
 }
+
+/// A sheet hanging below a short window gets its own outline, and the window's
+/// outline is masked off wherever the sheet covers it.
+@MainActor
+@Test func borderOutlinesKeepTheWindowsStrokeOffItsSheet() {
+    let window = CGRect(x: 0, y: 600, width: 1_000, height: 400)
+    let sheet = CGRect(x: 200, y: 0, width: 600, height: 960)
+    let paths = BorderView.sheetOutlines(window: window, sheet: sheet,
+                                         bounds: CGRect(x: 0, y: 0, width: 1_000, height: 1_000), radius: 16)
+    #expect(paths.owner.boundingBoxOfPath == CGRect(x: 1, y: 601, width: 998, height: 398))
+    #expect(paths.sheet.boundingBoxOfPath == CGRect(x: 201, y: 1, width: 598, height: 958))
+    // The window's bottom edge, beside and under the sheet.
+    #expect(paths.ownerMask.contains(CGPoint(x: 100, y: 601), using: .evenOdd))
+    #expect(!paths.ownerMask.contains(CGPoint(x: 500, y: 601), using: .evenOdd))
+    // The window's top edge, which the sheet does not reach.
+    #expect(paths.ownerMask.contains(CGPoint(x: 500, y: 999), using: .evenOdd))
+}
