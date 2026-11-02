@@ -19,7 +19,8 @@ func windowAvailabilityChange(for notification: String) -> WindowAvailabilityCha
 /// replacing its observer or repeatedly registering subscriptions that succeeded.
 struct ApplicationObservation {
     static let notifications = [kAXWindowCreatedNotification, kAXFocusedWindowChangedNotification,
-                                kAXApplicationHiddenNotification, kAXApplicationShownNotification]
+                                kAXApplicationHiddenNotification, kAXApplicationShownNotification,
+                                kAXSheetCreatedNotification]
     private(set) var pending = ApplicationObservation.notifications
     private(set) var attempts = 0
 

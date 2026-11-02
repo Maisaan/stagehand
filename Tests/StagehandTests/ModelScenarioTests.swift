@@ -766,6 +766,14 @@ struct ModelScenarioTests {
         let border = try #require(harness.overlays.borderFrame)
         #expect(harness.overlays.borderSheet
             == CGRect(x: border.minX + 40, y: border.minY + 28, width: 200, height: 2_000))
+
+        // Closing the sheet redraws at once from the last frame, without asking the app.
+        harness.windows.sheets["a"] = nil
+        let reads = harness.windows.frameReads
+        harness.windows.onSheetChange?("a")
+        #expect(harness.overlays.borderSheet == nil)
+        #expect(harness.overlays.borderFrame == border)
+        #expect(harness.windows.frameReads == reads)
     }
 
     /// Unlocking after a long lock rechecks at once and then every 50 ms for a

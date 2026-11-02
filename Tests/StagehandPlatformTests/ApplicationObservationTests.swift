@@ -18,7 +18,7 @@ import Testing
         return .success
     })
     #expect(received.contains(kAXWindowCreatedNotification))
-    #expect(received.count == 4)
+    #expect(received.count == ApplicationObservation.notifications.count)
     #expect(observation.pending.isEmpty)
 }
 
@@ -47,7 +47,7 @@ import Testing
         _ = observation.register { _ in calls += 1; return .cannotComplete }
     }
     #expect(observation.attempts == 20)
-    #expect(calls == 80)
+    #expect(calls == 20 * ApplicationObservation.notifications.count)
     var complete = ApplicationObservation()
     _ = complete.register { _ in .success }
     #expect(!complete.register { _ in Issue.record("Completed subscriptions were retried"); return .success })
@@ -63,6 +63,6 @@ import Testing
         received.append(name)
         return .success
     })
-    #expect(received.count == 4)
+    #expect(received.count == ApplicationObservation.notifications.count)
     #expect(observation.pending.isEmpty)
 }

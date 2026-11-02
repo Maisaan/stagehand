@@ -7,6 +7,8 @@ final class FocusBorderController {
     private let overlays: any NavigationPresenting
     private let windowNumber: (String) -> CGWindowID?
     private(set) var windowID: String?
+    /// The window frame the border was last drawn for, without its sheet.
+    private(set) var frame: CGRect?
     private(set) var cornerRadius: CGFloat?
     private var cachedWindowNumber: CGWindowID?
     private var cornerRadiusResolved = false
@@ -23,6 +25,7 @@ final class FocusBorderController {
     func show(windowID: String, frame: CGRect, sheet: CGRect? = nil, color: NSColor,
               refreshShape: Bool = true, raise: Bool = false) {
         overlays.setBorderColor(color)
+        self.frame = frame
         let changed = self.windowID != windowID
         let number = windowNumber(windowID)
         let identityChanged = changed || cachedWindowNumber != number
@@ -57,6 +60,7 @@ final class FocusBorderController {
     /// Forgets the cached window without changing what is on screen.
     func reset() {
         windowID = nil
+        frame = nil
         cachedWindowNumber = nil
         cornerRadius = nil
         cornerRadiusResolved = false

@@ -440,6 +440,13 @@ final class StagehandModel: ObservableObject {
             guard let self else { return false }
             return !self.changes.isProcessing && !self.ribbonMotion.isRunning && self.gestureBase == nil
         }
+        windowSystem.onSheetChange = { [weak self] id in
+            // Redraw from the last frame: reading it now would wait on the app mid-animation.
+            guard let self, self.isRunning, !self.isSuspended,
+                  self.focusBorder.windowID == id, self.state.focusedWindowID == id,
+                  let frame = self.focusBorder.frame else { return }
+            self.updateFocusBorder(windowID: id, frame: frame, refreshShape: false)
+        }
         windowSystem.onFrameChange = { [weak self] id, frame in
             guard let self, self.windowSystem.wantsFrameChange?() == true,
                   self.focusBorder.windowID == id, self.state.focusedWindowID == id else { return }

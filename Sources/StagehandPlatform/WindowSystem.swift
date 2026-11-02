@@ -114,6 +114,7 @@ public final class WindowSystem {
     public var onChange: (() -> Void)?
     public var onWindowCreated: (() -> Void)?
     public var onFrameChange: ((String, CGRect) -> Void)?
+    public var onSheetChange: ((String) -> Void)?
     public var onFocusedWindowChange: ((String) -> Void)?
     /// A tracked window's title changed. No rescan is scheduled for it.
     public var onTitleChange: ((String, String) -> Void)?
@@ -150,8 +151,8 @@ public final class WindowSystem {
         /// The last parking request that verified this window at the side, and with what.
         /// Cleared by its move, resize, or minimize notifications.
         var parkCheck: ParkCheck?
-        /// The attached sheet the last focus read found in front of this window.
-        var sheet: SheetPlacement?
+        /// The attached sheet in front of this window, observed until it is destroyed.
+        var sheet: AttachedSheet?
     }
 
     struct ParkCheck: Equatable {
@@ -660,7 +661,6 @@ public final class WindowSystem {
         for id in Array(windows.keys) {
             windows[id]?.isAdmitted = false
             windows[id]?.observationComplete = false
-            windows[id]?.sheet = nil
         }
         ownedWindows.removeAll()
         let center = NSWorkspace.shared.notificationCenter
@@ -1162,7 +1162,7 @@ public final class WindowSystem {
     /// Where the window's focused sheet sits when the window is at `frame`. A sheet can be
     /// taller or wider than its window, such as Xcode's sign-in sheet over its short Settings window.
     public func sheetFrame(windowID: String, over frame: CGRect) -> CGRect? {
-        windows[windowID]?.sheet?.frame(over: frame)
+        windows[windowID]?.sheet?.placement?.frame(over: frame)
     }
 
     /// Returns the WindowServer identity captured from Accessibility discovery.
@@ -1589,7 +1589,7 @@ public final class WindowSystem {
         case none
         case own
         /// `sheet` is set when the focused element was an attached sheet of the window.
-        case external(String?, sheet: SheetPlacement?)
+        case external(String?, sheet: SheetRead?)
     }
 
     private func resolveFocus(_ read: FocusRead) -> String? {
@@ -1597,12 +1597,14 @@ public final class WindowSystem {
         case .none: return nil
         case .own: return nativeWindows.focusedWindowID
         case .external(let id, let sheet):
-            // A read that lands on the window itself means its sheet closed.
             if let id {
-                if focusDiagnosticsEnabled, sheet != nil || windows[id]?.sheet != nil {
-                    logger.notice("Focus sheet t=\(ProcessInfo.processInfo.systemUptime, privacy: .public) window=\(id, privacy: .public) sheet=\(sheet.map { "\($0.frame(over: .zero).size)" } ?? "none", privacy: .public)")
+                if let sheet {
+                    attachSheet(sheet, to: id, source: "focus")
+                } else if windows[id]?.sheet != nil {
+                    // Focus on the window itself: its sheet is gone even if the app
+                    // posted no destroyed notification for it.
+                    detachSheet(from: id, reason: "focus")
                 }
-                windows[id]?.sheet = sheet
             }
             return id
         }
@@ -1644,11 +1646,8 @@ public final class WindowSystem {
         guard let focusedWindow = elementAttribute(focusedApp, kAXFocusedWindowAttribute) else { return .none }
         let isSheet = attribute(focusedWindow, kAXRoleAttribute) as? String == kAXSheetRole
         let id = trackedWindowID(matching: focusedWindow, isSheet: isSheet, in: snapshot)
-        guard isSheet, let id, let owner = snapshot.windows.first(where: { $0.id == id })?.element,
-              let sheetFrame = readFrame(focusedWindow), let ownerFrame = readFrame(owner) else {
-            return .external(id, sheet: nil)
-        }
-        return .external(id, sheet: SheetPlacement(sheet: sheetFrame, owner: ownerFrame))
+        guard isSheet, let id else { return .external(id, sheet: nil) }
+        return .external(id, sheet: readSheet(focusedWindow, ownerID: id, in: snapshot))
     }
 
     /// Reports focus changes macOS made, such as a click or Command-Tab. The newly
@@ -1996,6 +1995,18 @@ public final class WindowSystem {
                         _ = AXUIElementGetPid(changedWindow, &pid)
                         logger.notice("Discovery t=\(ProcessInfo.processInfo.systemUptime, privacy: .public) AX=\(name, privacy: .public) pid=\(pid, privacy: .public)")
                     }
+                    if name == kAXSheetCreatedNotification {
+                        owner.sheetCreated(changedWindow)
+                        return
+                    }
+                    if let id = owner.windowID(owningSheet: changedWindow) {
+                        if name == kAXUIElementDestroyedNotification {
+                            owner.detachSheet(from: id, reason: "destroyed")
+                        } else {
+                            owner.refreshSheet(of: id)
+                        }
+                        return
+                    }
                     if name == kAXMovedNotification || name == kAXResizedNotification
                         || name == kAXWindowMiniaturizedNotification || name == kAXWindowDeminiaturizedNotification {
                         owner.invalidateParkCheck(for: changedWindow)
@@ -2234,12 +2245,18 @@ public final class WindowSystem {
             let removal = ObserverRemoval(
                 observer: observer, appElement: AXUIElementCreateApplication(pid),
                 applicationNotifications: registration?.registered ?? [],
-                windowElements: windows.values.filter { $0.record.pid == pid }.map(\.element)
+                windowElements: windows.values.filter { $0.record.pid == pid }.map(\.element),
+                sheetElements: windows.values.compactMap { $0.record.pid == pid ? $0.sheet?.element : nil }
             )
             (queue ?? Self.scanQueue).async { removal.perform() }
         }
         for id in Array(windows.keys) where windows[id]?.record.pid == pid {
             windows[id]?.observationComplete = false
+            // Its subscriptions went with the observer; a new one finds the sheet again.
+            if windows[id]?.sheet != nil {
+                windows[id]?.sheet = nil
+                onSheetChange?(id)
+            }
         }
     }
 
@@ -2249,6 +2266,7 @@ public final class WindowSystem {
         let appElement: AXUIElement
         let applicationNotifications: [String]
         let windowElements: [AXUIElement]
+        let sheetElements: [AXUIElement]
 
         func perform() {
             for name in applicationNotifications {
@@ -2256,6 +2274,11 @@ public final class WindowSystem {
             }
             for element in windowElements {
                 for name in WindowSystem.windowNotifications {
+                    AXObserverRemoveNotification(observer, element, name as CFString)
+                }
+            }
+            for element in sheetElements {
+                for name in WindowSystem.sheetNotifications {
                     AXObserverRemoveNotification(observer, element, name as CFString)
                 }
             }
@@ -2644,6 +2667,154 @@ public final class WindowSystem {
             _ = writePosition(child.element, position: destination)
         }
         return success
+    }
+
+    /// A sheet is observed for its own end and size. Its moves follow its window, which
+    /// the placement already accounts for, so they would only repeat reads during motion.
+    nonisolated static let sheetNotifications = [kAXUIElementDestroyedNotification, kAXResizedNotification]
+
+    /// An attached sheet and where it sits; `placement` is nil while it has no size yet.
+    struct AttachedSheet {
+        let element: AXUIElement
+        var placement: SheetPlacement?
+        var readInFlight = false
+        var readPending = false
+    }
+
+    /// A sheet read off the main thread. A sheet that is still opening can report zero
+    /// height; it has no placement until its resize notification brings a real size.
+    struct SheetRead: @unchecked Sendable {
+        let element: AXUIElement
+        let placement: SheetPlacement?
+    }
+
+    nonisolated private func readSheet(_ element: AXUIElement, ownerID: String,
+                                       in snapshot: IdentitySnapshot) -> SheetRead {
+        guard let owner = snapshot.windows.first(where: { $0.id == ownerID })?.element,
+              let sheetFrame = readFrame(element), sheetFrame.width > 1, sheetFrame.height > 1,
+              let ownerFrame = readFrame(owner) else { return SheetRead(element: element, placement: nil) }
+        return SheetRead(element: element, placement: SheetPlacement(sheet: sheetFrame, owner: ownerFrame))
+    }
+
+    private func windowID(owningSheet element: AXUIElement) -> String? {
+        windows.first { $0.value.sheet.map { CFEqual($0.element, element) } == true }?.key
+    }
+
+    private func observationQueue(pid: pid_t) -> DispatchQueue {
+        if let queue = observationQueues[pid] { return queue }
+        let queue = DispatchQueue(label: "app.stagehand.observation.\(pid)", qos: .userInitiated)
+        observationQueues[pid] = queue
+        return queue
+    }
+
+    private func logSheet(_ id: String, _ event: String) {
+        guard focusDiagnosticsEnabled else { return }
+        logger.notice("Sheet t=\(ProcessInfo.processInfo.systemUptime, privacy: .public) window=\(id, privacy: .public) \(event, privacy: .public)")
+    }
+
+    /// The app announced a sheet. Its owner and frame are read on the app's queue,
+    /// since the app is busy animating the sheet in.
+    private func sheetCreated(_ element: AXUIElement) {
+        let pid = Self.pid(of: element)
+        let request = SheetLookup(system: self, element: element, snapshot: identitySnapshot())
+        observationQueue(pid: pid).async {
+            let ownerID = request.system.trackedWindowID(matching: request.element, isSheet: true, in: request.snapshot)
+            let read = ownerID.map { request.system.readSheet(request.element, ownerID: $0, in: request.snapshot) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let ownerID, let read else { return }
+                    request.system.attachSheet(read, to: ownerID, source: "created")
+                }
+            }
+        }
+    }
+
+    private struct SheetLookup: @unchecked Sendable {
+        let system: WindowSystem
+        let element: AXUIElement
+        let snapshot: IdentitySnapshot
+    }
+
+    /// Records a sheet from either discovery path. A new sheet is subscribed to its
+    /// destroyed and resized notifications, which end it and keep its size current.
+    private func attachSheet(_ read: SheetRead, to id: String, source: String) {
+        guard started, let tracked = windows[id], tracked.isAdmitted else { return }
+        if let current = tracked.sheet, CFEqual(current.element, read.element) {
+            guard let placement = read.placement, placement != current.placement else { return }
+            windows[id]?.sheet?.placement = placement
+            logSheet(id, "placed source=\(source) size=\(placement.size)")
+            onSheetChange?(id)
+            return
+        }
+        if tracked.sheet != nil { detachSheet(from: id, reason: "replaced") }
+        windows[id]?.sheet = AttachedSheet(element: read.element, placement: read.placement)
+        logSheet(id, "attached source=\(source) size=\(read.placement.map { "\($0.size)" } ?? "none")")
+        onSheetChange?(id)
+        guard let observer = observers[tracked.record.pid] else { return }
+        let request = SheetSubscription(system: self, observer: observer, element: read.element,
+                                        context: Unmanaged.passUnretained(self).toOpaque())
+        observationQueue(pid: tracked.record.pid).async {
+            let destroyed = AXObserverAddNotification(request.observer, request.element,
+                                                      kAXUIElementDestroyedNotification as CFString, request.context)
+            _ = AXObserverAddNotification(request.observer, request.element,
+                                          kAXResizedNotification as CFString, request.context)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    // A sheet that closed before its subscription no longer exists.
+                    guard destroyed == .invalidUIElement,
+                          let id = request.system.windowID(owningSheet: request.element) else { return }
+                    request.system.detachSheet(from: id, reason: "invalid")
+                }
+            }
+        }
+    }
+
+    private struct SheetSubscription: @unchecked Sendable {
+        let system: WindowSystem
+        let observer: AXObserver
+        let element: AXUIElement
+        let context: UnsafeMutableRawPointer
+    }
+
+    private func detachSheet(from id: String, reason: String) {
+        guard let sheet = windows[id]?.sheet, let pid = windows[id]?.record.pid else { return }
+        windows[id]?.sheet = nil
+        logSheet(id, "detached reason=\(reason)")
+        onSheetChange?(id)
+        guard let observer = observers[pid] else { return }
+        let request = ObservationRequest(observer: observer, element: sheet.element,
+                                         context: Unmanaged.passUnretained(self).toOpaque())
+        observationQueue(pid: pid).async {
+            for name in Self.sheetNotifications {
+                AXObserverRemoveNotification(request.observer, request.element, name as CFString)
+            }
+        }
+    }
+
+    /// Re-reads a resized sheet on the app's queue; resizes during a read coalesce into one more.
+    private func refreshSheet(of id: String) {
+        guard let tracked = windows[id], let sheet = tracked.sheet else { return }
+        guard !sheet.readInFlight else {
+            windows[id]?.sheet?.readPending = true
+            return
+        }
+        windows[id]?.sheet?.readInFlight = true
+        let request = SheetLookup(system: self, element: sheet.element, snapshot: identitySnapshot())
+        observationQueue(pid: tracked.record.pid).async {
+            let read = request.system.readSheet(request.element, ownerID: id, in: request.snapshot)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    let system = request.system
+                    guard let current = system.windows[id]?.sheet, CFEqual(current.element, request.element) else { return }
+                    system.windows[id]?.sheet?.readInFlight = false
+                    if current.readPending {
+                        system.windows[id]?.sheet?.readPending = false
+                        system.refreshSheet(of: id)
+                    }
+                    system.attachSheet(read, to: id, source: "resized")
+                }
+            }
+        }
     }
 
     /// Where an attached sheet sits on its window. AppKit centers a sheet below the

@@ -9,6 +9,8 @@ public protocol WindowManaging: AnyObject {
     /// A tracked app created a window; called instead of onChange for that notification.
     var onWindowCreated: (() -> Void)? { get set }
     var onFrameChange: ((String, CGRect) -> Void)? { get set }
+    /// A window's attached sheet lost focus or closed; its frame no longer includes the sheet.
+    var onSheetChange: ((String) -> Void)? { get set }
     var onFocusedWindowChange: ((String) -> Void)? { get set }
     /// Whether an observed focus change would be used now; unused AX reads are skipped.
     var wantsObservedFocus: (() -> Bool)? { get set }

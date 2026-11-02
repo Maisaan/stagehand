@@ -18,6 +18,7 @@ final class FakeWindowSystem: WindowManaging {
     var onChange: (() -> Void)?
     var onWindowCreated: (() -> Void)?
     var onFrameChange: ((String, CGRect) -> Void)?
+    var onSheetChange: ((String) -> Void)?
     var onFocusedWindowChange: ((String) -> Void)?
     var wantsObservedFocus: (() -> Bool)?
     var wantsFrameChange: (() -> Bool)?
