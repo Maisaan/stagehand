@@ -1598,7 +1598,12 @@ public final class WindowSystem {
         case .own: return nativeWindows.focusedWindowID
         case .external(let id, let sheet):
             // A read that lands on the window itself means its sheet closed.
-            if let id { windows[id]?.sheet = sheet }
+            if let id {
+                if focusDiagnosticsEnabled, sheet != nil || windows[id]?.sheet != nil {
+                    logger.notice("Focus sheet t=\(ProcessInfo.processInfo.systemUptime, privacy: .public) window=\(id, privacy: .public) sheet=\(sheet.map { "\($0.frame(over: .zero).size)" } ?? "none", privacy: .public)")
+                }
+                windows[id]?.sheet = sheet
+            }
             return id
         }
     }
