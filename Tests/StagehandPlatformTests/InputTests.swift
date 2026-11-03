@@ -239,18 +239,21 @@ private func suppressed(_ ownership: inout GestureInputOwnership, _ event: Suppr
 }
 
 @Test func inputOwnershipLeavesARapidFollowingFlickItsMomentum() {
-    for beginPhase: Int64 in [1, 128] {
+    // A flick's stream starts with began, after a may-begin when the fingers rest first.
+    for beginPhases: [Int64] in [[1], [128, 1]] {
         var ownership = GestureInputOwnership()
         ownership.observe(contactCount: 3, fingerCount: 3, eligible: true, now: 10)
         ownership.observe(contactCount: 0, fingerCount: 3, eligible: true, now: 10.1)
         #expect(suppressed(&ownership, .momentumBegan, now: 10.11))
         // Two fingers land and flick within the window after the owned lift.
         ownership.observe(contactCount: 2, fingerCount: 3, eligible: true, now: 10.12)
-        #expect(!suppressed(&ownership, .scroll(phase: beginPhase, momentumPhase: 0), now: 10.13))
+        for phase in beginPhases {
+            #expect(!suppressed(&ownership, .scroll(phase: phase, momentumPhase: 0), now: 10.13))
+        }
         #expect(!suppressed(&ownership, .live, now: 10.15))
         ownership.observe(contactCount: 0, fingerCount: 3, eligible: true, now: 10.2)
-        #expect(!suppressed(&ownership, .momentumBegan, now: 10.21), "phase \(beginPhase)")
-        #expect(!suppressed(&ownership, .momentum, now: 10.4), "phase \(beginPhase)")
+        #expect(!suppressed(&ownership, .momentumBegan, now: 10.21), "phases \(beginPhases)")
+        #expect(!suppressed(&ownership, .momentum, now: 10.4), "phases \(beginPhases)")
     }
 }
 
@@ -1316,4 +1319,32 @@ private func withheld(_ state: inout GestureCallbackState, _ event: Suppressible
     let ticks = CGEventTimestamp((now - 0.05) * 1e9 * Double(info.denom) / Double(info.numer))
     #expect(abs((eventUptime(ticks, now: now) ?? 0) - (now - 0.05)) < 0.001)
     #expect(eventUptime(0, now: now) == nil)
+}
+
+/// macOS keeps sending a swipe's momentum after the next fingers touch, which sends a
+/// may-begin (and a began once they move). Recorded 2026-11-03: the claim used to end
+/// there, and the rest of the momentum reached T3 Code, which navigated on it.
+@Test func inputOwnershipKeepsAClaimedMomentumStreamThroughTheNextTouch() {
+    var ownership = GestureInputOwnership()
+    ownership.observe(contactCount: 3, fingerCount: 3, eligible: true, now: 1)
+    ownership.observe(contactCount: 0, fingerCount: 3, eligible: true, now: 1.1)
+    #expect(suppressed(&ownership, .momentumBegan, now: 1.11))
+    #expect(!suppressed(&ownership, .scroll(phase: 128, momentumPhase: 0), now: 1.2))
+    #expect(suppressed(&ownership, .momentum, now: 1.21))
+    #expect(!suppressed(&ownership, .liveBegan, now: 1.25))
+    #expect(suppressed(&ownership, .momentum, now: 1.26))
+    #expect(suppressed(&ownership, .momentumEnded, now: 1.3))
+    // The flick that began at 1.25 has momentum of its own: the app's.
+    #expect(!suppressed(&ownership, .momentumBegan, now: 1.4))
+    #expect(!suppressed(&ownership, .momentum, now: 1.41))
+}
+
+/// A may-begin just before the swipe's momentum begins does not hand that momentum over.
+@Test func inputOwnershipClaimsMomentumThatBeginsRightAfterAMayBegin() {
+    var ownership = GestureInputOwnership()
+    ownership.observe(contactCount: 3, fingerCount: 3, eligible: true, now: 1)
+    ownership.observe(contactCount: 0, fingerCount: 3, eligible: true, now: 1.1)
+    #expect(!suppressed(&ownership, .scroll(phase: 128, momentumPhase: 0), now: 1.103))
+    #expect(suppressed(&ownership, .momentumBegan, now: 1.104))
+    #expect(suppressed(&ownership, .momentum, now: 1.12))
 }

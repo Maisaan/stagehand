@@ -92,9 +92,11 @@ struct GestureInputOwnership: Equatable, Sendable {
     /// True from an owned lift until a new sequence starts. The lifted sequence's last
     /// scroll and gesture events may arrive after the zero-contact frame and belong to it.
     private(set) var liftTailPending = false
-    /// True from an owned lift until the app starts its own live scroll. Momentum may only
-    /// be claimed while this holds; a later two-finger flick's momentum is the app's even
-    /// when it begins within the window after the owned lift.
+    /// True from an owned lift until the app starts its own live scroll (phase began).
+    /// Momentum may only be claimed while this holds; a later two-finger flick's momentum is
+    /// the app's even when it begins within the window after the owned lift. A may-begin
+    /// does not count: macOS sends one the moment fingers touch, also just before the
+    /// swipe's own momentum begins, and a may-begin alone never has momentum of its own.
     private(set) var momentumEligible = false
     private(set) var ownsMomentum = false
     private var lastMomentumTime: TimeInterval = 0
@@ -137,18 +139,21 @@ struct GestureInputOwnership: Equatable, Sendable {
         case .scroll(let phase, let momentumPhase):
             if ownsSequence, framesFresh { return true }
             guard momentumPhase != 0 else {
-                // A new live scroll ends any momentum claim and the lift tail, and the
-                // momentum that follows it belongs to the app even if it begins soon after
-                // the owned lift.
+                // A new live scroll ends the lift tail, and the momentum that follows it
+                // belongs to the app even if it begins soon after the owned lift. A momentum
+                // stream already claimed stays claimed until it ends: macOS keeps sending the
+                // swipe's momentum after the next fingers touch (recording, 2026-11-03: 33 of
+                // 39 claimed streams leaked partway after a may-begin, and T3 Code navigated).
                 if phase == 1 || phase == 128 {
-                    ownsMomentum = false
-                    momentumEligible = false
+                    if phase == 1 { momentumEligible = false }
                     liftTailPending = false
                     return false
                 }
                 // Phase 0 is a mouse wheel, never part of a trackpad sequence.
                 return phase != 0 && inLiftTail(now: now)
             }
+            // A momentum begin is a new stream: decide it afresh.
+            if momentumPhase == 1 { ownsMomentum = false }
             if ownsMomentum, now - lastMomentumTime > Self.momentumInactivityInterval { ownsMomentum = false }
             if !ownsMomentum, momentumEligible, now - lastLiftTime < momentumSuppressionWindow {
                 ownsMomentum = true
