@@ -177,6 +177,30 @@ private func suppressed(_ ownership: inout GestureInputOwnership, _ event: Suppr
     #expect(!suppressed(&ownership, .gesture, now: 1.121))
 }
 
+/// WindowServer delivered a lifted sequence's last scroll and touch events up to 475 ms
+/// after the zero-contact frame, and Chromium navigated on them (2026-11-03).
+@Test func inputOwnershipWithholdsTheLiftedSequencesTrailingEventsUntilANewSequenceStarts() {
+    var ownership = GestureInputOwnership()
+    ownership.observe(contactCount: 3, fingerCount: 3, eligible: true, now: 1)
+    ownership.observe(contactCount: 0, fingerCount: 3, eligible: true, now: 1.1)
+    #expect(suppressed(&ownership, .gesture, now: 1.575))
+    #expect(suppressed(&ownership, .live, now: 1.575))
+    #expect(suppressed(&ownership, .scroll(phase: 4, momentumPhase: 0), now: 1.58))
+    // A finger landing in a touch event starts a new sequence before its contact frame.
+    #expect(!suppressed(&ownership, .gestureStart, now: 1.6))
+    #expect(!suppressed(&ownership, .gesture, now: 1.61))
+    #expect(!suppressed(&ownership, .live, now: 1.61))
+    // Without a new sequence, the tail ends on its own.
+    ownership.observe(contactCount: 3, fingerCount: 3, eligible: true, now: 2)
+    ownership.observe(contactCount: 0, fingerCount: 3, eligible: true, now: 2.1)
+    #expect(suppressed(&ownership, .gesture, now: 2.1 + liftTailInterval - 0.01))
+    #expect(!suppressed(&ownership, .gesture, now: 2.1 + liftTailInterval + 0.01))
+    #expect(!suppressed(&ownership, .live, now: 2.1 + liftTailInterval + 0.02))
+    // While owned, a landing finger's touches are the sequence's like any other.
+    ownership.observe(contactCount: 3, fingerCount: 3, eligible: true, now: 4)
+    #expect(suppressed(&ownership, .gestureStart, now: 4.01))
+}
+
 @Test func inputOwnershipKeepsMomentumFromAnOwnedLiftUntilItEnds() {
     var ownership = GestureInputOwnership()
     ownership.observe(contactCount: 3, fingerCount: 3, eligible: true, now: 1)
@@ -288,7 +312,7 @@ private func enabledCallbackState(unmodified: Bool = true, shortcut: Bool = fals
     feed(contacts(dx: -0.13), at: 1.2)
     #expect(suppressed(&state.ownership, .live, now: 1.302))
     feed([], at: 1.4)
-    #expect(!suppressed(&state.ownership, .live, now: 1.401))
+    #expect(suppressed(&state.ownership, .live, now: 1.401))
     #expect(suppressed(&state.ownership, .gesture, now: 1.401))
     #expect(suppressed(&state.ownership, .momentumBegan, now: 1.42))
 }
@@ -1140,8 +1164,9 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     // The swipe fingers lift; the Dock's last event of that sequence is withheld too.
     feed([held], at: 1.12, buttonDown: true)
     #expect(withheld(.dockControl, at: 1.121))
-    #expect(!withheld(.dockControl, at: 1.3))
-    #expect(state.withheldDockControlEvents == 2)
+    #expect(withheld(.dockControl, at: 1.3))
+    #expect(!withheld(.dockControl, at: 1.12 + liftTailInterval + 0.01))
+    #expect(state.withheldDockControlEvents == 3)
     feed([], at: 1.4, buttonDown: false)
 
     // Four fingers without a held click: macOS's swipe between Spaces.
@@ -1235,11 +1260,16 @@ private func withheld(_ state: inout GestureCallbackState, _ event: Suppressible
     #expect(!withheld(&state, .live, now: 1.2))
     state.observeOwnership(contactCount: 3, eligible: true, now: 1.25)
     state.observeOwnership(contactCount: 0, eligible: true, now: 1.3)
-    #expect(!withheld(&state, .live, now: 1.35))
+    #expect(withheld(&state, .live, now: 1.35))
+    #expect(withheld(&state, .gesture, now: 1.7))
+    // A mouse wheel is not the lifted sequence's, and a new stream ends the tail.
+    #expect(!withheld(&state, .scroll(phase: 0, momentumPhase: 0), now: 1.75))
+    #expect(!withheld(&state, .liveBegan, now: 1.8))
     // A two-finger scroll that never becomes owned does not count.
     state.observeOwnership(contactCount: 2, eligible: true, now: 2)
     #expect(!withheld(&state, .liveBegan, now: 2.01))
     state.observeOwnership(contactCount: 0, eligible: true, now: 2.1)
     #expect(state.appInputLeaks.summary
-        == "owned=1 before=1s/1g stale=1s/0g afterLift=1s/0g afterLiftMs=50 landingMs=30 frameGapMs=220 rejected=0")
+        == "owned=1 before=1s/1g stale=1s/0g afterLift=2s/0g afterLiftMs=500 momentumAfterLift=0 tail=1s/1g "
+        + "tailMs=400 landingMs=30 frameGapMs=220 rejected=0")
 }

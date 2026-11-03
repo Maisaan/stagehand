@@ -41,6 +41,10 @@ let momentumSuppressionWindow: TimeInterval = 0.15
 /// Events are withheld only while contact frames are still arriving. If the framework
 /// stops reporting frames mid-sequence, scrolling recovers after this long.
 let inputSuppressionStaleInterval: TimeInterval = 0.1
+/// After an owned lift, the sequence's own scroll and touch events are withheld until new
+/// contacts land or a new stream begins, for at most this long. WindowServer delivered
+/// them up to 475 ms after Stagehand's zero-contact frame (diagnostic log, 2026-11-03).
+let liftTailInterval: TimeInterval = 1.0
 
 /// Which app-bound events a three-finger sequence withholds from the app under the pointer.
 enum SuppressibleInputEvent: Equatable, Sendable {
@@ -48,6 +52,9 @@ enum SuppressibleInputEvent: Equatable, Sendable {
     case scroll(phase: Int64, momentumPhase: Int64)
     /// Touch, swipe, and begin/end gesture events derived from the same contacts.
     case gesture
+    /// A gesture event that starts a new sequence: a begin-gesture event, or touches with a
+    /// finger that just landed. Told apart only during a lift tail, which it ends.
+    case gestureStart
     /// The Dock's own gestures, among them its swipe between Spaces and full-screen apps.
     case dockControl
 }
@@ -60,9 +67,16 @@ enum SuppressibleInputEvent: Equatable, Sendable {
 /// withhold both, and must do so for the whole sequence. Owning a sequence from its first
 /// frame with enough fingers, until every finger lifts, means an app never sees a scroll
 /// stream that starts mid-sequence or a swipe whose beginning was withheld. After the lift,
-/// the sequence's terminal touch event and its momentum scroll are still withheld: the
-/// terminal event carries the final finger positions an app's swipe would commit on, and
-/// momentum would scroll content under a ribbon that already moved.
+/// the sequence's terminal scroll and touch events and its momentum are still withheld: the
+/// terminal touch event carries the final finger positions an app's swipe would commit on
+/// (Chromium navigates back or forward on touchesEnded), and momentum would scroll content
+/// under a ribbon that already moved. The terminal events trail the zero-contact frame by
+/// up to about half a second, so the tail lasts until a new sequence shows itself: new
+/// contacts, a new scroll stream's first phase, or a finger landing in a touch event.
+///
+/// Fingers rarely land together. Frames before the third finger lands belong to the app,
+/// so a browser may already have armed its swipe on two fingers; withholding the rest of
+/// the sequence, its end included, keeps it from committing.
 ///
 /// The cost is that any third contact during a two-finger scroll, a resting thumb or a palm
 /// the hardware accepted, holds that scroll until all fingers lift.
@@ -74,8 +88,8 @@ struct GestureInputOwnership: Equatable, Sendable {
     private(set) var ownsSequence = false
     private(set) var lastContactFrameTime: TimeInterval = 0
     private(set) var lastLiftTime: TimeInterval = 0
-    /// True from an owned lift until new contacts land. The lifted sequence's last gesture
-    /// event may arrive after the zero-contact frame and still belongs to it.
+    /// True from an owned lift until a new sequence starts. The lifted sequence's last
+    /// scroll and gesture events may arrive after the zero-contact frame and belong to it.
     private(set) var liftTailPending = false
     /// True from an owned lift until the app starts its own live scroll. Momentum may only
     /// be claimed while this holds; a later two-finger flick's momentum is the app's even
@@ -101,6 +115,11 @@ struct GestureInputOwnership: Equatable, Sendable {
         if !ownsSequence, eligible, contactCount >= fingerCount { ownsSequence = true }
     }
 
+    /// The lifted sequence's trailing events are still arriving.
+    func inLiftTail(now: TimeInterval) -> Bool {
+        liftTailPending && now - lastLiftTime < liftTailInterval
+    }
+
     /// Decide one app-bound event. Mutating: momentum ownership follows the stream's phases.
     mutating func suppress(_ event: SuppressibleInputEvent, now: TimeInterval) -> Bool {
         let framesFresh = now - lastContactFrameTime < inputSuppressionStaleInterval
@@ -109,18 +128,25 @@ struct GestureInputOwnership: Equatable, Sendable {
             // Withheld only beside a held click, by GestureCallbackState.suppress.
             return false
         case .gesture:
-            return (ownsSequence && framesFresh)
-                || (liftTailPending && now - lastLiftTime < inputSuppressionStaleInterval)
+            return (ownsSequence && framesFresh) || inLiftTail(now: now)
+        case .gestureStart:
+            if ownsSequence, framesFresh { return true }
+            liftTailPending = false
+            return false
         case .scroll(let phase, let momentumPhase):
             if ownsSequence, framesFresh { return true }
             guard momentumPhase != 0 else {
-                // A new live scroll ends any momentum claim, and the momentum that follows
-                // it belongs to the app even if it begins soon after the owned lift.
+                // A new live scroll ends any momentum claim and the lift tail, and the
+                // momentum that follows it belongs to the app even if it begins soon after
+                // the owned lift.
                 if phase == 1 || phase == 128 {
                     ownsMomentum = false
                     momentumEligible = false
+                    liftTailPending = false
+                    return false
                 }
-                return false
+                // Phase 0 is a mouse wheel, never part of a trackpad sequence.
+                return phase != 0 && inLiftTail(now: now)
             }
             if ownsMomentum, now - lastMomentumTime > Self.momentumInactivityInterval { ownsMomentum = false }
             if !ownsMomentum, momentumEligible, now - lastLiftTime < momentumSuppressionWindow {
@@ -153,6 +179,12 @@ struct AppInputLeakStats: Equatable, Sendable {
     private(set) var whileStale = Counts()
     /// Passed within `liftWindow` after an owned lift, before new contacts landed.
     private(set) var afterLift = Counts()
+    /// Momentum streams that began within `liftWindow` after an owned lift and passed.
+    private(set) var momentumAfterLift = 0
+    /// Withheld after an owned lift by the lift tail, not counting momentum.
+    private(set) var withheldInTail = Counts()
+    /// Latest event counted in `withheldInTail`, after its lift.
+    private(set) var longestWithheldInTailMilliseconds = 0
     /// Latest event counted in `afterLift`, after its lift.
     private(set) var longestAfterLiftMilliseconds = 0
     /// Longest gap between contact frames inside an owned sequence.
@@ -161,7 +193,7 @@ struct AppInputLeakStats: Equatable, Sendable {
     private(set) var longestLandingMilliseconds = 0
     var rejectedFrames = 0
 
-    static let liftWindow: TimeInterval = 0.5
+    static let liftWindow: TimeInterval = 2
 
     private var contactsDown = false
     private var landingTime: TimeInterval = 0
@@ -205,7 +237,7 @@ struct AppInputLeakStats: Equatable, Sendable {
             add(&pendingBeforeOwnership)
         } else if let lift = ownedLiftTime, now - lift < Self.liftWindow {
             if case .scroll(_, let momentumPhase) = kind, momentumPhase != 0 {
-                // Momentum the app owns after a later flick is not this sequence's.
+                if momentumPhase == 1 { momentumAfterLift &+= 1 }
                 return
             }
             add(&afterLift)
@@ -213,9 +245,21 @@ struct AppInputLeakStats: Equatable, Sendable {
         }
     }
 
+    mutating func recordWithheld(_ kind: SuppressibleInputEvent, ownership: GestureInputOwnership, now: TimeInterval) {
+        guard !ownership.ownsSequence, !contactsDown, let lift = ownedLiftTime else { return }
+        switch kind {
+        case .scroll(_, let momentumPhase) where momentumPhase != 0: return
+        case .scroll: withheldInTail.scroll &+= 1
+        default: withheldInTail.gesture &+= 1
+        }
+        longestWithheldInTailMilliseconds = max(longestWithheldInTailMilliseconds, Int(((now - lift) * 1000).rounded()))
+    }
+
     var summary: String {
         "owned=\(ownedSequences) before=\(beforeOwnership.summary) stale=\(whileStale.summary) "
             + "afterLift=\(afterLift.summary) afterLiftMs=\(longestAfterLiftMilliseconds) "
+            + "momentumAfterLift=\(momentumAfterLift) tail=\(withheldInTail.summary) "
+            + "tailMs=\(longestWithheldInTailMilliseconds) "
             + "landingMs=\(longestLandingMilliseconds) frameGapMs=\(longestOwnedFrameGapMilliseconds) "
             + "rejected=\(rejectedFrames)"
     }
@@ -629,7 +673,11 @@ extension GestureCallbackState {
         guard enabled else { return false }
         guard case .dockControl = kind else {
             let suppressed = ownership.suppress(kind, now: now)
-            if !suppressed { appInputLeaks.recordPassed(kind, ownership: ownership, now: now) }
+            if suppressed {
+                appInputLeaks.recordWithheld(kind, ownership: ownership, now: now)
+            } else {
+                appInputLeaks.recordPassed(kind, ownership: ownership, now: now)
+            }
             return suppressed
         }
         guard !heldClickContactIDs.isEmpty else { return false }
@@ -940,15 +988,24 @@ private let inputTapCallback: CGEventTapCallBack = { _, type, event, context in
         if let context { Unmanaged<InputTapThread>.fromOpaque(context).takeUnretainedValue().reenable() }
         return Unmanaged.passUnretained(event)
     }
-    let kind: SuppressibleInputEvent = if type == .scrollWheel {
+    var kind: SuppressibleInputEvent = if type == .scrollWheel {
         .scroll(phase: event.getIntegerValueField(.scrollWheelEventScrollPhase),
                 momentumPhase: event.getIntegerValueField(.scrollWheelEventMomentumPhase))
     } else if type.rawValue == dockControlEventType {
         .dockControl
+    } else if type.rawValue == UInt32(NSEvent.EventType.beginGesture.rawValue) {
+        .gestureStart
     } else {
         .gesture
     }
     let now = ProcessInfo.processInfo.systemUptime
+    // During a lift tail only, tell a new sequence's first touches from the lifted one's
+    // last: reading the touches builds an NSEvent, too costly for every gesture event.
+    if kind == .gesture, type.rawValue == UInt32(NSEvent.EventType.gesture.rawValue),
+       gestureCallbackState.withLock({ $0.ownership.inLiftTail(now: now) }),
+       let touchEvent = NSEvent(cgEvent: event), !touchEvent.touches(matching: .began, in: nil).isEmpty {
+        kind = .gestureStart
+    }
     if type == .leftMouseDragged {
         if event.getIntegerValueField(.eventSourceUserData) != syntheticPointerTag {
             gestureCallbackState.withLock {
@@ -958,8 +1015,9 @@ private let inputTapCallback: CGEventTapCallBack = { _, type, event, context in
         }
         return Unmanaged.passUnretained(event)
     }
+    let decided = kind
     let suppress = gestureCallbackState.withLock { state in
-        state.suppress(kind, now: now)
+        state.suppress(decided, now: now)
     }
     return suppress ? nil : Unmanaged.passUnretained(event)
 }
