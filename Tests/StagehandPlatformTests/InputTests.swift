@@ -186,7 +186,7 @@ private func suppressed(_ ownership: inout GestureInputOwnership, _ event: Suppr
     #expect(suppressed(&ownership, .gesture, now: 1.575))
     #expect(suppressed(&ownership, .live, now: 1.575))
     #expect(suppressed(&ownership, .scroll(phase: 4, momentumPhase: 0), now: 1.58))
-    // A finger landing in a touch event starts a new sequence before its contact frame.
+    // A begin-gesture event starts a new sequence before its contact frame.
     #expect(!suppressed(&ownership, .gestureStart, now: 1.6))
     #expect(!suppressed(&ownership, .gesture, now: 1.61))
     #expect(!suppressed(&ownership, .live, now: 1.61))
@@ -1167,14 +1167,14 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     #expect(withheld(.dockControl, at: 1.3))
     #expect(!withheld(.dockControl, at: 1.12 + liftTailInterval + 0.01))
     #expect(state.withheldDockControlEvents == 3)
-    feed([], at: 1.4, buttonDown: false)
+    feed([], at: 2.2, buttonDown: false)
 
     // Four fingers without a held click: macOS's swipe between Spaces.
     let four = contacts(count: 4)
-    feed(four, at: 2, buttonDown: false)
-    feed(contacts(count: 4, dx: -0.05), at: 2.05, buttonDown: false)
-    #expect(!withheld(.dockControl, at: 2.051))
-    #expect(withheld(.liveBegan, at: 2.051))
+    feed(four, at: 3, buttonDown: false)
+    feed(contacts(count: 4, dx: -0.05), at: 3.05, buttonDown: false)
+    #expect(!withheld(.dockControl, at: 3.051))
+    #expect(withheld(.liveBegan, at: 3.051))
 }
 
 @Test func aHeldClickFingersTravelIsMeasured() {
@@ -1269,7 +1269,51 @@ private func withheld(_ state: inout GestureCallbackState, _ event: Suppressible
     state.observeOwnership(contactCount: 2, eligible: true, now: 2)
     #expect(!withheld(&state, .liveBegan, now: 2.01))
     state.observeOwnership(contactCount: 0, eligible: true, now: 2.1)
-    #expect(state.appInputLeaks.summary
-        == "owned=1 before=1s/1g stale=1s/0g afterLift=2s/0g afterLiftMs=500 momentumAfterLift=0 tail=1s/1g "
-        + "tailMs=400 landingMs=30 frameGapMs=220 rejected=0")
+    let summary = state.appInputLeaks.summary
+    for field in ["owned=1 ", "before=1s/1g ", "stale=1s/0g ", "afterLift=2s/0g ", "afterLiftMs=500 ",
+                  "momentumAfterLift=0 ", "tail=1s/1g ", "tailMs=400 ", "landingMs=30 ", "frameGapMs=220 ",
+                  "afterLiftKinds=s0:1,s1:1 ", "tailKinds=s2:1,g?:1 ", "tailEnds=scrollBegan:1 "] {
+        #expect(summary.contains(field), "\(field) in \(summary)")
+    }
+}
+
+/// What ends a lift tail, and whether a passed event was made before its lift, are counted
+/// so a leak can be traced to its cause.
+@Test func appInputLeakStatsRecordTailEndsAndLateEvents() {
+    var state = GestureCallbackState()
+    state.enabled = true
+    state.recognizer = NavigationGestureRecognizer(fingerCount: 3)
+    let gestureType = UInt32(NSEvent.EventType.gesture.rawValue)
+    // Contacts end the first tail.
+    state.observeOwnership(contactCount: 3, eligible: true, now: 1)
+    state.observeOwnership(contactCount: 0, eligible: true, now: 1.1)
+    #expect(withheld(&state, .gesture, now: 1.2))
+    state.observeOwnership(contactCount: 3, eligible: true, now: 1.3)
+    state.observeOwnership(contactCount: 0, eligible: true, now: 1.4)
+    // A may-begin ends the second; a touch event made before the lift then passes late.
+    let mayBegin = state.suppress(.scroll(phase: 128, momentumPhase: 0), now: 1.5)
+    #expect(!mayBegin)
+    let late = state.suppress(.gesture, now: 1.6, rawType: gestureType, eventTime: 1.35)
+    #expect(!late)
+    // The third tail runs out with events still arriving.
+    state.observeOwnership(contactCount: 3, eligible: true, now: 2)
+    state.observeOwnership(contactCount: 0, eligible: true, now: 2.1)
+    let afterCap = state.suppress(.gesture, now: 2.1 + liftTailInterval + 0.1, rawType: gestureType, eventTime: 3.15)
+    #expect(!afterCap)
+    let summary = state.appInputLeaks.summary
+    for field in ["tailEnds=contacts:1,mayBegin:1,cap:1 ", "afterLiftKinds=s128:1,g29:2 ",
+                  "madeBeforeLift=1 ", "lagMs=250"] {
+        #expect(summary.contains(field), "\(field) in \(summary)")
+    }
+}
+
+@Test func eventUptimeReadsNanosecondsOrMachTicks() {
+    let now = ProcessInfo.processInfo.systemUptime
+    let nanoseconds = CGEventTimestamp((now - 0.05) * 1e9)
+    #expect(abs((eventUptime(nanoseconds, now: now) ?? 0) - (now - 0.05)) < 0.001)
+    var info = mach_timebase_info_data_t()
+    mach_timebase_info(&info)
+    let ticks = CGEventTimestamp((now - 0.05) * 1e9 * Double(info.denom) / Double(info.numer))
+    #expect(abs((eventUptime(ticks, now: now) ?? 0) - (now - 0.05)) < 0.001)
+    #expect(eventUptime(0, now: now) == nil)
 }

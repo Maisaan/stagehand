@@ -52,8 +52,7 @@ enum SuppressibleInputEvent: Equatable, Sendable {
     case scroll(phase: Int64, momentumPhase: Int64)
     /// Touch, swipe, and begin/end gesture events derived from the same contacts.
     case gesture
-    /// A gesture event that starts a new sequence: a begin-gesture event, or touches with a
-    /// finger that just landed. Told apart only during a lift tail, which it ends.
+    /// A begin-gesture event: a new sequence, which ends a lift tail.
     case gestureStart
     /// The Dock's own gestures, among them its swipe between Spaces and full-screen apps.
     case dockControl
@@ -72,7 +71,9 @@ enum SuppressibleInputEvent: Equatable, Sendable {
 /// (Chromium navigates back or forward on touchesEnded), and momentum would scroll content
 /// under a ribbon that already moved. The terminal events trail the zero-contact frame by
 /// up to about half a second, so the tail lasts until a new sequence shows itself: new
-/// contacts, a new scroll stream's first phase, or a finger landing in a touch event.
+/// contacts, a new scroll stream's first phase, or a begin-gesture event. Reading touch
+/// phases from the tap's events to spot a landing finger ended the tail on the lifted
+/// sequence's own trailing touches in most swipes (c20e17a, 2026-11-03); it is only counted.
 ///
 /// Fingers rarely land together. Frames before the third finger lands belong to the app,
 /// so a browser may already have armed its swipe on two fingers; withholding the rest of
@@ -193,6 +194,31 @@ struct AppInputLeakStats: Equatable, Sendable {
     private(set) var longestLandingMilliseconds = 0
     var rejectedFrames = 0
 
+    /// Event kinds, for splitting what passed after a lift and what the tail withheld.
+    /// Scroll slots are `CGScrollPhase` values; gesture slots are raw CG event types.
+    static let kindLabels = ["s0", "s1", "s2", "s4", "s8", "s128", "s?", "g19", "g20", "g29", "g30", "g31", "g?"]
+    static func kindSlot(_ kind: SuppressibleInputEvent, rawType: UInt32) -> Int {
+        if case .scroll(let phase, _) = kind {
+            return [0, 1, 2, 4, 8, 128].firstIndex(of: phase) ?? 6
+        }
+        return [19, 20, 29, 30, 31].firstIndex(of: rawType).map { $0 + 7 } ?? 12
+    }
+    private(set) var afterLiftKinds = [Int](repeating: 0, count: 13)
+    private(set) var tailKinds = [Int](repeating: 0, count: 13)
+    /// What ended each lift tail: new contacts, a scroll began or may-begin, a
+    /// begin-gesture event, or the cap running out with events still arriving.
+    static let tailEndLabels = ["contacts", "scrollBegan", "mayBegin", "beginGesture", "cap"]
+    private(set) var tailEnds = [Int](repeating: 0, count: 5)
+    /// Touch reads during lift tails: attempts, NSEvent conversions that failed, and reads
+    /// that reported a began touch. Counted only; they no longer end the tail.
+    struct TouchReads: Equatable, Sendable { var tries = 0, failed = 0, began = 0 }
+    private(set) var touchReads = TouchReads()
+    /// Passed after a lift though the event was made before the lift: the lifted
+    /// sequence's own input, delivered late.
+    private(set) var passedMadeBeforeLift = 0
+    /// Longest wait between an event's own time and the tap seeing it, after a lift.
+    private(set) var longestDeliveryLagMilliseconds = 0
+
     static let liftWindow: TimeInterval = 2
 
     private var contactsDown = false
@@ -200,10 +226,14 @@ struct AppInputLeakStats: Equatable, Sendable {
     private var lastFrameTime: TimeInterval = 0
     private var pendingBeforeOwnership = Counts()
     private var ownedLiftTime: TimeInterval?
+    private var capCounted = false
 
     mutating func observe(contactCount: Int, ownedBefore: Bool, ownedAfter: Bool, now: TimeInterval) {
         if contactCount == 0 {
-            if ownedBefore { ownedLiftTime = now }
+            if ownedBefore {
+                ownedLiftTime = now
+                capCounted = false
+            }
             contactsDown = false
             pendingBeforeOwnership = Counts()
             return
@@ -227,7 +257,22 @@ struct AppInputLeakStats: Equatable, Sendable {
         }
     }
 
-    mutating func recordPassed(_ kind: SuppressibleInputEvent, ownership: GestureInputOwnership, now: TimeInterval) {
+    mutating func recordTailEnd(_ slot: Int) { tailEnds[slot] &+= 1 }
+
+    mutating func recordTouchRead(converted: Bool, began: Bool) {
+        touchReads.tries &+= 1
+        if !converted { touchReads.failed &+= 1 }
+        if began { touchReads.began &+= 1 }
+    }
+
+    private mutating func recordTiming(eventTime: TimeInterval?, lift: TimeInterval, now: TimeInterval) {
+        guard let eventTime else { return }
+        if eventTime < lift { passedMadeBeforeLift &+= 1 }
+        longestDeliveryLagMilliseconds = max(longestDeliveryLagMilliseconds, Int(((now - eventTime) * 1000).rounded()))
+    }
+
+    mutating func recordPassed(_ kind: SuppressibleInputEvent, ownership: GestureInputOwnership, now: TimeInterval,
+                               rawType: UInt32 = 0, eventTime: TimeInterval? = nil) {
         func add(_ counts: inout Counts) {
             if case .scroll = kind { counts.scroll &+= 1 } else { counts.gesture &+= 1 }
         }
@@ -241,17 +286,25 @@ struct AppInputLeakStats: Equatable, Sendable {
                 return
             }
             add(&afterLift)
+            afterLiftKinds[Self.kindSlot(kind, rawType: rawType)] &+= 1
             longestAfterLiftMilliseconds = max(longestAfterLiftMilliseconds, Int(((now - lift) * 1000).rounded()))
+            if ownership.liftTailPending, !ownership.inLiftTail(now: now), !capCounted {
+                capCounted = true
+                tailEnds[4] &+= 1
+            }
+            recordTiming(eventTime: eventTime, lift: lift, now: now)
         }
     }
 
-    mutating func recordWithheld(_ kind: SuppressibleInputEvent, ownership: GestureInputOwnership, now: TimeInterval) {
+    mutating func recordWithheld(_ kind: SuppressibleInputEvent, ownership: GestureInputOwnership, now: TimeInterval,
+                                 rawType: UInt32 = 0) {
         guard !ownership.ownsSequence, !contactsDown, let lift = ownedLiftTime else { return }
         switch kind {
         case .scroll(_, let momentumPhase) where momentumPhase != 0: return
         case .scroll: withheldInTail.scroll &+= 1
         default: withheldInTail.gesture &+= 1
         }
+        tailKinds[Self.kindSlot(kind, rawType: rawType)] &+= 1
         longestWithheldInTailMilliseconds = max(longestWithheldInTailMilliseconds, Int(((now - lift) * 1000).rounded()))
     }
 
@@ -261,7 +314,18 @@ struct AppInputLeakStats: Equatable, Sendable {
             + "momentumAfterLift=\(momentumAfterLift) tail=\(withheldInTail.summary) "
             + "tailMs=\(longestWithheldInTailMilliseconds) "
             + "landingMs=\(longestLandingMilliseconds) frameGapMs=\(longestOwnedFrameGapMilliseconds) "
-            + "rejected=\(rejectedFrames)"
+            + "rejected=\(rejectedFrames) "
+            + "afterLiftKinds=\(Self.labeled(afterLiftKinds, Self.kindLabels)) "
+            + "tailKinds=\(Self.labeled(tailKinds, Self.kindLabels)) "
+            + "tailEnds=\(Self.labeled(tailEnds, Self.tailEndLabels)) "
+            + "touchReads=\(touchReads.tries)/\(touchReads.failed)/\(touchReads.began) "
+            + "madeBeforeLift=\(passedMadeBeforeLift) lagMs=\(longestDeliveryLagMilliseconds)"
+    }
+
+    /// Nonzero slots as `label:count`, comma-separated; `-` when all are zero.
+    private static func labeled(_ counts: [Int], _ labels: [String]) -> String {
+        let parts = zip(labels, counts).filter { $0.1 != 0 }.map { "\($0.0):\($0.1)" }
+        return parts.isEmpty ? "-" : parts.joined(separator: ",")
     }
 }
 
@@ -651,6 +715,7 @@ extension GestureCallbackState {
 extension GestureCallbackState {
     mutating func observeOwnership(contactCount: Int, eligible: Bool, now: TimeInterval) {
         let ownedBefore = ownership.ownsSequence
+        if contactCount > 0, ownership.inLiftTail(now: now) { appInputLeaks.recordTailEnd(0) }
         ownership.observe(contactCount: contactCount, fingerCount: recognizer.fingerCount,
                           eligible: eligible, now: now)
         appInputLeaks.observe(contactCount: contactCount, ownedBefore: ownedBefore,
@@ -669,14 +734,23 @@ extension GestureCallbackState {
     /// Passing them instead ran the Space swipe, and passing the first as cancelled made
     /// the Dock follow the held finger (4e4ce6a, 2026-10-26); neither freed the pointer,
     /// which macOS locks either way.
-    mutating func suppress(_ kind: SuppressibleInputEvent, now: TimeInterval) -> Bool {
+    mutating func suppress(_ kind: SuppressibleInputEvent, now: TimeInterval,
+                           rawType: UInt32 = 0, eventTime: TimeInterval? = nil) -> Bool {
         guard enabled else { return false }
         guard case .dockControl = kind else {
+            let tailWasActive = ownership.inLiftTail(now: now)
             let suppressed = ownership.suppress(kind, now: now)
+            if tailWasActive, !ownership.liftTailPending {
+                switch kind {
+                case .scroll(phase: 1, _): appInputLeaks.recordTailEnd(1)
+                case .scroll: appInputLeaks.recordTailEnd(2)
+                default: appInputLeaks.recordTailEnd(3)
+                }
+            }
             if suppressed {
-                appInputLeaks.recordWithheld(kind, ownership: ownership, now: now)
+                appInputLeaks.recordWithheld(kind, ownership: ownership, now: now, rawType: rawType)
             } else {
-                appInputLeaks.recordPassed(kind, ownership: ownership, now: now)
+                appInputLeaks.recordPassed(kind, ownership: ownership, now: now, rawType: rawType, eventTime: eventTime)
             }
             return suppressed
         }
@@ -988,7 +1062,7 @@ private let inputTapCallback: CGEventTapCallBack = { _, type, event, context in
         if let context { Unmanaged<InputTapThread>.fromOpaque(context).takeUnretainedValue().reenable() }
         return Unmanaged.passUnretained(event)
     }
-    var kind: SuppressibleInputEvent = if type == .scrollWheel {
+    let kind: SuppressibleInputEvent = if type == .scrollWheel {
         .scroll(phase: event.getIntegerValueField(.scrollWheelEventScrollPhase),
                 momentumPhase: event.getIntegerValueField(.scrollWheelEventMomentumPhase))
     } else if type.rawValue == dockControlEventType {
@@ -999,12 +1073,16 @@ private let inputTapCallback: CGEventTapCallBack = { _, type, event, context in
         .gesture
     }
     let now = ProcessInfo.processInfo.systemUptime
-    // During a lift tail only, tell a new sequence's first touches from the lifted one's
-    // last: reading the touches builds an NSEvent, too costly for every gesture event.
+    // During a lift tail only, read whether the touches report a began finger. Counted for
+    // the log, never acted on (see GestureInputOwnership). The tap thread's run loop never
+    // returns, so the NSEvent needs its own pool.
+    var touchRead: (converted: Bool, began: Bool)?
     if kind == .gesture, type.rawValue == UInt32(NSEvent.EventType.gesture.rawValue),
-       gestureCallbackState.withLock({ $0.ownership.inLiftTail(now: now) }),
-       let touchEvent = NSEvent(cgEvent: event), !touchEvent.touches(matching: .began, in: nil).isEmpty {
-        kind = .gestureStart
+       gestureCallbackState.withLock({ $0.enabled && $0.ownership.inLiftTail(now: now) }) {
+        touchRead = autoreleasepool {
+            guard let touchEvent = NSEvent(cgEvent: event) else { return (false, false) }
+            return (true, !touchEvent.touches(matching: .began, in: nil).isEmpty)
+        }
     }
     if type == .leftMouseDragged {
         if event.getIntegerValueField(.eventSourceUserData) != syntheticPointerTag {
@@ -1015,11 +1093,29 @@ private let inputTapCallback: CGEventTapCallBack = { _, type, event, context in
         }
         return Unmanaged.passUnretained(event)
     }
-    let decided = kind
+    let eventTime = eventUptime(event.timestamp, now: now)
+    let read = touchRead
     let suppress = gestureCallbackState.withLock { state in
-        state.suppress(decided, now: now)
+        if let read { state.appInputLeaks.recordTouchRead(converted: read.converted, began: read.began) }
+        return state.suppress(kind, now: now, rawType: type.rawValue, eventTime: eventTime)
     }
     return suppress ? nil : Unmanaged.passUnretained(event)
+}
+
+private let machTicksToSeconds: Double = {
+    var info = mach_timebase_info_data_t()
+    mach_timebase_info(&info)
+    return Double(info.numer) / Double(info.denom) / 1e9
+}()
+
+/// An event's own time on the `systemUptime` clock. `CGEventTimestamp` is documented in
+/// nanoseconds but has been mach ticks on Apple silicon; take whichever reading is near now.
+func eventUptime(_ timestamp: CGEventTimestamp, now: TimeInterval) -> TimeInterval? {
+    guard timestamp != 0 else { return nil }
+    let asNanoseconds = Double(timestamp) / 1e9
+    let asTicks = Double(timestamp) * machTicksToSeconds
+    let best = abs(asNanoseconds - now) < abs(asTicks - now) ? asNanoseconds : asTicks
+    return abs(best - now) < 60 ? best : nil
 }
 
 /// Hosts the input tap on its own run loop. The tap filters every scroll and gesture
