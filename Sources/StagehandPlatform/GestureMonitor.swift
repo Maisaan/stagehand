@@ -501,6 +501,18 @@ private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
     let flags = CGEventSource.flagsState(.combinedSessionState)
     let buttonDown = CGEventSource.buttonState(.combinedSessionState, button: .left)
     let now = ProcessInfo.processInfo.systemUptime
+    if InputRecorder.isEnabled {
+        var recorded: [(id: Int32, frame: Int32, state: UInt32, x: Float, y: Float)] = []
+        if let raw {
+            let buffer = raw.assumingMemoryBound(to: RawContact.self)
+            for index in 0..<Int(count) {
+                let touch = buffer[index]
+                recorded.append((touch.identifier, touch.frame, touch.state,
+                                 touch.normalized.position.x, touch.normalized.position.y))
+            }
+        }
+        InputRecorder.recordFrame(now: now, timestamp: timestamp, flags: flags, buttonDown: buttonDown, touches: recorded)
+    }
     let (delivery, move, dropCheck) = gestureCallbackState.withLock { state in
         (state.process(contacts: snapshot, touches: frameTouches, rawCount: count, flags: flags,
                        timestamp: timestamp, now: now, buttonDown: buttonDown),
@@ -952,6 +964,7 @@ final class GestureMonitor {
                 }
             }
         }
+        InputRecorder.startIfRequested()
         register(device, contactCallback)
         isRunning = true
         startDevice(device, 0)
@@ -974,6 +987,7 @@ final class GestureMonitor {
         // its private dequeue thread exits can race the framework's own final release.
         // Reuse this handle on restart instead of allocating/leaking one per preference edit.
         removeScrollTap()
+        InputRecorder.stop()
     }
 
     /// After sleep the framework's device handle may stop delivering frames. Forget it so
@@ -1098,6 +1112,9 @@ private let inputTapCallback: CGEventTapCallBack = { _, type, event, context in
     let suppress = gestureCallbackState.withLock { state in
         if let read { state.appInputLeaks.recordTouchRead(converted: read.converted, began: read.began) }
         return state.suppress(kind, now: now, rawType: type.rawValue, eventTime: eventTime)
+    }
+    if InputRecorder.isEnabled {
+        InputRecorder.recordEvent(event, type: type, now: now, eventTime: eventTime, withheld: suppress)
     }
     return suppress ? nil : Unmanaged.passUnretained(event)
 }
