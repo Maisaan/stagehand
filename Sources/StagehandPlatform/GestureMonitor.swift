@@ -134,6 +134,93 @@ struct GestureInputOwnership: Equatable, Sendable {
     }
 }
 
+/// Scroll and gesture events the input tap passed to the app around owned sequences,
+/// counted since gestures started, for the diagnostic log. An app that saw the start of a
+/// sequence, a stretch whose frames went stale, or events after the lift can run its own
+/// swipe (a browser's back or forward) beside Stagehand's.
+struct AppInputLeakStats: Equatable, Sendable {
+    struct Counts: Equatable, Sendable {
+        var scroll = 0
+        var gesture = 0
+        var summary: String { "\(scroll)s/\(gesture)g" }
+    }
+
+    /// Sequences that became owned.
+    private(set) var ownedSequences = 0
+    /// Passed while contacts were down, before the sequence became owned.
+    private(set) var beforeOwnership = Counts()
+    /// Passed while a sequence was owned but its contact frames had stopped arriving.
+    private(set) var whileStale = Counts()
+    /// Passed within `liftWindow` after an owned lift, before new contacts landed.
+    private(set) var afterLift = Counts()
+    /// Latest event counted in `afterLift`, after its lift.
+    private(set) var longestAfterLiftMilliseconds = 0
+    /// Longest gap between contact frames inside an owned sequence.
+    private(set) var longestOwnedFrameGapMilliseconds = 0
+    /// Longest time from the first contact to ownership.
+    private(set) var longestLandingMilliseconds = 0
+    var rejectedFrames = 0
+
+    static let liftWindow: TimeInterval = 0.5
+
+    private var contactsDown = false
+    private var landingTime: TimeInterval = 0
+    private var lastFrameTime: TimeInterval = 0
+    private var pendingBeforeOwnership = Counts()
+    private var ownedLiftTime: TimeInterval?
+
+    mutating func observe(contactCount: Int, ownedBefore: Bool, ownedAfter: Bool, now: TimeInterval) {
+        if contactCount == 0 {
+            if ownedBefore { ownedLiftTime = now }
+            contactsDown = false
+            pendingBeforeOwnership = Counts()
+            return
+        }
+        if !contactsDown {
+            contactsDown = true
+            landingTime = now
+            ownedLiftTime = nil
+            pendingBeforeOwnership = Counts()
+        } else if ownedBefore {
+            longestOwnedFrameGapMilliseconds = max(longestOwnedFrameGapMilliseconds,
+                                                   Int(((now - lastFrameTime) * 1000).rounded()))
+        }
+        lastFrameTime = now
+        if !ownedBefore, ownedAfter {
+            ownedSequences &+= 1
+            beforeOwnership.scroll &+= pendingBeforeOwnership.scroll
+            beforeOwnership.gesture &+= pendingBeforeOwnership.gesture
+            pendingBeforeOwnership = Counts()
+            longestLandingMilliseconds = max(longestLandingMilliseconds, Int(((now - landingTime) * 1000).rounded()))
+        }
+    }
+
+    mutating func recordPassed(_ kind: SuppressibleInputEvent, ownership: GestureInputOwnership, now: TimeInterval) {
+        func add(_ counts: inout Counts) {
+            if case .scroll = kind { counts.scroll &+= 1 } else { counts.gesture &+= 1 }
+        }
+        if ownership.ownsSequence {
+            add(&whileStale)
+        } else if contactsDown {
+            add(&pendingBeforeOwnership)
+        } else if let lift = ownedLiftTime, now - lift < Self.liftWindow {
+            if case .scroll(_, let momentumPhase) = kind, momentumPhase != 0 {
+                // Momentum the app owns after a later flick is not this sequence's.
+                return
+            }
+            add(&afterLift)
+            longestAfterLiftMilliseconds = max(longestAfterLiftMilliseconds, Int(((now - lift) * 1000).rounded()))
+        }
+    }
+
+    var summary: String {
+        "owned=\(ownedSequences) before=\(beforeOwnership.summary) stale=\(whileStale.summary) "
+            + "afterLift=\(afterLift.summary) afterLiftMs=\(longestAfterLiftMilliseconds) "
+            + "landingMs=\(longestLandingMilliseconds) frameGapMs=\(longestOwnedFrameGapMilliseconds) "
+            + "rejected=\(rejectedFrames)"
+    }
+}
+
 /// Event types the input tap filters: scroll wheel plus the gesture family AppKit turns
 /// into `touches*WithEvent`, `swipe(with:)`, and begin/end gesture. Core Graphics has no
 /// public names for the gesture types; the raw values are `NSEvent.EventType`'s.
@@ -271,6 +358,7 @@ struct GestureCallbackState {
     var heldClickPositions: [Int32: (x: Double, y: Double)] = [:]
     var recognizer = NavigationGestureRecognizer()
     var ownership = GestureInputOwnership()
+    var appInputLeaks = AppInputLeakStats()
     var frameValidator = GestureFrameValidator()
     /// Set once corrupt frames exhaust the validator; delivered to the monitor on main.
     var failure: String?
@@ -415,6 +503,7 @@ extension GestureCallbackState {
             // Ownership is left alone: the fingers are still down, and a stream of rejected
             // frames stops refreshing it, so the stale check releases the app's input.
             let wasDragging = recognizer.isDragging
+            if ownership.ownsSequence { appInputLeaks.rejectedFrames &+= 1 }
             recognizer.cancelUntilLift()
             if wasDragging { pendingEvents.append(.cancelled) }
             if frameValidator.isExhausted {
@@ -441,8 +530,7 @@ extension GestureCallbackState {
         }
         if ignoredUntilLift {
             if snapshot.isEmpty { ignoredUntilLift = false }
-            ownership.observe(contactCount: snapshot.count, fingerCount: recognizer.fingerCount,
-                              eligible: false, now: now)
+            observeOwnership(contactCount: snapshot.count, eligible: false, now: now)
             return nil
         }
         let carriesDrop = buttonDown && heldClickCarriesDrop && !heldClickContactIDs.isEmpty
@@ -454,8 +542,7 @@ extension GestureCallbackState {
                 ? shortcutGestureModifiers(for: flags, bindings: shortcutBindings) : nil
             if shortcutModifiers == nil && !unmodifiedEnabled {
                 ignoredUntilLift = true
-                ownership.observe(contactCount: snapshot.count, fingerCount: recognizer.fingerCount,
-                                  eligible: false, now: now)
+                observeOwnership(contactCount: snapshot.count, eligible: false, now: now)
                 return nil
             }
         }
@@ -464,8 +551,7 @@ extension GestureCallbackState {
         // on the first scroll deltas and touches. Ownership lasts until every finger lifts
         // even if the recognizer cancels, so the app never receives the tail of a sequence
         // whose beginning it did not see.
-        ownership.observe(contactCount: snapshot.count, fingerCount: recognizer.fingerCount,
-                          eligible: true, now: now)
+        observeOwnership(contactCount: snapshot.count, eligible: true, now: now)
         let modifiersChanged = shortcutModifiers.map { $0 != modifiers } ?? false
         let modifierCancelled = recognizer.isDragging && modifiersChanged
         if recognizer.hasContactSequence && modifiersChanged {
@@ -519,6 +605,14 @@ extension GestureCallbackState {
 }
 
 extension GestureCallbackState {
+    mutating func observeOwnership(contactCount: Int, eligible: Bool, now: TimeInterval) {
+        let ownedBefore = ownership.ownsSequence
+        ownership.observe(contactCount: contactCount, fingerCount: recognizer.fingerCount,
+                          eligible: eligible, now: now)
+        appInputLeaks.observe(contactCount: contactCount, ownedBefore: ownedBefore,
+                              ownedAfter: ownership.ownsSequence, now: now)
+    }
+
     /// Decide one app-bound event for the input tap.
     ///
     /// The held click is still a finger on the trackpad to macOS: with three fingers
@@ -533,7 +627,11 @@ extension GestureCallbackState {
     /// which macOS locks either way.
     mutating func suppress(_ kind: SuppressibleInputEvent, now: TimeInterval) -> Bool {
         guard enabled else { return false }
-        guard case .dockControl = kind else { return ownership.suppress(kind, now: now) }
+        guard case .dockControl = kind else {
+            let suppressed = ownership.suppress(kind, now: now)
+            if !suppressed { appInputLeaks.recordPassed(kind, ownership: ownership, now: now) }
+            return suppressed
+        }
         guard !heldClickContactIDs.isEmpty else { return false }
         // A Dock gesture beside a held click means macOS has locked the touch.
         pointerLockedBesideHeldClick = true
@@ -787,6 +885,11 @@ final class GestureMonitor {
     /// Dock gesture events withheld beside a held click since gestures last started.
     nonisolated static func withheldDockControlEventCount() -> Int {
         gestureCallbackState.withLock { $0.withheldDockControlEvents }
+    }
+
+    /// What the input tap passed to apps around owned sequences since gestures last started.
+    nonisolated static func appInputLeakSummary() -> String {
+        gestureCallbackState.withLock { $0.appInputLeaks.summary }
     }
 
     /// How far held-click fingers have moved since gestures last started, in trackpad widths.

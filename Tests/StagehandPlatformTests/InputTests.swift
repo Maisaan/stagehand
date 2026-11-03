@@ -1215,3 +1215,31 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     #expect(!state.pointerLockedBesideHeldClick)
     #expect(!state.syntheticAnchorValid)
 }
+
+private func withheld(_ state: inout GestureCallbackState, _ event: SuppressibleInputEvent,
+                      now: TimeInterval) -> Bool {
+    state.suppress(event, now: now)
+}
+
+@Test func appInputLeakStatsCountWhatPassedAroundAnOwnedSequence() {
+    var state = GestureCallbackState()
+    state.enabled = true
+    state.recognizer = NavigationGestureRecognizer(fingerCount: 3)
+    // Two fingers land first: their events pass and count once the third lands.
+    state.observeOwnership(contactCount: 2, eligible: true, now: 1)
+    #expect(!withheld(&state, .liveBegan, now: 1.001))
+    #expect(!withheld(&state, .gesture, now: 1.002))
+    state.observeOwnership(contactCount: 3, eligible: true, now: 1.03)
+    #expect(withheld(&state, .live, now: 1.031))
+    // Frames stop arriving: the stale stretch passes.
+    #expect(!withheld(&state, .live, now: 1.2))
+    state.observeOwnership(contactCount: 3, eligible: true, now: 1.25)
+    state.observeOwnership(contactCount: 0, eligible: true, now: 1.3)
+    #expect(!withheld(&state, .live, now: 1.35))
+    // A two-finger scroll that never becomes owned does not count.
+    state.observeOwnership(contactCount: 2, eligible: true, now: 2)
+    #expect(!withheld(&state, .liveBegan, now: 2.01))
+    state.observeOwnership(contactCount: 0, eligible: true, now: 2.1)
+    #expect(state.appInputLeaks.summary
+        == "owned=1 before=1s/1g stale=1s/0g afterLift=1s/0g afterLiftMs=50 landingMs=30 frameGapMs=220 rejected=0")
+}

@@ -17,7 +17,8 @@ extension StagehandModel {
     func pointerDetails() -> [String: String] {
         let held = pointer.isButtonDown
         return ["pointerHeld": String(held), "dragAndDrop": String(held && pointer.isDragAndDrop),
-                "dockControlEventsWithheld": String(InputController.withheldDockControlEventCount())]
+                "dockControlEventsWithheld": String(InputController.withheldDockControlEventCount()),
+                "appInputPassed": InputController.appInputLeakSummary()]
     }
 
     func handleGesture(_ event: GestureNavigationEvent) {

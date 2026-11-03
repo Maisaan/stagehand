@@ -171,6 +171,11 @@ public final class InputController {
         GestureMonitor.withheldDockControlEventCount()
     }
 
+    /// Scroll and gesture events passed to apps around owned sequences, for the log.
+    nonisolated public static func appInputLeakSummary() -> String {
+        GestureMonitor.appInputLeakSummary()
+    }
+
     /// How far held-click fingers have moved since gestures last started, in trackpad widths.
     nonisolated public static func heldClickTravel() -> Double {
         GestureMonitor.heldClickTravel()
