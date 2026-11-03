@@ -71,9 +71,9 @@ enum SuppressibleInputEvent: Equatable, Sendable {
 /// (Chromium navigates back or forward on touchesEnded), and momentum would scroll content
 /// under a ribbon that already moved. The terminal events trail the zero-contact frame by
 /// up to about half a second, so the tail lasts until a new sequence shows itself: new
-/// contacts, a new scroll stream's first phase, or a begin-gesture event. Reading touch
-/// phases from the tap's events to spot a landing finger ended the tail on the lifted
-/// sequence's own trailing touches in most swipes (c20e17a, 2026-11-03); it is only counted.
+/// contacts, a new scroll stream's first phase, or a begin-gesture event. Touch phases
+/// cannot tell a landing finger: an NSEvent made from the tap's gesture event carries no
+/// touches (input recording, 2026-11-03).
 ///
 /// Fingers rarely land together. Frames before the third finger lands belong to the app,
 /// so a browser may already have armed its swipe on two fingers; withholding the rest of
@@ -214,10 +214,6 @@ struct AppInputLeakStats: Equatable, Sendable {
     /// begin-gesture event, or the cap running out with events still arriving.
     static let tailEndLabels = ["contacts", "scrollBegan", "mayBegin", "beginGesture", "cap"]
     private(set) var tailEnds = [Int](repeating: 0, count: 5)
-    /// Touch reads during lift tails: attempts, NSEvent conversions that failed, and reads
-    /// that reported a began touch. Counted only; they no longer end the tail.
-    struct TouchReads: Equatable, Sendable { var tries = 0, failed = 0, began = 0 }
-    private(set) var touchReads = TouchReads()
     /// Passed after a lift though the event was made before the lift: the lifted
     /// sequence's own input, delivered late.
     private(set) var passedMadeBeforeLift = 0
@@ -263,12 +259,6 @@ struct AppInputLeakStats: Equatable, Sendable {
     }
 
     mutating func recordTailEnd(_ slot: Int) { tailEnds[slot] &+= 1 }
-
-    mutating func recordTouchRead(converted: Bool, began: Bool) {
-        touchReads.tries &+= 1
-        if !converted { touchReads.failed &+= 1 }
-        if began { touchReads.began &+= 1 }
-    }
 
     private mutating func recordTiming(eventTime: TimeInterval?, lift: TimeInterval, now: TimeInterval) {
         guard let eventTime else { return }
@@ -323,7 +313,6 @@ struct AppInputLeakStats: Equatable, Sendable {
             + "afterLiftKinds=\(Self.labeled(afterLiftKinds, Self.kindLabels)) "
             + "tailKinds=\(Self.labeled(tailKinds, Self.kindLabels)) "
             + "tailEnds=\(Self.labeled(tailEnds, Self.tailEndLabels)) "
-            + "touchReads=\(touchReads.tries)/\(touchReads.failed)/\(touchReads.began) "
             + "madeBeforeLift=\(passedMadeBeforeLift) lagMs=\(longestDeliveryLagMilliseconds)"
     }
 
@@ -506,18 +495,6 @@ private let contactCallback: ContactCallback = { _, raw, count, timestamp, _ in
     let flags = CGEventSource.flagsState(.combinedSessionState)
     let buttonDown = CGEventSource.buttonState(.combinedSessionState, button: .left)
     let now = ProcessInfo.processInfo.systemUptime
-    if InputRecorder.isEnabled {
-        var recorded: [(id: Int32, frame: Int32, state: UInt32, x: Float, y: Float)] = []
-        if let raw {
-            let buffer = raw.assumingMemoryBound(to: RawContact.self)
-            for index in 0..<Int(count) {
-                let touch = buffer[index]
-                recorded.append((touch.identifier, touch.frame, touch.state,
-                                 touch.normalized.position.x, touch.normalized.position.y))
-            }
-        }
-        InputRecorder.recordFrame(now: now, timestamp: timestamp, flags: flags, buttonDown: buttonDown, touches: recorded)
-    }
     let (delivery, move, dropCheck) = gestureCallbackState.withLock { state in
         (state.process(contacts: snapshot, touches: frameTouches, rawCount: count, flags: flags,
                        timestamp: timestamp, now: now, buttonDown: buttonDown),
@@ -969,7 +946,6 @@ final class GestureMonitor {
                 }
             }
         }
-        InputRecorder.startIfRequested()
         register(device, contactCallback)
         isRunning = true
         startDevice(device, 0)
@@ -992,7 +968,6 @@ final class GestureMonitor {
         // its private dequeue thread exits can race the framework's own final release.
         // Reuse this handle on restart instead of allocating/leaking one per preference edit.
         removeScrollTap()
-        InputRecorder.stop()
     }
 
     /// After sleep the framework's device handle may stop delivering frames. Forget it so
@@ -1092,17 +1067,6 @@ private let inputTapCallback: CGEventTapCallBack = { _, type, event, context in
         .gesture
     }
     let now = ProcessInfo.processInfo.systemUptime
-    // During a lift tail only, read whether the touches report a began finger. Counted for
-    // the log, never acted on (see GestureInputOwnership). The tap thread's run loop never
-    // returns, so the NSEvent needs its own pool.
-    var touchRead: (converted: Bool, began: Bool)?
-    if kind == .gesture, type.rawValue == UInt32(NSEvent.EventType.gesture.rawValue),
-       gestureCallbackState.withLock({ $0.enabled && $0.ownership.inLiftTail(now: now) }) {
-        touchRead = autoreleasepool {
-            guard let touchEvent = NSEvent(cgEvent: event) else { return (false, false) }
-            return (true, !touchEvent.touches(matching: .began, in: nil).isEmpty)
-        }
-    }
     if type == .leftMouseDragged {
         if event.getIntegerValueField(.eventSourceUserData) != syntheticPointerTag {
             gestureCallbackState.withLock {
@@ -1113,13 +1077,8 @@ private let inputTapCallback: CGEventTapCallBack = { _, type, event, context in
         return Unmanaged.passUnretained(event)
     }
     let eventTime = eventUptime(event.timestamp, now: now)
-    let read = touchRead
     let suppress = gestureCallbackState.withLock { state in
-        if let read { state.appInputLeaks.recordTouchRead(converted: read.converted, began: read.began) }
-        return state.suppress(kind, now: now, rawType: type.rawValue, eventTime: eventTime)
-    }
-    if InputRecorder.isEnabled {
-        InputRecorder.recordEvent(event, type: type, now: now, eventTime: eventTime, withheld: suppress)
+        state.suppress(kind, now: now, rawType: type.rawValue, eventTime: eventTime)
     }
     return suppress ? nil : Unmanaged.passUnretained(event)
 }
