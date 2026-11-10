@@ -101,13 +101,25 @@ extension StagehandModel {
         }
     }
 
+    /// Called for every process that ends, including one whose windows already
+    /// reported their destruction while it quit.
     func applicationTerminated(pid: Int32) {
-        removeFromRibbon(forgetFocus: true, event: "application_removed", remove: {
-            removeTerminatedApplication(
-                pid: pid, windows: &windows, state: &state, restoration: &workspaceRestoration,
-                trackedWindowIDs: windowSystem.trackedWindowIDs
-            )
-        }, details: { ["pid": String(pid), "windowCount": String($0.count)] })
+        guard isRunning, !isSuspended else { return }
+        if windows.contains(where: { $0.pid == pid }) {
+            removeFromRibbon(forgetFocus: true, event: "application_removed", remove: {
+                removeTerminatedApplication(
+                    pid: pid, windows: &windows, state: &state, restoration: &workspaceRestoration,
+                    trackedWindowIDs: windowSystem.trackedWindowIDs
+                )
+            }, details: { ["pid": String(pid), "windowCount": String($0.count)] })
+        }
+        if let remembered = relaunchSlots.applicationTerminated(pid: pid, at: now()) {
+            diagnostics.record("relaunch_slots_remembered", details: [
+                "pid": String(pid),
+                "bundleIdentifier": remembered.bundleIdentifier,
+                "windowCount": String(remembered.count)
+            ])
+        }
     }
 
     @discardableResult
@@ -144,10 +156,13 @@ extension StagehandModel {
         guard isRunning, !isSuspended else { return false }
         refreshTask?.cancel()
         let previousState = state
+        let previousWindows = windows
         let motionStart = navigationFrames()
         let focusedWindowID = state.focusedWindowID
         let removedIDs = remove()
         guard !removedIDs.isEmpty else { return false }
+        relaunchSlots.windowsLeft(previousWindows.filter { removedIDs.contains($0.id) }, layout: previousState,
+                                  preferredHeights: preferredHeights, at: now())
         if forgetFocus { focusHistory.remove(windowIDs: removedIDs) }
         focusMostRecentWindowAfterLoss(
             previousFocusedWindowID: focusedWindowID,
@@ -299,16 +314,34 @@ extension StagehandModel {
                       observedFocusedWindowID observed: String?? = nil) {
         let motionStart = navigationFrames()
         let oldState = state
+        let currentIDs = Set(current.map(\.id))
+        relaunchSlots.windowsLeft(windows.filter { !currentIDs.contains($0.id) }, layout: oldState,
+                                  preferredHeights: preferredHeights, at: now())
         windows = current
         // The scan read every frame off the main thread; the next slide starts from them.
         for window in current { knownFrames[window.id] = window.frame }
+        // The active space before this scan, renumbered for spaces a relaunch reopened.
+        var unchangedActiveSpaceIndex = oldState.activeSpaceIndex
+        for placement in relaunchSlots.place(current, state: &state, restoration: &workspaceRestoration,
+                                             at: now()) {
+            for opened in placement.openedSpaceIndices where opened <= unchangedActiveSpaceIndex {
+                unchangedActiveSpaceIndex += 1
+            }
+            if let height = placement.preferredHeight { preferredHeights[placement.windowID] = height }
+            diagnostics.record("relaunched_window_placed", details: [
+                "windowID": placement.windowID,
+                "departedWindowID": placement.departedWindowID,
+                "spaces": placement.spaceIndices.map { String($0 + 1) }.joined(separator: ","),
+                "openedSpaces": placement.openedSpaceIndices.map { String($0 + 1) }.joined(separator: ",")
+            ])
+        }
         workspaceRestoration.reconcile(state: &state, windowIDs: current.map(\.id),
                                        trackedWindowIDs: windowSystem.trackedWindowIDs,
                                        initialWidthFractions: initialWidthFractions(for: current))
         let observedFocusedWindowID = observed ?? windowSystem.focusedWindowID()
         // A window restored from the Dock takes focus even if macOS has not reported it yet.
         let placedRestoredWindow = placeRestoredWindows()
-        if !placedRestoredWindow, oldState.activeSpaceIndex == state.activeSpaceIndex,
+        if !placedRestoredWindow, unchangedActiveSpaceIndex == state.activeSpaceIndex,
            let focused = observedFocusedWindowID,
            current.contains(where: { $0.id == focused }) {
             // External app activation follows an existing membership; shared windows stay in this space.

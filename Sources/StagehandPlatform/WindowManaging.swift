@@ -19,6 +19,7 @@ public protocol WindowManaging: AnyObject {
     /// Whether the window-list inventory poll may run now; it skips switches and gestures.
     var wantsInventory: (() -> Bool)? { get set }
     var onTitleChange: ((String, String) -> Void)? { get set }
+    /// Every process that ends, whether or not it still had tracked windows.
     var onApplicationTerminated: ((pid_t) -> Void)? { get set }
     var onWindowDestroyed: ((String) -> Void)? { get set }
     var onWindowMiniaturized: ((String) -> Void)? { get set }

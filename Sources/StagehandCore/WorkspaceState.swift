@@ -191,6 +191,32 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         return true
     }
 
+    /// Opens an empty numbered slot at `index`; it and later spaces move up one.
+    /// Fails when the last slot is occupied or active, since it would be dropped.
+    @discardableResult
+    public mutating func openSpace(at index: Int) -> Bool {
+        let last = Self.spaceCount - 1
+        guard spaces.indices.contains(index), spaces[last].windowIDs.isEmpty,
+              activeSpaceIndex != last else { return false }
+        spaces.removeLast()
+        spaces.insert(SpaceState(), at: index)
+        if activeSpaceIndex >= index { activeSpaceIndex += 1 }
+        return true
+    }
+
+    /// Adds a window that is not yet a member of the space at `position`, keeping
+    /// the space's focus, as a relaunched window returning to its slot.
+    @discardableResult
+    public mutating func insert(windowID: String, inSpace index: Int, at position: Int, width: Double) -> Bool {
+        guard spaces.indices.contains(index), !windowID.isEmpty,
+              !spaces[index].windowIDs.contains(windowID) else { return false }
+        let clamped = min(max(position, 0), spaces[index].windowIDs.count)
+        spaces[index].windowIDs.insert(windowID, at: clamped)
+        spaces[index].widthFractions[windowID] = SpaceState.clampedWidth(width)
+        if spaces[index].focusedWindowID == nil { spaces[index].focusedWindowID = windowID }
+        return true
+    }
+
     /// Keep a saved membership snapshot aligned after the corresponding live slot closes.
     public mutating func discardSpace(at index: Int) {
         guard spaces.indices.contains(index) else { return }

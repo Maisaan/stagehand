@@ -642,7 +642,9 @@ public final class WindowSystem {
             try? recoveryJournal.remove(windowID: record.windowID)
             interruptedWindowIDs.remove(record.windowID)
         }
-        if !removedIDs.isEmpty { onApplicationTerminated?(pid) }
+        // Also without tracked windows: an app that closed them while quitting
+        // still ended, and its ribbon slots are kept for its relaunch.
+        onApplicationTerminated?(pid)
     }
 
     /// `windowsReachable` false: the user is away from this Desktop (another Space, the

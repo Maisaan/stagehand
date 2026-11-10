@@ -110,6 +110,23 @@ struct WorkspaceRestoration {
         }
     }
 
+    /// Opens an empty space in the layout and in the remembered memberships, so a
+    /// window that is away keeps its numbered slot. Not during a transition: a
+    /// rollback would return to the layout from before the space opened.
+    @discardableResult
+    mutating func openSpace(state: inout WorkspaceState, at index: Int) -> Bool {
+        guard transition == nil else { return false }
+        var opened = state
+        guard opened.openSpace(at: index) else { return false }
+        var openedPending = pending
+        for pendingIndex in openedPending.indices {
+            guard openedPending[pendingIndex].state.openSpace(at: index) else { return false }
+        }
+        state = opened
+        pending = openedPending
+        return true
+    }
+
     @discardableResult
     mutating func compactEmptySpace(state: inout WorkspaceState, at index: Int) -> Bool {
         guard state.spaces.indices.contains(index), state.spaces[index].windowIDs.isEmpty,

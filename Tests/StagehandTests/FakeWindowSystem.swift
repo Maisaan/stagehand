@@ -53,8 +53,9 @@ final class FakeWindowSystem: WindowManaging {
     var trackedWindowIDs: Set<String> { Set(windows.keys) }
 
     @discardableResult
-    func addWindow(_ id: String, pid: Int32, frame: CGRect) -> WindowRecord {
-        let record = WindowRecord(id: id, appName: "App \(pid)", title: id, bundleIdentifier: "test.app\(pid)",
+    func addWindow(_ id: String, pid: Int32, frame: CGRect, bundleIdentifier: String? = nil) -> WindowRecord {
+        let record = WindowRecord(id: id, appName: "App \(pid)", title: id,
+                                  bundleIdentifier: bundleIdentifier ?? "test.app\(pid)",
                                   pid: pid, frame: frame, isResizable: true)
         windows[id] = Window(record: record, frame: frame, original: frame)
         return record
@@ -79,6 +80,12 @@ final class FakeWindowSystem: WindowManaging {
         windows[id]?.minimized = false
         if focus { focused = id }
         if notify { onWindowDeminiaturized?(id) } else { onChange?() }
+    }
+
+    /// The app quits after its windows reported their destruction, as most do.
+    func terminate(pid: Int32) {
+        for id in windows.keys where windows[id]?.record.pid == pid { close(id) }
+        onApplicationTerminated?(pid)
     }
 
     func close(_ id: String) {

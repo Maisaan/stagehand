@@ -80,6 +80,7 @@ Record the app pairs, pass/fail result, and any relevant log timestamps in the c
 - Remove one shared membership without closing the real window.
 - Switch to an empty space. Typing must not reach a parked app; a blank Stagehand placeholder is expected.
 - Create a new window. It is inserted after the current window and receives focus.
+- Quit an app whose window sits between two others (in a space of its own, too) and reopen it, or let it relaunch for an update, while another window is focused. Its windows return to their old spaces, order, widths, and heights; a space it left empty reopens in its old place. The log shows `relaunch_slots_remembered` and `relaunched_window_placed`.
 
 ## Input and gestures
 

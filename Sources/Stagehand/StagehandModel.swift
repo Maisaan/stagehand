@@ -231,6 +231,9 @@ final class StagehandModel: ObservableObject {
         return desktopCheckAttempts <= Self.quickDesktopChecks ? .milliseconds(500) : .seconds(5)
     }
     var workspaceRestoration = WorkspaceRestoration()
+    /// Ribbon slots of apps that quit, for the windows of their next launch.
+    var relaunchSlots = RelaunchSlots()
+    var now: () -> Date = Date.init
     var focusHistory = WindowFocusHistory()
     /// Windows that left the ribbon by minimizing. When one returns, it joins next
     /// to the focused window instead of its old slot.

@@ -29,7 +29,7 @@ Press Control + Option + Escape to pause. Pausing, quitting, and relaunching aft
 
 ## Usage
 
-Each space keeps its own window order, focus, and widths for the session. A window can be shared with several spaces. Drag a window by its title bar to reorder it; resize it to set its width (25% to 100% of the screen).
+Each space keeps its own window order, focus, and widths for the session. A window can be shared with several spaces. An app that quits and relaunches, as for an update, gets its old slots back. Drag a window by its title bar to reorder it; resize it to set its width (25% to 100% of the screen).
 
 | Action | Shortcut |
 | --- | --- |

@@ -396,6 +396,37 @@ struct ModelScenarioTests {
         #expect(harness.events("automatic_pause").isEmpty)
     }
 
+    /// An app updating itself quits and relaunches. Its windows reported their
+    /// destruction before the process ended, so the termination arrived with no
+    /// windows left; the relaunched window then joined after the focused window
+    /// instead of returning to its slot.
+    @Test func aRelaunchedAppReturnsToItsSlotInTheRibbon() async {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        let order = harness.model.state.currentSpace.windowIDs
+        let updated = order[1]
+        let pid = harness.windows.record(windowID: updated)!.pid
+        harness.windows.terminate(pid: pid)
+        await harness.settle()
+        harness.windows.setFocus(order[2])
+        harness.windows.onFocusedWindowChange?(order[2])
+        await harness.settle()
+        #expect(harness.model.state.focusedWindowID == order[2])
+        #expect(harness.events("relaunch_slots_remembered").count == 1)
+
+        harness.windows.addWindow("relaunched", pid: 900, frame: CGRect(x: 80, y: 60, width: 700, height: 500),
+                                  bundleIdentifier: "test.app\(pid)")
+        harness.windows.setFocus("relaunched")
+        harness.windows.onWindowCreated?()
+        await harness.settle()
+
+        #expect(harness.model.state.currentSpace.windowIDs == [order[0], "relaunched", order[2]])
+        #expect(harness.model.state.focusedWindowID == "relaunched")
+        #expect(harness.events("relaunched_window_placed").count == 1)
+    }
+
     @Test(arguments: [true, false])
     func aNewlyOpenedAppJoinsAfterTheFocusedWindow(focusedAtScan: Bool) async {
         let harness = ModelHarness(windowIDs: ["a", "b", "c", "d", "e"], focused: "a")
