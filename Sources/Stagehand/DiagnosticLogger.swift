@@ -41,7 +41,10 @@ final class DiagnosticLogger {
     private(set) var writeFailures = 0
     private(set) var writeAttempts = 0
 
+    /// Joins events of one launch: change IDs restart at 1 in every process.
+    let session: String
     private let now: () -> Date
+    private let uptime: () -> TimeInterval
     private let rotationSize: Int
     private let encoder: JSONEncoder
     private var handle: FileHandle?
@@ -56,12 +59,18 @@ final class DiagnosticLogger {
     private var pruneTask: Task<Void, Never>?
     private var pruneTimer: Task<Void, Never>?
 
+    static let launchSession = String(format: "%08x", UInt32.random(in: .min ... .max))
+
     init(logURL: URL = DiagnosticLogger.defaultLogURL, enabled: Bool, now: @escaping () -> Date = Date.init,
+         uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         session: String = DiagnosticLogger.launchSession,
          pruneInterval: Duration = DiagnosticLogger.defaultPruneInterval,
          rotationSize: Int = DiagnosticLogger.defaultRotationSize) {
         self.logURL = logURL
         isEnabled = enabled
         self.now = now
+        self.uptime = uptime
+        self.session = session
         self.rotationSize = max(1, rotationSize)
         encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -95,6 +104,8 @@ final class DiagnosticLogger {
         if let writeSuspendedUntil, timestamp < writeSuspendedUntil { return }
         let entry = Entry(
             timestamp: timestamp.ISO8601Format(.init(includingFractionalSeconds: true)),
+            uptimeMs: (uptime() * 1_000_000).rounded() / 1_000,
+            session: session,
             event: event,
             details: details()
         )
@@ -338,6 +349,9 @@ final class DiagnosticLogger {
 
     private struct Entry: Encodable {
         let timestamp: String
+        /// Monotonic (system uptime, paused during sleep): wall time can step.
+        let uptimeMs: Double
+        let session: String
         let event: String
         let details: [String: String]
     }

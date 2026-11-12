@@ -98,5 +98,20 @@ struct BenchmarkMeasurementTests {
         #expect(first?["motionScheduledMs"] is NSNull)
         #expect(first?["focusMs"] as? Double == 12)
         #expect(record.resultLine == "Result: FAIL: spaces: setup failed")
+        #expect(json?["build"] == nil)
+    }
+
+    /// The runner's checkout can differ from the binary that ran, so raw samples name the binary.
+    @Test func rawSamplesNameTheBuildThatRan() throws {
+        var record = BenchmarkRecord()
+        record.build = BuildIdentity(version: "ae0cfcd-dirty", buildNumber: "812",
+                                     executableModified: "2026-11-13T01:00:00Z")
+
+        let json = try JSONSerialization.jsonObject(with: record.jsonData()) as? [String: Any]
+        let build = json?["build"] as? [String: String]
+
+        #expect(build == ["version": "ae0cfcd-dirty", "buildNumber": "812",
+                          "executableModified": "2026-11-13T01:00:00Z"])
+        #expect(json?["schema"] as? Int == 1)
     }
 }

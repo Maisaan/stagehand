@@ -31,8 +31,8 @@ Set `STAGEHAND_APP` to benchmark another build. To compare against an older comm
 Every run is saved, pass or fail, to `$BENCHMARK_RESULTS_DIR` (default `~/Library/Application Support/Stagehand/Benchmarks`, not under `~/Library/Logs`, which cleaners such as Mole delete) as `<UTC start>-<sha7>[-dirty]-<mode>[-r<N>]/`:
 
 - `report.txt`: the text report, also printed.
-- `raw.json`: the app's raw samples, the only input to comparison.
-- `meta.json`: written by the runner: git SHA, branch and dirty flag of the checkout that holds the app (the runner's own checkout when the app lives elsewhere, such as `/Applications`), the app's path, version and executable modification time, macOS version and hardware model, mode, flags, whether logging was on, 1- and 5-minute load average at start, start and end time, and the run's outcome (`pass`, `fail`, `timeout`) with its reasons.
+- `raw.json`: the app's raw samples, the only input to comparison. Its `build` block is the running binary's own version, build number and executable modification time.
+- `meta.json`: written by the runner: git SHA, branch and dirty flag of the checkout that holds the app (the runner's own checkout when the app lives elsewhere, such as `/Applications`; `git.holdsApp` tells which), the app's path, bundle version, build number and executable modification time, macOS version and hardware model, mode, flags, whether logging was on, 1- and 5-minute load average at start, start and end time, and the run's outcome (`pass`, `fail`, `timeout`) with its reasons.
 - `diagnostic.log`: the run's own diagnostic log (`--diagnostic-log`), so probe runs stay out of `stagehand.log`.
 
 `BENCHMARK_REPEAT=N` runs each mode N times in a row (the `-r<N>` suffix), 3 by default. Single runs vary by 10 to 30 percent, so judge a change by the median of the repeats and treat anything inside the baseline's spread as noise. Use `BENCHMARK_REPEAT=1` only for a quick smoke check, never for a before/after comparison. `BENCHMARK_TIMEOUT` caps each run (default 240 s). The runner exits non-zero when any run timed out, has a report line starting with `FAIL`, or does not end with exactly `Result: PASS`; it runs the remaining modes first.
@@ -51,7 +51,7 @@ python3 -I scripts/compare-benchmarks.py ~/Library/Application\ Support/Stagehan
 
 It reads only `raw.json` and `meta.json`, groups runs by mode, and prints p50, p90 and max per metric for baseline and candidate, with the spread across repeats when a side has two or more. A change that lands inside the baseline's repeat spread is marked **within noise**; with one baseline run, noise is unknown. Failed runs, missing phases, missing keys and missing samples are listed and left out of the numbers, never counted as zero; null focus times count as unconfirmed focus.
 
-It refuses (exit 1) when mode, logging, the `environment` block (display, scale, frame rates, Reduce Motion) or the `settings` block (gap, widths, probe settings) differ, or when one side mixes builds. `--allow-mismatch` compares anyway and lists the differences at the top.
+Builds are identified by the bundle (`raw.json`'s `build`, else `meta.json`'s `app`), not the runner's checkout. It refuses (exit 1) when mode, logging, the `environment` block (display, scale, frame rates, Reduce Motion) or the `settings` block (gap, widths, probe settings) differ, or when one side mixes builds. `--allow-mismatch` compares anyway and lists the differences at the top.
 
 Results from before stage 1 of the benchmark work (no `raw.json`, report text only) are not comparable: the comparison treats them as failed runs. Build both sides with the stage-1 benchmark code, as above.
 

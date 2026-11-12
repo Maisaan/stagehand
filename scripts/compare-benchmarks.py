@@ -41,9 +41,16 @@ class Run:
 
     @property
     def build(self):
-        git = self.meta.get("git", {})
+        # The binary that ran, read by the app itself when it can be: the runner's checkout may not have built it.
+        bundle = (self.raw or {}).get("build") or {}
         app = self.meta.get("app", {})
-        return (git.get("sha"), git.get("dirty"), app.get("executableModified"))
+        version = bundle.get("version") or app.get("version")
+        if version:
+            return Build(version, bundle.get("buildNumber") or app.get("buildNumber"),
+                         bundle.get("executableModified") or app.get("executableModified"))
+        git = self.meta.get("git", {})
+        sha = (git.get("sha") or "unknown")[:7] + ("-dirty" if git.get("dirty") else "")
+        return Build(f"checkout {sha}", None, app.get("executableModified"))
 
     @property
     def passed(self):
@@ -52,6 +59,17 @@ class Run:
     @property
     def start_load(self):
         return self.meta.get("loadAverageAtStart", {}).get("1m")
+
+
+@dataclass(frozen=True)
+class Build:
+    version: str
+    number: str | None
+    modified: str | None
+
+    def __str__(self):
+        number = f" #{self.number}" if self.number else ""
+        return f"{self.version}{number}"
 
 
 @dataclass
@@ -285,8 +303,7 @@ def side_differences(side_name, runs):
     differences = []
     builds = {run.build for run in runs}
     if len(builds) > 1:
-        listed = ", ".join(f"{(sha or 'unknown')[:7]}{'-dirty' if dirty else ''} built {modified}"
-                           for sha, dirty, modified in sorted(builds, key=str))
+        listed = ", ".join(f"{build} built {build.modified}" for build in sorted(builds, key=repr))
         differences.append(f"{side_name} mixes builds: {listed}")
     by_mode = group_by_mode(runs)
     for mode, mode_runs in by_mode.items():
@@ -478,8 +495,7 @@ def compare_mode(lines, baseline_runs, candidate_runs, title):
 
 
 def side_header(name, runs):
-    builds = sorted({run.build for run in runs}, key=str)
-    described = ", ".join(f"{(sha or 'unknown')[:7]}{'-dirty' if dirty else ''}" for sha, dirty, _ in builds)
+    described = ", ".join(sorted({str(run.build) for run in runs}))
     modes = ", ".join(sorted({str(run.mode) for run in runs}))
     loads = [run.start_load for run in runs if run.start_load is not None]
     load = f"; start load {describe_loads(loads)}" if loads else ""

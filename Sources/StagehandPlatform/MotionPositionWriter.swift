@@ -125,9 +125,9 @@ final class MotionPositionWriter: @unchecked Sendable {
             for item in batch {
                 var position = item.position
                 guard let value = AXValueCreate(.cgPoint, &position) else { continue }
-                let began = CFAbsoluteTimeGetCurrent()
+                let began = ProcessInfo.processInfo.systemUptime
                 AXUIElementSetAttributeValue(item.element, kAXPositionAttribute as CFString, value)
-                let finished = CFAbsoluteTimeGetCurrent()
+                let finished = ProcessInfo.processInfo.systemUptime
                 lock.withLock {
                     guard item.generation == generation else { return }
                     sent += 1

@@ -590,7 +590,10 @@ final class StagehandModel: ObservableObject {
                 ])
             }
         }
-        self.diagnostics.record("session_started")
+        self.diagnostics.record("session_started", details: BuildIdentity.running.diagnosticDetails.merging([
+            "pid": String(ProcessInfo.processInfo.processIdentifier),
+            "bootTime": BuildIdentity.bootTime()?.ISO8601Format() ?? "unknown"
+        ]) { current, _ in current })
         refreshPermissions()
         startAccessibilityMonitor()
     }

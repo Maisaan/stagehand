@@ -14,6 +14,7 @@ import StagehandPlatform
 extension StagehandModel {
     func runBenchmark(probeURL: URL, busy: Bool, switches: Int = 24, rawOutput: URL? = nil) async -> String {
         var record = BenchmarkRecord()
+        record.build = .running
         var lines: [String] = []
         let ownerInput = OwnerInputMonitor()
         ownerInput.start()

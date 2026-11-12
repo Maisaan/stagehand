@@ -56,16 +56,21 @@ if [[ "$launch" == open ]]; then
 fi
 
 executable="$app/Contents/MacOS/Stagehand"
+# The checkout that holds the app, else the runner's own; only the former built it.
 checkout="$(git -C "$(dirname "$app")" rev-parse --show-toplevel 2>/dev/null || echo "$root")"
+checkout_holds_app=true
+git -C "$(dirname "$app")" rev-parse --show-toplevel >/dev/null 2>&1 || checkout_holds_app=false
 git_sha="$(git -C "$checkout" rev-parse HEAD 2>/dev/null || echo unknown)"
 git_branch="$(git -C "$checkout" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
 git_dirty=false
 [[ -n "$(git -C "$checkout" status --porcelain --untracked-files=no 2>/dev/null)" ]] && git_dirty=true
 name_base="${git_sha:0:7}"
 [[ "$git_dirty" == true ]] && name_base+="-dirty"
-app_version=""
-[[ -f "$app/Contents/Info.plist" ]] &&
+app_version="" app_build_number=""
+if [[ -f "$app/Contents/Info.plist" ]]; then
     app_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist" 2>/dev/null || true)"
+    app_build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist" 2>/dev/null || true)"
+fi
 executable_modified=""
 [[ -f "$executable" ]] && executable_modified="$(date -u -r "$(stat -f %m "$executable")" +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -74,7 +79,9 @@ write_meta() {
     META_MODE="$mode" META_FLAGS="$(printf '%s\n' ${flags[@]+"${flags[@]}"})" META_LOGGING="$logging" \
     META_REPEAT="$index" META_REPEATS="$repeats" META_TIMEOUT="$timeout_seconds" \
     META_GIT_SHA="$git_sha" META_GIT_BRANCH="$git_branch" META_GIT_DIRTY="$git_dirty" META_CHECKOUT="$checkout" \
-    META_APP="$app" META_APP_VERSION="$app_version" META_EXECUTABLE_MODIFIED="$executable_modified" \
+    META_CHECKOUT_HOLDS_APP="$checkout_holds_app" \
+    META_APP="$app" META_APP_VERSION="$app_version" META_APP_BUILD_NUMBER="$app_build_number" \
+    META_EXECUTABLE_MODIFIED="$executable_modified" \
     META_MACOS="$(sw_vers -productVersion)" META_MACOS_BUILD="$(sw_vers -buildVersion)" \
     META_MODEL="$(sysctl -n hw.model)" META_CPU="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)" \
     META_LOAD1="$load1" META_LOAD5="$load5" META_START="$started" META_END="${ended:-}" \
@@ -90,8 +97,9 @@ meta = {
     "mode": e["META_MODE"], "flags": lines("META_FLAGS"), "loggingEnabled": e["META_LOGGING"] == "true",
     "repeat": int(e["META_REPEAT"]), "repeats": int(e["META_REPEATS"]), "timeoutSeconds": int(e["META_TIMEOUT"]),
     "git": {"sha": e["META_GIT_SHA"], "branch": e["META_GIT_BRANCH"], "dirty": e["META_GIT_DIRTY"] == "true",
-            "checkout": e["META_CHECKOUT"]},
+            "checkout": e["META_CHECKOUT"], "holdsApp": e["META_CHECKOUT_HOLDS_APP"] == "true"},
     "app": {"path": e["META_APP"], "version": e["META_APP_VERSION"] or None,
+            "buildNumber": e["META_APP_BUILD_NUMBER"] or None,
             "executableModified": e["META_EXECUTABLE_MODIFIED"] or None},
     "machine": {"macOS": e["META_MACOS"], "macOSBuild": e["META_MACOS_BUILD"], "model": e["META_MODEL"],
                 "cpu": e["META_CPU"] or None},

@@ -100,6 +100,19 @@ class CompareBenchmarksTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("baseline mixes builds", output)
 
+    def test_builds_are_identified_by_the_bundle_not_the_runner_checkout(self):
+        def with_build(version):
+            return fixtures.modified(fixtures.raw(), lambda raw: raw.update(
+                build={"version": version, "buildNumber": "812", "executableModified": "2026-11-13T01:00:00Z"}))
+        fixtures.write_run(self.root / "base/r1", fixtures.meta(sha="a" * 40), with_build("1111111"))
+        fixtures.write_run(self.root / "base/r2", fixtures.meta(sha="c" * 40), with_build("1111111"))
+        fixtures.write_run(self.root / "cand/r1", fixtures.meta(sha="b" * 40), with_build("2222222"))
+        fixtures.write_run(self.root / "cand/r2", fixtures.meta(sha="b" * 40), with_build("3333333"))
+        status, output = self.run_compare(self.root / "base", self.root / "cand")
+        self.assertEqual(status, 1)
+        self.assertNotIn("baseline mixes builds", output)
+        self.assertIn("candidate mixes builds: 2222222 #812", output)
+
     def test_missing_phase_is_reported_not_zero(self):
         baseline = fixtures.write_run(self.root / "base")
         without_rapid = fixtures.modified(fixtures.raw(), lambda raw: raw["phases"].pop("rapid"))

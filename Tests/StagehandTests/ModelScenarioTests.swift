@@ -11,6 +11,18 @@ import StagehandCore
 @MainActor
 @Suite(.serialized)
 struct ModelScenarioTests {
+    /// A benchmark's runner checkout can differ from the binary that ran; the log names the binary.
+    @Test func theSessionStartNamesTheBuildTheProcessAndTheBoot() {
+        let harness = ModelHarness(windowIDs: ["a"], focused: "a")
+        defer { harness.cleanUp() }
+        let details = harness.events("session_started").first?["details"] as? [String: String]
+        #expect(details?["pid"] == String(ProcessInfo.processInfo.processIdentifier))
+        #expect(details?["bootTime"].flatMap { try? Date($0, strategy: .iso8601) } != nil)
+        #expect(details?["buildVersion"] != nil)
+        #expect(details?["buildNumber"] != nil)
+        #expect(details?["executableModified"] != nil)
+    }
+
     @Test func navigationMovesFocusAndParksTheRibbonsHiddenWindows() async {
         let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
         defer { harness.cleanUp() }

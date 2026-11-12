@@ -98,6 +98,23 @@ class RunBenchmarkTests(unittest.TestCase):
             self.assertEqual(set(meta["loadAverageAtStart"]), {"1m", "5m"})
             self.assertTrue(meta["startUtc"].endswith("Z") and meta["endUtc"].endswith("Z"))
 
+    def test_meta_names_the_app_bundle_apart_from_the_runner_checkout(self):
+        plist = self.app / "Contents/Info.plist"
+        plist.write_text('''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleShortVersionString</key><string>1234567-dirty</string>
+<key>CFBundleVersion</key><string>812</string>
+</dict></plist>
+''')
+        result = self.run_runner("busy")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        [directory] = self.run_dirs()
+        meta = self.meta(directory)
+        self.assertEqual((meta["app"]["version"], meta["app"]["buildNumber"]), ("1234567-dirty", "812"))
+        self.assertFalse(meta["git"]["holdsApp"])
+        self.assertEqual(meta["git"]["checkout"], str(RUNNER.parents[1]))
+
     def test_single_run_has_no_repeat_suffix_and_quiet_turns_logging_off(self):
         result = self.run_runner("busy-quiet")
         self.assertEqual(result.returncode, 0, result.stderr)

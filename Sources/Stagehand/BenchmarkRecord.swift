@@ -8,6 +8,7 @@ struct BenchmarkRecord: Encodable {
 
     var failures: [String] = []
     var ownerInput: String?
+    var build: BuildIdentity?
     var environment: Environment?
     var settings: Settings?
     var phases = Phases()
@@ -126,7 +127,7 @@ struct BenchmarkRecord: Encodable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schema, result, failures, ownerInput, environment, settings, phases
+        case schema, result, failures, ownerInput, build, environment, settings, phases
     }
 
     func encode(to encoder: Encoder) throws {
@@ -135,6 +136,7 @@ struct BenchmarkRecord: Encodable {
         try container.encode(passed ? "pass" : "fail", forKey: .result)
         try container.encode(failures, forKey: .failures)
         try container.encodeIfPresent(ownerInput, forKey: .ownerInput)
+        try container.encodeIfPresent(build, forKey: .build)
         try container.encodeIfPresent(environment, forKey: .environment)
         try container.encodeIfPresent(settings, forKey: .settings)
         try container.encode(phases, forKey: .phases)

@@ -32,7 +32,8 @@ private struct LogFixture {
     let fixture = LogFixture()
     defer { fixture.remove() }
     var now = Date(timeIntervalSince1970: 1_000_000)
-    let logger = DiagnosticLogger(logURL: fixture.logURL, enabled: true, now: { now })
+    let logger = DiagnosticLogger(logURL: fixture.logURL, enabled: true, now: { now },
+                                  uptime: { 12.345_678_9 }, session: "s1")
 
     for _ in 0..<60 {
         logger.record("yesterday")
@@ -56,7 +57,7 @@ private struct LogFixture {
     // The handle reopens after the swap and keeps appending.
     logger.record("later")
     contents = fixture.contents()
-    #expect(contents.hasSuffix("\"event\":\"later\",\"timestamp\":\"\(now.ISO8601Format(.init(includingFractionalSeconds: true)))\"}\n"))
+    #expect(contents.hasSuffix("\"event\":\"later\",\"session\":\"s1\",\"timestamp\":\"\(now.ISO8601Format(.init(includingFractionalSeconds: true)))\",\"uptimeMs\":12345.679}\n"))
     #expect(contents.split(separator: "\n").count == 61)
 }
 
@@ -191,7 +192,7 @@ private struct LogFixture {
 @Test func clearRemovesTheLogAndItsRotation() throws {
     let fixture = LogFixture()
     defer { fixture.remove() }
-    let logger = DiagnosticLogger(logURL: fixture.logURL, enabled: true, rotationSize: 100)
+    let logger = DiagnosticLogger(logURL: fixture.logURL, enabled: true, rotationSize: 200)
     for index in 0..<4 { logger.record("entry\(index)") }
     #expect(FileManager.default.fileExists(atPath: logger.rotatedLogURL.path))
     logger.clear()
@@ -303,4 +304,25 @@ private final class PruneHold {
 
     #expect(FileManager.default.fileExists(atPath: logger.rotatedLogURL.path))
     #expect(try String(contentsOf: logger.rotatedLogURL, encoding: .utf8) == archive)
+}
+
+/// Change IDs restart at 1 in every launch, so the analyzer joins events by
+/// session, and times them by the monotonic uptime because wall time can step.
+@MainActor
+@Test func everyEventCarriesTheLaunchSessionAndMonotonicUptime() throws {
+    let fixture = LogFixture()
+    defer { fixture.remove() }
+    var uptime: TimeInterval = 100
+    let logger = DiagnosticLogger(logURL: fixture.logURL, enabled: true, uptime: { uptime })
+    logger.record("first")
+    uptime = 100.25
+    logger.record("second", details: ["key": "value"])
+
+    let entries = try fixture.contents().split(separator: "\n").map {
+        try #require(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])
+    }
+    #expect(entries.map { $0["uptimeMs"] as? Double } == [100_000, 100_250])
+    #expect(entries.allSatisfy { $0["session"] as? String == DiagnosticLogger.launchSession })
+    #expect(DiagnosticLogger.launchSession.count == 8)
+    #expect(DiagnosticLogger(logURL: fixture.logURL, enabled: false).session == logger.session)
 }
