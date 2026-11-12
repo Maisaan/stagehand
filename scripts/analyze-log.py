@@ -3,7 +3,7 @@
 
 Usage:
   scripts/analyze-log.py [--since ISO] [--until ISO] [--split ISO] [--log PATH]
-                         [--include-diagnostic-runs]
+                         [--include-diagnostic-runs] [--high-load N]
 
 Times are UTC ISO-8601 prefixes as written in the log, e.g. 2026-10-15T12:55.
 --split prints the same report for before and after that time, for comparing
@@ -13,26 +13,40 @@ an installed build against the previous one. Acceptance and benchmark runs
 end with a manual pause a few seconds after a burst of switches. Run with
 `python3 -I`.
 
+Changes are paired by (session, changeID) over the whole log before --since,
+--until or --split select them, so a range boundary never mispairs one; a change
+that straddles the boundary is counted as cut, not timed. Durations use the
+monotonic uptimeMs where logged. Logs before 2026-11-13 have no session: they
+are split at each launch (session_started), where change IDs restart, or at a
+30-minute gap, and labelled approximate; before 2026-11-12 they have no change
+IDs either and pair by queue order, which a cancelled queue can misalign.
+
 Sections:
-  navigation   per-switch phases: action -> first motion -> settled, focus time.
-               Actions pair with their motion, focus and completion by changeID;
-               logs before 2026-11-12 have none and pair by queue order, which a
-               cancelled queue can misalign. Actions without change_completed
-               (merged into the next step, no effect, refused, failed, cancelled)
-               are counted as incomplete, never timed.
+  navigation   per-switch phases: action -> motion scheduled -> settled, focus
+               time. Only change_completed counts as settled; a change that
+               ended otherwise (change_ended: merged, superseded, noEffect,
+               refused, skipped, interrupted, failed, cancelled) is counted by
+               outcome, never timed.
+  change traces  orphan events (no change_queued for their ID), duplicate
+               terminal events, changes cut by the time range, and changes with
+               no terminal event (log ended, or the session went on)
+  changes      queue wait (queued -> started), processing (started -> terminal)
+               and outcomes per origin (command, gesture, system) and operation
   focus by app focus confirmation per target pid (names resolved while running)
   motion       per-animation write statistics; *MotionGap is the longest a
                window went without moving, i.e. a visible freeze
   main thread  main_thread_stall events by the last event before them, and by
                the call most often running during them (activity)
   stall kind   stalls split by the main thread's own CPU during the wait:
-               computing (CPU >= half the wait) or waiting (on another app's
-               reply, or for a CPU under load; loadAverage tells which)
+               computing (CPU >= half the wait), starved (CPU under a tenth of
+               it while the 1-minute load is at least --high-load: waiting for a
+               CPU), or waiting (most likely on another app's reply)
   resources    resource_sample: footprint, CPU %, wakeups/s, threads
   timing       launch_timing and desktop_resume_refreshed
   drag and drop  drag_and_drop_ended: pointer gaps and Stagehand's own moves
-  layouts      change_completed: Accessibility calls on the main thread and parking
-               requests skipped or read, by kind of change
+  layouts      change_completed and superseded change_ended: Accessibility calls
+               on the main thread and parking requests skipped or read, by kind
+               of change
   lifecycle    lock/unlock, suspend/resume latency, pauses and failures
 """
 import argparse
@@ -41,6 +55,7 @@ import json
 import os
 import re
 import subprocess
+from dataclasses import dataclass
 from datetime import datetime
 
 
@@ -65,84 +80,268 @@ def process_name(pid):
         return "?"
 
 
-def navigation_stats(events):
-    """Per-action latencies (ms) and counts of incomplete actions and rejected focus."""
+SESSION_GAP_MS = 30 * 60 * 1000
+# Near-zero main-thread CPU while the machine is loaded: waiting for a CPU, not for another app.
+STARVED_CPU_FRACTION = 0.1
+TRACE_EVENTS = {"change_queued", "change_started", "change_completed", "change_ended",
+                "navigation_motion_planned", "ribbon_animation_started", "ribbon_animation_completed",
+                "navigation_focus_confirmed"}
+SYSTEM_OPERATIONS = {"observedFocus", "windowRemoval", "refresh", "preferences"}
+
+
+def annotate_sessions(events):
+    """Adds _session, _approximate and _t (uptimeMs when logged, else wall-clock ms) to each event.
+
+    Logs before 2026-11-13 carry no session. They are split where a launch starts (session_started),
+    where change IDs restart, or at a gap over 30 minutes, and marked approximate.
+    """
+    annotated = []
+    legacy_sessions = 0
+    legacy_key = None
+    last_wall = None
+    last_change_id = None
+    for event in events:
+        wall = ms(event["timestamp"])
+        if "session" in event:
+            key, approximate = event["session"], False
+        else:
+            change_id = event.get("details", {}).get("changeID") if event["event"] == "change_queued" else None
+            restarted = (change_id is not None and change_id.isdigit() and last_change_id is not None
+                         and int(change_id) <= last_change_id)
+            gap = last_wall is not None and wall - last_wall > SESSION_GAP_MS
+            if legacy_key is None or event["event"] == "session_started" or restarted or gap:
+                legacy_sessions += 1
+                legacy_key = f"legacy-{legacy_sessions}"
+                last_change_id = None
+            if change_id is not None and change_id.isdigit():
+                last_change_id = int(change_id)
+            last_wall = wall
+            key, approximate = legacy_key, True
+        annotated.append(dict(event, _session=key, _approximate=approximate, _t=float(event.get("uptimeMs", wall))))
+    return annotated
+
+
+def ensure_annotated(events):
+    return events if not events or "_session" in events[0] else annotate_sessions(events)
+
+
+class Trace:
+    def __init__(self, session, change_id, queued):
+        details = queued.get("details", {})
+        self.session = session
+        self.change_id = change_id
+        self.approximate = queued["_approximate"]
+        self.operation = details.get("operation", "")
+        self.origin = details.get("origin") or (
+            "system" if self.operation in SYSTEM_OPERATIONS else "command")
+        self.gesture_id = details.get("gestureID")
+        self.queued = queued
+        self.started = None
+        self.terminals = []
+        self.motion = None
+        self.focus = None
+        self.last = queued
+
+    @property
+    def terminal(self):
+        return self.terminals[0] if self.terminals else None
+
+    @property
+    def outcome(self):
+        terminal = self.terminal
+        if terminal is None:
+            return None
+        if terminal["event"] == "change_completed":
+            return "completed"
+        return terminal.get("details", {}).get("outcome", "ended")
+
+
+def build_traces(events):
+    """Pairs every change event with its change_queued by (session, changeID), over the whole log.
+
+    Returns (traces in queue order, orphan events, gesture start times by (session, gestureID)).
+    Events without a changeID (logs before 2026-11-12, and motion and focus before 2026-11-13) are
+    given to the change processing at the time, which only approximate sessions rely on.
+    """
+    traces = {}
+    order = []
+    orphans = []
+    gestures = {}
+    current = {}
+    legacy_queue = collections.defaultdict(collections.deque)
+    legacy_count = collections.Counter()
+    for event in events:
+        name, d, session = event["event"], event.get("details", {}), event["_session"]
+        if name == "gesture_motion_started" and "gestureID" in d:
+            gestures.setdefault((session, d["gestureID"]), event)
+        if name not in TRACE_EVENTS:
+            continue
+        change_id = d.get("changeID")
+        if name == "change_queued":
+            if change_id is None:
+                legacy_count[session] += 1
+                change_id = f"q{legacy_count[session]}"
+                legacy_queue[session].append((change_id, d.get("operation", "")))
+            key = (session, change_id)
+            if key in traces:
+                orphans.append((event, "change ID queued twice in one session"))
+                continue
+            traces[key] = Trace(session, change_id, event)
+            order.append(traces[key])
+            continue
+        if name == "change_started" and change_id is None:
+            queue = legacy_queue[session]
+            while queue and queue[0][1] != d.get("operation", ""):
+                queue.popleft()
+            change_id = queue.popleft()[0] if queue else None
+        if change_id is not None:
+            key = (session, change_id)
+        elif event["_approximate"]:
+            key = current.get(session)
+        else:
+            key = None
+        if key is None:
+            continue
+        trace = traces.get(key)
+        if trace is None:
+            orphans.append((event, "no change_queued for its change ID"))
+            continue
+        trace.last = event
+        if name == "change_started":
+            current[session] = key
+            trace.started = event
+        elif name in ("change_completed", "change_ended"):
+            trace.terminals.append(event)
+            if current.get(session) == key:
+                current[session] = None
+        elif name == "ribbon_animation_started":
+            trace.motion = trace.motion or event
+        elif name == "navigation_focus_confirmed" and d.get("focusConfirmed") != "false":
+            trace.focus = trace.focus or event
+    return order, orphans, gestures
+
+
+@dataclass
+class ChangeSummary:
+    nav: dict
+    counts: collections.Counter
+    by_kind: dict
+    approximate_sessions: int
+
+
+def summarize_changes(events, since="", until="9999"):
+    """Per-change latencies (ms) and counts for changes queued in [since, until).
+
+    Pairing runs over every event first and filters after, so a range boundary never mispairs a
+    change; a change that straddles the boundary is counted as cut, not timed.
+    """
+    events = ensure_annotated(events)
+    traces, orphans, gestures = build_traces(events)
     nav = collections.defaultdict(list)
     counts = collections.Counter()
-    queued, operations, motion, focus, completed = {}, {}, {}, {}, {}
-    started = set()
-    legacy_queue = collections.deque()
-    legacy_count = 0
-    current = None
-    gesture = None
+    by_kind = collections.defaultdict(lambda: {"wait": [], "processing": [], "outcomes": collections.Counter()})
+    within = lambda event: since <= event["timestamp"] < until
+    last_progress = collections.defaultdict(lambda: float("-inf"))
+    for trace in traces:
+        for event in [trace.started, *trace.terminals]:
+            if event is not None:
+                last_progress[trace.session] = max(last_progress[trace.session], event["_t"])
     for event in events:
-        name, t, d = event["event"], ms(event["timestamp"]), event.get("details", {})
-        operation = d.get("operation", "")
-        # Separate from the chain below: a swipe's action is also an action change.
-        if name == "gesture_motion_started":
-            gesture = t
-        elif name == "change_queued" and operation.startswith("action.") and gesture is not None:
-            nav["swipe start -> action"].append(t - gesture)
-            gesture = None
-        elif name == "gesture_motion_resolved":
-            gesture = None
-        if name == "change_queued":
-            change_id = d.get("changeID")
-            if change_id is None:
-                legacy_count += 1
-                change_id = f"legacy-{legacy_count}"
-                legacy_queue.append((change_id, operation))
-            queued[change_id] = t
-            operations[change_id] = operation
-        elif name == "change_started":
-            change_id = d.get("changeID")
-            if change_id is None:
-                while legacy_queue and legacy_queue[0][1] != operation:
-                    legacy_queue.popleft()
-                change_id = legacy_queue.popleft()[0] if legacy_queue else None
-            current = change_id
-            if change_id is not None:
-                started.add(change_id)
-        elif name == "change_completed":
-            change_id = d.get("changeID", current)
-            if change_id is not None:
-                completed.setdefault(change_id, t)
-            current = None
-        elif name == "ribbon_animation_started" and current is not None:
-            motion.setdefault(current, t)
-        elif name == "navigation_focus_confirmed":
-            if d.get("focusConfirmed") == "false":
-                counts["focus rejected"] += 1
-            elif current is not None:
-                focus.setdefault(current, t)
-            if d.get("focusReport"):
-                report_ = json.loads(d["focusReport"])
-                nav["focus attempt (driver)"].append(report_["elapsedMilliseconds"])
-                nav["focus attempt pid " + str(report_.get("targetPID"))].append(report_["elapsedMilliseconds"])
-    for change_id, operation in operations.items():
-        if not operation.startswith("action."):
+        d = event.get("details", {})
+        if not within(event) or event["event"] != "navigation_focus_confirmed":
             continue
-        counts["actions"] += 1
-        begin = queued[change_id]
-        if change_id in motion:
-            nav["action -> first motion"].append(motion[change_id] - begin)
-        if change_id in focus:
-            nav["action -> focus confirmed"].append(focus[change_id] - begin)
-        if change_id in completed:
-            nav["action -> settled"].append(completed[change_id] - begin)
-        elif change_id in started:
-            counts["incomplete: started, never completed"] += 1
+        if d.get("focusConfirmed") == "false":
+            counts["focus rejected"] += 1
+        if d.get("focusReport"):
+            report_ = json.loads(d["focusReport"])
+            nav["focus attempt (driver)"].append(report_["elapsedMilliseconds"])
+            nav["focus attempt pid " + str(report_.get("targetPID"))].append(report_["elapsedMilliseconds"])
+    for event, reason in orphans:
+        if within(event):
+            counts[f"orphan {event['event']}: {reason}"] += 1
+    approximate_sessions = set()
+    legacy_gesture = None
+    for trace in traces:
+        queued, terminal = trace.queued, trace.terminal
+        if not within(queued):
+            if terminal is not None and within(terminal):
+                counts["cut by the time range: queued before it"] += 1
+            continue
+        if trace.approximate:
+            approximate_sessions.add(trace.session)
+        if len(trace.terminals) > 1:
+            counts["duplicate terminal events"] += 1
+        if terminal is not None and not within(terminal):
+            counts["cut by the time range: ended after it"] += 1
+            continue
+        is_action = trace.operation.startswith("action.")
+        if is_action:
+            counts["actions"] += 1
+        kind = by_kind[(trace.origin, trace.operation)]
+        begin = queued["_t"]
+        if trace.started is not None:
+            kind["wait"].append(trace.started["_t"] - begin)
+            if terminal is not None:
+                kind["processing"].append(terminal["_t"] - trace.started["_t"])
+        if terminal is not None:
+            kind["outcomes"][trace.outcome] += 1
+            if trace.outcome != "completed":
+                counts[f"ended {trace.outcome}"] += 1
         else:
+            unfinished = "log ended" if trace.last["_t"] >= last_progress[trace.session] else "session went on"
+            kind["outcomes"]["no terminal"] += 1
+            if not trace.approximate:
+                counts[f"no terminal event ({unfinished})"] += 1
+        if trace.gesture_id is not None and (trace.session, trace.gesture_id) in gestures:
+            nav["swipe start -> action"].append(begin - gestures[(trace.session, trace.gesture_id)]["_t"])
+        if not is_action:
+            continue
+        if trace.motion is not None:
+            nav["action -> motion scheduled"].append(trace.motion["_t"] - begin)
+        if trace.focus is not None:
+            nav["action -> focus confirmed"].append(trace.focus["_t"] - begin)
+        if trace.outcome == "completed":
+            nav["action -> settled"].append(terminal["_t"] - begin)
+        elif terminal is None and trace.started is not None:
+            counts["incomplete: started, never completed"] += 1
+        elif terminal is None:
             counts["incomplete: never started"] += 1
-    return nav, counts
+    # Logs before gesture IDs: a swipe's action is the next action queued after its start.
+    for event in events:
+        if not event["_approximate"] or not within(event):
+            continue
+        name, operation = event["event"], event.get("details", {}).get("operation", "")
+        if name == "gesture_motion_started":
+            legacy_gesture = event
+        elif name == "change_queued" and operation.startswith("action.") and legacy_gesture is not None:
+            if legacy_gesture["_session"] == event["_session"]:
+                nav["swipe start -> action"].append(event["_t"] - legacy_gesture["_t"])
+            legacy_gesture = None
+        elif name == "gesture_motion_resolved":
+            legacy_gesture = None
+    return ChangeSummary(nav, counts, by_kind, len(approximate_sessions))
 
 
-def report(events, title):
+def stall_kind(waited, cpu, load, high_load):
+    if cpu >= waited / 2:
+        return "computing"
+    if cpu < waited * STARVED_CPU_FRACTION and load is not None and load >= high_load:
+        return "starved"
+    return "waiting"
+
+
+INTEGRITY_PREFIXES = ("orphan", "duplicate", "cut by", "no terminal")
+
+
+def report(all_events, title, since="", until="9999", high_load=None):
+    high_load = high_load if high_load is not None else (os.cpu_count() or 1)
+    events = [e for e in all_events if since <= e["timestamp"] < until]
     print(f"== {title}: {len(events)} events"
           + (f", {events[0]['timestamp']} .. {events[-1]['timestamp']}" if events else ""))
     if not events:
         return
-    nav, nav_counts = navigation_stats(events)
+    summary = summarize_changes(all_events, since, until)
+    nav, nav_counts = summary.nav, summary.counts
     motion = collections.defaultdict(list)
     stalls = collections.defaultdict(list)
     stalls_by_activity = collections.defaultdict(list)
@@ -169,7 +368,8 @@ def report(events, title):
             stalls[d.get("lastEvent", "?")].append(float(d.get("waitedMilliseconds", 0)))
             if "mainThreadCPUMilliseconds" in d:
                 waited = float(d.get("waitedMilliseconds", 0))
-                kind = "computing" if float(d["mainThreadCPUMilliseconds"]) >= waited / 2 else "waiting"
+                load = float(d["loadAverage"]) if "loadAverage" in d else None
+                kind = stall_kind(waited, float(d["mainThreadCPUMilliseconds"]), load, high_load)
                 stall_kinds[kind].append(waited)
             if "loadAverage" in d:
                 stall_loads.append(float(d["loadAverage"]))
@@ -188,7 +388,8 @@ def report(events, title):
                 timing["launch " + key].append(float(value))
         if name == "desktop_resume_refreshed":
             timing["resume refresh milliseconds"].append(float(d.get("milliseconds", 0)))
-        if name == "change_completed" and "appCallsOnMain" in d:
+        # A superseded slide carries the same cost fields; before change_ended it was a change_completed.
+        if name in ("change_completed", "change_ended") and "appCallsOnMain" in d:
             kind = operation.split(".")[0]
             for key in ("appCallsOnMain", "parkRequests", "parkSkipped"):
                 if key in d:
@@ -203,11 +404,22 @@ def report(events, title):
                     "ribbon_position_commit_failed", "refresh_starved", "ribbon_animation_stalled"):
             lifecycle.append((event["timestamp"], name, d.get("reason") or d.get("relation") or ""))
 
-    print("-- navigation (ms)")
-    for key in ("swipe start -> action", "action -> first motion", "action -> focus confirmed",
+    print("-- navigation (ms)" + (f"; {summary.approximate_sessions} launch(es) without session IDs, paired"
+                                  " approximately by queue order" if summary.approximate_sessions else ""))
+    for key in ("swipe start -> action", "action -> motion scheduled", "action -> focus confirmed",
                 "action -> settled", "focus attempt (driver)"):
         print(f"  {key:28s} {pct(nav[key])}")
-    print("  " + ", ".join(f"{key} {value}" for key, value in sorted(nav_counts.items())))
+    print("  " + ", ".join(f"{key} {value}" for key, value in sorted(nav_counts.items())
+                           if not key.startswith(INTEGRITY_PREFIXES)))
+    integrity = [(key, value) for key, value in sorted(nav_counts.items()) if key.startswith(INTEGRITY_PREFIXES)]
+    print("-- change traces: " + (", ".join(f"{key} {value}" for key, value in integrity) or "all paired"))
+    if summary.by_kind:
+        print("-- changes by origin and operation (ms): queue wait, processing, outcomes")
+        for (origin, operation), kind in sorted(summary.by_kind.items(),
+                                                key=lambda item: -sum(item[1]["outcomes"].values()))[:20]:
+            outcomes = ", ".join(f"{name} {count}" for name, count in kind["outcomes"].most_common())
+            print(f"  {origin:8s} {operation[:34]:34s} wait {pct(kind['wait'])}")
+            print(f"  {'':8s} {'':34s} processing {pct(kind['processing'])}; {outcomes}")
     print("-- focus attempt by target app (ms)")
     by_pid = [(key.removeprefix("focus attempt pid "), values) for key, values in nav.items()
               if key.startswith("focus attempt pid ")]
@@ -226,7 +438,8 @@ def report(events, title):
         for label, values in sorted(stalls_by_activity.items(), key=lambda item: -sum(item[1]))[:15]:
             print(f"  {label[:60]:60s} total={sum(values):.0f} {pct(values)}")
     if stall_kinds:
-        print("-- main thread stalls by kind (main thread CPU during the wait)")
+        print(f"-- main thread stalls by kind (main thread CPU during the wait; starved: under"
+              f" {STARVED_CPU_FRACTION:.0%} of it at load >= {high_load:g})")
         for kind, values in sorted(stall_kinds.items()):
             print(f"  {kind:12s} total={sum(values):.0f} {pct(values)}")
         if stall_loads:
@@ -264,6 +477,33 @@ def report(events, title):
         print(f"  {timestamp} {name} {extra}{note}")
 
 
+def without_diagnostic_runs(events):
+    """Drops acceptance and benchmark runs, per session so another launch's events are kept."""
+    inside = set()
+    kept = []
+    for event in events:
+        session = event["_session"]
+        if event["event"] == "diagnostic_run_began":
+            inside.add(session)
+        if session not in inside:
+            kept.append(event)
+        if event["event"] == "diagnostic_run_ended":
+            inside.discard(session)
+    return kept
+
+
+def load_events(paths):
+    events = []
+    for path in paths:
+        with open(path) as handle:
+            for line in handle:
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    return annotate_sessions(events)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--log", action="append",
@@ -272,33 +512,21 @@ def main():
     parser.add_argument("--until", default="9999")
     parser.add_argument("--split", default=None)
     parser.add_argument("--include-diagnostic-runs", action="store_true")
+    parser.add_argument("--high-load", type=float, default=None,
+                        help="1-minute load at which a stall with near-zero main-thread CPU counts as starved"
+                             " (default: this Mac's CPU count)")
     args = parser.parse_args()
-    events = []
-    in_diagnostic_run = False
     directory = os.path.expanduser("~/Library/Logs/Stagehand")
     paths = args.log or [p for p in (os.path.join(directory, "stagehand.1.log"),
                                      os.path.join(directory, "stagehand.log")) if os.path.exists(p)]
-    lines = []
-    for path in paths:
-        with open(path) as handle:
-            lines.extend(handle)
-    for line in lines:
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if event["event"] == "diagnostic_run_began":
-            in_diagnostic_run = True
-        if not (in_diagnostic_run and not args.include_diagnostic_runs) \
-                and args.since <= event["timestamp"] < args.until:
-            events.append(event)
-        if event["event"] == "diagnostic_run_ended":
-            in_diagnostic_run = False
+    events = load_events(paths)
+    if not args.include_diagnostic_runs:
+        events = without_diagnostic_runs(events)
     if args.split:
-        report([e for e in events if e["timestamp"] < args.split], f"before {args.split}")
-        report([e for e in events if e["timestamp"] >= args.split], f"after {args.split}")
+        report(events, f"before {args.split}", args.since, min(args.until, args.split), args.high_load)
+        report(events, f"after {args.split}", max(args.since, args.split), args.until, args.high_load)
     else:
-        report(events, "log")
+        report(events, "log", args.since, args.until, args.high_load)
 
 
 if __name__ == "__main__":

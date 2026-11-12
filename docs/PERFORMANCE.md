@@ -62,7 +62,7 @@ What it reports, and what each line means:
 - **to focus confirmed / settled**: when typing can go to the destination, and when everything stopped. `rejected` counts focus that Stagehand could not confirm, and `no attempt` counts switches that never tried. `timed out` counts idle waits that hit 8 s; their settled time is the timeout, not a measurement.
 - **longest freeze of the destination window mid-motion**: the longest the window being watched went without moving. Over about 33 ms is visible stutter. Frame work alone does not show this.
 - **frame work per tick, dropped frames**: Stagehand's own main-thread cost per display tick.
-- **main thread**: a background thread posts to the main queue every 4 ms. The keyboard tap, gestures, and ribbon frames run there, so a blocked main thread delays typing in every app. `stalls by phase` names the last diagnostic event before each stall.
+- **main thread**: a background thread posts to the main queue every 4 ms. The keyboard tap, gestures, and ribbon frames run there, so a blocked main thread delays typing in every app. `stalls by phase` names the last diagnostic event before each stall (since 2026-11-13 that can be `change_ended`).
 - **Space switches**, **Rapid switches**, **Start**, **Window scan**, **Settings / quick controls / app bar** open times.
 - **Pause and restore frames**: the restore runs inside the call, so its duration is the main-thread stall.
 - **Result**: the last line is `Result: PASS`, or `Result: FAIL:` followed by every failure: a timed-out wait, rejected or missing focus, final focus not matching the ribbon, or a failed setup. A failed run's numbers aren't comparable. `--raw-output <path>` also writes every sample as JSON.
@@ -76,9 +76,23 @@ python3 -I scripts/analyze-log.py --since 2026-10-15T12:00
 python3 -I scripts/analyze-log.py --split <install time, UTC>   # before/after an install
 ```
 
-It reads `stagehand.1.log` and `stagehand.log` and skips acceptance and benchmark runs (`diagnostic_run_began` to `diagnostic_run_ended`). The benchmark runner gives each run its own log, but acceptance and older builds without `--diagnostic-log` write into `stagehand.log` and can rotate it, so note install and run times.
+It reads `stagehand.1.log` and `stagehand.log` and skips acceptance and benchmark runs (`diagnostic_run_began` to `diagnostic_run_ended`, per session). The benchmark runner gives each run its own log, but acceptance and older builds without `--diagnostic-log` write into `stagehand.log` and can rotate it, so note install and run times.
+
+It pairs every change by (session, changeID) over the whole log first, then applies `--since`, `--until` or `--split`, so a range boundary never mispairs a change: one that straddles it is counted as cut, not timed. Durations use `uptimeMs`. Besides the latencies it reports:
+
+- **change traces**: orphan events (a change ID with no `change_queued` in its session), duplicate terminal events, changes cut by the time range, and changes with no terminal event (the log ended, or the session went on, which is a bug).
+- **changes by origin and operation**: queue wait (queued to started), processing (started to terminal) and outcome counts, for `command`, `gesture` and `system` changes.
+- **stalls by kind**: `computing`, `waiting`, and `starved`: main-thread CPU under a tenth of the wait at a 1-minute load of at least `--high-load` (default: the CPU count), so the thread was waiting for a CPU, not for another app.
+
+Logs written before 2026-11-13 have no session: the analyzer splits them at each `session_started`, where change IDs restart, or at a 30-minute gap, and labels the navigation section approximate. Logs before 2026-11-12 also lack change IDs and pair by queue order.
 
 ### Events worth knowing
+
+- Every event has `session` (8 hex characters, one per launch; change and gesture IDs restart in each) and `uptimeMs` (system uptime: monotonic, paused while the Mac sleeps). Time durations with `uptimeMs`; `timestamp` is wall time and can step. `session_started` carries `buildVersion`, `buildNumber`, `executableModified`, `pid` and `bootTime`.
+- A change's life: `change_queued` (`changeID`, `operation`, `origin`: `command`, `gesture` with its `gestureID`, or `system`), `change_started`, then exactly one terminal: `change_completed`, or `change_ended` with `outcome` and `reason`:
+  - `noEffect` (the state did not change), `merged` (a navigation step without typing folded into the next; `successorChangeID`), `superseded` (its slide was cut short by the next change; `successorChangeID`, and the cost fields of `change_completed`), `refused` (a tile that did not fit), `skipped` (the focus a preferences layout depends on moved);
+  - `failed` (logged before the pause it causes; `focus_target_unavailable` when the destination vanished, which may not pause), `interrupted` (it was running when a pause, sleep or Desktop change cancelled the queue; the reason names which), `cancelled` (still queued then).
+  `navigation_motion_planned`, `ribbon_animation_started`/`_completed` and `navigation_focus_confirmed` carry the `changeID` of the change they belong to. Gesture events and the `gesture.preview.restore` animation carry the gesture's `gestureID`.
 
 - `main_thread_stall`: the main thread was blocked for 50 ms or more. `lastEvent` names the phase. `activity` names the call that was running, sampled every 10 ms during the wait (`MainThreadActivity` labels around main-thread Accessibility calls, the AX callback, and the window list; `unlabeled` is anything else, such as AppKit or a loaded machine). `mainThreadCPUMilliseconds` is the main thread's own CPU during the wait: close to `waitedMilliseconds` means Stagehand was computing, near zero means it was waiting on another app or, with a high `loadAverage`, for a CPU. analyze-log.py splits stalls into computing and waiting. Logged only while diagnostic logging is on.
 - `resource_sample`: once a minute while logging is on: `footprintMegabytes`, `cpuPercent`, `idleWakeupsPerSecond`, `interruptWakeupsPerSecond`, `threads` since the previous sample. Compare builds with `--split` for lightness.
