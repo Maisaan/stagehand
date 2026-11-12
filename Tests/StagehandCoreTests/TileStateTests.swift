@@ -143,7 +143,23 @@ private func observablyEqual(_ current: WorkspaceState, _ legacy: LegacyWorkspac
     return zip(current.spaces, legacy.spaces).allSatisfy { space, old in
         space.windowIDs == old.windowIDs && space.focusedWindowID == old.focusedWindowID
             && space.tiles.allSatisfy { !$0.isMultiPane }
-            && old.windowIDs.allSatisfy { space.widthFraction(for: $0) == old.widthFraction(for: $0) }
+            && old.windowIDs.allSatisfy { space.tileWidthFraction(containing: $0) == old.widthFraction(for: $0) }
+    }
+}
+
+/// Canonical form: splits of two or more children with usable weights, no
+/// split along its parent's axis, no empty window ID.
+private func treeViolations(_ tree: PaneTree, parentAxis: SplitAxis?) -> [String] {
+    switch tree {
+    case .pane(let windowID):
+        return windowID.isEmpty ? ["empty window ID"] : []
+    case .split(let axis, let children, let weights):
+        var problems: [String] = []
+        if children.count < 2 { problems.append("split of \(children.count)") }
+        if weights.count != children.count { problems.append("weights misaligned") }
+        if !weights.allSatisfy({ $0.isFinite && $0 > 0 }) { problems.append("bad weight \(weights)") }
+        if axis == parentAxis { problems.append("nested \(axis) split") }
+        return problems + children.flatMap { treeViolations($0, parentAxis: axis) }
     }
 }
 
@@ -158,8 +174,8 @@ private func invariantViolations(_ state: WorkspaceState) -> [String] {
         for (tileIndex, tile) in space.tiles.enumerated() {
             if tile.windowIDs.isEmpty { problems.append("space \(index): empty tile") }
             if !tile.windowIDs.contains(tile.activeWindowID) { problems.append("space \(index): active not a member") }
-            if tile.heightWeights.count != tile.windowIDs.count { problems.append("space \(index): weights misaligned") }
-            if !tile.heightWeights.allSatisfy({ $0.isFinite && $0 > 0 }) { problems.append("space \(index): bad weight") }
+            if tile.windowIDs != tile.panes.windowIDs { problems.append("space \(index): stale reading order") }
+            problems += treeViolations(tile.panes, parentAxis: nil).map { "space \(index) tile \(tile.id): \($0)" }
             if !(SpaceState.minimumWidthFraction...SpaceState.maximumWidthFraction).contains(tile.widthFraction) {
                 problems.append("space \(index): width \(tile.widthFraction)")
             }
@@ -219,18 +235,25 @@ private func invariantViolations(_ state: WorkspaceState) -> [String] {
         let observedWidths = randomSizes()
         let preferredHeights = randomSizes()
         let observedHeights = randomSizes()
-        // Learned minimum heights apply only to stacks, so they change nothing here.
+        // Minimums and the pane gap apply only to multi-pane tiles, so they change nothing here.
+        let minimumWidths = randomSizes()
         let minimumHeights = randomSizes()
         let placements = WindowLayout.placements(
             for: state, availableFrame: frame, gap: gap, observedWidths: observedWidths,
             preferredHeights: preferredHeights, observedHeights: observedHeights,
             minimumHeights: minimumHeights
         )
+        let spacePlacements = WindowLayout.placements(
+            for: state.currentSpace, availableFrame: frame, tileGap: gap, paneGap: gaps.randomElement(using: &rng)!,
+            observedWidths: observedWidths, preferredHeights: preferredHeights, observedHeights: observedHeights,
+            minimumWidths: minimumWidths, minimumHeights: minimumHeights
+        )
         let expected = LegacyWindowLayout.placements(
             for: state, availableFrame: frame, gap: gap, observedWidths: observedWidths,
             preferredHeights: preferredHeights, observedHeights: observedHeights
         )
         #expect(placements == expected, "seed \(seed)")
+        #expect(spacePlacements == expected, "seed \(seed) space")
     }
 }
 
@@ -246,22 +269,54 @@ private func invariantViolations(_ state: WorkspaceState) -> [String] {
             let space = Int.random(in: -1...9, using: &rng)
             let direction = [-2, -1, 0, 1].randomElement(using: &rng)!
             let position = Int.random(in: -1...6, using: &rng)
-            switch Int.random(in: 0..<10, using: &rng) {
-            case 0:
-                state.stack(windowID: id, intoTileAt: position, inSpace: space)
-                operation = "stack \(id) into \(position) space \(space)"
-            case 1:
-                state.unstack(windowID: id, toward: direction, inSpace: space)
-                operation = "unstack \(id) \(direction) space \(space)"
-            case 2, 3:
+            let paneDirection = PaneDirection.allCases.randomElement(using: &rng)!
+            let edge = [TileEdge.left, .right, .top, .bottom].randomElement(using: &rng)!
+            switch Int.random(in: 0..<24, using: &rng) {
+            case 0, 1:
+                state.join(windowID: id, intoTileAt: position, edge: edge, inSpace: space)
+                operation = "join \(id) into \(position) at \(edge) space \(space)"
+            case 2:
+                state.expel(windowID: id, toward: direction, inSpace: space)
+                operation = "expel \(id) \(direction) space \(space)"
+            case 3:
+                state.expel(windowID: id, toTileAt: position, inSpace: space)
+                operation = "expel \(id) to \(position) space \(space)"
+            case 4:
                 state.moveFocusedWindowAcrossTiles(by: direction)
                 operation = "across \(direction)"
-            case 4:
-                state.focusMember(by: direction)
-                operation = "focusMember \(direction)"
-            case 5:
-                state.reorderMember(windowID: id, to: position, inSpace: space)
-                operation = "reorderMember \(id) \(position) space \(space)"
+            case 5, 6:
+                state.moveFocusedWindowSideways(by: direction)
+                operation = "sideways \(direction)"
+            case 7:
+                state.moveFocusedWindowVertically(by: direction)
+                operation = "vertically \(direction)"
+            case 8, 9:
+                state.focusPane(direction: paneDirection)
+                operation = "focusPane \(paneDirection)"
+            case 10:
+                state.reorderPane(windowID: id, to: position, inSpace: space)
+                operation = "reorderPane \(id) \(position) space \(space)"
+            case 11:
+                state.swapPane(windowID: id, direction: paneDirection, inSpace: space)
+                operation = "swapPane \(id) \(paneDirection) space \(space)"
+            case 12:
+                let point = CGPoint(x: Double.random(in: 0...1, using: &rng), y: Double.random(in: 0...1, using: &rng))
+                state.movePane(windowID: id, to: point, inSpace: space)
+                operation = "movePane \(id) \(point) space \(space)"
+            case 13, 14:
+                let layout = PaneLayout.allCases.randomElement(using: &rng)!
+                state.arrange(tileOf: id, layout: layout)
+                operation = "arrange \(id) \(layout)"
+            case 15:
+                let neighbor = pool.randomElement(using: &rng)!
+                let fraction = [0.1, 0.5, 0.9, 0, 1, .nan].randomElement(using: &rng)!
+                state.setSplitShares(windowID: id, neighborID: neighbor, fraction: fraction)
+                operation = "shares \(id) \(neighbor) \(fraction)"
+            case 16:
+                let returning = "n\(Int.random(in: 0..<3, using: &rng))"
+                let saved = Tile(panes: .h(.p("w1"), .v(.p(returning), .p("w4"), weights: [2, 1]), .p("w6")))
+                state.rejoin(windowID: returning, savedTile: saved, inSpace: space)
+                operation = "rejoin \(returning) space \(space)"
             default:
                 operation = applyRandomOperation(&state, &legacy, &rng).0
             }
@@ -281,7 +336,7 @@ private func invariantViolations(_ state: WorkspaceState) -> [String] {
 
 private func stacked(_ tiles: [[String]], focus: String? = nil, widths: [Double]? = nil) -> WorkspaceState {
     WorkspaceState(spaces: [SpaceState(tiles: tiles.enumerated().map { index, members in
-        Tile(windowIDs: members, widthFraction: widths?[index] ?? SpaceState.defaultWidthFraction)
+        Tile(stacking: members, widthFraction: widths?[index] ?? SpaceState.defaultWidthFraction)
     }, focusedWindowID: focus)])
 }
 
@@ -291,7 +346,7 @@ private func stacked(_ tiles: [[String]], focus: String? = nil, widths: [Double]
     #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["b", "c", "d"]])
     #expect(state.focusedWindowID == "d")
     #expect(state.currentSpace.tiles[1].activeWindowID == "d")
-    #expect(state.currentSpace.widthFraction(for: "d") == 0.6)
+    #expect(state.currentSpace.tileWidthFraction(containing: "d") == 0.6)
 
     var edge = stacked([["a"], ["b"]], focus: "a")
     #expect(edge.moveFocusedWindowAcrossTiles(by: -1) == false)
@@ -305,7 +360,7 @@ private func stacked(_ tiles: [[String]], focus: String? = nil, widths: [Double]
     #expect(state.moveFocusedWindowAcrossTiles(by: 1) == true)
     #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["b", "d"], ["c"], ["e"]])
     #expect(state.focusedWindowID == "c")
-    #expect(state.currentSpace.widthFraction(for: "c") == 0.6)
+    #expect(state.currentSpace.tileWidthFraction(containing: "c") == 0.6)
     // The stack remembers the member that took the leaver's place.
     #expect(state.currentSpace.tiles[1].activeWindowID == "d")
 
@@ -329,15 +384,15 @@ private func stacked(_ tiles: [[String]], focus: String? = nil, widths: [Double]
 
 @Test func memberFocusMovesWithinTheTileWithoutWrapping() {
     var state = stacked([["a"], ["b", "c", "d"]], focus: "c")
-    #expect(state.focusMember(by: -1) == true)
+    #expect(state.focusPane(direction: .up) == true)
     #expect(state.focusedWindowID == "b")
-    #expect(state.focusMember(by: -1) == false)
-    #expect(state.focusMember(by: 1) == true)
-    #expect(state.focusMember(by: 1) == true)
+    #expect(state.focusPane(direction: .up) == false)
+    #expect(state.focusPane(direction: .down) == true)
+    #expect(state.focusPane(direction: .down) == true)
     #expect(state.focusedWindowID == "d")
-    #expect(state.focusMember(by: 1) == false)
+    #expect(state.focusPane(direction: .down) == false)
     var single = stacked([["a"], ["b"]], focus: "a")
-    #expect(single.focusMember(by: 1) == false)
+    #expect(single.focusPane(direction: .down) == false)
 }
 
 @Test func horizontalFocusEntersTheRememberedMemberAndReorderMovesWholeTiles() {
@@ -357,24 +412,23 @@ private func stacked(_ tiles: [[String]], focus: String? = nil, widths: [Double]
     #expect(state.focusedWindowID == "c")
 }
 
-@Test func reorderingAMemberMovesItsHeightWeightAndKeepsFocus() {
+@Test func reorderingAPaneMovesItsWeightAndKeepsFocus() {
     var state = WorkspaceState(spaces: [SpaceState(tiles: [
-        Tile(windowIDs: ["a", "b", "c"], heightWeights: [3, 1, 2])
+        Tile(stacking: ["a", "b", "c"], weights: [3, 1, 2])
     ], focusedWindowID: "b")])
-    #expect(state.reorderMember(windowID: "a", to: 9, inSpace: 0) == true)
-    #expect(state.currentSpace.tiles[0].windowIDs == ["b", "c", "a"])
-    #expect(state.currentSpace.tiles[0].heightWeights == [1, 2, 3])
+    #expect(state.reorderPane(windowID: "a", to: 9, inSpace: 0) == true)
+    #expect(state.currentSpace.tiles[0].panes == .stack(["b", "c", "a"], weights: [1, 2, 3]))
     #expect(state.focusedWindowID == "b")
-    #expect(state.reorderMember(windowID: "a", to: 2, inSpace: 0) == false)
+    #expect(state.reorderPane(windowID: "a", to: 2, inSpace: 0) == false)
 }
 
 @Test func widthBelongsToTheTile() {
     var state = stacked([["a", "b"], ["c"]], focus: "b", widths: [0.5, 0.7])
     #expect(state.setWidthFraction(0.8, for: "a") == true)
-    #expect(state.currentSpace.widthFraction(for: "b") == 0.8)
+    #expect(state.currentSpace.tileWidthFraction(containing: "b") == 0.8)
     state.apply(.growWidth)
-    #expect(state.currentSpace.widthFraction(for: "a") == 0.85)
-    #expect(state.currentSpace.widthFraction(for: "c") == 0.7)
+    #expect(state.currentSpace.tileWidthFraction(containing: "a") == 0.85)
+    #expect(state.currentSpace.tileWidthFraction(containing: "c") == 0.7)
 }
 
 @Test func aClosedFocusedMemberHandsFocusToATileMate() {
@@ -426,8 +480,8 @@ private func stacked(_ tiles: [[String]], focus: String? = nil, widths: [Double]
 
 @Test func tilesRoundTripAndMalformedTilesAreRepaired() throws {
     let state = WorkspaceState(spaces: [SpaceState(tiles: [
-        Tile(id: "left", windowIDs: ["a", "b"], widthFraction: 0.6, activeWindowID: "b", heightWeights: [2, 1]),
-        Tile(windowIDs: ["c"])
+        Tile(id: "left", stacking: ["a", "b"], widthFraction: 0.6, activeWindowID: "b", weights: [2, 1]),
+        Tile(stacking: ["c"])
     ], focusedWindowID: "c")])
     let data = try JSONEncoder().encode(state)
     #expect(try JSONDecoder().decode(WorkspaceState.self, from: data) == state)
@@ -435,13 +489,32 @@ private func stacked(_ tiles: [[String]], focus: String? = nil, widths: [Double]
     let space = try #require((payload["spaces"] as? [[String: Any]])?.first)
     #expect(space["windowIDs"] == nil)
 
-    let repairable = Data(#"{"spaces":[{"columns":[{"id":"x","windowIDs":["a","b"],"activeWindowID":"z","heightWeights":[-1]},{"id":"x","windowIDs":["b","c"],"heightWeights":[1,4]}],"focusedWindowID":"c"}]}"#.utf8)
-    let repaired = try JSONDecoder().decode(WorkspaceState.self, from: repairable).currentSpace
+    let tile = try #require((space["tiles"] as? [[String: Any]])?.first)
+    #expect(tile["windowIDs"] == nil)
+    #expect(tile["panes"] != nil)
+
+    // Two tiles with ID x; the first repeats b, has an empty ID, a bad weight, a
+    // one-child split and a nested split along its parent's axis; the second
+    // repeats b from the first.
+    let repairable = Data(#"""
+        {"spaces":[{"tiles":[
+          {"id":"x","activeWindowID":"z","panes":{"split":{"axis":"vertical","weights":[-1,2,1],"children":[
+            {"pane":{"windowID":"a"}},
+            {"split":{"axis":"vertical","weights":[1,3],"children":[{"pane":{"windowID":"b"}},{"pane":{"windowID":"b"}}]}},
+            {"split":{"axis":"horizontal","weights":[5],"children":[{"pane":{"windowID":""}}]}}]}}},
+          {"id":"x","panes":{"split":{"axis":"horizontal","weights":[1,4],"children":[
+            {"pane":{"windowID":"b"}},{"pane":{"windowID":"c"}}]}}}],
+          "focusedWindowID":"c","displayAnchor":"UUID-1"}],
+         "shownSpaceIndices":{"UUID-2":3,"UUID-3":12}}
+        """#.utf8)
+    let decoded = try JSONDecoder().decode(WorkspaceState.self, from: repairable)
+    let repaired = decoded.currentSpace
     #expect(repaired.tiles.map(\.id) == ["x", "x#2"])
-    #expect(repaired.tiles.map(\.windowIDs) == [["a", "b"], ["c"]])
-    #expect(repaired.tiles.map(\.heightWeights) == [[1, 1], [4]])
+    #expect(repaired.tiles.map(\.panes) == [.v(.p("a"), .p("b"), weights: [1, 2]), .p("c")])
     #expect(repaired.tiles[0].activeWindowID == "a")
     #expect(repaired.focusedWindowID == "c")
+    #expect(repaired.displayAnchor == DisplayID(rawValue: "UUID-1"))
+    #expect(decoded.shownSpaceIndices == [DisplayID(rawValue: "UUID-2"): 3])
 }
 
 // MARK: - Stack layout
@@ -459,7 +532,7 @@ private func frame(_ placements: [WindowPlacement], _ id: String) throws -> CGRe
     #expect(try frame(placements, "b") == CGRect(x: 0, y: 395, width: 500, height: 345))
 
     let weighted = WorkspaceState(spaces: [SpaceState(tiles: [
-        Tile(windowIDs: ["a", "b", "c"], widthFraction: 0.5, heightWeights: [2, 1, 1])
+        Tile(stacking: ["a", "b", "c"], widthFraction: 0.5, weights: [2, 1, 1])
     ])])
     let thirds = WindowLayout.placements(for: weighted, availableFrame: viewport, gap: 20)
     #expect(try frame(thirds, "a").height == 330)
@@ -483,25 +556,27 @@ private func frame(_ placements: [WindowPlacement], _ id: String) throws -> CGRe
     #expect(try frame(placements, "b").height == 380)
     #expect(try frame(placements, "c").maxY == viewport.maxY)
 
-    // A stack whose members all refused their share stays centered.
+    // Windows shorter than their panes are centered in them.
     let short = WindowLayout.placements(for: stacked([["a", "b"]]), availableFrame: viewport, gap: 10,
                                         observedHeights: ["a": 200, "b": 200])
-    #expect(try frame(short, "a").minY == viewport.midY - 205)
+    #expect(try frame(short, "a") == CGRect(x: 0, y: viewport.minY + 72.5, width: 950, height: 200))
+    #expect(try frame(short, "b").midY == viewport.maxY - 172.5)
 }
 
-@Test func aStackIsAsWideAsItsWidestMemberAndMembersAlignLeft() throws {
+@Test func aStackIsAsWideAsItsWidestPaneAndNarrowerWindowsAreCentered() throws {
     let state = stacked([["a", "b"], ["c"]], focus: "a", widths: [0.5, 0.5])
     let placements = WindowLayout.placements(for: state, availableFrame: viewport, gap: 10,
                                              observedWidths: ["a": 420, "b": 610])
-    #expect(try frame(placements, "a").minX == frame(placements, "b").minX)
+    #expect(try frame(placements, "a").midX == frame(placements, "b").midX)
     #expect(try frame(placements, "a").width == 420)
+    #expect(try frame(placements, "b").minX == 0)
     #expect(try frame(placements, "c").minX == frame(placements, "b").maxX + 10)
 }
 
 @Test func focusInsideATileDoesNotScrollTheRibbon() throws {
     var state = stacked([["a"], ["b", "c"], ["d"]], focus: "c", widths: [0.8, 0.8, 0.8])
     let lower = WindowLayout.placements(for: state, availableFrame: viewport)
-    state.focusMember(by: -1)
+    state.focusPane(direction: .up)
     let upper = WindowLayout.placements(for: state, availableFrame: viewport)
     #expect(lower.map(\.frame) == upper.map(\.frame))
     #expect(upper.filter(\.isFocused).map(\.windowID) == ["b"])

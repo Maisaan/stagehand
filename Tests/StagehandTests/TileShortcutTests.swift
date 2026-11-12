@@ -9,7 +9,7 @@ import Testing
 
 private func tiles(_ members: [[String]], focus: String? = nil, width: Double = 0.25) -> WorkspaceState {
     WorkspaceState(spaces: [SpaceState(tiles: members.map {
-        Tile(windowIDs: $0, widthFraction: width)
+        Tile(stacking: $0, widthFraction: width)
     }, focusedWindowID: focus)])
 }
 

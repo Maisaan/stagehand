@@ -461,7 +461,7 @@ struct SettingsView: View {
                 Text("Active").font(.caption).foregroundStyle(.secondary)
             }
             Group {
-                let requested = Int((model.state.spaces[spaceIndex].widthFraction(for: window.id) * 100).rounded())
+                let requested = Int((model.state.spaces[spaceIndex].tileWidthFraction(containing: window.id) * 100).rounded())
                 let actual = model.actualWidthPercent(for: window)
                 Text("\(actual ?? requested)%")
                     .font(.callout.monospacedDigit()).foregroundStyle(.secondary)

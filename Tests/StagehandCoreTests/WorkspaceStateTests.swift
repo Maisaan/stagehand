@@ -50,8 +50,8 @@ import Testing
 
     #expect(state.spaces[0].windowIDs == ["t3", "browser", "terminal"])
     #expect(state.spaces[1].windowIDs == ["notes", "t3"])
-    #expect(state.spaces[0].widthFraction(for: "t3") == 0.7)
-    #expect(state.spaces[1].widthFraction(for: "t3") == 0.4)
+    #expect(state.spaces[0].tileWidthFraction(containing: "t3") == 0.7)
+    #expect(state.spaces[1].tileWidthFraction(containing: "t3") == 0.4)
     #expect(state.apply(.shareToSpace(index: 0)) == false)
 }
 
@@ -65,7 +65,7 @@ import Testing
     let shared = state.share(windowID: "other", toSpace: 1)
     #expect(shared)
     #expect(state.spaces[1].windowIDs == ["other"])
-    #expect(state.spaces[1].widthFraction(for: "other") == 0.6)
+    #expect(state.spaces[1].tileWidthFraction(containing: "other") == 0.6)
     #expect(state.focusedWindowID == "focused")
     let sharedMissing = state.share(windowID: "missing", toSpace: 1)
     let sharedAgain = state.share(windowID: "other", toSpace: 1)
@@ -127,7 +127,7 @@ import Testing
     #expect(state.apply(.moveToSpace(index: 2, follow: true)) == true)
     #expect(state.activeSpaceIndex == 2)
     #expect(state.focusedWindowID == "b")
-    #expect(state.currentSpace.widthFraction(for: "b") == 0.5)
+    #expect(state.currentSpace.tileWidthFraction(containing: "b") == 0.5)
     #expect(state.spaces[0].windowIDs == ["a"])
     #expect(state.spaces[0].focusedWindowID == "a")
 }
@@ -145,7 +145,7 @@ import Testing
     #expect(movedDown)
     #expect(state.activeSpaceIndex == 1)
     #expect(state.focusedWindowID == "focused")
-    #expect(state.currentSpace.widthFraction(for: "focused") == 0.55)
+    #expect(state.currentSpace.tileWidthFraction(containing: "focused") == 0.55)
     #expect(state.spaces[0].windowIDs == ["other"])
     let snapshot = state
     let downAlone = state.apply(.moveWindowDownSpace)
@@ -177,7 +177,7 @@ import Testing
     #expect(state.spaces[0].windowIDs == ["b"])
     #expect(state.spaces[1].windowIDs == ["c", "a", "d"])
     #expect(state.spaces[1].focusedWindowID == "c")
-    #expect(state.spaces[1].widthFraction(for: "a") == 0.8)
+    #expect(state.spaces[1].tileWidthFraction(containing: "a") == 0.8)
 }
 
 @Test func removingMembershipDoesNotOrphanWindow() {
@@ -197,20 +197,20 @@ import Testing
     var state = WorkspaceState()
     state.reconcile(windowIDs: ["a"])
     #expect(state.apply(.growWidth) == true)
-    #expect(state.currentSpace.widthFraction(for: "a") == 1)
+    #expect(state.currentSpace.tileWidthFraction(containing: "a") == 1)
     #expect(state.apply(.growWidth) == false)
     for _ in 0..<30 { state.apply(.shrinkWidth) }
-    #expect(state.currentSpace.widthFraction(for: "a") == 0.25)
+    #expect(state.currentSpace.tileWidthFraction(containing: "a") == 0.25)
     #expect(state.apply(.shrinkWidth) == false)
     state.apply(.growWidth)
-    #expect(state.currentSpace.widthFraction(for: "a") == 0.3)
+    #expect(state.currentSpace.tileWidthFraction(containing: "a") == 0.3)
     state.setWidthFraction(.infinity, for: "a")
-    #expect(state.currentSpace.widthFraction(for: "a") == 0.95)
+    #expect(state.currentSpace.tileWidthFraction(containing: "a") == 0.95)
     state.setWidthFraction(2, for: "a")
-    #expect(state.currentSpace.widthFraction(for: "a") == 1)
+    #expect(state.currentSpace.tileWidthFraction(containing: "a") == 1)
     #expect(state.apply(.growWidth) == false)
     state.setWidthFraction(-10, for: "a")
-    #expect(state.currentSpace.widthFraction(for: "a") == 0.25)
+    #expect(state.currentSpace.tileWidthFraction(containing: "a") == 0.25)
 }
 
 @Test func initialWidthsAreClampedAndDoNotOverwriteKnownWindows() {
@@ -223,17 +223,17 @@ import Testing
         initialWidthFractions: ["known": 0.8, "small": 0.1, "large": 1.2]
     )
 
-    #expect(state.currentSpace.widthFraction(for: "known") == 0.5)
-    #expect(state.currentSpace.widthFraction(for: "small") == 0.25)
-    #expect(state.currentSpace.widthFraction(for: "large") == 1)
-    #expect(state.currentSpace.widthFraction(for: "unspecified") == 0.95)
+    #expect(state.currentSpace.tileWidthFraction(containing: "known") == 0.5)
+    #expect(state.currentSpace.tileWidthFraction(containing: "small") == 0.25)
+    #expect(state.currentSpace.tileWidthFraction(containing: "large") == 1)
+    #expect(state.currentSpace.tileWidthFraction(containing: "unspecified") == 0.95)
 }
 
 @Test func persistedObsoleteLayoutFieldsAreIgnored() throws {
-    let legacy = Data(#"{"maximizeWindows":true,"layoutMode":"monocle","maximumWidthFraction":1,"spaces":[{"columns":[{"windowIDs":["a"],"widthFraction":0.95},{"windowIDs":["b"],"widthFraction":0.5}]}]}"#.utf8)
+    let legacy = Data(#"{"maximizeWindows":true,"layoutMode":"monocle","maximumWidthFraction":1,"spaces":[{"tiles":[{"panes":{"pane":{"windowID":"a"}},"widthFraction":0.95},{"panes":{"pane":{"windowID":"b"}},"widthFraction":0.5}]}]}"#.utf8)
     let state = try JSONDecoder().decode(WorkspaceState.self, from: legacy)
-    #expect(state.currentSpace.widthFraction(for: "a") == 0.95)
-    #expect(state.currentSpace.widthFraction(for: "b") == 0.5)
+    #expect(state.currentSpace.tileWidthFraction(containing: "a") == 0.95)
+    #expect(state.currentSpace.tileWidthFraction(containing: "b") == 0.5)
     let saved = try JSONEncoder().encode(state)
     #expect(try JSONDecoder().decode(WorkspaceState.self, from: saved) == state)
     let payload = try #require(JSONSerialization.jsonObject(with: saved) as? [String: Any])
@@ -250,15 +250,15 @@ import Testing
     let data = try JSONEncoder().encode(original)
     #expect(try JSONDecoder().decode(WorkspaceState.self, from: data) == original)
 
-    let invalid = Data(#"{"activeSpaceIndex":100,"spaces":[{"columns":[{"windowIDs":["a"],"widthFraction":4},{"windowIDs":["a",""]},{"windowIDs":[]},{"windowIDs":["b"],"widthFraction":-1}],"focusedWindowID":"missing"}]}"#.utf8)
+    let invalid = Data(#"{"activeSpaceIndex":100,"spaces":[{"tiles":[{"panes":{"pane":{"windowID":"a"}},"widthFraction":4},{"panes":{"split":{"axis":"horizontal","children":[{"pane":{"windowID":"a"}},{"pane":{"windowID":""}}],"weights":[1,1]}}},{},{"panes":{"pane":{"windowID":"b"}},"widthFraction":-1}],"focusedWindowID":"missing"}]}"#.utf8)
     let restored = try JSONDecoder().decode(WorkspaceState.self, from: invalid)
     #expect(restored.spaces.count == 9)
     #expect(restored.activeSpaceIndex == 8)
     #expect(restored.spaces[0].windowIDs == ["a", "b"])
     #expect(restored.spaces[0].tiles.count == 2)
     #expect(restored.spaces[0].focusedWindowID == "a")
-    #expect(restored.spaces[0].widthFraction(for: "a") == 1)
-    #expect(restored.spaces[0].widthFraction(for: "b") == 0.25)
+    #expect(restored.spaces[0].tileWidthFraction(containing: "a") == 1)
+    #expect(restored.spaces[0].tileWidthFraction(containing: "b") == 0.25)
 }
 
 @Test func displayedSpacesContainOnlyOccupiedSpacesAndTheActiveSpace() {
@@ -284,7 +284,7 @@ import Testing
         SpaceState(windowIDs: ["c", "a", "b"], focusedWindowID: "c",
                    widthFractions: ["a": 0.8, "b": 0.4, "c": 0.6])
     ])
-    let widths = Dictionary(uniqueKeysWithValues: ["a", "b", "c", "d"].map { ($0, state.currentSpace.widthFraction(for: $0)) })
+    let widths = Dictionary(uniqueKeysWithValues: ["a", "b", "c", "d"].map { ($0, state.currentSpace.tileWidthFraction(containing: $0)) })
     let otherSpaces = Array(state.spaces.dropFirst())
 
     #expect(state.reorderWindow(windowID: "b", to: 3) == true)
@@ -293,7 +293,7 @@ import Testing
     #expect(state.reorderWindow(windowID: "d", to: 0) == true)
     #expect(state.currentSpace.windowIDs == ["d", "a", "c", "b"])
     #expect(state.focusedWindowID == "b")
-    #expect(widths.allSatisfy { state.currentSpace.widthFraction(for: $0.key) == $0.value })
+    #expect(widths.allSatisfy { state.currentSpace.tileWidthFraction(containing: $0.key) == $0.value })
     #expect(Array(state.spaces.dropFirst()) == otherSpaces)
 }
 
@@ -340,7 +340,7 @@ import Testing
     let shared = state.share(windowID: "one", fromSpace: 1, toSpace: 3)
     #expect(shared)
     #expect(state.spaces[3].windowIDs == ["one"])
-    #expect(state.spaces[3].widthFraction(for: "one") == 0.4)
+    #expect(state.spaces[3].tileWidthFraction(containing: "one") == 0.4)
     let moved = state.move(windowID: "shared", fromSpace: 1, toSpace: 2)
     #expect(moved)
     #expect(state.spaces[1].windowIDs == ["one"])
@@ -356,17 +356,17 @@ import Testing
 @Test func widthPresetShortcutsStepThroughThePresetsAndWrap() {
     var state = WorkspaceState()
     state.reconcile(windowIDs: ["a"])
-    #expect(state.currentSpace.widthFraction(for: "a") == 0.95)
+    #expect(state.currentSpace.tileWidthFraction(containing: "a") == 0.95)
     #expect(state.apply(.nextWidthPreset) == true)
-    #expect(state.currentSpace.widthFraction(for: "a") == 1)
+    #expect(state.currentSpace.tileWidthFraction(containing: "a") == 1)
     #expect(state.apply(.nextWidthPreset) == true)
-    #expect(state.currentSpace.widthFraction(for: "a") == 0.5)
+    #expect(state.currentSpace.tileWidthFraction(containing: "a") == 0.5)
     #expect(state.apply(.nextWidthPreset) == true)
-    #expect(state.currentSpace.widthFraction(for: "a") == 0.75)
+    #expect(state.currentSpace.tileWidthFraction(containing: "a") == 0.75)
     #expect(state.apply(.previousWidthPreset) == true)
-    #expect(state.currentSpace.widthFraction(for: "a") == 0.5)
+    #expect(state.currentSpace.tileWidthFraction(containing: "a") == 0.5)
     #expect(state.apply(.previousWidthPreset) == true)
-    #expect(state.currentSpace.widthFraction(for: "a") == 1)
+    #expect(state.currentSpace.tileWidthFraction(containing: "a") == 1)
 }
 
 @Test func widthPresetShortcutsUseTheSuppliedPresetsAndIgnoreUnusableValues() {
@@ -375,15 +375,15 @@ import Testing
     let presets = [0.6, .nan, 0.4, 2.0, 0.6]
     #expect(SpaceState.normalizedWidthPresets(presets) == [0.4, 0.6, 1.0])
     #expect(state.apply(.nextWidthPreset, widthPresets: presets) == true)
-    #expect(state.currentSpace.widthFraction(for: "a") == 1)
+    #expect(state.currentSpace.tileWidthFraction(containing: "a") == 1)
     #expect(state.apply(.nextWidthPreset, widthPresets: presets) == true)
-    #expect(state.currentSpace.widthFraction(for: "a") == 0.4)
+    #expect(state.currentSpace.tileWidthFraction(containing: "a") == 0.4)
     #expect(state.apply(.previousWidthPreset, widthPresets: presets) == true)
-    #expect(state.currentSpace.widthFraction(for: "a") == 1)
+    #expect(state.currentSpace.tileWidthFraction(containing: "a") == 1)
     // A width within half a percent of a preset counts as that preset.
     state.setWidthFraction(0.604, for: "a")
     #expect(state.apply(.nextWidthPreset, widthPresets: presets) == true)
-    #expect(state.currentSpace.widthFraction(for: "a") == 1)
+    #expect(state.currentSpace.tileWidthFraction(containing: "a") == 1)
     #expect(SpaceState.normalizedWidthPresets([]) == SpaceState.defaultWidthPresets)
     #expect(SpaceState.normalizedWidthPresets([.infinity]) == SpaceState.defaultWidthPresets)
 }

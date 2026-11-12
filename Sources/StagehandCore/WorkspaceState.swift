@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 public enum NavigationAction: Equatable, Sendable {
@@ -43,105 +44,91 @@ public enum NavigationAction: Equatable, Sendable {
     }
 }
 
-/// One place in the ribbon: windows stacked top to bottom that share one width.
+/// One place in the ribbon: a width and a layout of panes, each holding one window.
 public struct Tile: Codable, Equatable, Sendable {
-    public static let defaultHeightWeight = 1.0
-
     /// Stable for the tile's life in its space. A new tile takes the ID of the
     /// window that starts it, made unique within the space; it does not follow
     /// that window when it leaves.
     public let id: String
-    /// Members top to bottom. Never empty inside a `SpaceState`.
-    public fileprivate(set) var windowIDs: [String]
+    public private(set) var panes: PaneTree
     public fileprivate(set) var widthFraction: Double
-    /// The member that horizontal focus enters; the focused window when this
-    /// tile holds focus.
+    /// The pane that horizontal focus enters; the focused window when this tile
+    /// holds focus.
     public fileprivate(set) var activeWindowID: String
-    /// Each member's relative share of a stack's height, parallel to `windowIDs`.
-    public fileprivate(set) var heightWeights: [Double]
+    /// Reading order, derived from `panes`. Stored because layout reads it on
+    /// every gesture frame.
+    public private(set) var windowIDs: [String]
 
     public var isMultiPane: Bool { windowIDs.count > 1 }
     // Kept for StagehandModel+Benchmark.swift until slice B.
     public var isStack: Bool { isMultiPane }
 
+    /// Repairs `panes` to canonical form, keeping the first pane of a window
+    /// that appears twice. A tile without panes is dropped by `SpaceState`.
     public init(
         id: String? = nil,
-        windowIDs: [String],
+        panes: PaneTree,
         widthFraction: Double = SpaceState.defaultWidthFraction,
-        activeWindowID: String? = nil,
-        heightWeights: [Double] = []
+        activeWindowID: String? = nil
     ) {
         var seen = Set<String>()
-        var members: [String] = []
-        var weights: [Double] = []
-        for (offset, windowID) in windowIDs.enumerated() where !windowID.isEmpty && seen.insert(windowID).inserted {
-            members.append(windowID)
-            weights.append(Self.clampedHeightWeight(heightWeights.indices.contains(offset) ? heightWeights[offset] : nil))
-        }
-        self.id = id.flatMap { $0.isEmpty ? nil : $0 } ?? members.first ?? ""
-        self.windowIDs = members
+        let repaired = panes.restricted { !$0.isEmpty && seen.insert($0).inserted }
+        self.panes = repaired ?? Self.emptyPanes
+        self.windowIDs = repaired?.windowIDs ?? []
+        self.id = id.flatMap { $0.isEmpty ? nil : $0 } ?? windowIDs.first ?? ""
         self.widthFraction = SpaceState.clampedWidth(widthFraction)
-        self.activeWindowID = activeWindowID.flatMap { seen.contains($0) ? $0 : nil } ?? members.first ?? ""
-        self.heightWeights = weights
+        self.activeWindowID = activeWindowID.flatMap { seen.contains($0) ? $0 : nil } ?? windowIDs.first ?? ""
     }
 
-    public func heightWeight(for windowID: String) -> Double {
-        windowIDs.firstIndex(of: windowID).map { heightWeights[$0] } ?? Self.defaultHeightWeight
+    public init(id: String? = nil, windowID: String, widthFraction: Double = SpaceState.defaultWidthFraction) {
+        self.init(id: id, panes: .pane(windowID: windowID), widthFraction: widthFraction)
     }
 
-    fileprivate static func clampedHeightWeight(_ value: Double?) -> Double {
-        guard let value, value.isFinite, value > 0 else { return defaultHeightWeight }
-        return value
+    private static let emptyPanes = PaneTree.split(axis: .vertical, children: [], weights: [])
+
+    /// The window's share of the tile's width, as a fraction of the display.
+    func paneWidthFraction(of windowID: String) -> Double {
+        guard isMultiPane else { return widthFraction }
+        let share = panes.unitFrame(of: windowID).map { Double($0.width) } ?? 1
+        return SpaceState.clampedWidth(widthFraction * share)
     }
 
-    fileprivate mutating func append(windowID: String) {
-        windowIDs.append(windowID)
-        heightWeights.append(Self.defaultHeightWeight)
+    fileprivate mutating func setPanes(_ tree: PaneTree) {
+        panes = tree.restricted { _ in true } ?? tree
+        windowIDs = panes.windowIDs
+        if !tree.contains(activeWindowID) { activeWindowID = windowIDs.first ?? "" }
     }
 
-    fileprivate mutating func insertMember(_ windowID: String, at position: Int, heightWeight: Double) {
-        let index = min(max(position, 0), windowIDs.count)
-        windowIDs.insert(windowID, at: index)
-        heightWeights.insert(Self.clampedHeightWeight(heightWeight), at: index)
-    }
-
-    /// Removes a member. A removed active member hands that role to the window
-    /// that takes its place, or to the one above when it was the bottom member.
-    fileprivate mutating func removeMember(at index: Int) {
-        let windowID = windowIDs.remove(at: index)
-        heightWeights.remove(at: index)
-        if activeWindowID == windowID, !windowIDs.isEmpty {
-            activeWindowID = windowIDs[min(index, windowIDs.count - 1)]
-        }
-    }
-
-    fileprivate mutating func moveMember(from source: Int, to destination: Int) {
-        let windowID = windowIDs.remove(at: source)
-        let weight = heightWeights.remove(at: source)
-        windowIDs.insert(windowID, at: destination)
-        heightWeights.insert(weight, at: destination)
+    /// Removes a pane of a multi-pane tile; the rest grow into its space. A
+    /// removed active pane hands that role to the first pane of the sibling that
+    /// absorbed its space.
+    fileprivate mutating func removePane(_ windowID: String) {
+        guard let remaining = panes.removing(windowID) else { return }
+        let successor = panes.successor(ofRemoved: windowID)
+        let wasActive = windowID == activeWindowID
+        setPanes(remaining)
+        if wasActive, let successor { activeWindowID = successor }
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, windowIDs, widthFraction, activeWindowID, heightWeights
+        case id, panes, widthFraction, activeWindowID
     }
 
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
             id: try values.decodeIfPresent(String.self, forKey: .id),
-            windowIDs: try values.decodeIfPresent([String].self, forKey: .windowIDs) ?? [],
+            panes: try values.decodeIfPresent(PaneTree.self, forKey: .panes) ?? Self.emptyPanes,
             widthFraction: try values.decodeIfPresent(Double.self, forKey: .widthFraction)
                 ?? SpaceState.defaultWidthFraction,
-            activeWindowID: try values.decodeIfPresent(String.self, forKey: .activeWindowID),
-            heightWeights: try values.decodeIfPresent([Double].self, forKey: .heightWeights) ?? []
+            activeWindowID: try values.decodeIfPresent(String.self, forKey: .activeWindowID)
         )
     }
 }
 
 /// A space's ribbon: ordered tiles. A window appears at most once per space,
-/// tiles are never empty, and the focused window is its tile's active member.
-/// A window can belong to several spaces; stack composition is per space.
+/// tiles are never empty, and the focused window is its tile's active pane.
+/// A window can belong to several spaces; tile layouts are per space.
 public struct SpaceState: Codable, Equatable, Sendable {
     public static let minimumWidthFraction = 0.25
     public static let maximumWidthFraction = 1.0
@@ -163,11 +150,13 @@ public struct SpaceState: Codable, Equatable, Sendable {
     }
     // Kept for StagehandModel+Benchmark.swift until slice B.
     public var columns: [Tile] { tiles }
-    /// Every member, tile by tile, top to bottom. Derived from `tiles` and
+    /// Every window, tile by tile, in reading order. Derived from `tiles` and
     /// rebuilt on each change, so per-frame readers do not allocate.
     public private(set) var windowIDs: [String] = []
     private var tileIndexByWindowID: [String: Int] = [:]
     public fileprivate(set) var focusedWindowID: String?
+    /// The display the space belongs to. Nil means the fallback display.
+    public fileprivate(set) var displayAnchor: DisplayID?
 
     /// A space whose windows each have a tile of their own.
     public init(
@@ -177,7 +166,7 @@ public struct SpaceState: Codable, Equatable, Sendable {
     ) {
         self.init(
             tiles: windowIDs.map {
-                Tile(windowIDs: [$0], widthFraction: widthFractions[$0] ?? Self.defaultWidthFraction)
+                Tile(windowID: $0, widthFraction: widthFractions[$0] ?? Self.defaultWidthFraction)
             },
             focusedWindowID: focusedWindowID
         )
@@ -185,25 +174,20 @@ public struct SpaceState: Codable, Equatable, Sendable {
 
     /// Drops empty tiles and any window already placed in an earlier tile,
     /// and makes tile IDs unique.
-    public init(tiles: [Tile], focusedWindowID: String? = nil) {
+    public init(tiles: [Tile], focusedWindowID: String? = nil, displayAnchor: DisplayID? = nil) {
         var seen = Set<String>()
         var usedIDs = Set<String>()
         var kept: [Tile] = []
         for tile in tiles {
-            let indices = tile.windowIDs.indices.filter { seen.insert(tile.windowIDs[$0]).inserted }
-            guard let first = indices.first else { continue }
-            let id = Self.uniqueTileID(tile.id.isEmpty ? tile.windowIDs[first] : tile.id, used: usedIDs)
+            guard let panes = tile.panes.restricted(to: { !$0.isEmpty && seen.insert($0).inserted }) else { continue }
+            let id = Self.uniqueTileID(tile.id.isEmpty ? panes.windowIDs[0] : tile.id, used: usedIDs)
             usedIDs.insert(id)
-            kept.append(Tile(
-                id: id,
-                windowIDs: indices.map { tile.windowIDs[$0] },
-                widthFraction: tile.widthFraction,
-                activeWindowID: tile.activeWindowID,
-                heightWeights: indices.map { tile.heightWeights[$0] }
-            ))
+            kept.append(Tile(id: id, panes: panes, widthFraction: tile.widthFraction,
+                             activeWindowID: tile.activeWindowID))
         }
         self.tiles = kept
         self.focusedWindowID = nil
+        self.displayAnchor = displayAnchor
         indexMembers()
         if let focus = focusedWindowID.flatMap({ seen.contains($0) ? $0 : nil }) ?? kept.first?.activeWindowID {
             setFocus(windowID: focus)
@@ -222,9 +206,15 @@ public struct SpaceState: Codable, Equatable, Sendable {
         focusedWindowID.flatMap(tileIndex(of:))
     }
 
-    /// The width of the window's tile.
-    public func widthFraction(for windowID: String) -> Double {
+    /// The width keys, presets and `setWidthFraction` act on this width.
+    public func tileWidthFraction(containing windowID: String) -> Double {
         tileIndex(of: windowID).map { tiles[$0].widthFraction } ?? Self.defaultWidthFraction
+    }
+
+    /// The width a window takes when it leaves its tile: its pane's share of the
+    /// tile's width, so it keeps roughly the width it had.
+    public func paneWidthFraction(of windowID: String) -> Double {
+        tileIndex(of: windowID).map { tiles[$0].paneWidthFraction(of: windowID) } ?? Self.defaultWidthFraction
     }
 
     fileprivate static func clampedWidth(_ value: Double) -> Double {
@@ -232,7 +222,7 @@ public struct SpaceState: Codable, Equatable, Sendable {
         return min(max(value, minimumWidthFraction), maximumWidthFraction)
     }
 
-    private static func uniqueTileID(_ base: String, used: Set<String>) -> String {
+    fileprivate static func uniqueTileID(_ base: String, used: Set<String>) -> String {
         guard used.contains(base) else { return base }
         var suffix = 2
         while used.contains("\(base)#\(suffix)") { suffix += 1 }
@@ -252,7 +242,7 @@ public struct SpaceState: Codable, Equatable, Sendable {
         tileIndexByWindowID = index
     }
 
-    /// Focuses a member and makes it its tile's active member.
+    /// Focuses a window and makes it its tile's active pane.
     fileprivate mutating func setFocus(windowID: String) {
         guard let index = tileIndex(of: windowID) else { return }
         if tiles[index].activeWindowID != windowID { tiles[index].activeWindowID = windowID }
@@ -261,8 +251,7 @@ public struct SpaceState: Codable, Equatable, Sendable {
 
     /// A one-window tile for `windowID` with an ID unused in this space.
     fileprivate func newTile(windowID: String, width: Double) -> Tile {
-        Tile(id: Self.uniqueTileID(windowID, used: Set(tiles.map(\.id))),
-             windowIDs: [windowID], widthFraction: width)
+        Tile(id: Self.uniqueTileID(windowID, used: Set(tiles.map(\.id))), windowID: windowID, widthFraction: width)
     }
 
     /// Adds a window as its own tile after the focused tile.
@@ -273,14 +262,13 @@ public struct SpaceState: Codable, Equatable, Sendable {
         if focus || focusedWindowID == nil { setFocus(windowID: windowID) }
     }
 
-    /// A focused window that leaves hands focus to a tile-mate (the one below,
-    /// or above when it was the bottom member); a window alone in its tile
-    /// hands it to the next tile's active member, or the previous tile's.
+    /// A focused window that leaves a multi-pane tile hands focus to the pane
+    /// that absorbs its space; a window alone in its tile hands it to the next
+    /// tile's active pane, or the previous tile's.
     fileprivate mutating func remove(windowID: String) {
-        guard let index = tileIndex(of: windowID),
-              let member = tiles[index].windowIDs.firstIndex(of: windowID) else { return }
+        guard let index = tileIndex(of: windowID) else { return }
         if tiles[index].isMultiPane {
-            tiles[index].removeMember(at: member)
+            tiles[index].removePane(windowID)
             if focusedWindowID == windowID { setFocus(windowID: tiles[index].activeWindowID) }
         } else {
             tiles.remove(at: index)
@@ -291,45 +279,60 @@ public struct SpaceState: Codable, Equatable, Sendable {
         }
     }
 
-    /// Puts a window that is not a member back between the tile-mates it had.
-    /// `savedMembers` is its saved tile top to bottom, itself included. It joins
-    /// the tile of its nearest saved mate above (just below that mate), else of
-    /// its nearest saved mate below (just above it). False when no mate is here.
-    fileprivate mutating func rejoin(windowID: String, savedMembers: [String], heightWeight: Double) -> Bool {
-        guard !contains(windowID: windowID), let position = savedMembers.firstIndex(of: windowID) else { return false }
-        let above = savedMembers[..<position].reversed().first { contains(windowID: $0) }
-        let below = savedMembers[(position + 1)...].first { contains(windowID: $0) }
-        guard let mate = above ?? below, let tile = tileIndex(of: mate),
-              let mateIndex = tiles[tile].windowIDs.firstIndex(of: mate) else { return false }
-        tiles[tile].insertMember(windowID, at: above != nil ? mateIndex + 1 : mateIndex,
-                                 heightWeight: heightWeight)
+    /// Puts a window that is not a member back into the tile holding its nearest
+    /// saved tile-mate (in the saved reading order, earlier ones first). When
+    /// that tile is the saved one minus this window, the saved layout returns
+    /// whole; otherwise the window goes beside that mate, on the side it had.
+    /// False when no mate is here.
+    fileprivate mutating func rejoin(windowID: String, savedTile: Tile) -> Bool {
+        let savedOrder = savedTile.windowIDs
+        guard !contains(windowID: windowID), let position = savedOrder.firstIndex(of: windowID) else { return false }
+        let earlier = savedOrder[..<position].reversed().first { contains(windowID: $0) }
+        let later = savedOrder[(position + 1)...].first { contains(windowID: $0) }
+        guard let mate = earlier ?? later, let tile = tileIndex(of: mate) else { return false }
+        let current = tiles[tile].panes
+        guard let saved = savedTile.panes.restricted(to: { $0 == windowID || current.contains($0) }) else {
+            return false
+        }
+        if saved.removing(windowID) == current {
+            tiles[tile].setPanes(saved)
+        } else {
+            tiles[tile].setPanes(current.inserting(windowID, beside: mate,
+                                                   along: saved.separatingAxis(windowID, mate) ?? .vertical,
+                                                   after: earlier != nil))
+        }
         return true
     }
 
-    /// Takes a window out of its tile and returns it as a tile of its own.
-    /// A window alone in its tile takes that tile, ID included. Focus is the
-    /// caller's to restore.
+    /// Takes a window out of its tile and returns it as a tile of its own with
+    /// its pane's width. A window alone in its tile takes that tile, ID
+    /// included. Focus is the caller's to restore.
     fileprivate mutating func detach(windowID: String) -> Tile? {
-        guard let index = tileIndex(of: windowID),
-              let member = tiles[index].windowIDs.firstIndex(of: windowID) else { return nil }
+        guard let index = tileIndex(of: windowID) else { return nil }
         guard tiles[index].isMultiPane else { return tiles.remove(at: index) }
-        let width = tiles[index].widthFraction
-        tiles[index].removeMember(at: member)
+        let width = tiles[index].paneWidthFraction(of: windowID)
+        tiles[index].removePane(windowID)
         return newTile(windowID: windowID, width: width)
     }
 
     private enum CodingKeys: String, CodingKey {
-        // Version 2 layout files store tiles under this key.
-        case tiles = "columns", focusedWindowID
+        case tiles, focusedWindowID, displayAnchor
     }
 
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
             tiles: try values.decodeIfPresent([Tile].self, forKey: .tiles) ?? [],
-            focusedWindowID: try values.decodeIfPresent(String.self, forKey: .focusedWindowID)
+            focusedWindowID: try values.decodeIfPresent(String.self, forKey: .focusedWindowID),
+            displayAnchor: try values.decodeIfPresent(DisplayID.self, forKey: .displayAnchor)
         )
     }
+}
+
+public enum TileArrangement: Equatable, Sendable {
+    case arranged
+    case unchanged
+    case notEnoughWindows(needed: Int, available: Int)
 }
 
 public struct WorkspaceState: Codable, Equatable, Sendable {
@@ -337,7 +340,12 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
 
     public var isPaused: Bool
     public private(set) var spaces: [SpaceState]
+    /// The focused space; its display is the focused display.
     public private(set) var activeSpaceIndex: Int
+    /// The space each other display shows.
+    public private(set) var shownSpaceIndices: [DisplayID: Int]
+    /// Runtime only, never saved.
+    public private(set) var displays = DisplayList()
 
     public var currentSpace: SpaceState { spaces[activeSpaceIndex] }
     public var focusedWindowID: String? { currentSpace.focusedWindowID }
@@ -348,12 +356,14 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     public init(
         isPaused: Bool = false,
         spaces: [SpaceState] = [],
-        activeSpaceIndex: Int = 0
+        activeSpaceIndex: Int = 0,
+        shownSpaceIndices: [DisplayID: Int] = [:]
     ) {
         self.isPaused = isPaused
         self.spaces = Array(spaces.prefix(Self.spaceCount))
         self.spaces.append(contentsOf: repeatElement(SpaceState(), count: Self.spaceCount - self.spaces.count))
         self.activeSpaceIndex = min(max(activeSpaceIndex, 0), Self.spaceCount - 1)
+        self.shownSpaceIndices = shownSpaceIndices.filter { (0..<Self.spaceCount).contains($0.value) }
     }
 
     /// Restore returning windows without undoing changes to windows already in the workspace.
@@ -362,12 +372,8 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         for index in spaces.indices {
             let savedSpace = savedState.spaces[index]
             for (offset, windowID) in savedSpace.windowIDs.enumerated() where returningIDs.contains(windowID) {
-                // A window that was stacked rejoins the tile holding its saved
-                // tile-mates, between the same neighbors, with its saved share.
                 if let savedTile = savedSpace.tileIndex(of: windowID).map({ savedSpace.tiles[$0] }),
-                   savedTile.isMultiPane,
-                   spaces[index].rejoin(windowID: windowID, savedMembers: savedTile.windowIDs,
-                                        heightWeight: savedTile.heightWeight(for: windowID)) {
+                   savedTile.isMultiPane, spaces[index].rejoin(windowID: windowID, savedTile: savedTile) {
                     continue
                 }
                 // Insert before the next surviving neighbor's tile, preserving the
@@ -378,7 +384,7 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
                 let insertionIndex = nextID.flatMap { spaces[index].tileIndex(of: $0) }
                     ?? spaces[index].tiles.endIndex
                 spaces[index].tiles.insert(
-                    spaces[index].newTile(windowID: windowID, width: savedSpace.widthFraction(for: windowID)),
+                    spaces[index].newTile(windowID: windowID, width: savedSpace.paneWidthFraction(of: windowID)),
                     at: insertionIndex
                 )
             }
@@ -437,6 +443,10 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         spaces.removeLast()
         spaces.insert(SpaceState(), at: index)
         if activeSpaceIndex >= index { activeSpaceIndex += 1 }
+        shownSpaceIndices = shownSpaceIndices.compactMapValues { shown in
+            let moved = shown >= index ? shown + 1 : shown
+            return moved < Self.spaceCount ? moved : nil
+        }
         return true
     }
 
@@ -454,15 +464,13 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     }
 
     /// Adds a window that is not yet a member of the space into the tile holding
-    /// its nearest saved tile-mate, as a relaunched stack member returning to its
-    /// stack. `savedMembers` is its saved tile top to bottom, with this window's
-    /// ID in its own place. Keeps the space's focus and the tile's width. False
-    /// when none of its mates is in the space.
+    /// its nearest saved tile-mate, as a relaunched window returning to its tile.
+    /// `savedTile` holds this window's ID in its own pane. Keeps the space's focus
+    /// and the tile's width. False when none of its mates is in the space.
     @discardableResult
-    public mutating func rejoin(windowID: String, savedMembers: [String], heightWeight: Double,
-                                inSpace index: Int) -> Bool {
+    public mutating func rejoin(windowID: String, savedTile: Tile, inSpace index: Int) -> Bool {
         guard spaces.indices.contains(index), !windowID.isEmpty else { return false }
-        return spaces[index].rejoin(windowID: windowID, savedMembers: savedMembers, heightWeight: heightWeight)
+        return spaces[index].rejoin(windowID: windowID, savedTile: savedTile)
     }
 
     /// Keep a saved membership snapshot aligned after the corresponding live space closes.
@@ -471,6 +479,9 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         spaces.remove(at: index)
         spaces.append(SpaceState())
         if activeSpaceIndex > index { activeSpaceIndex -= 1 }
+        shownSpaceIndices = shownSpaceIndices.compactMapValues { shown in
+            shown == index ? nil : shown > index ? shown - 1 : shown
+        }
     }
 
     @discardableResult
@@ -489,7 +500,7 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
 
     /// Moves a member, as a tile of its own, directly after the space's focused
     /// tile, then focuses it there, as macOS does when the user reopens a window.
-    /// A stacked window leaves its stack.
+    /// A window in a multi-pane tile leaves it.
     @discardableResult
     public mutating func placeAfterFocused(windowID: String, inSpace index: Int) -> Bool {
         guard spaces.indices.contains(index), spaces[index].contains(windowID: windowID) else { return false }
@@ -525,54 +536,58 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         return true
     }
 
-    /// Moves a member to `position` within its own tile, top to bottom. Its
-    /// height weight moves with it; focus and width do not change.
+    // MARK: - Panes
+
+    /// Moves a pane to `position` among its split's children. Its weight moves
+    /// with it; focus and width do not change.
     @discardableResult
-    public mutating func reorderMember(windowID: String, to position: Int, inSpace spaceIndex: Int) -> Bool {
+    public mutating func reorderPane(windowID: String, to position: Int, inSpace spaceIndex: Int) -> Bool {
         guard spaces.indices.contains(spaceIndex),
               let tile = spaces[spaceIndex].tileIndex(of: windowID),
-              let member = spaces[spaceIndex].tiles[tile].windowIDs.firstIndex(of: windowID) else { return false }
-        let destination = min(max(position, 0), spaces[spaceIndex].tiles[tile].windowIDs.count - 1)
-        guard member != destination else { return false }
-        spaces[spaceIndex].tiles[tile].moveMember(from: member, to: destination)
+              let panes = spaces[spaceIndex].tiles[tile].panes.reordering(windowID, to: position) else { return false }
+        spaces[spaceIndex].tiles[tile].setPanes(panes)
         return true
     }
 
-    /// Adds a window at the bottom of the tile at `tileIndex` in the space,
-    /// taking that tile's width. A focused window keeps focus.
+    /// Adds a window as a pane spanning the `edge` of the tile at `tileIndex`,
+    /// taking it out of its own tile. Joining at a side adds the window's width
+    /// to the tile's, up to the whole display; joining at the top or bottom
+    /// keeps the tile's width. A focused window keeps focus.
     @discardableResult
-    public mutating func stack(windowID: String, intoTileAt tileIndex: Int, inSpace index: Int) -> Bool {
+    public mutating func join(windowID: String, intoTileAt tileIndex: Int, edge: TileEdge,
+                              inSpace index: Int) -> Bool {
         guard spaces.indices.contains(index), spaces[index].tiles.indices.contains(tileIndex),
               let source = spaces[index].tileIndex(of: windowID), source != tileIndex else { return false }
         let wasFocused = spaces[index].focusedWindowID == windowID
+        let joinerWidth = spaces[index].paneWidthFraction(of: windowID)
         let sourceDisappears = !spaces[index].tiles[source].isMultiPane
         _ = spaces[index].detach(windowID: windowID)
         let target = sourceDisappears && source < tileIndex ? tileIndex - 1 : tileIndex
-        spaces[index].tiles[target].append(windowID: windowID)
+        var tile = spaces[index].tiles[target]
+        tile.setPanes(tile.panes.joining(windowID, at: edge))
+        if edge.axis == .horizontal {
+            tile.widthFraction = SpaceState.clampedWidth(tile.widthFraction + joinerWidth)
+        }
+        spaces[index].tiles[target] = tile
         if wasFocused { spaces[index].setFocus(windowID: windowID) }
         return true
     }
 
-    /// Takes a stacked window out of its tile as a tile of its own, directly
-    /// before it (`direction` < 0) or after it, with the stack's width. A focused
+    /// Takes a window out of its multi-pane tile as a tile of its own, directly
+    /// before it (`direction` < 0) or after it, with its pane's width. A focused
     /// window keeps focus.
     @discardableResult
-    public mutating func unstack(windowID: String, toward direction: Int, inSpace index: Int) -> Bool {
+    public mutating func expel(windowID: String, toward direction: Int, inSpace index: Int) -> Bool {
         guard direction != 0, spaces.indices.contains(index),
-              let source = spaces[index].tileIndex(of: windowID),
-              spaces[index].tiles[source].isMultiPane else { return false }
-        let wasFocused = spaces[index].focusedWindowID == windowID
-        guard let tile = spaces[index].detach(windowID: windowID) else { return false }
-        spaces[index].tiles.insert(tile, at: direction < 0 ? source : source + 1)
-        if wasFocused { spaces[index].setFocus(windowID: windowID) }
-        return true
+              let source = spaces[index].tileIndex(of: windowID) else { return false }
+        return expel(windowID: windowID, toTileAt: direction < 0 ? source : source + 1, inSpace: index)
     }
 
-    /// Takes a stacked window out of its tile as a tile of its own at tile
-    /// index `position`, counted with its stack still in place, with the stack's
-    /// width, as a member dropped outside its tile. A focused window keeps focus.
+    /// Takes a window out of its multi-pane tile as a tile of its own at tile
+    /// index `position`, counted with its tile still in place, with its pane's
+    /// width. A focused window keeps focus.
     @discardableResult
-    public mutating func unstack(windowID: String, toTileAt position: Int, inSpace index: Int) -> Bool {
+    public mutating func expel(windowID: String, toTileAt position: Int, inSpace index: Int) -> Bool {
         guard spaces.indices.contains(index),
               let source = spaces[index].tileIndex(of: windowID),
               spaces[index].tiles[source].isMultiPane else { return false }
@@ -583,44 +598,159 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         return true
     }
 
-    /// Sets a stacked member's relative share of its tile's height in the
-    /// current space. A window alone in its tile has no share to set.
+    /// Exchanges a window's pane with the pane on `direction`'s side in its
+    /// tile. The weights stay with the positions; focus stays on the window.
     @discardableResult
-    public mutating func setHeightWeight(_ weight: Double, for windowID: String) -> Bool {
-        guard weight.isFinite, weight > 0,
-              let tile = currentSpace.tileIndex(of: windowID), currentSpace.tiles[tile].isMultiPane,
-              let member = currentSpace.tiles[tile].windowIDs.firstIndex(of: windowID),
-              currentSpace.tiles[tile].heightWeights[member] != weight else { return false }
-        spaces[activeSpaceIndex].tiles[tile].heightWeights[member] = weight
+    public mutating func swapPane(windowID: String, direction: PaneDirection, inSpace index: Int) -> Bool {
+        guard spaces.indices.contains(index), let tile = spaces[index].tileIndex(of: windowID),
+              let other = spaces[index].tiles[tile].panes.neighbor(of: windowID, toward: direction) else { return false }
+        spaces[index].tiles[tile].setPanes(spaces[index].tiles[tile].panes.swapping(windowID, other))
         return true
     }
 
-    /// The sideways stacking move for the focused window: alone in its tile, it
-    /// joins the neighboring tile on that side at the bottom; in a stack, it
+    /// Swaps a window's pane with the pane under `point`, in the tile's unit square.
+    @discardableResult
+    public mutating func movePane(windowID: String, to point: CGPoint, inSpace index: Int) -> Bool {
+        guard spaces.indices.contains(index), let tile = spaces[index].tileIndex(of: windowID),
+              let other = spaces[index].tiles[tile].panes.pane(at: point), other != windowID else { return false }
+        spaces[index].tiles[tile].setPanes(spaces[index].tiles[tile].panes.swapping(windowID, other))
+        return true
+    }
+
+    /// Moves focus to the neighboring pane on that side. Left and right go on
+    /// into the adjacent tile, entering at its facing edge; up and down stay in
+    /// the tile. Nothing happens at an end.
+    @discardableResult
+    public mutating func focusPane(direction: PaneDirection) -> Bool {
+        guard let windowID = focusedWindowID, let index = currentSpace.tileIndex(of: windowID) else { return false }
+        let tile = currentSpace.tiles[index]
+        if let neighbor = tile.panes.neighbor(of: windowID, toward: direction) {
+            spaces[activeSpaceIndex].setFocus(windowID: neighbor)
+            return true
+        }
+        let target = index + (direction.isForward ? 1 : -1)
+        guard direction.axis == .horizontal, currentSpace.tiles.indices.contains(target),
+              let origin = tile.panes.unitFrame(of: windowID) else { return false }
+        let entered = currentSpace.tiles[target]
+        let entry = entered.panes.entryPane(movingToward: direction, verticalRange: origin.minY...origin.maxY,
+                                            active: entered.activeWindowID) ?? entered.activeWindowID
+        spaces[activeSpaceIndex].setFocus(windowID: entry)
+        return true
+    }
+
+    /// The focused window swaps with the pane on that side; at its tile's edge
+    /// it leaves as its own tile on that side; alone in its tile, it joins the
+    /// neighboring tile at the facing edge. Focus stays on it.
+    @discardableResult
+    public mutating func moveFocusedWindowSideways(by direction: Int) -> Bool {
+        guard direction != 0, let windowID = focusedWindowID,
+              let tile = currentSpace.tileIndex(of: windowID) else { return false }
+        if swapPane(windowID: windowID, direction: direction > 0 ? .right : .left, inSpace: activeSpaceIndex) {
+            return true
+        }
+        if currentSpace.tiles[tile].isMultiPane {
+            return expel(windowID: windowID, toward: direction, inSpace: activeSpaceIndex)
+        }
+        let target = tile + direction.signum()
+        guard currentSpace.tiles.indices.contains(target) else { return false }
+        return join(windowID: windowID, intoTileAt: target, edge: direction > 0 ? .left : .right,
+                    inSpace: activeSpaceIndex)
+    }
+
+    /// The focused window swaps with the pane above (`direction` < 0) or below.
+    @discardableResult
+    public mutating func moveFocusedWindowVertically(by direction: Int) -> Bool {
+        guard direction != 0, let windowID = focusedWindowID else { return false }
+        return swapPane(windowID: windowID, direction: direction > 0 ? .down : .up, inSpace: activeSpaceIndex)
+    }
+
+    /// The stacking move for the focused window: alone in its tile, it joins the
+    /// neighboring tile on that side at the bottom; in a multi-pane tile, it
     /// leaves as its own tile on that side. Focus stays on it.
     @discardableResult
     public mutating func moveFocusedWindowAcrossTiles(by direction: Int) -> Bool {
         guard direction != 0, let windowID = focusedWindowID,
               let tile = currentSpace.tileIndex(of: windowID) else { return false }
         if currentSpace.tiles[tile].isMultiPane {
-            return unstack(windowID: windowID, toward: direction, inSpace: activeSpaceIndex)
+            return expel(windowID: windowID, toward: direction, inSpace: activeSpaceIndex)
         }
         let target = tile + direction.signum()
         guard currentSpace.tiles.indices.contains(target) else { return false }
-        return stack(windowID: windowID, intoTileAt: target, inSpace: activeSpaceIndex)
+        return join(windowID: windowID, intoTileAt: target, edge: .bottom, inSpace: activeSpaceIndex)
     }
 
-    /// Focuses the window above (`direction` < 0) or below the focused window in
-    /// its tile. Stops at the ends.
+    /// Gives `windowID`'s side of the split that separates it from `neighborID`
+    /// `fraction` of the two sides' combined share, in the current space. The
+    /// rest of the tile keeps its sizes.
     @discardableResult
-    public mutating func focusMember(by direction: Int) -> Bool {
-        guard direction != 0, let windowID = focusedWindowID,
-              let tile = currentSpace.tileIndex(of: windowID) else { return false }
-        let members = currentSpace.tiles[tile].windowIDs
-        guard let member = members.firstIndex(of: windowID),
-              members.indices.contains(member + direction.signum()) else { return false }
-        spaces[activeSpaceIndex].setFocus(windowID: members[member + direction.signum()])
+    public mutating func setSplitShares(windowID: String, neighborID: String, fraction: Double) -> Bool {
+        guard fraction.isFinite, fraction > 0, fraction < 1, windowID != neighborID,
+              let tile = currentSpace.tileIndex(of: windowID), currentSpace.tileIndex(of: neighborID) == tile,
+              let panes = currentSpace.tiles[tile].panes.settingShares(windowID, neighborID, fraction: fraction)
+        else { return false }
+        spaces[activeSpaceIndex].tiles[tile].setPanes(panes)
         return true
+    }
+
+    /// Lays out the current space's tile holding `windowID` as `layout`. `single`
+    /// breaks it into one tile per window, in place. Other layouts take the
+    /// windows they lack from the following tiles, then the preceding ones,
+    /// nearest first, and expel windows beyond the layout's panes as tiles of
+    /// their own just after it. Every window keeps its reading-order rank in the
+    /// space, and the focused window keeps focus.
+    @discardableResult
+    public mutating func arrange(tileOf windowID: String, layout: PaneLayout) -> TileArrangement {
+        guard let tileIndex = currentSpace.tileIndex(of: windowID) else { return .unchanged }
+        var space = currentSpace
+        let tile = space.tiles[tileIndex]
+        let focused = space.focusedWindowID
+        if layout == .single {
+            guard tile.isMultiPane else { return .unchanged }
+            var usedIDs = Set(space.tiles.map(\.id))
+            let parts = tile.windowIDs.enumerated().map { offset, id in
+                let tileID = offset == 0 ? tile.id : SpaceState.uniqueTileID(id, used: usedIDs)
+                usedIDs.insert(tileID)
+                return Tile(id: tileID, windowID: id, widthFraction: tile.paneWidthFraction(of: id))
+            }
+            space.tiles.replaceSubrange(tileIndex...tileIndex, with: parts)
+        } else {
+            let needed = layout.paneCount
+            guard space.windowIDs.count >= needed else {
+                return .notEnoughWindows(needed: needed, available: space.windowIDs.count)
+            }
+            var following: [String] = []
+            var preceding: [String] = []
+            if tile.windowIDs.count < needed {
+                for id in space.tiles[(tileIndex + 1)...].flatMap(\.windowIDs)
+                where tile.windowIDs.count + following.count < needed {
+                    following.append(id)
+                }
+                for id in space.tiles[..<tileIndex].flatMap(\.windowIDs).reversed()
+                where tile.windowIDs.count + following.count + preceding.count < needed {
+                    preceding.append(id)
+                }
+            }
+            let ordered = preceding.reversed() + tile.windowIDs + following
+            let kept = Array(ordered.prefix(needed))
+            let extras = ordered.dropFirst(needed).map { ($0, tile.paneWidthFraction(of: $0)) }
+            guard let panes = layout.tree(kept) else { return .unchanged }
+            let active = focused.flatMap { kept.contains($0) ? $0 : nil }
+                ?? (kept.contains(tile.activeWindowID) ? tile.activeWindowID : kept[0])
+            let arranged = Tile(id: tile.id, panes: panes,
+                                widthFraction: layout.spansTwoColumns ? SpaceState.maximumWidthFraction
+                                    : tile.widthFraction,
+                                activeWindowID: active)
+            guard arranged != tile else { return .unchanged }
+            for id in preceding + following { space.remove(windowID: id) }
+            guard let position = space.tiles.firstIndex(where: { $0.id == tile.id }) else { return .unchanged }
+            space.tiles[position] = arranged
+            for (offset, extra) in extras.enumerated() {
+                space.tiles.insert(space.newTile(windowID: extra.0, width: extra.1), at: position + 1 + offset)
+            }
+        }
+        if let focused { space.setFocus(windowID: focused) }
+        spaces[activeSpaceIndex] = space
+        return .arranged
     }
 
     /// Sets the width of the window's tile in the current space.
@@ -659,7 +789,7 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
               !spaces[destinationIndex].contains(windowID: windowID) else { return false }
         spaces[destinationIndex].insert(
             windowID: windowID,
-            width: spaces[sourceIndex].widthFraction(for: windowID),
+            width: spaces[sourceIndex].paneWidthFraction(of: windowID),
             focus: false
         )
         return true
@@ -669,7 +799,7 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     public mutating func move(windowID: String, fromSpace sourceIndex: Int, toSpace destinationIndex: Int) -> Bool {
         guard spaces.indices.contains(sourceIndex), spaces.indices.contains(destinationIndex),
               sourceIndex != destinationIndex, spaces[sourceIndex].contains(windowID: windowID) else { return false }
-        let width = spaces[sourceIndex].widthFraction(for: windowID)
+        let width = spaces[sourceIndex].paneWidthFraction(of: windowID)
         spaces[destinationIndex].insert(windowID: windowID, width: width, focus: false)
         spaces[sourceIndex].remove(windowID: windowID)
         return true
@@ -703,12 +833,12 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         case .shrinkWidth, .growWidth:
             guard let windowID = focusedWindowID else { return false }
             let adjustment = action == .growWidth ? 0.05 : -0.05
-            let width = (currentSpace.widthFraction(for: windowID) * 100 + adjustment * 100).rounded() / 100
+            let width = (currentSpace.tileWidthFraction(containing: windowID) * 100 + adjustment * 100).rounded() / 100
             return setWidthFraction(width, for: windowID)
         case .nextWidthPreset, .previousWidthPreset:
             guard let windowID = focusedWindowID else { return false }
             let presets = SpaceState.normalizedWidthPresets(widthPresets)
-            let current = currentSpace.widthFraction(for: windowID)
+            let current = currentSpace.tileWidthFraction(containing: windowID)
             // Half a percent of slack so a width set by a drag lands on the nearest step.
             let target = action == .nextWidthPreset
                 ? presets.first { $0 > current + 0.005 } ?? presets[0]
@@ -724,11 +854,11 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         case .stackPrevious, .stackNext:
             return moveFocusedWindowAcrossTiles(by: action == .stackNext ? 1 : -1)
         case .focusMemberAbove, .focusMemberBelow:
-            return focusMember(by: action == .focusMemberBelow ? 1 : -1)
+            return focusPane(direction: action == .focusMemberBelow ? .down : .up)
         }
     }
 
-    /// Steps focus into the adjacent tile's active member, or swaps the focused
+    /// Steps focus into the adjacent tile's active pane, or swaps the focused
     /// tile with it.
     private mutating func navigateWindow(by direction: Int, reorder: Bool) -> Bool {
         guard let index = currentSpace.focusedTileIndex,
@@ -750,7 +880,7 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     private mutating func moveFocusedWindow(toSpace index: Int, follow: Bool) -> Bool {
         guard spaces.indices.contains(index), index != activeSpaceIndex,
               let windowID = focusedWindowID else { return false }
-        spaces[index].insert(windowID: windowID, width: currentSpace.widthFraction(for: windowID), focus: false)
+        spaces[index].insert(windowID: windowID, width: currentSpace.paneWidthFraction(of: windowID), focus: false)
         spaces[activeSpaceIndex].remove(windowID: windowID)
         if follow {
             activeSpaceIndex = index
@@ -760,7 +890,7 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case isPaused, spaces, activeSpaceIndex
+        case isPaused, spaces, activeSpaceIndex, shownSpaceIndices
     }
 
     public init(from decoder: any Decoder) throws {
@@ -768,7 +898,8 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         self.init(
             isPaused: try values.decodeIfPresent(Bool.self, forKey: .isPaused) ?? false,
             spaces: try values.decodeIfPresent([SpaceState].self, forKey: .spaces) ?? [],
-            activeSpaceIndex: try values.decodeIfPresent(Int.self, forKey: .activeSpaceIndex) ?? 0
+            activeSpaceIndex: try values.decodeIfPresent(Int.self, forKey: .activeSpaceIndex) ?? 0,
+            shownSpaceIndices: try values.decodeIfPresent([DisplayID: Int].self, forKey: .shownSpaceIndices) ?? [:]
         )
     }
 }

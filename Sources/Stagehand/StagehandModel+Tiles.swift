@@ -63,7 +63,7 @@ extension StagehandModel {
         var candidate = state
         let changed = switch change {
         case .moveFocusedWindowAcrossTiles(let direction): candidate.moveFocusedWindowAcrossTiles(by: direction)
-        case .focusMember(let direction): candidate.focusMember(by: direction)
+        case .focusMember(let direction): candidate.focusPane(direction: direction < 0 ? .up : .down)
         }
         guard changed else { return .unchanged }
         if let refusal = stackRefusal(from: state, to: candidate) {
@@ -91,8 +91,8 @@ extension StagehandModel {
             // A tile whose members all came from one tile gained no one.
             let sources = Set(tile.windowIDs.map { before.tileIndex(of: $0) })
             guard sources.count > 1 || sources.contains(nil) else { continue }
-            let required = WindowLayout.minimumStackHeight(windowIDs: tile.windowIDs, gap: gap,
-                                                           minimumHeights: learnedMinimumHeights)
+            let required = WindowLayout.minimumTileSize(tile, paneGap: gap, minimumWidths: [:],
+                                                        minimumHeights: learnedMinimumHeights).height
             if required > availableFrame.height + 1 {
                 return .stackDoesNotFit(windowIDs: tile.windowIDs, requiredHeight: required,
                                         availableHeight: availableFrame.height)
@@ -187,12 +187,12 @@ extension StagehandModel {
         guard let minX = own.map(\.frame.minX).min(), let maxX = own.map(\.frame.maxX).max() else { return }
         if (minX...maxX).contains(frame.midX) {
             let position = own.count { $0.windowID != windowID && $0.frame.midY < frame.midY }
-            state.reorderMember(windowID: windowID, to: position, inSpace: state.activeSpaceIndex)
+            state.reorderPane(windowID: windowID, to: position, inSpace: state.activeSpaceIndex)
         } else {
-            state.unstack(windowID: windowID,
-                          toTileAt: dropTileIndex(windowID: windowID, droppedMidX: frame.midX,
-                                                  placements: placements, space: space),
-                          inSpace: state.activeSpaceIndex)
+            state.expel(windowID: windowID,
+                        toTileAt: dropTileIndex(windowID: windowID, droppedMidX: frame.midX,
+                                                placements: placements, space: space),
+                        inSpace: state.activeSpaceIndex)
         }
     }
 
@@ -211,8 +211,7 @@ extension StagehandModel {
                                        previous: previous, observed: observed,
                                        height: { self.knownFrames[$0]?.height },
                                        minimumHeight: { self.learnedMinimumHeights[$0] }) else { return }
-        state.setHeightWeight(resize.weight, for: windowID)
-        state.setHeightWeight(resize.neighborWeight, for: resize.neighborID)
+        state.setSplitShares(windowID: windowID, neighborID: resize.neighborID, fraction: resize.share)
     }
 }
 
@@ -243,33 +242,31 @@ func dropTileIndex(windowID: String, droppedMidX: CGFloat, placements: [WindowPl
 
 struct StackResize: Equatable {
     let neighborID: String
-    let weight: Double
-    let neighborWeight: Double
+    /// The resized window's part of the height it shares with the neighbor.
+    let share: Double
 }
 
-/// New height shares after the user resized a stacked window from `previous` to
-/// `observed`. The neighbor on the edge that moved (above for a top-edge drag)
-/// gives or takes the difference; at the stack's own top or bottom edge, the
-/// neighbor on the other side does. The pair keeps its combined share, so the
-/// other members keep their heights, and the neighbor keeps at least its known
-/// minimum height.
+/// The new height share after the user resized a window of a vertical stack of
+/// panes from `previous` to `observed`. The neighbor on the edge that moved
+/// (above for a top-edge drag) gives or takes the difference; at the stack's own
+/// top or bottom edge, the neighbor on the other side does. The pair keeps its
+/// combined share, so the other panes keep their heights, and the neighbor keeps
+/// at least its known minimum height.
 func stackResize(tile: Tile, windowID: String, previous: CGRect, observed: CGRect,
                  height: (String) -> CGFloat?, minimumHeight: (String) -> CGFloat?) -> StackResize? {
-    guard tile.isMultiPane, let index = tile.windowIDs.firstIndex(of: windowID),
+    guard case .split(.vertical, let children, _) = tile.panes,
+          let index = children.firstIndex(of: .pane(windowID: windowID)),
           previous.height.isFinite, previous.height > 0,
           observed.height.isFinite, observed.height > 0 else { return nil }
     let topMoved = abs(observed.minY - previous.minY) > 3
     let bottomMoved = abs(observed.maxY - previous.maxY) > 3
-    let above = index > 0 ? index - 1 : nil
-    let below = index + 1 < tile.windowIDs.count ? index + 1 : nil
-    guard let neighbor = topMoved && !bottomMoved ? above ?? below : below ?? above else { return nil }
-    let neighborID = tile.windowIDs[neighbor]
-    guard let neighborHeight = height(neighborID), neighborHeight.isFinite, neighborHeight > 0 else { return nil }
+    let above = index > 0 ? children[index - 1] : nil
+    let below = index + 1 < children.count ? children[index + 1] : nil
+    guard case .pane(let neighborID) = topMoved && !bottomMoved ? above ?? below : below ?? above,
+          let neighborHeight = height(neighborID), neighborHeight.isFinite, neighborHeight > 0 else { return nil }
     let total = previous.height + neighborHeight
     let neighborFloor = max(1, minimumHeight(neighborID).flatMap { $0.isFinite ? $0 : nil } ?? 0)
     let memberHeight = min(observed.height, total - neighborFloor)
     guard memberHeight > 0 else { return nil }
-    let pair = tile.heightWeights[index] + tile.heightWeights[neighbor]
-    let share = Double(memberHeight / total)
-    return StackResize(neighborID: neighborID, weight: pair * share, neighborWeight: pair * (1 - share))
+    return StackResize(neighborID: neighborID, share: Double(memberHeight / total))
 }

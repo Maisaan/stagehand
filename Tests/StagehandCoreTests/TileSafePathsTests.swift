@@ -3,14 +3,13 @@ import Foundation
 import Testing
 @testable import StagehandCore
 
-// Slice 2 of tile stacking: the paths that must keep a stack intact while
-// nothing in the UI creates one yet.
+// The paths that must keep a multi-pane tile intact.
 
 private func stackedSpace(_ tiles: [[String]], focus: String? = nil, widths: [Double]? = nil,
                           weights: [[Double]]? = nil) -> SpaceState {
     SpaceState(tiles: tiles.enumerated().map { index, members in
-        Tile(windowIDs: members, widthFraction: widths?[index] ?? SpaceState.defaultWidthFraction,
-             heightWeights: weights?[index] ?? [])
+        Tile(stacking: members, widthFraction: widths?[index] ?? SpaceState.defaultWidthFraction,
+             weights: weights?[index] ?? [])
     }, focusedWindowID: focus)
 }
 
@@ -32,8 +31,8 @@ private func stacked(_ tiles: [[String]], focus: String? = nil, widths: [Double]
     state.restoreMemberships(windowIDs: ["c"], from: saved)
 
     #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["b", "c", "d"], ["e"]])
-    #expect(state.currentSpace.tiles[1].heightWeight(for: "c") == 2.5)
-    #expect(state.currentSpace.widthFraction(for: "c") == 0.6)
+    #expect(state.currentSpace.tiles[1].panes.weight(of: "c") == 2.5)
+    #expect(state.currentSpace.tileWidthFraction(containing: "c") == 0.6)
 }
 
 @Test func aReturningTopMemberJoinsAboveItsRemainingMate() {
@@ -54,7 +53,7 @@ private func stacked(_ tiles: [[String]], focus: String? = nil, widths: [Double]
     state.restoreMemberships(windowIDs: ["b", "c"], from: saved)
 
     #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["b", "c"], ["d"]])
-    #expect(state.currentSpace.widthFraction(for: "c") == 0.6)
+    #expect(state.currentSpace.tileWidthFraction(containing: "c") == 0.6)
 }
 
 @Test func aStackedWindowWhoseMatesAreGoneReturnsAsItsOwnTile() {
@@ -65,43 +64,73 @@ private func stacked(_ tiles: [[String]], focus: String? = nil, widths: [Double]
     #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["c"], ["d"]])
 }
 
-@Test func rejoinPlacesARelaunchedMemberAmongItsMates() {
-    var state = stacked([["a"], ["b", "d"]], focus: "a")
-    #expect(state.rejoin(windowID: "new", savedMembers: ["b", "new", "d"], heightWeight: 3, inSpace: 0) == true)
-    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["b", "new", "d"]])
-    #expect(state.currentSpace.tiles[1].heightWeight(for: "new") == 3)
+@Test func rejoinRestoresTheSavedTreeWhenTheRestIsUnchanged() {
+    var state = stacked([["a"], ["b", "d"]], focus: "a", widths: [0.5, 0.6])
+    #expect(state.rejoin(windowID: "new", savedTile: Tile(stacking: ["b", "new", "d"], weights: [1, 3, 1]),
+                         inSpace: 0) == true)
+    #expect(state.currentSpace.tiles[1].panes == .stack(["b", "new", "d"], weights: [1, 3, 1]))
+    #expect(state.currentSpace.tileWidthFraction(containing: "new") == 0.6)
     #expect(state.focusedWindowID == "a")
-    #expect(state.rejoin(windowID: "other", savedMembers: ["x", "other"], heightWeight: 1, inSpace: 0) == false)
-    #expect(state.rejoin(windowID: "new", savedMembers: ["b", "new"], heightWeight: 1, inSpace: 0) == false)
+    #expect(state.rejoin(windowID: "other", savedTile: Tile(stacking: ["x", "other"]), inSpace: 0) == false)
+    #expect(state.rejoin(windowID: "new", savedTile: Tile(stacking: ["b", "new"]), inSpace: 0) == false)
+
+    // A 2x2 grid that lost its bottom-right pane gets it back in place.
+    let grid = Tile(panes: .v(.h(.p("a"), .p("b")), .h(.p("c"), .p("d")), weights: [2, 1]))
+    var gridState = WorkspaceState(spaces: [SpaceState(tiles: [
+        Tile(panes: .v(.h(.p("a"), .p("b")), .p("c"), weights: [2, 1]))
+    ])])
+    #expect(gridState.rejoin(windowID: "d", savedTile: grid, inSpace: 0) == true)
+    #expect(gridState.currentSpace.tiles[0].panes == grid.panes)
+}
+
+@Test func rejoinOtherwiseGoesBesideTheNearestSavedSiblingOnItsSide() {
+    // The tile changed since: b now sits beside a, not below it.
+    var state = WorkspaceState(spaces: [SpaceState(tiles: [Tile(panes: .h(.p("a"), .p("b")))])])
+    #expect(state.rejoin(windowID: "c", savedTile: Tile(panes: .v(.p("a"), .p("b"), .p("c"))), inSpace: 0) == true)
+    #expect(state.currentSpace.tiles[0].panes == .h(.p("a"), .v(.p("b"), .p("c"))))
+
+    // With no earlier mate present, it goes before the later one, along their saved split.
+    var front = WorkspaceState(spaces: [SpaceState(tiles: [Tile(panes: .v(.p("b"), .p("x")))])])
+    #expect(front.rejoin(windowID: "a", savedTile: Tile(panes: .h(.p("a"), .p("b"))), inSpace: 0) == true)
+    #expect(front.currentSpace.tiles[0].panes == .v(.h(.p("a"), .p("b")), .p("x")))
 }
 
 // MARK: - Drops and resizes
 
 @Test func aStackedWindowDroppedOutsideItsTileBecomesItsOwnTileThere() {
     var state = stacked([["a"], ["b", "c"], ["d"]], focus: "c", widths: [0.5, 0.6, 0.7])
-    #expect(state.unstack(windowID: "c", toTileAt: 3, inSpace: 0) == true)
+    #expect(state.expel(windowID: "c", toTileAt: 3, inSpace: 0) == true)
     #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["b"], ["d"], ["c"]])
     #expect(state.focusedWindowID == "c")
-    #expect(state.currentSpace.widthFraction(for: "c") == 0.6)
+    #expect(state.currentSpace.tileWidthFraction(containing: "c") == 0.6)
 
     var front = stacked([["a"], ["b", "c"]], focus: "b")
-    #expect(front.unstack(windowID: "b", toTileAt: -4, inSpace: 0) == true)
+    #expect(front.expel(windowID: "b", toTileAt: -4, inSpace: 0) == true)
     #expect(front.currentSpace.tiles.map(\.windowIDs) == [["b"], ["a"], ["c"]])
     #expect(front.focusedWindowID == "b")
 
     var lone = stacked([["a"], ["b"]], focus: "a")
-    #expect(lone.unstack(windowID: "a", toTileAt: 1, inSpace: 0) == false)
+    #expect(lone.expel(windowID: "a", toTileAt: 1, inSpace: 0) == false)
 }
 
-@Test func heightWeightsAreSetOnlyForStackedMembers() {
-    var state = stacked([["a"], ["b", "c"]], focus: "a")
-    #expect(state.setHeightWeight(2, for: "b") == true)
-    #expect(state.currentSpace.tiles[1].heightWeights == [2, 1])
-    #expect(state.setHeightWeight(2, for: "b") == false)
-    #expect(state.setHeightWeight(2, for: "a") == false)
-    #expect(state.setHeightWeight(0, for: "c") == false)
-    #expect(state.setHeightWeight(.nan, for: "c") == false)
-    #expect(state.setHeightWeight(3, for: "missing") == false)
+@Test func splitSharesTradeBetweenTheTwoSidesOnlyWithinOneTile() {
+    var state = stacked([["a"], ["b", "c", "d"]], focus: "a")
+    #expect(state.setSplitShares(windowID: "b", neighborID: "c", fraction: 0.75) == true)
+    #expect(state.currentSpace.tiles[1].panes == .stack(["b", "c", "d"], weights: [1.5, 0.5, 1]))
+    #expect(state.setSplitShares(windowID: "b", neighborID: "c", fraction: 0.75) == false)
+    #expect(state.setSplitShares(windowID: "a", neighborID: "b", fraction: 0.5) == false)
+    #expect(state.setSplitShares(windowID: "c", neighborID: "d", fraction: 0) == false)
+    #expect(state.setSplitShares(windowID: "c", neighborID: "d", fraction: .nan) == false)
+    #expect(state.setSplitShares(windowID: "c", neighborID: "c", fraction: 0.5) == false)
+    #expect(state.setSplitShares(windowID: "missing", neighborID: "c", fraction: 0.5) == false)
+
+    // Across a grid's rows, the rows trade; each row keeps its own columns.
+    var grid = WorkspaceState(spaces: [SpaceState(tiles: [
+        Tile(panes: .v(.h(.p("a"), .p("b"), weights: [1, 3]), .h(.p("c"), .p("d"))))
+    ])])
+    #expect(grid.setSplitShares(windowID: "b", neighborID: "d", fraction: 0.25) == true)
+    #expect(grid.currentSpace.tiles[0].panes
+        == .v(.h(.p("a"), .p("b"), weights: [1, 3]), .h(.p("c"), .p("d")), weights: [0.5, 1.5]))
 }
 
 @Test func stackSafeOperationsKeepTheInvariants() throws {
@@ -113,13 +142,16 @@ private func stacked(_ tiles: [[String]], focus: String? = nil, widths: [Double]
         for _ in 0..<30 {
             let id = pool.randomElement(using: &generator)!
             switch Int.random(in: 0..<6, using: &generator) {
-            case 0: state.unstack(windowID: id, toTileAt: Int.random(in: -1...5, using: &generator), inSpace: 0)
-            case 1: state.setHeightWeight([0.5, 1, 3, -1].randomElement(using: &generator)!, for: id)
+            case 0: state.expel(windowID: id, toTileAt: Int.random(in: -1...5, using: &generator), inSpace: 0)
+            case 1: state.setSplitShares(windowID: id, neighborID: pool.randomElement(using: &generator)!,
+                                         fraction: [0.2, 0.5, 0.9, -1].randomElement(using: &generator)!)
             case 2: state.reconcile(windowIDs: pool.filter { _ in Bool.random(using: &generator) })
             case 3: state.restoreMemberships(windowIDs: Set(pool.filter { _ in Bool.random(using: &generator) }),
                                              from: saved)
-            case 4: state.rejoin(windowID: "n\(Int.random(in: 0..<3, using: &generator))",
-                                 savedMembers: ["w1", "n0", "w4", "n1", "n2"], heightWeight: 2, inSpace: 0)
+            case 4:
+                let returning = "n\(Int.random(in: 0..<3, using: &generator))"
+                state.rejoin(windowID: returning, savedTile: Tile(stacking: ["w1", "n0", "w4", "n1", "n2"]),
+                             inSpace: 0)
             default: state.moveFocusedWindowAcrossTiles(by: Bool.random(using: &generator) ? 1 : -1)
             }
             for space in state.spaces {
@@ -127,7 +159,7 @@ private func stacked(_ tiles: [[String]], focus: String? = nil, widths: [Double]
                 #expect(space.windowIDs == flat)
                 #expect(Set(flat).count == flat.count)
                 #expect(space.tiles.allSatisfy { !$0.windowIDs.isEmpty && $0.windowIDs.contains($0.activeWindowID)
-                    && $0.heightWeights.count == $0.windowIDs.count })
+                    && $0.windowIDs == $0.panes.windowIDs })
                 if let focused = space.focusedWindowID, let tile = space.tileIndex(of: focused) {
                     #expect(space.tiles[tile].activeWindowID == focused)
                 } else {
@@ -170,17 +202,20 @@ private func frame(_ placements: [WindowPlacement], _ id: String) throws -> CGRe
     #expect(try frame(placements, "a").height == 34)
 }
 
-@Test func aStackThatCannotFitIsCenteredAtItsMinimumsAndReportsItsHeight() throws {
+@Test func aStackThatCannotFitStartsAtTheTopAtItsMinimumsAndReportsItsSize() throws {
     let state = stacked([["a", "b"]], focus: "a")
     let minimums: [String: CGFloat] = ["a": 500, "b": 400]
     let placements = WindowLayout.placements(for: state, availableFrame: screen, gap: 8, minimumHeights: minimums)
     #expect(try frame(placements, "a").height == 500)
     #expect(try frame(placements, "b").height == 400)
-    #expect(try frame(placements, "a").minY == 350 - 454)
-    #expect(WindowLayout.minimumStackHeight(windowIDs: ["a", "b"], gap: 8, minimumHeights: minimums) == 908)
-    #expect(WindowLayout.minimumStackHeight(windowIDs: ["a", "b", "c"], gap: -20, minimumHeights: minimums) == 900)
-    #expect(WindowLayout.minimumStackHeight(windowIDs: ["a", "z"], gap: .nan,
-                                            minimumHeights: ["a": 10, "z": .infinity]) == 18)
+    #expect(try frame(placements, "a").minY == 0)
+    #expect(try frame(placements, "b").minY == 508)
+    func size(_ tile: Tile, gap: CGFloat, widths: [String: CGFloat] = [:], heights: [String: CGFloat]) -> CGSize {
+        WindowLayout.minimumTileSize(tile, paneGap: gap, minimumWidths: widths, minimumHeights: heights)
+    }
+    #expect(size(Tile(stacking: ["a", "b"]), gap: 8, heights: minimums) == CGSize(width: 0, height: 908))
+    #expect(size(Tile(stacking: ["a", "b", "c"]), gap: -20, heights: minimums) == CGSize(width: 0, height: 900))
+    #expect(size(Tile(stacking: ["a", "z"]), gap: .nan, heights: ["a": 10, "z": .infinity]) == CGSize(width: 0, height: 18))
 }
 
 @Test func minimumHeightsChangeNothingForLoneWindowsOrStacksWithRoom() {
@@ -194,10 +229,10 @@ private func frame(_ placements: [WindowPlacement], _ id: String) throws -> CGRe
         == WindowLayout.placements(for: roomy, availableFrame: screen))
 }
 
-@Test func anObservedHeightStillWinsOverAMinimum() throws {
+@Test func aMinimumHoldsThePaneWhileASmallerObservedWindowIsCenteredInIt() throws {
     let state = stacked([["a", "b"]], focus: "a")
     let placements = WindowLayout.placements(for: state, availableFrame: screen, gap: 0,
                                              observedHeights: ["a": 200], minimumHeights: ["a": 600])
-    #expect(try frame(placements, "a").height == 200)
-    #expect(try frame(placements, "b").height == 500)
+    #expect(try frame(placements, "a") == CGRect(x: 0, y: 200, width: 950, height: 200))
+    #expect(try frame(placements, "b") == CGRect(x: 0, y: 600, width: 950, height: 100))
 }

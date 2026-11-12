@@ -19,7 +19,7 @@ struct RelaunchPlaces {
         let layout: WorkspaceState
         let preferredHeight: CGFloat?
         /// The layout just before the first window of its app's quit left. Windows
-        /// close one at a time, so only this one still shows the stacks the app's
+        /// close one at a time, so only this one still shows the tiles the app's
         /// windows shared; `layout` alone has lost the mates that closed first.
         var quitLayout: WorkspaceState?
     }
@@ -177,11 +177,15 @@ struct RelaunchPlaces {
             }
             let space = state.spaces[target]
             guard !space.contains(windowID: windowID) else { continue }
-            // A stacked window goes back into the tile holding its tile-mates.
-            if let savedTile = stackTile(of: departed, in: savedSpace),
+            // A window from a multi-pane tile goes back into the tile holding its tile-mates.
+            if let savedTile = multiPaneTile(of: departed, in: savedSpace),
                state.rejoin(windowID: windowID,
-                            savedMembers: savedTile.windowIDs.map { $0 == departed.id ? windowID : resolve($0) },
-                            heightWeight: savedTile.heightWeight(for: departed.id), inSpace: target) {
+                            savedTile: Tile(id: savedTile.id,
+                                            panes: savedTile.panes.mapWindowIDs {
+                                                $0 == departed.id ? windowID : resolve($0)
+                                            },
+                                            widthFraction: savedTile.widthFraction),
+                            inSpace: target) {
                 joined.append(target)
                 continue
             }
@@ -193,17 +197,17 @@ struct RelaunchPlaces {
                 ?? later.flatMap { space.tileIndex(of: $0) }
                 ?? space.tiles.endIndex
             if state.insert(windowID: windowID, inSpace: target, at: position,
-                            width: savedSpace.widthFraction(for: departed.id)) {
+                            width: savedSpace.paneWidthFraction(of: departed.id)) {
                 joined.append(target)
             }
         }
         return (joined, opened)
     }
 
-    /// The stack the departed window was in, in the space of its layout that is
-    /// `savedSpace`, as it was before its app's first window left. Nil when it
-    /// was alone in its tile.
-    private static func stackTile(of departed: DepartedWindow, in savedSpace: SpaceState) -> Tile? {
+    /// The multi-pane tile the departed window was in, in the space of its
+    /// layout that is `savedSpace`, as it was before its app's first window left.
+    /// Nil when it was alone in its tile.
+    private static func multiPaneTile(of departed: DepartedWindow, in savedSpace: SpaceState) -> Tile? {
         var candidates = [savedSpace]
         if let quitLayout = departed.quitLayout {
             // The same space before the quit: it holds the window and, of every

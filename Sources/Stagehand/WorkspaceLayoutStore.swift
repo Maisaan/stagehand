@@ -11,7 +11,9 @@ struct WorkspaceLayoutStore {
     /// aside rather than guessed at.
     /// 2: spaces hold tiles (stacks of windows sharing a width) instead of a
     /// flat window list with per-window widths.
-    static let currentVersion = 2
+    /// 3: a tile's windows are a split tree of panes; spaces carry a display
+    /// anchor and the workspace the space shown on each other display.
+    static let currentVersion = 3
 
     private struct SavedLayout: Codable {
         var version: Int

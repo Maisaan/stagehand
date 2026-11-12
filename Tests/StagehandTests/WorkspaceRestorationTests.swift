@@ -97,7 +97,7 @@ struct WorkspaceRestorationTests {
         ))
 
         #expect(state.spaces[0].windowIDs == original.spaces[0].windowIDs)
-        #expect(state.spaces[0].widthFraction(for: "minimized") == 0.62)
+        #expect(state.spaces[0].tileWidthFraction(containing: "minimized") == 0.62)
         #expect(state.spaces[1].windowIDs == ["minimized"])
     }
 
@@ -150,7 +150,7 @@ struct WorkspaceRestorationTests {
             initialWidthFractions: ["new": 0.64]
         )
 
-        #expect(state.currentSpace.widthFraction(for: "new") == 0.64)
+        #expect(state.currentSpace.tileWidthFraction(containing: "new") == 0.64)
     }
 
     @Test func resumingPreservesSpacesOrderSharingAndWidthsAndOmitsClosedWindows() {
@@ -211,7 +211,7 @@ struct WorkspaceRestorationTests {
                               trackedWindowIDs: ["left", "shared", "right"])
 
         #expect(state.spaces[0].windowIDs == ["left", "shared", "right"])
-        #expect(state.spaces[0].widthFraction(for: "left") == 0.5)
+        #expect(state.spaces[0].tileWidthFraction(containing: "left") == 0.5)
         #expect(state.spaces[1].windowIDs == ["shared"])
     }
 
@@ -255,7 +255,7 @@ struct WorkspaceRestorationTests {
         #expect(state.spaces[0].windowIDs == ["other"])
         #expect(state.spaces[1].windowIDs == ["late"])
         #expect(state.spaces[2].windowIDs == ["shared", "new"])
-        #expect(state.spaces[2].widthFraction(for: "shared") == 0.5)
+        #expect(state.spaces[2].tileWidthFraction(containing: "shared") == 0.5)
         #expect(state.focusedWindowID == "new")
     }
 
@@ -290,7 +290,7 @@ struct WorkspaceRestorationTests {
         #expect(state.activeSpaceIndex == 1)
         #expect(state.spaces[1].windowIDs == ["later-a", "later-b"])
         #expect(state.spaces[1].focusedWindowID == "later-b")
-        #expect(state.spaces[1].widthFraction(for: "later-a") == 0.42)
+        #expect(state.spaces[1].tileWidthFraction(containing: "later-a") == 0.42)
         #expect(state.spaces[2].windowIDs.isEmpty)
     }
 
@@ -326,7 +326,7 @@ struct WorkspaceRestorationTests {
         restoration.reconcile(state: &state, windowIDs: ["first", "later", "unavailable"],
                               trackedWindowIDs: ["first", "later", "unavailable"])
         #expect(state.spaces[1].windowIDs == ["later", "unavailable"])
-        #expect(state.spaces[1].widthFraction(for: "unavailable") == 0.62)
+        #expect(state.spaces[1].tileWidthFraction(containing: "unavailable") == 0.62)
         #expect(state.spaces[2].windowIDs.isEmpty)
     }
 

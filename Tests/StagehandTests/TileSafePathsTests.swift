@@ -4,14 +4,13 @@ import Testing
 @testable import Stagehand
 @testable import StagehandPlatform
 
-// Slice 2 of tile stacking. Nothing in the UI creates a stack yet, so these
-// build stacked states directly and drive the paths that must keep them intact.
+// These build multi-pane states directly and drive the paths that must keep them intact.
 
 private func tiles(_ members: [[String]], focus: String? = nil, widths: [Double]? = nil,
                    weights: [[Double]]? = nil) -> WorkspaceState {
     WorkspaceState(spaces: [SpaceState(tiles: members.enumerated().map { index, ids in
-        Tile(windowIDs: ids, widthFraction: widths?[index] ?? SpaceState.defaultWidthFraction,
-             heightWeights: weights?[index] ?? [])
+        Tile(stacking: ids, widthFraction: widths?[index] ?? SpaceState.defaultWidthFraction,
+             weights: weights?[index] ?? [])
     }, focusedWindowID: focus)])
 }
 
@@ -38,7 +37,7 @@ private func layout(_ state: WorkspaceState) -> [[String]] {
                                hadPreview: false, reduceMotion: false))
     // Leaving a tile and entering another member's tile is not within one tile.
     var split = tiles([["a", "b"], ["c"]], focus: "a")
-    split.unstack(windowID: "a", toward: 1, inSpace: 0)
+    split.expel(windowID: "a", toward: 1, inSpace: 0)
     split.focus(windowID: "b")
     #expect(shouldSlideRibbon(from: tiles([["a", "b"], ["c"]], focus: "a"), to: split, source: .managed,
                               hadPreview: false, reduceMotion: false))
@@ -81,7 +80,7 @@ private func layout(_ state: WorkspaceState) -> [[String]] {
 // MARK: - Resizes
 
 @Test func aStackedResizeTradesHeightWithTheNeighborOnTheDraggedEdge() throws {
-    let tile = Tile(windowIDs: ["a", "b", "c"])
+    let tile = Tile(stacking: ["a", "b", "c"])
     let heights: [String: CGFloat] = ["a": 200, "b": 300, "c": 200]
     let previous = CGRect(x: 0, y: 210, width: 500, height: 300)
     // Bottom edge down by 100: c gives it.
@@ -89,7 +88,7 @@ private func layout(_ state: WorkspaceState) -> [[String]] {
                                           observed: CGRect(x: 0, y: 210, width: 500, height: 400),
                                           height: { heights[$0] }, minimumHeight: { _ in nil }))
     #expect(bottom.neighborID == "c")
-    #expect(abs(bottom.weight - 2 * 400 / 500) < 1e-9 && abs(bottom.neighborWeight - 2 * 100 / 500) < 1e-9)
+    #expect(abs(bottom.share - 400.0 / 500) < 1e-9)
     // Top edge up by 100: a gives it.
     let top = try #require(stackResize(tile: tile, windowID: "b", previous: previous,
                                        observed: CGRect(x: 0, y: 110, width: 500, height: 400),
@@ -104,8 +103,8 @@ private func layout(_ state: WorkspaceState) -> [[String]] {
     let floored = try #require(stackResize(tile: tile, windowID: "b", previous: previous,
                                            observed: CGRect(x: 0, y: 210, width: 500, height: 480),
                                            height: { heights[$0] }, minimumHeight: { $0 == "c" ? 150 : nil }))
-    #expect(abs(floored.neighborWeight - 2 * 150 / 500) < 1e-9)
-    #expect(stackResize(tile: Tile(windowIDs: ["a"]), windowID: "a", previous: previous,
+    #expect(abs(floored.share - 350.0 / 500) < 1e-9)
+    #expect(stackResize(tile: Tile(stacking: ["a"]), windowID: "a", previous: previous,
                         observed: CGRect(x: 0, y: 210, width: 500, height: 400),
                         height: { heights[$0] }, minimumHeight: { _ in nil }) == nil)
 }
@@ -149,8 +148,8 @@ private func quit(_ records: [WindowRecord], pid: Int32, windows: inout [WindowR
 
     #expect(placements.map(\.windowID) == ["new"])
     #expect(layout(state) == [["left"], ["top", "new", "bottom"]])
-    #expect(state.currentSpace.tiles[1].heightWeight(for: "new") == 2)
-    #expect(state.currentSpace.widthFraction(for: "new") == 0.6)
+    #expect(state.currentSpace.tiles[1].panes.weight(of: "new") == 2)
+    #expect(state.currentSpace.tileWidthFraction(containing: "new") == 0.6)
     #expect(state.focusedWindowID == "left")
 }
 
@@ -183,7 +182,7 @@ private func quit(_ records: [WindowRecord], pid: Int32, windows: inout [WindowR
                      state: &state, restoration: &restoration, at: start.addingTimeInterval(5))
 
     #expect(layout(state) == [["x"], ["n1", "n2"]])
-    #expect(state.currentSpace.widthFraction(for: "n2") == 0.7)
+    #expect(state.currentSpace.tileWidthFraction(containing: "n2") == 0.7)
 }
 
 // MARK: - Restoration and rollback
@@ -193,7 +192,7 @@ private func quit(_ records: [WindowRecord], pid: Int32, windows: inout [WindowR
     var restoration = WorkspaceRestoration()
     var state = stacked
     restoration.beginTransition(from: state)
-    state.unstack(windowID: "c", toward: 1, inSpace: 0)
+    state.expel(windowID: "c", toward: 1, inSpace: 0)
     #expect(layout(state) == [["a"], ["b"], ["c"]])
 
     #expect(restoration.rollBack(state: &state, windowIDs: ["a", "b", "c"], trackedWindowIDs: ["a", "b", "c"]))
@@ -211,7 +210,7 @@ private func quit(_ records: [WindowRecord], pid: Int32, windows: inout [WindowR
     restoration.reconcile(state: &state, windowIDs: ["a", "b", "c", "d"], trackedWindowIDs: ["a", "b", "c", "d"])
 
     #expect(layout(state) == [["a"], ["b", "c", "d"]])
-    #expect(state.currentSpace.tiles[1].heightWeight(for: "c") == 3)
+    #expect(state.currentSpace.tiles[1].panes.weight(of: "c") == 3)
 }
 
 @Test func pausingKeepsStacksInTheRememberedLayout() {
@@ -320,7 +319,7 @@ struct TileScenarioTests {
 
         #expect(layout(harness.model.state) == [["a"], ["b"], ["c"]])
         #expect(harness.model.state.focusedWindowID == "c")
-        #expect(abs(harness.model.state.currentSpace.widthFraction(for: "c") - 0.25) < 0.001)
+        #expect(abs(harness.model.state.currentSpace.tileWidthFraction(containing: "c") - 0.25) < 0.001)
         #expect(noPause(harness))
     }
 
@@ -368,7 +367,7 @@ struct TileScenarioTests {
         await userChanged(harness, "c", to: CGRect(x: c3.minX, y: c3.minY, width: c3.width + 120, height: c3.height))
         #expect(abs(frame(harness, "c").width - (c3.width + 120)) <= 1)
         #expect(abs(frame(harness, "b").width - (c3.width + 120)) <= 1)
-        #expect(abs(harness.model.state.currentSpace.widthFraction(for: "b") - Double((c3.width + 120) / available.width)) < 0.001)
+        #expect(abs(harness.model.state.currentSpace.tileWidthFraction(containing: "b") - Double((c3.width + 120) / available.width)) < 0.001)
         #expect(layout(harness.model.state) == [["a"], ["b", "c"]])
         #expect(noPause(harness))
     }
@@ -402,11 +401,12 @@ struct TileScenarioTests {
         #expect(Set(harness.windows.clampedFrameWrites).isSuperset(of: ["a", "b", "c"]))
 
         let space = harness.model.state.currentSpace
-        #expect(abs(space.widthFraction(for: "b") - 0.5) < 0.001)
-        #expect(abs(space.widthFraction(for: "a") - 0.3) < 0.001)
+        #expect(abs(space.tileWidthFraction(containing: "b") - 0.5) < 0.001)
+        #expect(abs(space.tileWidthFraction(containing: "a") - 0.3) < 0.001)
         #expect(abs(frame(harness, "b").width - available.width * 0.5) <= 1)
         #expect(abs(frame(harness, "c").width - available.width * 0.4) <= 1)
-        #expect(frame(harness, "b").minX == frame(harness, "c").minX)
+        // The narrower window is centered in the tile's width.
+        #expect(abs(frame(harness, "b").midX - frame(harness, "c").midX) <= 1)
         #expect(noPause(harness))
     }
 

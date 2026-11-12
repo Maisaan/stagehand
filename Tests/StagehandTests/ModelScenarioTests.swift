@@ -283,21 +283,21 @@ struct ModelScenarioTests {
         harness.model.start()
         await harness.settle()
         // The harness windows open at 60% of the available width.
-        #expect(harness.model.state.currentSpace.widthFraction(for: "a") == 0.6)
+        #expect(harness.model.state.currentSpace.tileWidthFraction(containing: "a") == 0.6)
 
         harness.model.navigate(.nextWidthPreset)
         await harness.settle()
-        #expect(harness.model.state.currentSpace.widthFraction(for: "a") == 1)
+        #expect(harness.model.state.currentSpace.tileWidthFraction(containing: "a") == 1)
         // A full-width window hides both neighbors. b belongs to the listed app.
         #expect(harness.windows.parkRemnantWidths["b"] == WindowTuning.maximumParkedRemnantWidth)
         #expect(harness.windows.parkRemnantWidths["c"] == WindowTuning.parkedRemnantWidth)
 
         harness.model.navigate(.nextWidthPreset)
         await harness.settle()
-        #expect(harness.model.state.currentSpace.widthFraction(for: "a") == 0.4)
+        #expect(harness.model.state.currentSpace.tileWidthFraction(containing: "a") == 0.4)
         harness.model.navigate(.previousWidthPreset)
         await harness.settle()
-        #expect(harness.model.state.currentSpace.widthFraction(for: "a") == 1)
+        #expect(harness.model.state.currentSpace.tileWidthFraction(containing: "a") == 1)
         #expect(harness.events("automatic_pause").isEmpty)
     }
 

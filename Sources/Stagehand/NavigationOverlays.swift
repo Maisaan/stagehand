@@ -758,7 +758,7 @@ struct AppIcon: View {
     }
 }
 
-/// One ribbon tile in the app bar: a lone window, or a stack's windows top to bottom.
+/// One ribbon tile in the app bar: a lone window, or a multi-pane tile's windows in reading order.
 struct AppBarTile: Equatable, Identifiable {
     let id: String
     let windows: [WindowRecord]
@@ -811,7 +811,7 @@ final class NavigationHUDModel: ObservableObject {
         return workspace
     }
 
-    /// The app bar's groups: each tile's windows top to bottom, leaving out
+    /// The app bar's groups: each tile's windows in reading order, leaving out
     /// windows without a record and tiles left empty by that.
     static func tiles(of space: SpaceState, records: [String: WindowRecord]) -> [AppBarTile] {
         space.tiles.compactMap { tile in

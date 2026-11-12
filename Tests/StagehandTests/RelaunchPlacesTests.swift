@@ -51,7 +51,7 @@ struct RelaunchPlacesTests {
         #expect(placements.map(\.windowID) == ["new"])
         #expect(placements.first?.preferredHeight == 600)
         #expect(state.currentSpace.windowIDs == ["left", "new", "right"])
-        #expect(state.currentSpace.widthFraction(for: "new") == 0.5)
+        #expect(state.currentSpace.tileWidthFraction(containing: "new") == 0.5)
         #expect(places.rememberedBundleIdentifiers.isEmpty)
     }
 
