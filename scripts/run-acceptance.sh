@@ -5,6 +5,8 @@ set -euo pipefail
 # Exits 0 only when the report starts with PASS. STAGEHAND_APP selects the build;
 # it defaults to dist/Stagehand.app when present, otherwise /Applications.
 # STAGEHAND_ACCEPTANCE_TIMEOUT caps the run in seconds (default 180).
+# ACCEPTANCE_SYSTEM=1 adds the system stage: a display scaling change and a native
+# Desktop switch (see docs/ACCEPTANCE.md). The screen flickers during it.
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ -n "${STAGEHAND_APP:-}" ]]; then
     app="$STAGEHAND_APP"
@@ -24,12 +26,19 @@ if pgrep -f "Stagehand.app/Contents/MacOS/Stagehand" >/dev/null; then
 fi
 [[ -d "$root/dist/AcceptanceProbe.app" ]] || "$root/scripts/build-acceptance-probe.sh" >/dev/null
 report="$(mktemp -t stagehand-acceptance)"
+stage_arguments=()
+stage_note=""
+if [[ "${ACCEPTANCE_SYSTEM:-}" == 1 ]]; then
+    stage_arguments=(--acceptance-system)
+    stage_note=", with the system stage: the screen will flicker"
+fi
 trap 'rm -f "$report"' EXIT
-echo "Running acceptance with $app (timeout ${timeout_seconds}s)"
+echo "Running acceptance with $app (timeout ${timeout_seconds}s)$stage_note"
 # Launch through LaunchServices: running the binary from a shell would make
 # macOS check the terminal's Accessibility permission instead of Stagehand's.
 # `open -W` has no timeout of its own, so run it in the background and watch it.
-open -W -n "$app" --args --acceptance "$root/dist/AcceptanceProbe.app" --acceptance-output "$report" &
+open -W -n "$app" --args --acceptance "$root/dist/AcceptanceProbe.app" --acceptance-output "$report" \
+    ${stage_arguments[@]+"${stage_arguments[@]}"} &
 open_pid=$!
 deadline=$((SECONDS + timeout_seconds))
 while kill -0 "$open_pid" 2>/dev/null; do

@@ -93,7 +93,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if let index = arguments.firstIndex(of: "--acceptance"), arguments.indices.contains(index + 1) {
             Task { @MainActor in
-                let report = await model.diagnoseAcceptance(probeURL: URL(fileURLWithPath: arguments[index + 1]))
+                let report = await model.diagnoseAcceptance(probeURL: URL(fileURLWithPath: arguments[index + 1]),
+                                                            systemStage: arguments.contains("--acceptance-system"))
                 print(report)
                 // Launched through LaunchServices so macOS checks Stagehand's own
                 // Accessibility grant; stdout is not attached then.

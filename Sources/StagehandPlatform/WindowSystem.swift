@@ -151,6 +151,8 @@ public final class WindowSystem {
         /// The last parking request that verified this window at the side, and with what.
         /// Cleared by its move, resize, or minimize notifications.
         var parkCheck: ParkCheck?
+        /// The display generation of the last parking request that read this window.
+        var parkReadDisplayGeneration: Int?
         /// The attached sheet in front of this window, observed until it is destroyed.
         var sheet: AttachedSheet?
     }
@@ -1210,6 +1212,11 @@ public final class WindowSystem {
         }
     }
 
+    /// Whether parking read this window after the latest screen-parameters change.
+    public func parkingReadSinceDisplayChange(windowID: String) -> Bool {
+        windows[windowID]?.parkReadDisplayGeneration == displayGeneration
+    }
+
     public func isParked(windowID: String) -> Bool {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.isParked(windowID: windowID) }
         return windows[windowID]?.parking.isParked == true
@@ -1257,6 +1264,7 @@ public final class WindowSystem {
             return true
         }
         parkReadReasons[reason, default: 0] += 1
+        windows[windowID]?.parkReadDisplayGeneration = displayGeneration
         motionWriter.settle(pid: tracked.record.pid)
         // AX can move a parked window back onscreen after our last frame read.
         // Check its physical position on every parking request.

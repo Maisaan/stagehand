@@ -103,12 +103,13 @@ enum ManagedDisplaySpacesReader {
         let symbol: String?
         let currentSpace: (@Sendable (DisplayID) -> UInt64?)?
         let managedDisplaySpaces: @Sendable () -> [String: UInt64]
+        let displaySpaceLists: @Sendable () -> [[String: Any]]?
     }
 
     private static let functions: Functions = {
         guard let framework = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_NOW | RTLD_LOCAL),
               let connectionSymbol = dlsym(framework, "CGSMainConnectionID") else {
-            return Functions(symbol: nil, currentSpace: nil, managedDisplaySpaces: { [:] })
+            return Functions(symbol: nil, currentSpace: nil, managedDisplaySpaces: { [:] }, displaySpaceLists: { nil })
         }
         let connection = unsafeBitCast(connectionSymbol, to: (@convention(c) () -> Int32).self)
         let names = ["SLSManagedDisplayGetCurrentSpace", "CGSManagedDisplayGetCurrentSpace"]
@@ -125,10 +126,14 @@ enum ManagedDisplaySpacesReader {
         let copy = dlsym(framework, "CGSCopyManagedDisplaySpaces").map {
             unsafeBitCast($0, to: (@convention(c) (Int32) -> Unmanaged<CFArray>?).self)
         }
-        let managedDisplaySpaces: @Sendable () -> [String: UInt64] = {
-            guard let copy else { return [:] }
+        let displaySpaceLists: @Sendable () -> [[String: Any]]? = {
+            guard let copy else { return nil }
             let client = connection()
-            guard client != 0, let displays = copy(client)?.takeRetainedValue() as? [[String: Any]] else { return [:] }
+            guard client != 0 else { return nil }
+            return copy(client)?.takeRetainedValue() as? [[String: Any]]
+        }
+        let managedDisplaySpaces: @Sendable () -> [String: UInt64] = {
+            guard let displays = displaySpaceLists() else { return [:] }
             var spaces: [String: UInt64] = [:]
             for display in displays {
                 // "Display Identifier" is the UUID, or "Main" when displays share Spaces.
@@ -139,7 +144,8 @@ enum ManagedDisplaySpacesReader {
             }
             return spaces
         }
-        return Functions(symbol: resolved?.0, currentSpace: currentSpace, managedDisplaySpaces: managedDisplaySpaces)
+        return Functions(symbol: resolved?.0, currentSpace: currentSpace, managedDisplaySpaces: managedDisplaySpaces,
+                         displaySpaceLists: displaySpaceLists)
     }()
 
     /// nil when neither private symbol resolves: per-display tracking is unavailable.
@@ -149,6 +155,9 @@ enum ManagedDisplaySpacesReader {
 
     /// For diagnostics only, keyed by WindowServer's display identifier.
     static func managedDisplaySpaces() -> [String: UInt64] { functions.managedDisplaySpaces() }
+
+    /// Every display's Spaces in Mission Control order, or nil when WindowServer does not answer.
+    static func displaySpaces() -> [DisplaySpaces]? { functions.displaySpaceLists().map(DisplaySpaces.parse) }
 
     /// Online displays, asleep ones included, without the copies of a mirror set, which
     /// have no Spaces of their own.

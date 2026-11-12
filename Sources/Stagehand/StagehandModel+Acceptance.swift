@@ -7,13 +7,14 @@ import StagehandPlatform
 extension StagehandModel {
     private static let acceptanceProbeID = "dev.stagehand.AcceptanceProbe"
 
-    private struct TypedProbe {
+    struct TypedProbe {
         let text: String
         let expectedWindowID: String
         let duringTransition: Bool
+        var moment: String?
     }
 
-    func diagnoseAcceptance(probeURL: URL, switches: Int = 30) async -> String {
+    func diagnoseAcceptance(probeURL: URL, switches: Int = 30, systemStage: Bool = false) async -> String {
         guard Bundle(url: probeURL)?.bundleIdentifier == Self.acceptanceProbeID else {
             return "FAIL: expected dist/AcceptanceProbe.app. No windows were changed."
         }
@@ -140,6 +141,7 @@ extension StagehandModel {
         let tile = await acceptanceTiles(system: system, typed: &typed)
         lines0 += tile.failures
         await waitUntilIdle()
+        let systemReport = systemStage ? await acceptanceSystemStage(system: system, typed: &typed) : nil
         try? await Task.sleep(for: .milliseconds(400))
 
         var lines: [String] = lines0
@@ -150,6 +152,10 @@ extension StagehandModel {
         lines.append("Space switches: \(spacesReady ? spaceSwitches : 0) of \(spaceSwitches)")
         if !spacesReady { failures += 1 }
         lines.append("Tile steps: \(tile.steps) of \(Self.acceptanceTileSteps)")
+        if let systemReport {
+            lines += systemReport.lines
+            failures += systemReport.failures
+        }
         lines.append("Final focus matches the ribbon: \(finalFocusMatches)")
         for probe in typed {
             let landed = titles.compactMap { id, title -> String? in
@@ -158,7 +164,8 @@ extension StagehandModel {
             }
             let ok = landed == [probe.expectedWindowID]
             if !ok { failures += 1 }
-            lines.append("Typing \(probe.duringTransition ? "during" : "after ") switch -> \(titles[probe.expectedWindowID] ?? "?"): "
+            let moment = probe.moment ?? "\(probe.duringTransition ? "during" : "after ") switch"
+            lines.append("Typing \(moment) -> \(titles[probe.expectedWindowID] ?? "?"): "
                 + (ok ? "ok" : "FAIL, landed in \(landed.map { titles[$0] ?? $0 })"))
         }
 
@@ -172,7 +179,8 @@ extension StagehandModel {
         }
         lines.append(contentsOf: acceptanceLogSummary(since: startedAt, failures: &failures))
         lines.insert("\(failures == 0 ? "PASS" : "FAIL"): \(switches) switches, \(spaceSwitches) space switches, "
-            + "\(tile.steps) tile steps, \(typed.count) typed checks, \(failures) failures", at: 0)
+            + "\(tile.steps) tile steps, \(typed.count) typed checks, \(failures) failures"
+            + (systemReport.map { ", system stage: \($0.summary)" } ?? ""), at: 0)
         return lines.joined(separator: "\n")
     }
 
@@ -258,7 +266,7 @@ extension StagehandModel {
     }
 
     /// Lowercase letters only: harmless if focus ever escapes to another app.
-    private static func probeText(_ index: Int) -> String {
+    static func probeText(_ index: Int) -> String {
         // Inner letters exclude q and z, so text typed next to another probe's
         // cannot contain a third probe's string by accident.
         let letters = Array("abcdefghijklmnop")
@@ -271,7 +279,7 @@ extension StagehandModel {
         return text + "z"
     }
 
-    private func type(_ text: String) async {
+    func type(_ text: String) async {
         let source = CGEventSource(stateID: .hidSystemState)
         for unit in text.utf16 {
             for keyDown in [true, false] {
