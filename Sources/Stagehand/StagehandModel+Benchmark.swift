@@ -191,16 +191,20 @@ extension StagehandModel {
         let rapidSettled = (CACurrentMediaTime() - rapidBegan) * 1_000
         let rapidWaits = monitor.stop().map(\.milliseconds)
         diagnostics.eventObserver = nil
-        let rapidFocusMatches = isRunning && state.focusedWindowID == windowSystem.focusedWindowID()
+        // A busy probe spins 150 ms on activation, longer than the 100 ms Accessibility
+        // timeout, so focus is read after the same pause the other phases leave.
+        try? await Task.sleep(for: .milliseconds(busy ? 300 : 150))
+        let rapidFocusMismatch = finalFocusMismatch()
+        let rapidFocusMatches = rapidFocusMismatch == nil
         record.phases.rapid = .init(settledMs: rapidSettled, timedOut: !rapidIdle, mainThreadWaitsMs: rapidWaits,
                                     finalFocusMatches: rapidFocusMatches)
         if !rapidIdle { record.failures.append("rapid: idle wait timed out") }
         if rapidRejections > 0 { record.failures.append("rapid: focus rejected \(rapidRejections) times") }
-        if !rapidFocusMatches { record.failures.append("rapid: final focus does not match the ribbon") }
+        if let rapidFocusMismatch { record.failures.append("rapid: final focus does not match the ribbon: \(rapidFocusMismatch)") }
         lines.append(String(format: "Rapid switches: settled %.0f ms after the first", rapidSettled)
             + (rapidIdle ? "" : " (timed out)"))
         lines.append("  main thread: " + Self.stallSummary(rapidWaits))
-        lines.append("Final focus matches the ribbon: \(rapidFocusMatches)")
+        lines.append("Final focus matches the ribbon: \(rapidFocusMatches)" + (rapidFocusMismatch.map { " (\($0))" } ?? ""))
 
         if stacksColumns, let stack = state.currentSpace.columns.first(where: \.isStack) {
             // Focus moving up and down inside the stack: no slide, one focus each.
@@ -332,8 +336,17 @@ extension StagehandModel {
                 phase: recorder.lastEvent(atOrBefore: $0.postedUptime) ?? "before"
             )
         }
-        phase.finalFocusMatches = isRunning && state.focusedWindowID == windowSystem.focusedWindowID()
+        phase.finalFocusMismatch = finalFocusMismatch()
+        phase.finalFocusMatches = phase.finalFocusMismatch == nil
         return phase
+    }
+
+    /// Nil when macOS reports the ribbon's focused window; otherwise what each side says.
+    private func finalFocusMismatch() -> String? {
+        guard isRunning else { return "Stagehand is not running" }
+        let observed = windowSystem.focusedWindowID()
+        guard observed != state.focusedWindowID else { return nil }
+        return "macOS reports \(observed ?? "no readable focused window"), the ribbon \(state.focusedWindowID ?? "none")"
     }
 
     private static func switchPhaseLines(_ phase: BenchmarkRecord.SwitchPhase, measuresStacking: Bool,
@@ -376,7 +389,8 @@ extension StagehandModel {
                 .joined(separator: ", "))
         }
         if let finalFocusMatches = phase.finalFocusMatches {
-            lines.append("Final focus matches the ribbon: \(finalFocusMatches)")
+            lines.append("Final focus matches the ribbon: \(finalFocusMatches)"
+                + (phase.finalFocusMismatch.map { " (\($0))" } ?? ""))
         }
         return lines
     }

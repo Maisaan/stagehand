@@ -53,6 +53,7 @@ struct BenchmarkRecord: Encodable {
         var mainThreadWaitsMs: [Double] = []
         var stalls: [Stall] = []
         var finalFocusMatches: Bool?
+        var finalFocusMismatch: String?
     }
 
     struct Switch: Encodable {
@@ -139,7 +140,10 @@ struct BenchmarkRecord: Encodable {
             if timing.focusRejected { failures.append("\(name): focus rejected on switch \(index + 1)") }
             if !timing.focusAttempted { failures.append("\(name): no focus attempt on switch \(index + 1)") }
         }
-        if phase.finalFocusMatches == false { failures.append("\(name): final focus does not match the ribbon") }
+        if phase.finalFocusMatches == false {
+            failures.append("\(name): final focus does not match the ribbon"
+                + (phase.finalFocusMismatch.map { ": \($0)" } ?? ""))
+        }
         return failures
     }
 
