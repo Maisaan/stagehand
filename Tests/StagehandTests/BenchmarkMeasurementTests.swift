@@ -101,6 +101,67 @@ struct BenchmarkMeasurementTests {
         #expect(json?["build"] == nil)
     }
 
+    private func endedTrace(id: Int, queued: TimeInterval, outcome: String = "completed",
+                            _ fill: (inout ChangeTrace) -> Void = { _ in }) -> EndedChangeTrace {
+        var trace = ChangeTrace(input: nil, queued: queued)
+        fill(&trace)
+        return EndedChangeTrace(changeID: id, operation: "action.focusNext", outcome: outcome, trace: trace)
+    }
+
+    /// busy-quiet logs nothing, so a switch's queue wait, first acknowledged write and
+    /// stall steps come from the change trace, which is filled either way.
+    @Test func aSwitchTakesItsFeltDelaysFromItsOwnChangesTrace() throws {
+        let recorder = BenchmarkSwitchRecorder()
+        recorder.begin(at: 10)
+        recorder.expectChange(2)
+        recorder.observe(endedTrace(id: 1, queued: 9.0) { $0.started = 9.5; $0.ended = 9.9 })
+        var writes = MotionWriteSummary()
+        writes.acknowledged = 14
+        writes.unacknowledged = 1
+        recorder.observe(endedTrace(id: 2, queued: 10.0) { trace in
+            trace.started = 10.002
+            trace.motionScheduled = 10.004
+            trace.firstAcknowledgedWrite = 10.020
+            trace.motionEnded = 10.250
+            trace.motionWrites = writes
+            trace.focusRequested = 10.251
+            trace.focusConfirmed = 10.400
+            trace.ended = 10.420
+        })
+
+        let timing = recorder.finish()
+        #expect(timing.changeOutcome == "completed")
+        #expect(abs((timing.queueWaitMs ?? 0) - 2) < 1e-6)
+        #expect(abs((timing.firstAcknowledgedWriteMs ?? 0) - 20) < 1e-6)
+        #expect(abs((timing.motionEndedMs ?? 0) - 250) < 1e-6)
+        #expect(timing.motionWritesAcknowledged == 14)
+        #expect(timing.motionWritesUnacknowledged == 1)
+        #expect(timing.motionWritesFailed == 0)
+        #expect(recorder.changeStep(at: 9.6) == "started")
+        #expect(recorder.changeStep(at: 10.1) == "motionScheduled")
+        #expect(recorder.changeStep(at: 10.3) == "focusRequested")
+        #expect(recorder.changeStep(at: 9.95) == nil)
+    }
+
+    @Test func aSwitchWithoutMotionKeepsItsTraceKeysAsNull() throws {
+        var record = BenchmarkRecord()
+        var timing = BenchmarkRecord.Switch(focusMs: 12, settledMs: 30)
+        timing.note(endedTrace(id: 1, queued: 1) { $0.started = 1.001; $0.focusConfirmed = 1.2 })
+        record.phases.spaces = .init(switches: [timing], stalls: [.init(waitedMs: 80, label: "unlabeled",
+                                                                        phase: "before", changeStep: nil)])
+
+        let json = try JSONSerialization.jsonObject(with: record.jsonData()) as? [String: Any]
+        let spaces = (json?["phases"] as? [String: Any])?["spaces"] as? [String: Any]
+        let first = try #require((spaces?["switches"] as? [[String: Any]])?.first)
+        #expect(first["changeOutcome"] as? String == "completed")
+        #expect(first["queueWaitMs"] as? Double != nil)
+        for key in ["firstAcknowledgedWriteMs", "motionEndedMs", "motionWritesAcknowledged",
+                    "motionWritesUnacknowledged", "motionWritesFailed"] {
+            #expect(first[key] is NSNull, "\(key)")
+        }
+        #expect((spaces?["stalls"] as? [[String: Any]])?.first?["changeStep"] is NSNull)
+    }
+
     /// The runner's checkout can differ from the binary that ran, so raw samples name the binary.
     @Test func rawSamplesNameTheBuildThatRan() throws {
         var record = BenchmarkRecord()

@@ -76,13 +76,23 @@ struct BenchmarkRecord: Encodable {
         var largestGapMs: Double?
         var frontmostMs: Double?
         var reordersAfterFrontmost: Int?
+        /// From the change's trace, measured from when it was queued; logged or not.
+        var changeOutcome: String?
+        var queueWaitMs: Double?
+        var firstAcknowledgedWriteMs: Double?
+        var motionEndedMs: Double?
+        var motionWritesAcknowledged: Int?
+        var motionWritesUnacknowledged: Int?
+        var motionWritesFailed: Int?
 
         var slid: Bool { motionScheduledMs != nil }
         var focusAttempted: Bool { focusMs != nil || focusRejected }
 
         private enum CodingKeys: String, CodingKey {
             case slid, motionScheduledMs, focusMs, focusRejected, settledMs, timedOut, frameWorkMs,
-                 droppedFrames, focusedGapMs, largestGapMs, frontmostMs, reordersAfterFrontmost
+                 droppedFrames, focusedGapMs, largestGapMs, frontmostMs, reordersAfterFrontmost,
+                 changeOutcome, queueWaitMs, firstAcknowledgedWriteMs, motionEndedMs,
+                 motionWritesAcknowledged, motionWritesUnacknowledged, motionWritesFailed
         }
 
         // Nil is written as null so a switch without motion or focus stays visible as one.
@@ -100,13 +110,45 @@ struct BenchmarkRecord: Encodable {
             try container.encode(largestGapMs, forKey: .largestGapMs)
             try container.encodeIfPresent(frontmostMs, forKey: .frontmostMs)
             try container.encodeIfPresent(reordersAfterFrontmost, forKey: .reordersAfterFrontmost)
+            try container.encode(changeOutcome, forKey: .changeOutcome)
+            try container.encode(queueWaitMs, forKey: .queueWaitMs)
+            try container.encode(firstAcknowledgedWriteMs, forKey: .firstAcknowledgedWriteMs)
+            try container.encode(motionEndedMs, forKey: .motionEndedMs)
+            try container.encode(motionWritesAcknowledged, forKey: .motionWritesAcknowledged)
+            try container.encode(motionWritesUnacknowledged, forKey: .motionWritesUnacknowledged)
+            try container.encode(motionWritesFailed, forKey: .motionWritesFailed)
+        }
+
+        mutating func note(_ ended: EndedChangeTrace) {
+            let trace = ended.trace
+            func sinceQueued(_ uptime: TimeInterval?) -> Double? { uptime.map { ($0 - trace.queued) * 1_000 } }
+            changeOutcome = ended.outcome
+            queueWaitMs = sinceQueued(trace.started)
+            firstAcknowledgedWriteMs = sinceQueued(trace.firstAcknowledgedWrite)
+            motionEndedMs = sinceQueued(trace.motionEnded)
+            motionWritesAcknowledged = trace.motionWrites?.acknowledged
+            motionWritesUnacknowledged = trace.motionWrites?.unacknowledged
+            motionWritesFailed = trace.motionWrites?.failed
         }
     }
 
     struct Stall: Encodable {
         var waitedMs: Double
         var label: String
+        /// The last diagnostic event before the stall; events recorded only with logging on are missing without it.
         var phase: String
+        /// The last step of the change running then, from its trace, logged or not; nil outside any change.
+        var changeStep: String?
+
+        private enum CodingKeys: String, CodingKey { case waitedMs, label, phase, changeStep }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(waitedMs, forKey: .waitedMs)
+            try container.encode(label, forKey: .label)
+            try container.encode(phase, forKey: .phase)
+            try container.encode(changeStep, forKey: .changeStep)
+        }
     }
 
     struct Rapid: Encodable {

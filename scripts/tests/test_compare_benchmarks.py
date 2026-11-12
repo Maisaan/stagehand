@@ -152,6 +152,43 @@ class CompareBenchmarksTests(unittest.TestCase):
         status, output = self.run_compare(baseline, candidate)
         self.assertIn("sequential.switches[].focusMs missing in 1 of 3 switches", output)
 
+    def with_trace(self, raw, first_write=20.0, unacknowledged=0):
+        for phase in ["sequential", "spaces"]:
+            for switch in raw["phases"][phase]["switches"]:
+                switch.update(changeOutcome="completed", queueWaitMs=0.5,
+                              firstAcknowledgedWriteMs=first_write if switch["slid"] else None,
+                              motionEndedMs=250.0 if switch["slid"] else None,
+                              motionWritesAcknowledged=14 if switch["slid"] else None,
+                              motionWritesUnacknowledged=unacknowledged if switch["slid"] else None,
+                              motionWritesFailed=0 if switch["slid"] else None)
+        return raw
+
+    def test_trace_metrics_are_compared_when_both_sides_have_them(self):
+        baseline = fixtures.write_run(self.root / "base", run_raw=self.with_trace(fixtures.raw()))
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(sha="b" * 40),
+                                       self.with_trace(fixtures.raw(), first_write=30.0, unacknowledged=2))
+        status, output = self.run_compare(baseline, candidate)
+        self.assertEqual(status, 0, output)
+        section = self.section(output, "sequential", "switches.firstAcknowledgedWriteMs")
+        self.assertIn("baseline   n=3 p50 20", section)
+        self.assertIn("candidate  n=3 p50 30", section)
+        self.assertIn("unacknowledged motion writes per run: baseline 0; candidate 6", output)
+        spaces = self.section(output, "spaces", "switches.firstAcknowledgedWriteMs")
+        self.assertIn("1 no acknowledged write", spaces)
+        self.assertNotIn("GAP", output)
+
+    def test_trace_metrics_are_left_out_when_one_side_predates_them(self):
+        baseline = fixtures.write_run(self.root / "base")
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(sha="b" * 40),
+                                       self.with_trace(fixtures.raw()))
+        status, output = self.run_compare(baseline, candidate)
+        self.assertEqual(status, 0, output)
+        for key in ["queueWaitMs", "firstAcknowledgedWriteMs", "motionEndedMs"]:
+            self.assertNotIn(key, output)
+        self.assertNotIn("unacknowledged motion writes", output)
+        self.assertNotIn("GAP", output)
+        self.assertIn("switches.focusMs", output)
+
     def test_null_focus_is_counted_as_unconfirmed_not_zero(self):
         baseline = fixtures.write_run(self.root / "base")
         unconfirmed = fixtures.raw(focus_times=(None, 220.0, 240.0))

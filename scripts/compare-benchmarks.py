@@ -83,12 +83,15 @@ class Metric:
     key: str
     label: str
     null_label: str = "null"
+    # Added after older results were saved: shown only when both sides have it.
+    optional: bool = False
 
 
 @dataclass
 class Count:
     key: str
     label: str
+    optional: bool = False
 
 
 class InputError(Exception):
@@ -202,6 +205,10 @@ def metric_definitions(phase):
         Metric("switches.focusedGapMs", "longest freeze of the destination"),
         Metric("switches.largestGapMs", "longest freeze of any moving window"),
         Metric("mainThreadWaitsMs", "main-thread waits"),
+        Metric("switches.queueWaitMs", "queue wait, from queued", "no change queued", optional=True),
+        Metric("switches.firstAcknowledgedWriteMs", "to the destination's first acknowledged write, from queued",
+               "no acknowledged write", optional=True),
+        Metric("switches.motionEndedMs", "to motion ended, from queued", "no motion", optional=True),
     ]
     if phase != "spaces":
         metrics.append(Metric("stalls.waitedMs", "stalls"))
@@ -217,7 +224,9 @@ def count_definitions(phase):
         return []
     counts = [Count("switches.timedOut", "switches timed out"),
               Count("switches.focusRejected", "focus rejected"),
-              Count("switches.droppedFrames", "dropped frames")]
+              Count("switches.droppedFrames", "dropped frames"),
+              Count("switches.motionWritesUnacknowledged", "unacknowledged motion writes", optional=True),
+              Count("switches.motionWritesFailed", "failed motion writes", optional=True)]
     if phase == "spaces":
         counts.append(Count("finalFocusMatches=false", "final focus wrong"))
     else:
@@ -475,6 +484,8 @@ def compare_mode(lines, baseline_runs, candidate_runs, title):
         for metric in metric_definitions(phase):
             baseline = collect_metric(baseline_ok, phase, metric)
             candidate = collect_metric(candidate_ok, phase, metric)
+            if metric.optional and (len(baseline[2]) == len(baseline_ok) or len(candidate[2]) == len(candidate_ok)):
+                continue
             lines.append(f"   {metric.label} ({metric.key}, ms)")
             lines.append(side_line("baseline", *baseline, len(baseline_ok), metric))
             lines.append(side_line("candidate", *candidate, len(candidate_ok), metric))
@@ -482,14 +493,16 @@ def compare_mode(lines, baseline_runs, candidate_runs, title):
                 lines.append("    change     " + format_change(summarize(baseline[0].values),
                                                                summarize(candidate[0].values), baseline[1]))
         for count in count_definitions(phase):
-            cells = []
+            sides = []
             for runs in [baseline_ok, candidate_ok]:
                 values = []
                 for run in runs:
                     phase_data = (run.raw.get("phases") or {}).get(phase)
-                    value = None if phase_data is None else extract_count(phase_data, count.key)
-                    values.append("missing" if value is None else str(value))
-                cells.append(", ".join(values))
+                    values.append(None if phase_data is None else extract_count(phase_data, count.key))
+                sides.append(values)
+            if count.optional and any(all(value is None for value in values) for values in sides):
+                continue
+            cells = [", ".join("missing" if value is None else str(value) for value in values) for values in sides]
             lines.append(f"   {count.label} per run: baseline {cells[0]}; candidate {cells[1]}")
     lines.append("")
 

@@ -58,6 +58,18 @@ struct ChangeTrace: Equatable {
         return details
     }
 
+    /// The last step this change had reached at `uptime`, by time: work then belonged to it.
+    func step(at uptime: TimeInterval) -> String {
+        let steps: [(name: String, uptime: TimeInterval?)] = [
+            ("queued", queued), ("started", started), ("motionScheduled", motionScheduled),
+            ("motionEnded", motionEnded), ("focusRequested", focusRequested), ("focusConfirmed", focusConfirmed),
+            ("heldInputPosted", heldInput?.postedUptime)
+        ]
+        return steps.compactMap { step in step.uptime.map { (step.name, $0) } }
+            .filter { $0.1 <= uptime }
+            .max { $0.1 < $1.1 }?.0 ?? "queued"
+    }
+
     /// Microsecond precision, like the log's `uptimeMs`.
     static func milliseconds(_ seconds: TimeInterval) -> String {
         String((seconds * 1_000_000).rounded() / 1_000)

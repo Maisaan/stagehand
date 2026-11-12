@@ -297,9 +297,11 @@ extension StagehandModel {
                                     nextAction: () -> NavigationAction) async -> BenchmarkRecord.SwitchPhase {
         let recorder = BenchmarkSwitchRecorder()
         diagnostics.eventObserver = { recorder.observe($0) }
+        changeTraceSink = { recorder.observe($0) }
         ribbonMotion.onFrameTiming = { recorder.frame(at: $0, work: $1, interval: frameInterval) }
         defer {
             diagnostics.eventObserver = nil
+            changeTraceSink = nil
             ribbonMotion.onFrameTiming = nil
         }
         var phase = BenchmarkRecord.SwitchPhase()
@@ -308,7 +310,9 @@ extension StagehandModel {
             let action = nextAction()
             let began = CACurrentMediaTime()
             recorder.begin(at: began)
+            let lastQueued = lastChangeID
             navigate(action)
+            recorder.expectChange(lastChangeID > lastQueued ? lastChangeID : nil)
             let stackingTask = frontmostPoll(measuresStacking ? state.focusedWindowID : nil,
                                              since: began, probes: probes)
             let idle = await benchmarkWaitUntilIdle()
@@ -334,7 +338,8 @@ extension StagehandModel {
             BenchmarkRecord.Stall(
                 waitedMs: $0.milliseconds,
                 label: $0.label.replacingOccurrences(of: #" pid=-?\d+"#, with: "", options: .regularExpression),
-                phase: recorder.lastEvent(atOrBefore: $0.postedUptime) ?? "before"
+                phase: recorder.lastEvent(atOrBefore: $0.postedUptime) ?? "before",
+                changeStep: recorder.changeStep(at: $0.postedUptime)
             )
         }
         phase.finalFocusMismatch = finalFocusMismatch()
@@ -360,7 +365,13 @@ extension StagehandModel {
                 + ", rejected \(switches.count(where: \.focusRejected))"
                 + ", no attempt \(switches.count { !$0.focusAttempted })",
             "  to settled: " + percentiles(switches.map(\.settledMs))
-                + ", timed out \(switches.count(where: \.timedOut))"
+                + ", timed out \(switches.count(where: \.timedOut))",
+            "  from queued: wait " + percentiles(switches.compactMap(\.queueWaitMs))
+                + "; first acknowledged write of the destination " + percentiles(switches.compactMap(\.firstAcknowledgedWriteMs))
+                + "; motion ended " + percentiles(switches.compactMap(\.motionEndedMs)),
+            "  motion writes: acknowledged \(switches.compactMap(\.motionWritesAcknowledged).reduce(0, +))"
+                + ", unacknowledged \(switches.compactMap(\.motionWritesUnacknowledged).reduce(0, +))"
+                + ", failed \(switches.compactMap(\.motionWritesFailed).reduce(0, +))"
         ]
         if measuresStacking {
             let front = switches.map(\.frontmostMs)
@@ -386,6 +397,8 @@ extension StagehandModel {
                     .sorted { $0.value > $1.value }.map { ($0.key, $0.value) }
             }
             lines.append("  stalls by phase: " + totals(\.phase).map { "\($0.0) \(Int($0.1))" }.joined(separator: ", "))
+            lines.append("  stalls by change step: " + totals { $0.changeStep ?? "between changes" }
+                .map { "\($0.0) \(Int($0.1))" }.joined(separator: ", "))
             lines.append("  stalls by call: " + totals(\.label).prefix(4).map { "\($0.0) \(Int($0.1))" }
                 .joined(separator: ", "))
         }
@@ -507,16 +520,33 @@ extension StagehandModel {
 }
 
 @MainActor
-private final class BenchmarkSwitchRecorder {
+final class BenchmarkSwitchRecorder {
     private var current: BenchmarkRecord.Switch?
     private var began = 0.0
     private var lastTick: Double?
     private var events: [(uptime: Double, name: String)] = []
+    private var traces: [EndedChangeTrace] = []
+    private var expectedChangeID: Int?
 
     func begin(at uptime: Double) {
         current = BenchmarkRecord.Switch()
         began = uptime
         lastTick = nil
+        expectedChangeID = nil
+    }
+
+    /// The change the switch queued; nil when it queued none.
+    func expectChange(_ id: Int?) {
+        expectedChangeID = id
+    }
+
+    func observe(_ ended: EndedChangeTrace) {
+        traces.append(ended)
+        if ended.changeID == expectedChangeID { current?.note(ended) }
+    }
+
+    func changeStep(at uptime: Double) -> String? {
+        traces.last { $0.trace.queued <= uptime && uptime <= ($0.trace.ended ?? .infinity) }?.trace.step(at: uptime)
     }
 
     func finish() -> BenchmarkRecord.Switch {
