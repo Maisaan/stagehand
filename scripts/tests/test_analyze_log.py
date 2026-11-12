@@ -216,6 +216,74 @@ class ChangeTraceTests(unittest.TestCase):
         self.assertIn(("gesture", "action.focusNext"), summary.by_kind)
 
 
+def stamped(start, change_id, outcome=None, **stamps):
+    """A change whose terminal event carries felt-delay stamps (ms offsets from 5_000_000 + start)."""
+    base = 5_000_000 + start
+    details = {key: str(base + value) if key.endswith("UptimeMs") else str(value) for key, value in stamps.items()}
+    terminal = (traced(start + 400, "change_ended", changeID=change_id, operation="action.focusNext",
+                       outcome=outcome, reason="test", **details) if outcome else
+                traced(start + 400, "change_completed", changeID=change_id, operation="action.focusNext", **details))
+    return [traced(start, "change_queued", changeID=change_id, operation="action.focusNext"),
+            traced(start + 10, "change_started", changeID=change_id, operation="action.focusNext"),
+            terminal]
+
+
+class FeltDelayTests(unittest.TestCase):
+    def test_felt_delays_come_from_the_terminal_trace_by_input_source_and_outcome(self):
+        keyboard = dict(inputSource="keyboardTap", inputEventUptimeMs=-6, inputReceivedUptimeMs=-5,
+                        inputDeliveredUptimeMs=-2, queuedUptimeMs=0, startedUptimeMs=3,
+                        motionScheduledUptimeMs=14, firstAcknowledgedWriteUptimeMs=34, focusConfirmedUptimeMs=294,
+                        heldInputEvents=2, heldInputTransferAgeMs=300, oldestHeldInputAgeMs=120)
+        events = (stamped(0, "1", **keyboard)
+                  + stamped(1000, "2", inputSource="hotKeyCallback", inputReceivedUptimeMs=0,
+                            inputDeliveredUptimeMs=0, queuedUptimeMs=0, startedUptimeMs=50)
+                  + stamped(2000, "3", queuedUptimeMs=0, startedUptimeMs=5, motionScheduledUptimeMs=25)
+                  + stamped(3000, "4", outcome="superseded", inputSource="trackpad", inputEventUptimeMs=-10,
+                            inputReceivedUptimeMs=-9, inputDeliveredUptimeMs=-1, queuedUptimeMs=0,
+                            startedUptimeMs=2, motionScheduledUptimeMs=8))
+        felt = analyze_log.summarize_changes(events).felt
+
+        keys = felt[("keyboardTap", "completed")]
+        self.assertEqual(keys["input -> main"], [4])
+        self.assertEqual(keys["queue wait"], [3])
+        self.assertEqual(keys["to motion scheduled"], [20])
+        self.assertEqual(keys["to first acknowledged write"], [40])
+        self.assertEqual(keys["to focus confirmed"], [300])
+        self.assertEqual(keys["held input: oldest event age"], [120])
+        self.assertEqual(keys["held input events"], [2])
+        self.assertEqual(felt[("hotKeyCallback", "completed")]["input -> main"], [0])
+        self.assertEqual(felt[("hotKeyCallback", "completed")]["queue wait"], [50])
+        self.assertEqual(felt[("none", "completed")]["to motion scheduled"], [25], "from queued without input")
+        self.assertNotIn("input -> main", felt[("none", "completed")])
+        self.assertEqual(felt[("trackpad", "superseded")]["input -> main"], [9])
+        self.assertEqual(felt[("trackpad", "superseded")]["to motion scheduled"], [18])
+
+    def test_changes_from_before_the_stamps_have_no_felt_delays(self):
+        self.assertEqual(dict(analyze_log.summarize_changes(change(0, "1")).felt), {})
+
+    def test_follows_are_summarized_by_how_they_ended(self):
+        def follow(handoff, **details):
+            base = dict(durationMilliseconds="55", ticks="7", droppedTicks="1", largestTickGapMilliseconds="33",
+                        largestCallbackGapMilliseconds="35", lateCallbacks="0",
+                        followStartedAfterTouchMilliseconds="40", firstAcknowledgedWriteAfterTouchMilliseconds="60",
+                        motionWritesSent="14", motionWritesAcknowledged="13", motionWritesUnacknowledged="1",
+                        motionWritesFailed="0", handoff=handoff)
+            base.update(details)
+            return traced(0, "gesture_follow_ended", **base)
+        handoffs, numbers, counts = analyze_log.summarize_follows(analyze_log.annotate_sessions([
+            follow("change", handoffChangeID="3"),
+            follow("settle", settleOperation="gesture.preview.restore", durationMilliseconds="400",
+                   droppedTicks="unknown", firstAcknowledgedWriteAfterTouchMilliseconds="none"),
+            follow("cancelled"),
+        ]))
+        self.assertEqual(handoffs, {"change": 1, "settle (gesture.preview.restore)": 1, "cancelled": 1})
+        self.assertEqual(numbers["durationMilliseconds"], [55, 400, 55])
+        self.assertEqual(numbers["firstAcknowledgedWriteAfterTouchMilliseconds"], [60, 60])
+        self.assertEqual(counts["dropped ticks"], 2)
+        self.assertEqual(counts["dropped ticks unknown"], 1)
+        self.assertEqual(counts["motionWritesUnacknowledged"], 3)
+
+
 class StallKindTests(unittest.TestCase):
     def test_near_zero_cpu_at_high_load_is_starved_and_at_low_load_waiting(self):
         self.assertEqual(analyze_log.stall_kind(200, 150, 3.0, high_load=10), "computing")
@@ -250,6 +318,22 @@ class CommandTests(unittest.TestCase):
         self.assertIn("change traces: all paired", after)
         self.assertIn("starved", after)
         self.assertIn("command  action.focusNext", after)
+
+    def test_felt_delays_and_follows_are_reported(self):
+        events = stamped(0, "1", inputSource="keyboardTap", inputEventUptimeMs=-6, inputReceivedUptimeMs=-5,
+                         inputDeliveredUptimeMs=-2, queuedUptimeMs=0, startedUptimeMs=3,
+                         focusConfirmedUptimeMs=294)
+        events.append(traced(500, "gesture_follow_ended", handoff="settle", settleOperation="gesture.preview.restore",
+                             durationMilliseconds="380", ticks="23", droppedTicks="0",
+                             largestCallbackGapMilliseconds="21", motionWritesSent="40"))
+        output = self.run_analyzer(events)
+        self.assertIn("-- felt delays (ms) by input source and outcome", output)
+        self.assertIn("  keyboardTap completed (n=1)", output)
+        self.assertRegex(output, r"input -> main +n=1 p50=4 ")
+        self.assertRegex(output, r"to focus confirmed +n=1 p50=300 ")
+        self.assertIn("gesture follows (gesture_follow_ended, n=1; ms unless noted): ended by "
+                      "settle (gesture.preview.restore) 1", output)
+        self.assertRegex(output, r"durationMilliseconds +n=1 p50=380 ")
 
     def test_a_diagnostic_run_is_left_out_without_dropping_another_session(self):
         events = ([traced(0, "diagnostic_run_began", session="bench", kind="benchmark")]

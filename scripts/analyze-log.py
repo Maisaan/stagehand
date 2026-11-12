@@ -32,6 +32,14 @@ Sections:
                no terminal event (log ended, or the session went on)
   changes      queue wait (queued -> started), processing (started -> terminal)
                and outcomes per origin (command, gesture, system) and operation
+  felt delays  from each terminal event's trace (logs since 2026-11-13), per
+               input source (keyboardTap, trackpad, hotKeyCallback, none) and
+               outcome: input -> main (the input's own time to the handler on
+               main), queue wait, and from the input (queued when there is
+               none) to motion scheduled, first acknowledged write and focus
+               confirmed; held typing: events and the oldest one's age
+  gesture follows  gesture_follow_ended: how each live follow ended, its
+               length, ticks, gaps, and touch to start and to first write
   focus by app focus confirmation per target pid (names resolved while running)
   motion       per-animation write statistics; *MotionGap is the longest a
                window went without moving, i.e. a visible freeze
@@ -227,6 +235,46 @@ class ChangeSummary:
     counts: collections.Counter
     by_kind: dict
     approximate_sessions: int
+    # (input source, outcome) -> felt delay -> ms values
+    felt: dict
+
+
+FELT_DELAYS = ("input -> main", "queue wait", "to motion scheduled", "to first acknowledged write",
+               "to focus confirmed", "held input: oldest event age")
+
+
+def felt_delays(details):
+    """A terminal event's felt delays (ms), from its trace stamps; empty for logs that predate them."""
+    def stamp(key):
+        value = details.get(key)
+        try:
+            return float(value) if value is not None else None
+        except ValueError:
+            return None
+    queued = stamp("queuedUptimeMs")
+    if queued is None:
+        return {}
+    event_time = stamp("inputEventUptimeMs")
+    received = stamp("inputReceivedUptimeMs")
+    delivered = stamp("inputDeliveredUptimeMs")
+    input_time = event_time if event_time is not None else received
+    origin = input_time if input_time is not None else queued
+    delays = {}
+    if delivered is not None and input_time is not None:
+        delays["input -> main"] = delivered - input_time
+    started = stamp("startedUptimeMs")
+    if started is not None:
+        delays["queue wait"] = started - queued
+    for name, key in (("to motion scheduled", "motionScheduledUptimeMs"),
+                      ("to first acknowledged write", "firstAcknowledgedWriteUptimeMs"),
+                      ("to focus confirmed", "focusConfirmedUptimeMs")):
+        value = stamp(key)
+        if value is not None:
+            delays[name] = value - origin
+    oldest = stamp("oldestHeldInputAgeMs")
+    if oldest is not None:
+        delays["held input: oldest event age"] = oldest
+    return delays
 
 
 def summarize_changes(events, since="", until="9999"):
@@ -240,6 +288,7 @@ def summarize_changes(events, since="", until="9999"):
     nav = collections.defaultdict(list)
     counts = collections.Counter()
     by_kind = collections.defaultdict(lambda: {"wait": [], "processing": [], "outcomes": collections.Counter()})
+    felt = collections.defaultdict(lambda: collections.defaultdict(list))
     within = lambda event: since <= event["timestamp"] < until
     last_progress = collections.defaultdict(lambda: float("-inf"))
     for trace in traces:
@@ -287,6 +336,15 @@ def summarize_changes(events, since="", until="9999"):
             kind["outcomes"][trace.outcome] += 1
             if trace.outcome != "completed":
                 counts[f"ended {trace.outcome}"] += 1
+            terminal_details = terminal.get("details", {})
+            delays = felt_delays(terminal_details)
+            if delays:
+                group = felt[(terminal_details.get("inputSource", "none"), trace.outcome)]
+                group["changes"].append(1)
+                for name, value in delays.items():
+                    group[name].append(value)
+                if "heldInputEvents" in terminal_details:
+                    group["held input events"].append(float(terminal_details["heldInputEvents"]))
         else:
             unfinished = "log ended" if trace.last["_t"] >= last_progress[trace.session] else "session went on"
             kind["outcomes"]["no terminal"] += 1
@@ -319,7 +377,36 @@ def summarize_changes(events, since="", until="9999"):
             legacy_gesture = None
         elif name == "gesture_motion_resolved":
             legacy_gesture = None
-    return ChangeSummary(nav, counts, by_kind, len(approximate_sessions))
+    return ChangeSummary(nav, counts, by_kind, len(approximate_sessions), felt)
+
+
+FOLLOW_NUMBERS = ("durationMilliseconds", "ticks", "largestTickGapMilliseconds", "largestCallbackGapMilliseconds",
+                  "lateCallbacks", "followStartedAfterTouchMilliseconds",
+                  "firstAcknowledgedWriteAfterTouchMilliseconds")
+
+
+def summarize_follows(events):
+    """gesture_follow_ended: handoffs, and each number over the follows that have it."""
+    handoffs = collections.Counter()
+    numbers = collections.defaultdict(list)
+    counts = collections.Counter()
+    for event in events:
+        if event["event"] != "gesture_follow_ended":
+            continue
+        d = event.get("details", {})
+        handoff = d.get("handoff", "?")
+        handoffs[f"{handoff} ({d['settleOperation']})" if handoff == "settle" and "settleOperation" in d
+                 else handoff] += 1
+        for key in FOLLOW_NUMBERS:
+            if d.get(key, "none") != "none":
+                numbers[key].append(float(d[key]))
+        if d.get("droppedTicks") == "unknown":
+            counts["dropped ticks unknown"] += 1
+        elif "droppedTicks" in d:
+            counts["dropped ticks"] += int(d["droppedTicks"])
+        for key in ("motionWritesSent", "motionWritesUnacknowledged", "motionWritesFailed"):
+            counts[key] += int(d.get(key, 0))
+    return handoffs, numbers, counts
 
 
 def stall_kind(waited, cpu, load, high_load):
@@ -420,6 +507,24 @@ def report(all_events, title, since="", until="9999", high_load=None):
             outcomes = ", ".join(f"{name} {count}" for name, count in kind["outcomes"].most_common())
             print(f"  {origin:8s} {operation[:34]:34s} wait {pct(kind['wait'])}")
             print(f"  {'':8s} {'':34s} processing {pct(kind['processing'])}; {outcomes}")
+    if summary.felt:
+        print("-- felt delays (ms) by input source and outcome; from the input's own time, queued when it has none")
+        for (source, outcome), group in sorted(summary.felt.items(), key=lambda item: -len(item[1]["changes"])):
+            print(f"  {source} {outcome} (n={len(group['changes'])})")
+            for name in FELT_DELAYS:
+                if group[name]:
+                    print(f"    {name:30s} {pct(group[name])}")
+            if group["held input events"]:
+                print(f"    {'held input events':30s} total={sum(group['held input events']):.0f}"
+                      f" {pct(group['held input events'])}")
+    handoffs, follow_numbers, follow_counts = summarize_follows(events)
+    if handoffs:
+        print(f"-- gesture follows (gesture_follow_ended, n={sum(handoffs.values())}; ms unless noted): ended by "
+              + ", ".join(f"{name} {count}" for name, count in handoffs.most_common()))
+        for key in FOLLOW_NUMBERS:
+            if follow_numbers[key]:
+                print(f"  {key:44s} {pct(follow_numbers[key])}")
+        print("  " + ", ".join(f"{key} {value}" for key, value in sorted(follow_counts.items())))
     print("-- focus attempt by target app (ms)")
     by_pid = [(key.removeprefix("focus attempt pid "), values) for key, values in nav.items()
               if key.startswith("focus attempt pid ")]
