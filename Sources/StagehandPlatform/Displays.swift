@@ -93,6 +93,15 @@ public struct DisplayArrangement: Equatable, Sendable {
             return abs(facingEdge - edge) <= 1
         }
     }
+
+    public func sharedEdges(of id: DisplayID) -> Set<WindowParkingSide> {
+        Set([WindowParkingSide.left, .right].filter { neighbor(of: id, on: $0) != nil })
+    }
+
+    /// A display with displays on both sides, so it has no free edge to park windows at.
+    public var displayWithoutFreeEdge: Display? {
+        displays.first { sharedEdges(of: $0.id).count == 2 }
+    }
 }
 
 public extension DisplayID {

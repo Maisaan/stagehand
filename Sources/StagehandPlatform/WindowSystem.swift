@@ -162,6 +162,7 @@ public final class WindowSystem {
         var side: WindowParkingSide?
         var remnantWidth: CGFloat
         var displayGeneration: Int
+        var bounds: CGRect?
     }
 
     /// How long a parked window verified at the side is trusted without reading it again,
@@ -174,12 +175,13 @@ public final class WindowSystem {
     /// to other apps per switch (2026-10-26 launch trace). e31ae1f added the read because
     /// a parked window can come back onscreen; its move notification now says so.
     nonisolated static func parkCheckReason(isParked: Bool, observationComplete: Bool, check: ParkCheck?,
-                                            side: WindowParkingSide?, remnantWidth: CGFloat,
+                                            bounds: CGRect?, side: WindowParkingSide?, remnantWidth: CGFloat,
                                             displayGeneration: Int, now: TimeInterval) -> String? {
         guard isParked else { return "notParked" }
         guard observationComplete else { return "observationIncomplete" }
         guard let check else { return "noCheck" }
         guard check.displayGeneration == displayGeneration else { return "displaysChanged" }
+        guard check.bounds == bounds else { return "boundsChanged" }
         guard check.side == side else { return "sideChanged" }
         guard check.remnantWidth == remnantWidth else { return "widthChanged" }
         guard now - check.at < parkCheckLifetime else { return "expired" }
@@ -1249,8 +1251,9 @@ public final class WindowSystem {
 
     /// Parks just this window, preserving other windows belonging to the same app.
     /// A thin side remnant avoids macOS's fully-offscreen clamp without changing Y.
+    /// Without `bounds`, it parks inside the visible frame of the display it overlaps most.
     @discardableResult
-    public func park(windowID: String, preferredSide: WindowParkingSide? = nil,
+    public func park(windowID: String, bounds requestedBounds: CGRect? = nil, preferredSide: WindowParkingSide? = nil,
                      remnantWidth: CGFloat = WindowTuning.parkedRemnantWidth) -> Bool {
         if nativeWindows.contains(windowID: windowID) { return nativeWindows.park(windowID: windowID) }
         guard let tracked = windows[windowID] else { return false }
@@ -1258,7 +1261,7 @@ public final class WindowSystem {
         parkRequests += 1
         guard let reason = Self.parkCheckReason(
             isParked: tracked.parking.isParked, observationComplete: tracked.observationComplete,
-            check: tracked.parkCheck, side: preferredSide, remnantWidth: remnantWidth,
+            check: tracked.parkCheck, bounds: requestedBounds, side: preferredSide, remnantWidth: remnantWidth,
             displayGeneration: displayGeneration, now: now) else {
             parkSkipped += 1
             return true
@@ -1277,12 +1280,17 @@ public final class WindowSystem {
             CGRect(x: screen.frame.minX, y: primaryTop - screen.frame.maxY,
                    width: screen.frame.width, height: screen.frame.height)
         }
-        guard let screenIndex = displays.indices.max(by: {
-            displays[$0].overlapArea(with: currentFrame) < displays[$1].overlapArea(with: currentFrame)
-        }) else { return false }
-        let visible = screens[screenIndex].visibleFrame
-        let bounds = CGRect(x: visible.minX, y: primaryTop - visible.maxY,
+        let bounds: CGRect
+        if let requestedBounds {
+            bounds = requestedBounds
+        } else {
+            guard let screenIndex = displays.indices.max(by: {
+                displays[$0].overlapArea(with: currentFrame) < displays[$1].overlapArea(with: currentFrame)
+            }) else { return false }
+            let visible = screens[screenIndex].visibleFrame
+            bounds = CGRect(x: visible.minX, y: primaryTop - visible.maxY,
                             width: visible.width, height: visible.height)
+        }
         var parking = tracked.parking
         let success = parking.park(frame: currentFrame, bounds: bounds, displays: displays,
                                    preferredSide: preferredSide, remnantWidth: remnantWidth,
@@ -1297,7 +1305,7 @@ public final class WindowSystem {
         windows[windowID]?.parking = parking
         windows[windowID]?.parkCheck = success
             ? ParkCheck(at: now, side: preferredSide, remnantWidth: remnantWidth,
-                        displayGeneration: displayGeneration) : nil
+                        displayGeneration: displayGeneration, bounds: requestedBounds) : nil
         if focusDiagnosticsEnabled {
             // A parked window was verified by the write's readback; read back only a refusal.
             let actual = success ? "verified" : String(describing: self.readFrame(tracked.element))

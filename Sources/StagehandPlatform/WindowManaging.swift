@@ -68,9 +68,11 @@ public protocol WindowManaging: AnyObject {
     func raiseWithoutActivating(windowID: String)
     func motionWriteStatistics(reset: Bool, focusedWindowID: String?) -> [String: String]
     @discardableResult func setFrame(windowID: String, frame: CGRect) -> Bool
-    /// `remnantWidth` is the widest strip that may stay visible at the side for
-    /// parking to count as confirmed; `WindowTuning.parkedRemnantWidth` by default.
-    @discardableResult func park(windowID: String, preferredSide: WindowParkingSide?, remnantWidth: CGFloat) -> Bool
+    /// Parks at a side of `bounds`, a display's visible frame; nil means the display the
+    /// window overlaps most. `remnantWidth` is the widest strip that may stay visible at
+    /// the side for parking to count as confirmed.
+    @discardableResult func park(windowID: String, bounds: CGRect?, preferredSide: WindowParkingSide?,
+                                 remnantWidth: CGFloat) -> Bool
 
     func focusedWindowID() -> String?
     /// The same answer, read without waiting on the focused app on the main thread.

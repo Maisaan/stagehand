@@ -206,8 +206,12 @@ final class FakeWindowSystem: WindowManaging {
 
     /// Position writes made by ribbon motion; none means nothing slid.
     private(set) var motionPositionWrites = 0
+    var motionFrames: [String: [CGRect]] = [:]
     func setMotionPosition(windowID: String, position: CGPoint) -> Bool {
         motionPositionWrites += 1
+        if let size = windows[windowID]?.frame.size {
+            motionFrames[windowID, default: []].append(CGRect(origin: position, size: size))
+        }
         return setPosition(windowID: windowID, position: position)
     }
 
@@ -252,8 +256,15 @@ final class FakeWindowSystem: WindowManaging {
     }
 
     var parkRemnantWidths: [String: CGFloat] = [:]
+    struct ParkRequest: Equatable {
+        let windowID: String
+        let bounds: CGRect?
+        let side: WindowParkingSide?
+    }
+    var parkRequests: [ParkRequest] = []
 
-    func park(windowID: String, preferredSide: WindowParkingSide?, remnantWidth: CGFloat) -> Bool {
+    func park(windowID: String, bounds: CGRect?, preferredSide: WindowParkingSide?, remnantWidth: CGFloat) -> Bool {
+        parkRequests.append(ParkRequest(windowID: windowID, bounds: bounds, side: preferredSide))
         guard let window = windows[windowID], !window.minimized else { return false }
         parkRemnantWidths[windowID] = remnantWidth
         if window.restoreFrame == nil { windows[windowID]?.restoreFrame = window.frame }

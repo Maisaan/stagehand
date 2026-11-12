@@ -279,8 +279,9 @@ extension StagehandModel {
 
     /// The display showing the focused space. Until the model sets its displays, that is
     /// the built-in display alone (README), so an external one is never laid out (070bfa8).
-    var focusedDisplay: Display? {
-        let arrangement = displayArrangement
+    var focusedDisplay: Display? { focusedDisplay(in: displayArrangement) }
+
+    func focusedDisplay(in arrangement: DisplayArrangement) -> Display? {
         guard let id = state.focusedDisplay else { return arrangement.builtIn }
         return arrangement.display(id)
     }
@@ -407,10 +408,14 @@ extension StagehandModel {
             nativeDesktopChanged()
             return .interrupted
         }
-        guard let availableFrame else {
+        let arrangement = displayArrangement
+        guard let display = focusedDisplay(in: arrangement) else {
             if let token { focusGate.cancelTransfer(token: token) }
             return failLayout("display_frame_unavailable")
         }
+        let availableFrame = display.visibleFrame
+        let sharedEdges = arrangement.sharedEdges(of: display.id)
+        var snappedBeforeMotion: Set<String> = []
         // Native frame setters and focus confirmation are separate operations. Never
         // leave the old outline on screen or follow their intermediate notifications.
         isLayingOutWindows = true
@@ -449,11 +454,22 @@ extension StagehandModel {
                                                  minimumWidths: learnedMinimumWidths,
                                                  minimumHeights: learnedMinimumHeights)
             let visible = placements.filter { $0.isVisible || slideFrom?[$0.windowID]?.intersects(availableFrame) == true }
+            var slideStarts = slideFrom
+            if let slideFrom, !sharedEdges.isEmpty {
+                let slide = sharedEdgeSafeSlide(
+                    from: slideFrom,
+                    to: Dictionary(placements.map { ($0.windowID, $0.frame) }, uniquingKeysWith: { first, _ in first }),
+                    displayFrame: display.frame,
+                    sharedEdges: sharedEdges
+                )
+                slideStarts = slide.from
+                if pass == 0 { snappedBeforeMotion = slide.snappedWindowIDs }
+            }
             // Position neighbors first. Raising the focused real window last keeps clamped neighbors behind it.
             for placement in visible.sorted(by: { !$0.isFocused && $1.isFocused }) {
                 // A correction pass only writes windows whose geometry actually changed.
                 var preparedFrame = placement.frame
-                if let start = slideFrom?[placement.windowID] { preparedFrame.origin.x = start.minX }
+                if let start = slideStarts?[placement.windowID] { preparedFrame.origin.x = start.minX }
                 if pass > 0, acceptedFrames[placement.windowID] == preparedFrame { continue }
                 // A sliding window is where the slide starts: a frame Stagehand wrote and
                 // verified or the last scan read. Only a window without one is read now.
@@ -620,7 +636,8 @@ extension StagehandModel {
                     to: targets,
                     visibleIDs: visibleIDs,
                     operation: operation,
-                    initialHorizontalVelocity: initialHorizontalVelocity
+                    initialHorizontalVelocity: initialHorizontalVelocity,
+                    snappedBeforeMotion: snappedBeforeMotion
                 )
                 if completed {
                     slideFinished = true
@@ -773,19 +790,28 @@ extension StagehandModel {
         case failed(details: [String: String])
     }
 
-    /// Parks every managed window outside `keeping`, on the side its layout frame
-    /// falls. A window that turns out to be minimized or closed leaves the ribbon.
+    /// Parks every managed window outside `keeping` and off the other displays, on its parking
+    /// display, on the side its layout frame falls. One that turns out minimized or closed leaves the ribbon.
     func parkHiddenWindows(keeping keptIDs: Set<String>,
                                    layoutFrames: [String: CGRect]) async -> HiddenWindowParking {
-        let bounds = availableFrame
+        let arrangement = displayArrangement
+        let focused = focusedDisplay(in: arrangement)
+        let keptIDs = keptIDs.union(windowsShownOnOtherDisplays(in: arrangement))
         for window in windows where !keptIDs.contains(window.id) {
-            let parkingSide = bounds.flatMap {
-                preferredParkingSide(for: layoutFrames[window.id], relativeTo: $0)
+            let display = focused.map { parkingDisplay(windowID: window.id, in: arrangement, focused: $0) }
+            let parkingSide = display.flatMap { display in
+                freeParkingSide(
+                    preferred: focused.flatMap { preferredParkingSide(for: layoutFrames[window.id], relativeTo: $0.visibleFrame) },
+                    sharedEdges: arrangement.sharedEdges(of: display.id)
+                )
             }
             let remnantWidth = parkedRemnantWidth(forBundleIdentifier: window.bundleIdentifier)
             let parking = await parkWindow(
                 windowID: window.id,
-                park: { windowSystem.park(windowID: $0, preferredSide: parkingSide, remnantWidth: remnantWidth) },
+                park: {
+                    windowSystem.park(windowID: $0, bounds: display?.visibleFrame,
+                                      preferredSide: parkingSide, remnantWidth: remnantWidth)
+                },
                 observedFrame: { windowSystem.observedFrame(windowID: $0) },
                 unavailability: { windowSystem.unavailability(windowID: $0) },
                 canRetry: { self.isRunning && !self.isSuspended && self.desktopScope.refresh() == .home }
@@ -808,6 +834,33 @@ extension StagehandModel {
             }
         }
         return .completed
+    }
+
+    /// Windows a space shown on another display has on screen; parking leaves them there.
+    func windowsShownOnOtherDisplays(in arrangement: DisplayArrangement) -> Set<String> {
+        var shown: Set<String> = []
+        for id in state.displays.ids where id != state.focusedDisplay {
+            guard let display = arrangement.display(id), let index = state.shownSpaceIndex(on: id) else { continue }
+            let placements = WindowLayout.placements(for: state.spaces[index], availableFrame: display.visibleFrame,
+                                                     tileGap: gap, paneGap: paneGap,
+                                                     preferredHeights: preferredHeights,
+                                                     minimumWidths: learnedMinimumWidths,
+                                                     minimumHeights: learnedMinimumHeights)
+            shown.formUnion(placements.filter(\.isVisible).map(\.windowID))
+        }
+        return shown
+    }
+
+    func parkingDisplay(windowID: String, in arrangement: DisplayArrangement, focused: Display) -> Display {
+        guard state.displays.ids.count > 1 else { return focused }
+        var candidates: [Display] = []
+        for index in state.spaces.indices where state.spaces[index].windowIDs.contains(windowID) {
+            guard let display = state.display(ofSpace: index).flatMap(arrangement.display),
+                  !candidates.contains(where: { $0.id == display.id }) else { continue }
+            candidates.append(display)
+        }
+        return displayToParkOn(candidates: candidates, displays: arrangement.displays,
+                               currentFrame: candidates.count > 1 ? knownFrame(windowID: windowID) : nil) ?? focused
     }
 
     func applyMotionFrames(_ frames: [String: CGRect]) {
@@ -851,10 +904,22 @@ extension StagehandModel {
     }
 
     func settleRibbon(from: [String: CGRect], to: [String: CGRect], visibleIDs: Set<String>,
-                              operation: String, initialHorizontalVelocity: CGFloat? = nil) async -> Bool {
-        let display = focusedDisplay
+                              operation: String, initialHorizontalVelocity: CGFloat? = nil,
+                              snappedBeforeMotion: Set<String> = []) async -> Bool {
+        let arrangement = displayArrangement
+        let display = focusedDisplay(in: arrangement)
+        let slide = display.map {
+            sharedEdgeSafeSlide(from: from, to: to, displayFrame: $0.frame, sharedEdges: arrangement.sharedEdges(of: $0.id))
+        } ?? SharedEdgeSlide(from: from, to: to, snappedWindowIDs: [])
+        let snapped = slide.snappedWindowIDs.union(snappedBeforeMotion)
+        if !snapped.isEmpty {
+            diagnostics.record("shared_edge_motion_snapped", details: [
+                "operation": operation,
+                "windowCount": String(snapped.count)
+            ])
+        }
         motionBackingScaleFactor = display?.backingScaleFactor ?? 1
-        motionWrittenPositions = from.mapValues {
+        motionWrittenPositions = slide.from.mapValues {
             RibbonMotion.pixelAligned($0.origin, backingScaleFactor: motionBackingScaleFactor)
         }
         var animationConfiguration = ribbonAnimationConfiguration
@@ -871,8 +936,8 @@ extension StagehandModel {
         let animationStart = ProcessInfo.processInfo.systemUptime
         let completed = await ribbonMotion.animate(
             on: display?.number,
-            from: from,
-            to: to,
+            from: slide.from,
+            to: slide.to,
             configuration: animationConfiguration,
             initialHorizontalVelocity: initialHorizontalVelocity,
             update: { [weak self] in self?.applyMotionFrames($0) }

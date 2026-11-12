@@ -165,7 +165,7 @@ struct WindowParking {
     }
 }
 
-extension CGRect {
+public extension CGRect {
     func overlapArea(with other: CGRect) -> CGFloat {
         let overlap = intersection(other)
         return overlap.isNull ? 0 : overlap.width * overlap.height

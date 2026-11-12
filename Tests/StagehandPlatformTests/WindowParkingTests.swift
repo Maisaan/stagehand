@@ -410,15 +410,16 @@ struct WindowParkingTests {
 }
 
 /// A parked window verified at the side is trusted without reading it again until its
-/// move, resize, or minimize notification clears the check, the parking request changes,
+/// move, resize, or minimize notification clears the check, the parking request (bounds, side, width) changes,
 /// the displays change, or the check is older than the backstop.
 @Test func aParkedWindowIsReadAgainOnlyWhenItMayHaveMoved() {
-    let check = WindowSystem.ParkCheck(at: 100, side: .left, remnantWidth: 64, displayGeneration: 3)
+    let builtIn = CGRect(x: 0, y: 32, width: 1512, height: 880)
+    let check = WindowSystem.ParkCheck(at: 100, side: .left, remnantWidth: 64, displayGeneration: 3, bounds: builtIn)
     func reason(isParked: Bool = true, observed: Bool = true, check: WindowSystem.ParkCheck? = check,
-                side: WindowParkingSide? = .left, remnant: CGFloat = 64, displayGeneration: Int = 3,
-                now: TimeInterval = 110) -> String? {
+                bounds: CGRect? = builtIn, side: WindowParkingSide? = .left, remnant: CGFloat = 64,
+                displayGeneration: Int = 3, now: TimeInterval = 110) -> String? {
         WindowSystem.parkCheckReason(isParked: isParked, observationComplete: observed, check: check,
-                                     side: side, remnantWidth: remnant,
+                                     bounds: bounds, side: side, remnantWidth: remnant,
                                      displayGeneration: displayGeneration, now: now)
     }
     #expect(reason() == nil)
@@ -426,6 +427,8 @@ struct WindowParkingTests {
     #expect(reason(observed: false) == "observationIncomplete")
     #expect(reason(check: nil) == "noCheck")
     #expect(reason(displayGeneration: 4) == "displaysChanged")
+    #expect(reason(bounds: CGRect(x: 1512, y: 0, width: 1920, height: 1055)) == "boundsChanged")
+    #expect(reason(bounds: nil) == "boundsChanged")
     #expect(reason(side: .right) == "sideChanged")
     #expect(reason(remnant: 200) == "widthChanged")
     #expect(reason(now: 100 + WindowSystem.parkCheckLifetime) == "expired")

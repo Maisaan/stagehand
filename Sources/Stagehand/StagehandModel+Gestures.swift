@@ -49,6 +49,7 @@ extension StagehandModel {
                 presentationFrames = frames.filter { $0.value.intersects(display?.visibleFrame ?? .zero) }
                 gesturePrepared = Set(presentationFrames?.keys.map { $0 } ?? [])
                 gestureUnwritable.removeAll()
+                gestureSharedEdgeSnaps.removeAll()
                 motionBackingScaleFactor = display?.backingScaleFactor ?? 1
                 motionWrittenPositions = presentationFrames?.mapValues {
                     RibbonMotion.pixelAligned($0.origin, backingScaleFactor: motionBackingScaleFactor)
@@ -159,29 +160,43 @@ extension StagehandModel {
     }
 
     func previewGesture(displacement: Double) {
-        guard let base = gestureBase, let display = focusedDisplay, gestureAxis == .horizontal,
+        let arrangement = displayArrangement
+        guard let base = gestureBase, let display = focusedDisplay(in: arrangement), gestureAxis == .horizontal,
               !changes.isProcessing, displacement.isFinite else { return }
-        let availableFrame = display.visibleFrame
+        let sharedEdges = arrangement.sharedEdges(of: display.id)
         ribbonMotion.follow(on: display.number, frames: { [weak self] in
             guard let self, self.gestureBase != nil, self.desktopScope.relation == .home else { return [:] }
             return self.gesturePreviewFrames(
                 from: base,
-                availableFrame: availableFrame,
+                on: display,
+                sharedEdges: sharedEdges,
                 displacement: displacement
             )
         }, update: { [weak self] in self?.applyMotionFrames($0) })
     }
 
-    func gesturePreviewFrames(from base: [String: CGRect], availableFrame: CGRect,
+    func gesturePreviewFrames(from base: [String: CGRect], on display: Display, sharedEdges: Set<WindowParkingSide>,
                                       displacement: Double) -> [String: CGRect] {
         if let cache = gesturePreviewCache, cache.displacement == displacement {
             presentationFrames = cache.frames
             return cache.frames
         }
         var complete = true
-        let preview = RibbonMotion.dragFrames(state: state, from: base, availableFrame: availableFrame,
+        let availableFrame = display.visibleFrame
+        var preview = RibbonMotion.dragFrames(state: state, from: base, availableFrame: availableFrame,
                                               gap: gap, paneGap: paneGap, displacement: displacement,
                                               configuration: ribbonAnimationConfiguration)
+        if !sharedEdges.isEmpty {
+            let slide = sharedEdgeSafeSlide(from: base, to: preview, displayFrame: display.frame, sharedEdges: sharedEdges)
+            preview = slide.to
+            if !slide.snappedWindowIDs.isSubset(of: gestureSharedEdgeSnaps) {
+                gestureSharedEdgeSnaps.formUnion(slide.snappedWindowIDs)
+                diagnostics.record("shared_edge_motion_snapped", details: [
+                    "operation": "gesture.preview",
+                    "windowCount": String(gestureSharedEdgeSnaps.count)
+                ])
+            }
+        }
         var frames: [String: CGRect] = [:]
         for (id, shifted) in preview {
             guard shifted.intersects(availableFrame) || gesturePrepared.contains(id),

@@ -184,6 +184,52 @@ func preferredParkingSide(for frame: CGRect?, relativeTo bounds: CGRect) -> Wind
     return frame.midX < bounds.midX ? .left : .right
 }
 
+/// With one shared edge, the free side every time keeps the parking check's side stable.
+func freeParkingSide(preferred: WindowParkingSide?, sharedEdges: Set<WindowParkingSide>) -> WindowParkingSide? {
+    guard sharedEdges.count == 1 else { return preferred }
+    return sharedEdges.contains(.left) ? .right : .left
+}
+
+/// The display the window is on when one of its spaces is there, else the first
+/// candidate: the display of its lowest-numbered space.
+func displayToParkOn(candidates: [Display], displays: [Display], currentFrame: CGRect?) -> Display? {
+    guard candidates.count > 1, let currentFrame else { return candidates.first }
+    let onDisplay = displays.max { $0.frame.overlapArea(with: currentFrame) < $1.frame.overlapArea(with: currentFrame) }
+    guard let onDisplay, onDisplay.frame.overlapArea(with: currentFrame) > 0,
+          candidates.contains(where: { $0.id == onDisplay.id }) else { return candidates.first }
+    return onDisplay
+}
+
+struct SharedEdgeSlide: Equatable {
+    var from: [String: CGRect]
+    var to: [String: CGRect]
+    var snappedWindowIDs: Set<String>
+}
+
+/// A window sliding across an edge shared with another display would show there mid-slide.
+func sharedEdgeSafeSlide(from: [String: CGRect], to: [String: CGRect], displayFrame: CGRect,
+                         sharedEdges: Set<WindowParkingSide>) -> SharedEdgeSlide {
+    var slide = SharedEdgeSlide(from: from, to: to, snappedWindowIDs: [])
+    guard !sharedEdges.isEmpty else { return slide }
+    func beyondSharedEdge(_ frame: CGRect) -> Bool {
+        (sharedEdges.contains(.left) && frame.minX < displayFrame.minX)
+            || (sharedEdges.contains(.right) && frame.maxX > displayFrame.maxX)
+    }
+    for (windowID, target) in to {
+        guard let start = from[windowID] else { continue }
+        if beyondSharedEdge(target) {
+            guard start != target else { continue }
+            slide.to[windowID] = start
+        } else if beyondSharedEdge(start) {
+            slide.from[windowID] = target
+        } else {
+            continue
+        }
+        slide.snappedWindowIDs.insert(windowID)
+    }
+    return slide
+}
+
 struct RibbonPositionWriteFailure: Equatable {
     let windowID: String
     let requestedFrame: CGRect

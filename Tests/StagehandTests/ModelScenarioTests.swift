@@ -212,10 +212,10 @@ struct ModelScenarioTests {
         defer { harness.cleanUp() }
         harness.model.start()
         await harness.settle()
-        let available = try #require(harness.model.availableFrame)
+        let display = try #require(harness.model.focusedDisplay)
         let base = harness.model.navigationFrames()
         let preview = { (displacement: Double) in
-            _ = harness.model.gesturePreviewFrames(from: base, availableFrame: available,
+            _ = harness.model.gesturePreviewFrames(from: base, on: display, sharedEdges: [],
                                                    displacement: displacement)
         }
         func writes(to id: String) -> Int { harness.windows.setFrameCalls.filter { $0 == id }.count }

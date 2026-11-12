@@ -80,3 +80,22 @@ private let laptopVisible = CGRect(x: 0, y: 70, width: 1512, height: 880)
     #expect(arrangement.neighbor(of: builtIn.id, on: .right) == nil)
     #expect(arrangement.neighbor(of: builtIn.id, on: .left) == nil)
 }
+
+@Test func sharedEdgesAreTheSidesTouchingAnotherDisplay() {
+    let builtIn = screen(1, laptop, visible: laptopVisible, builtIn: true)
+    let right = screen(2, CGRect(x: 1512, y: 0, width: 1920, height: 1080))
+    let left = screen(3, CGRect(x: -1920, y: 0, width: 1920, height: 1080))
+
+    let alone = DisplayArrangement(screens: [builtIn])
+    #expect(alone.sharedEdges(of: builtIn.id).isEmpty)
+    #expect(alone.displayWithoutFreeEdge == nil)
+
+    let pair = DisplayArrangement(screens: [builtIn, right])
+    #expect(pair.sharedEdges(of: builtIn.id) == [.right])
+    #expect(pair.sharedEdges(of: right.id) == [.left])
+    #expect(pair.displayWithoutFreeEdge == nil)
+
+    let between = DisplayArrangement(screens: [builtIn, right, left])
+    #expect(between.sharedEdges(of: builtIn.id) == [.left, .right])
+    #expect(between.displayWithoutFreeEdge?.id == builtIn.id)
+}

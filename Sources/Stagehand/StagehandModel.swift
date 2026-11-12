@@ -162,6 +162,8 @@ final class StagehandModel: ObservableObject {
     /// Windows whose first preview move was refused and whose frame could not be read:
     /// closing, or their app is not answering. The preview stops retrying them.
     var gestureUnwritable: Set<String> = []
+    /// Windows the preview held back from an edge shared with another display, logged once each.
+    var gestureSharedEdgeSnaps: Set<String> = []
     var gestureAxis: GestureAxis?
     var motionWrittenPositions: [String: CGPoint] = [:]
     var motionBackingScaleFactor: CGFloat = 1
