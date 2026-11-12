@@ -188,6 +188,73 @@ private func twoDisplays(_ state: WorkspaceState) -> WorkspaceState {
     #expect(state == settled)
 }
 
+@Test func anEmptiedActiveSpaceHandsFocusToASpaceOnTheSameDisplayFirst() {
+    var state = twoDisplays(workspace([["a"], ["b"], [], ["d"], ["e"]], active: 3, anchors: [1: external, 3: external]))
+    state.reconcile(windowIDs: ["a", "b", "e"])
+    #expect(state.activeSpaceIndex == 1)
+    #expect(state.focusedDisplay == external)
+    #expect(state.shownSpaceIndex(on: builtIn) == 0)
+
+    state.reconcile(windowIDs: ["a", "e"])
+    #expect(state.activeSpaceIndex == 0)
+    #expect(state.focusedDisplay == builtIn)
+
+    var lastOnItsDisplay = twoDisplays(workspace([["a"], ["b"]], active: 1, anchors: [1: external, 2: external]))
+    lastOnItsDisplay.reconcile(windowIDs: [])
+    #expect(lastOnItsDisplay.activeSpaceIndex == 1)
+    #expect(lastOnItsDisplay.focusedDisplay == external)
+}
+
+@Test func withOneDisplayAnEmptiedActiveSpaceHandsFocusAsBefore() {
+    for displays in [[DisplayID](), [builtIn]] {
+        var state = workspace([["a"], [], ["c"], ["d"]], active: 3)
+        state.setDisplays(displays, fallback: displays.first)
+        state.reconcile(windowIDs: ["a", "c"])
+        #expect(state.activeSpaceIndex == 2)
+        var emptied = workspace([["a"], ["b"]], active: 0)
+        emptied.setDisplays(displays, fallback: displays.first)
+        emptied.reconcile(windowIDs: ["b"])
+        #expect(emptied.activeSpaceIndex == 1)
+        emptied.reconcile(windowIDs: [])
+        #expect(emptied.activeSpaceIndex == 0)
+    }
+}
+
+@Test func observedFocusPrefersTheSpaceShownOnTheWindowsDisplay() {
+    var state = twoDisplays(workspace([["a"], ["b"], ["s"], ["s", "f"]], anchors: [1: external, 3: external]))
+    state.apply(.goToSpace(index: 3))
+    state.apply(.goToSpace(index: 0))
+    #expect(state.shownSpaceIndex(on: external) == 3)
+
+    #expect(state.spaceIndex(followingFocusTo: "s", onDisplay: external) == 3)
+    #expect(state.spaceIndex(followingFocusTo: "s", onDisplay: builtIn) == 2)
+    #expect(state.spaceIndex(followingFocusTo: "s", onDisplay: nil) == 2)
+    #expect(state.spaceIndex(followingFocusTo: "b", onDisplay: external) == 1)
+    #expect(state.spaceIndex(followingFocusTo: "a", onDisplay: external) == 0)
+    #expect(state.spaceIndex(followingFocusTo: "missing", onDisplay: external) == nil)
+}
+
+@Test func aWindowMovedToAnotherDisplaysSpaceTakesItsTileThereAndFocus() {
+    var state = twoDisplays(workspace([["a", "b"], ["c", "d"]], anchors: [1: external]))
+    let moved = state.moveWindow("a", fromSpace: 0, toSpace: 1, atTile: 1)
+    #expect(moved)
+    #expect(state.spaces[0].windowIDs == ["b"])
+    #expect(state.spaces[1].windowIDs == ["c", "a", "d"])
+    #expect(state.activeSpaceIndex == 1 && state.focusedWindowID == "a")
+    #expect(state.focusedDisplay == external)
+    #expect(state.shownSpaceIndex(on: builtIn) == 0)
+
+    var shared = twoDisplays(workspace([["a", "b"], ["c", "a"]], anchors: [1: external]))
+    let movedShared = shared.moveWindow("a", fromSpace: 0, toSpace: 1, atTile: 0)
+    #expect(movedShared)
+    #expect(shared.spaces[0].windowIDs == ["b"])
+    #expect(shared.spaces[1].windowIDs == ["a", "c"])
+    let before = shared
+    let movedMissing = shared.moveWindow("x", fromSpace: 0, toSpace: 1, atTile: 0)
+    let movedInPlace = shared.moveWindow("b", fromSpace: 0, toSpace: 0, atTile: 0)
+    #expect(!movedMissing && !movedInPlace && shared == before)
+}
+
 @Test func keyNavigationCrossesToTheNeighboringDisplayAtTheRibbonEnd() {
     var state = twoDisplays(workspace([["a", "b"], ["c", "d", "e"]], anchors: [1: external]))
     state.focus(windowID: "d", inSpace: 1)

@@ -73,7 +73,8 @@ struct WorkspaceRestoration {
         state: inout WorkspaceState,
         windowIDs: [String],
         trackedWindowIDs: Set<String>,
-        initialWidthFractions: [String: Double] = [:]
+        initialWidthFractions: [String: Double] = [:],
+        displayOfWindow: ((String) -> DisplayID?)? = nil
     ) {
         let liveWindowIDs = Set(windowIDs)
         let previousActiveSpaceIndex = state.activeSpaceIndex
@@ -95,7 +96,8 @@ struct WorkspaceRestoration {
         if !newlyUnavailable.isEmpty {
             pending.append(PendingMemberships(state: state, windowIDs: newlyUnavailable))
         }
-        state.reconcile(windowIDs: windowIDs, initialWidthFractions: initialWidthFractions)
+        state.reconcile(windowIDs: windowIDs, initialWidthFractions: initialWidthFractions,
+                        displayOfWindow: displayOfWindow)
         for index in pending.indices {
             pending[index].windowIDs.formIntersection(trackedWindowIDs)
             pending[index].windowIDs.subtract(liveWindowIDs)

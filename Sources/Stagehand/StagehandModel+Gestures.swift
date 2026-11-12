@@ -44,9 +44,15 @@ extension StagehandModel {
                !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
                 let frames = navigationFrames()
                 ribbonMotion.cancel()
-                let display = focusedDisplay
+                let arrangement = displayArrangement
+                let display = focusedDisplay(in: arrangement)
+                let sharedEdges = display.map { arrangement.sharedEdges(of: $0.id) } ?? []
                 gestureBase = frames
-                presentationFrames = frames.filter { $0.value.intersects(display?.visibleFrame ?? .zero) }
+                // A window resting across a shared edge is parked; it is not on screen to move.
+                presentationFrames = frames.filter { id, frame in
+                    frame.intersects(display?.visibleFrame ?? .zero) && (id == state.focusedWindowID
+                        || !isBeyondSharedEdge(frame, displayFrame: display?.frame ?? .zero, sharedEdges: sharedEdges))
+                }
                 gesturePrepared = Set(presentationFrames?.keys.map { $0 } ?? [])
                 gestureUnwritable.removeAll()
                 gestureSharedEdgeSnaps.removeAll()
@@ -199,9 +205,11 @@ extension StagehandModel {
         }
         var frames: [String: CGRect] = [:]
         for (id, shifted) in preview {
-            guard shifted.intersects(availableFrame) || gesturePrepared.contains(id),
+            let prepared = gesturePrepared.contains(id)
+            guard prepared || (shifted.intersects(availableFrame)
+                               && !isBeyondSharedEdge(shifted, displayFrame: display.frame, sharedEdges: sharedEdges)),
                   !gestureUnwritable.contains(id) else { continue }
-            if !gesturePrepared.contains(id) {
+            if !prepared {
                 let parkedBefore = diagnostics.isEnabled ? windowSystem.isParked(windowID: id) : false
                 let frameWritten = windowSystem.setFrame(windowID: id, frame: shifted)
                 let refusedFrame = frameWritten ? nil : windowSystem.observedFrame(windowID: id)

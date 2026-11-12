@@ -172,11 +172,13 @@ extension StagehandModel {
             prepared = prepareObservedFocus(
                 state: state,
                 notificationWindowID: notificationWindowID,
-                focusedWindowID: focusedWindowID
+                focusedWindowID: focusedWindowID,
+                focusedWindowDisplay: focusedWindowID.flatMap(managedDisplay(holdingWindow:))
             )
         } else {
             preferencesNeedLayout = true
-            prepared = change.policy.prepare(state: state, focusedWindowID: focusedWindowID)
+            prepared = change.policy.prepare(state: state, focusedWindowID: focusedWindowID,
+                                             focusedWindowDisplay: focusedWindowID.flatMap(managedDisplay(holdingWindow:)))
         }
         guard let prepared else {
             if case .observedFocus = change {
@@ -447,12 +449,14 @@ extension StagehandModel {
         let maximumPass = state.currentSpace.windowIDs.count
         for pass in 0...maximumPass {
             guard preferenceFocusStillMatches(request) else { return .completed }
-            placements = WindowLayout.placements(for: state.currentSpace, availableFrame: availableFrame,
-                                                 tileGap: gap, paneGap: paneGap,
-                                                 observedWidths: observedWidths, preferredHeights: preferredHeights,
-                                                 observedHeights: observedHeights,
-                                                 minimumWidths: learnedMinimumWidths,
-                                                 minimumHeights: learnedMinimumHeights)
+            placements = restingOffSharedEdges(
+                WindowLayout.placements(for: state.currentSpace, availableFrame: availableFrame,
+                                        tileGap: gap, paneGap: paneGap,
+                                        observedWidths: observedWidths, preferredHeights: preferredHeights,
+                                        observedHeights: observedHeights,
+                                        minimumWidths: learnedMinimumWidths,
+                                        minimumHeights: learnedMinimumHeights),
+                displayFrame: display.frame, sharedEdges: sharedEdges)
             let visible = placements.filter { $0.isVisible || slideFrom?[$0.windowID]?.intersects(availableFrame) == true }
             var slideStarts = slideFrom
             if let slideFrom, !sharedEdges.isEmpty {
@@ -747,6 +751,7 @@ extension StagehandModel {
                 focusBorder.hide()
             }
         }
+        layoutOtherDisplays(in: arrangement, besides: visibleIDs)
         overlays.setBorderColor(focusBorderColor)
         if request == .navigation { overlays.showNavigation(state: state, windows: windows) }
         else { overlays.updateNavigation(state: state, windows: windows) }
@@ -767,15 +772,18 @@ extension StagehandModel {
     }
 
     func navigationFrames() -> [String: CGRect] {
-        guard let availableFrame else { return [:] }
+        let arrangement = displayArrangement
+        guard let display = focusedDisplay(in: arrangement) else { return [:] }
         let members = Set(state.currentSpace.windowIDs)
         let actual = Dictionary(windows.filter { members.contains($0.id) }.compactMap { window in
             knownFrame(windowID: window.id).map { (window.id, $0) }
         }, uniquingKeysWith: { first, _ in first })
-        let placements = WindowLayout.placements(for: state.currentSpace, availableFrame: availableFrame,
-                                                 tileGap: gap, paneGap: paneGap,
-                                                 observedWidths: actual.mapValues(\.width),
-                                                 observedHeights: actual.mapValues(\.height))
+        let placements = restingOffSharedEdges(
+            WindowLayout.placements(for: state.currentSpace, availableFrame: display.visibleFrame,
+                                    tileGap: gap, paneGap: paneGap,
+                                    observedWidths: actual.mapValues(\.width),
+                                    observedHeights: actual.mapValues(\.height)),
+            displayFrame: display.frame, sharedEdges: arrangement.sharedEdges(of: display.id))
         var frames = Dictionary(placements.map {
             ($0.windowID, $0.isVisible ? actual[$0.windowID] ?? $0.frame : $0.frame)
         }, uniquingKeysWith: { first, _ in first })
@@ -838,17 +846,77 @@ extension StagehandModel {
 
     /// Windows a space shown on another display has on screen; parking leaves them there.
     func windowsShownOnOtherDisplays(in arrangement: DisplayArrangement) -> Set<String> {
-        var shown: Set<String> = []
-        for id in state.displays.ids where id != state.focusedDisplay {
-            guard let display = arrangement.display(id), let index = state.shownSpaceIndex(on: id) else { continue }
+        Set(otherDisplayLayouts(in: arrangement).flatMap { $0.placements.filter(\.isVisible).map(\.windowID) })
+    }
+
+    struct DisplayLayout {
+        let display: Display
+        let spaceIndex: Int
+        let placements: [WindowPlacement]
+    }
+
+    func otherDisplayLayouts(in arrangement: DisplayArrangement) -> [DisplayLayout] {
+        state.displays.ids.compactMap { id in
+            guard id != state.focusedDisplay, let display = arrangement.display(id),
+                  let index = state.shownSpaceIndex(on: id) else { return nil }
             let placements = WindowLayout.placements(for: state.spaces[index], availableFrame: display.visibleFrame,
                                                      tileGap: gap, paneGap: paneGap,
                                                      preferredHeights: preferredHeights,
                                                      minimumWidths: learnedMinimumWidths,
                                                      minimumHeights: learnedMinimumHeights)
-            shown.formUnion(placements.filter(\.isVisible).map(\.windowID))
+            return DisplayLayout(display: display, spaceIndex: index, placements: restingOffSharedEdges(
+                placements, displayFrame: display.frame, sharedEdges: arrangement.sharedEdges(of: id)))
         }
-        return shown
+    }
+
+    /// Static frames only: no slide, no focus. A display is written again only when its
+    /// layout changed; a size an app refuses is learned and applied by the next layout.
+    /// A window the focused display also shows stays there.
+    func layoutOtherDisplays(in arrangement: DisplayArrangement, besides focusedDisplayWindowIDs: Set<String>) {
+        let layouts = otherDisplayLayouts(in: arrangement)
+        otherDisplayFrames = otherDisplayFrames.filter { id, _ in layouts.contains { $0.display.id == id } }
+        var placed = focusedDisplayWindowIDs
+        for layout in layouts {
+            var targets: [String: CGRect] = [:]
+            for placement in layout.placements where placement.isVisible && !placed.contains(placement.windowID) {
+                targets[placement.windowID] = placement.frame
+            }
+            placed.formUnion(targets.keys)
+            guard otherDisplayFrames[layout.display.id] != targets else { continue }
+            for (windowID, target) in targets {
+                if !windowSystem.isParked(windowID: windowID), let known = knownFrames[windowID],
+                   framesMatch(observed: known, target: target) { continue }
+                let written = windowSystem.setFrame(windowID: windowID, frame: target)
+                let actual = written ? target : windowSystem.frame(windowID: windowID)
+                if let actual { noteLayoutSize(windowID: windowID, requested: target.size, actual: actual.size) }
+                noteAppliedFrame(actual, windowID: windowID)
+            }
+            otherDisplayFrames[layout.display.id] = targets
+        }
+    }
+
+    /// The managed display holding most of `frame`; nil while fewer than two are managed.
+    func managedDisplay(holding frame: CGRect, in arrangement: DisplayArrangement) -> DisplayID? {
+        guard state.displays.ids.count > 1 else { return nil }
+        let managed = arrangement.displays.filter { state.displays.ids.contains($0.id) }
+        guard let holder = managed.max(by: { $0.frame.overlapArea(with: frame) < $1.frame.overlapArea(with: frame) }),
+              holder.frame.overlapArea(with: frame) > 0 else { return nil }
+        return holder.id
+    }
+
+    func managedDisplay(holdingWindow windowID: String) -> DisplayID? {
+        guard state.displays.ids.count > 1,
+              let frame = knownFrames[windowID] ?? windows.first(where: { $0.id == windowID })?.frame else { return nil }
+        return managedDisplay(holding: frame, in: displayArrangement)
+    }
+
+    func displayOfNewWindows(_ records: [WindowRecord]) -> ((String) -> DisplayID?)? {
+        guard state.displays.ids.count > 1 else { return nil }
+        let arrangement = displayArrangement
+        let displays = Dictionary(records.compactMap { record in
+            managedDisplay(holding: record.frame, in: arrangement).map { (record.id, $0) }
+        }, uniquingKeysWith: { first, _ in first })
+        return { displays[$0] }
     }
 
     func parkingDisplay(windowID: String, in arrangement: DisplayArrangement, focused: Display) -> Display {

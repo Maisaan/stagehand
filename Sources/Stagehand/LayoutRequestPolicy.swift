@@ -18,14 +18,14 @@ enum LayoutRequestPolicy: Equatable {
         self == .navigation ? begin() : nil
     }
 
-    func prepare(state: WorkspaceState, focusedWindowID: String?) -> WorkspaceState? {
+    func prepare(state: WorkspaceState, focusedWindowID: String?,
+                 focusedWindowDisplay: DisplayID? = nil) -> WorkspaceState? {
         guard self == .preferences else { return state }
-        guard let focusedWindowID else { return nil }
+        guard let focusedWindowID,
+              let space = state.spaceIndex(followingFocusTo: focusedWindowID, onDisplay: focusedWindowDisplay)
+        else { return nil }
         var state = state
-        if !state.currentSpace.windowIDs.contains(focusedWindowID) {
-            guard let space = state.spaces.firstIndex(where: { $0.windowIDs.contains(focusedWindowID) }) else { return nil }
-            state.apply(.goToSpace(index: space))
-        }
+        if space != state.activeSpaceIndex { state.apply(.goToSpace(index: space)) }
         state.focus(windowID: focusedWindowID)
         return state
     }

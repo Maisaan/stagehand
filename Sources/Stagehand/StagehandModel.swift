@@ -164,6 +164,8 @@ final class StagehandModel: ObservableObject {
     var gestureUnwritable: Set<String> = []
     /// Windows the preview held back from an edge shared with another display, logged once each.
     var gestureSharedEdgeSnaps: Set<String> = []
+    /// The frames last written for each other display's shown space, by display.
+    var otherDisplayFrames: [DisplayID: [String: CGRect]] = [:]
     var gestureAxis: GestureAxis?
     var motionWrittenPositions: [String: CGPoint] = [:]
     var motionBackingScaleFactor: CGFloat = 1
@@ -663,6 +665,7 @@ final class StagehandModel: ObservableObject {
         pointerInteraction = nil
         lastAppliedFrames.removeAll()
         knownFrames.removeAll()
+        otherDisplayFrames.removeAll()
         preferencesNeedLayout = true
         onStateChange?()
     }
@@ -814,7 +817,8 @@ final class StagehandModel: ObservableObject {
                                       uniquingKeysWith: { first, _ in first })
         workspaceRestoration.reconcile(state: &state, windowIDs: windows.map(\.id),
                                        trackedWindowIDs: windowSystem.trackedWindowIDs,
-                                       initialWidthFractions: initialWidthFractions(for: windows))
+                                       initialWidthFractions: initialWidthFractions(for: windows),
+                                       displayOfWindow: displayOfNewWindows(windows))
         // Windows restored while paused keep their saved places on resume.
         minimizedWindowIDs.subtract(windows.map(\.id))
         if let focused = windowSystem.focusedWindowID() {
@@ -897,6 +901,7 @@ final class StagehandModel: ObservableObject {
         }
         lastAppliedFrames.removeAll()
         knownFrames.removeAll()
+        otherDisplayFrames.removeAll()
         recoveryInProgress = false
         if automatic {
             if automaticResumeAttempted {

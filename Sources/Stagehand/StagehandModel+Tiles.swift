@@ -258,6 +258,19 @@ extension StagehandModel {
         }
     }
 
+    /// A title-bar drop that lands mostly on another managed display joins the space
+    /// that display shows, as a tile of its own at the drop position, and takes focus there.
+    func applyDropOnOtherDisplay(windowID: String, frame: CGRect) -> Bool {
+        let arrangement = displayArrangement
+        guard let display = managedDisplay(holding: frame, in: arrangement), display != state.focusedDisplay,
+              let layout = otherDisplayLayouts(in: arrangement).first(where: { $0.display.id == display })
+        else { return false }
+        let position = dropTileIndex(windowID: windowID, droppedMidX: frame.midX, placements: layout.placements,
+                                     space: state.spaces[layout.spaceIndex])
+        return state.moveWindow(windowID, fromSpace: state.activeSpaceIndex, toSpace: layout.spaceIndex,
+                                atTile: position)
+    }
+
     /// A window alone in its tile sets the tile's width and its own preferred
     /// height; a pane's resize goes through `paneResize`.
     func applyPaneResize(windowID: String, previous: CGRect, observed: CGRect, available: CGRect) {

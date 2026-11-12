@@ -6,6 +6,13 @@ public struct WindowPlacement: Equatable, Sendable {
     public let frame: CGRect
     public let isVisible: Bool
     public let isFocused: Bool
+
+    public init(windowID: String, frame: CGRect, isVisible: Bool, isFocused: Bool) {
+        self.windowID = windowID
+        self.frame = frame
+        self.isVisible = isVisible
+        self.isFocused = isFocused
+    }
 }
 
 public enum WindowLayout {

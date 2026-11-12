@@ -434,10 +434,31 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
             )
         }
         if wasOccupied && currentSpace.windowIDs.isEmpty {
-            // Keep numbered shortcuts stable; empty spaces disappear from the picker.
-            activate(spaceAt: spaces.indices.last(where: { $0 < activeSpaceIndex && !spaces[$0].windowIDs.isEmpty })
-                ?? spaces.indices.first(where: { !spaces[$0].windowIDs.isEmpty }) ?? 0)
+            activate(spaceAt: spaceAfterActiveEmptied())
         }
+    }
+
+    /// Keeps numbered shortcuts stable; empty spaces disappear from the picker.
+    /// The focused display's own occupied spaces come first, so focus stays on it.
+    private func spaceAfterActiveEmptied() -> Int {
+        let display = focusedDisplay
+        let onDisplay = spaces.indices.filter { self.display(ofSpace: $0) == display }
+        for candidates in [onDisplay, Array(spaces.indices)] {
+            let occupied = candidates.filter { !spaces[$0].windowIDs.isEmpty }
+            if let index = occupied.last(where: { $0 < activeSpaceIndex }) ?? occupied.first { return index }
+        }
+        return onDisplay.first ?? 0
+    }
+
+    /// The space focus follows when macOS focuses `windowID`: the active space
+    /// when it holds the window, else the space `display` shows when that holds
+    /// it, else the first space holding it.
+    public func spaceIndex(followingFocusTo windowID: String, onDisplay display: DisplayID?) -> Int? {
+        if currentSpace.contains(windowID: windowID) { return activeSpaceIndex }
+        if let shown = display.flatMap(shownSpaceIndex(on:)), spaces[shown].contains(windowID: windowID) {
+            return shown
+        }
+        return spaces.firstIndex { $0.contains(windowID: windowID) }
     }
 
     /// Remove an empty numbered space so later spaces move down together. A
@@ -799,6 +820,24 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         let width = spaces[sourceIndex].paneWidthFraction(of: windowID)
         spaces[destinationIndex].insert(windowID: windowID, width: width, focus: false)
         spaces[sourceIndex].remove(windowID: windowID)
+        return true
+    }
+
+    /// Moves a window out of `source`, its tile collapsing, into `destination` as
+    /// a tile of its own at tile index `position`, and focuses it there. A window
+    /// already in `destination` leaves its tile there for the new one.
+    @discardableResult
+    public mutating func moveWindow(_ windowID: String, fromSpace source: Int, toSpace destination: Int,
+                                    atTile position: Int) -> Bool {
+        guard spaces.indices.contains(source), spaces.indices.contains(destination), source != destination,
+              spaces[source].contains(windowID: windowID) else { return false }
+        let width = spaces[source].paneWidthFraction(of: windowID)
+        spaces[source].remove(windowID: windowID)
+        spaces[destination].remove(windowID: windowID)
+        let clamped = min(max(position, 0), spaces[destination].tiles.count)
+        spaces[destination].tiles.insert(spaces[destination].newTile(windowID: windowID, width: width), at: clamped)
+        activate(spaceAt: destination)
+        spaces[destination].setFocus(windowID: windowID)
         return true
     }
 

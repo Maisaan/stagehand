@@ -339,7 +339,8 @@ extension StagehandModel {
         }
         workspaceRestoration.reconcile(state: &state, windowIDs: current.map(\.id),
                                        trackedWindowIDs: windowSystem.trackedWindowIDs,
-                                       initialWidthFractions: initialWidthFractions(for: current))
+                                       initialWidthFractions: initialWidthFractions(for: current),
+                                       displayOfWindow: displayOfNewWindows(current))
         let observedFocusedWindowID = observed ?? windowSystem.focusedWindowID()
         // A window restored from the Dock takes focus even if macOS has not reported it yet.
         let placedRestoredWindow = placeRestoredWindows()
@@ -347,8 +348,9 @@ extension StagehandModel {
            let focused = observedFocusedWindowID,
            current.contains(where: { $0.id == focused }) {
             // External app activation follows an existing membership; shared windows stay in this space.
-            if !state.currentSpace.windowIDs.contains(focused),
-               let space = state.spaces.firstIndex(where: { $0.windowIDs.contains(focused) }) {
+            if let space = state.spaceIndex(followingFocusTo: focused,
+                                            onDisplay: managedDisplay(holdingWindow: focused)),
+               space != state.activeSpaceIndex {
                 state.apply(.goToSpace(index: space))
             }
             state.focus(windowID: focused)
@@ -381,19 +383,12 @@ extension StagehandModel {
         let interaction = dragAndDrop ? nil : pointerInteraction
         var needsLayout = pointerInteraction?.needsLayout ?? false
         pointerInteraction = nil
-        if let availableFrame {
-            let activeWindowIDs = Set(state.currentSpace.windowIDs)
-            if let reappeared = current.first(where: { window in
-                guard !activeWindowIDs.contains(window.id),
-                      let frame = windowSystem.observedFrame(windowID: window.id) else { return false }
-                return frame.intersection(availableFrame).width > 64
-            }) {
-                needsLayout = true
-                diagnostics.record("off_space_window_reappeared", details: [
-                    "windowID": reappeared.id,
-                    "activeSpace": String(state.activeSpaceIndex + 1)
-                ])
-            }
+        if let reappeared = offSpaceWindowOnScreen(among: current) {
+            needsLayout = true
+            diagnostics.record("off_space_window_reappeared", details: [
+                "windowID": reappeared.id,
+                "activeSpace": String(state.activeSpaceIndex + 1)
+            ])
         }
         if let focused = focusedWindow,
            let previous = lastAppliedFrames[focused.id],
@@ -407,7 +402,7 @@ extension StagehandModel {
                     applyPaneResize(windowID: focused.id, previous: previous, observed: focused.frame,
                                     available: frame)
                 }
-                if moved && !resized {
+                if moved && !resized, !applyDropOnOtherDisplay(windowID: focused.id, frame: focused.frame) {
                     let placements: [WindowPlacement]
                     if let interaction, interaction.windowID == focused.id {
                         placements = interaction.placements
@@ -446,6 +441,21 @@ extension StagehandModel {
                               raiseBorder: observedFocusedWindowID == id)
         }
         onStateChange?()
+    }
+
+    /// A window outside the space a display shows, back on that display, as when an app moves a parked window.
+    func offSpaceWindowOnScreen(among current: [WindowRecord]) -> WindowRecord? {
+        let arrangement = displayArrangement
+        guard let focused = focusedDisplay(in: arrangement) else { return nil }
+        let shownSpaces = [(frame: focused.visibleFrame, members: Set(state.currentSpace.windowIDs))]
+            + otherDisplayLayouts(in: arrangement).map {
+                (frame: $0.display.visibleFrame, members: Set(state.spaces[$0.spaceIndex].windowIDs))
+            }
+        return current.first { window in
+            let away = shownSpaces.filter { !$0.members.contains(window.id) }
+            guard !away.isEmpty, let frame = windowSystem.observedFrame(windowID: window.id) else { return false }
+            return away.contains { frame.intersection($0.frame).width > 64 }
+        }
     }
 
     func initialWidthFractions(for windows: [WindowRecord]) -> [String: Double] {

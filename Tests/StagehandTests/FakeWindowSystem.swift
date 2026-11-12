@@ -227,6 +227,7 @@ final class FakeWindowSystem: WindowManaging {
     var refusesFrames: Set<String> = []
     var unreadableFrames: Set<String> = []
     private(set) var setFrameCalls: [String] = []
+    var setFrameWrites: [(windowID: String, frame: CGRect)] = []
 
     /// Sizes apps refuse to go below; a smaller write takes the minimum instead and
     /// reports the refusal, as WindowSystem's verified write does.
@@ -235,6 +236,7 @@ final class FakeWindowSystem: WindowManaging {
 
     func setFrame(windowID: String, frame: CGRect) -> Bool {
         setFrameCalls.append(windowID)
+        setFrameWrites.append((windowID, frame))
         guard let window = windows[windowID], !window.minimized, !refusesFrames.contains(windowID) else { return false }
         var accepted = frame
         if let minimum = minimumSizes[windowID] {

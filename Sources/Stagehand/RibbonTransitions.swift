@@ -91,10 +91,12 @@ func focusMostRecentWindowAfterLoss(
 func prepareObservedFocus(
     state: WorkspaceState,
     notificationWindowID: String,
-    focusedWindowID: String?
+    focusedWindowID: String?,
+    focusedWindowDisplay: DisplayID? = nil
 ) -> WorkspaceState? {
     guard notificationWindowID == focusedWindowID else { return nil }
-    return LayoutRequestPolicy.preferences.prepare(state: state, focusedWindowID: focusedWindowID)
+    return LayoutRequestPolicy.preferences.prepare(state: state, focusedWindowID: focusedWindowID,
+                                                   focusedWindowDisplay: focusedWindowDisplay)
 }
 
 /// Result of one layout pass. `.failed` pauses and restores; `.interrupted` means the
@@ -206,14 +208,32 @@ struct SharedEdgeSlide: Equatable {
     var snappedWindowIDs: Set<String>
 }
 
+func isBeyondSharedEdge(_ frame: CGRect, displayFrame: CGRect, sharedEdges: Set<WindowParkingSide>) -> Bool {
+    (sharedEdges.contains(.left) && frame.minX < displayFrame.minX)
+        || (sharedEdges.contains(.right) && frame.maxX > displayFrame.maxX)
+}
+
+/// A window resting across an edge shared with another display would draw there,
+/// so it counts as hidden and parks. The focused window always shows.
+func restingOffSharedEdges(_ placements: [WindowPlacement], displayFrame: CGRect,
+                           sharedEdges: Set<WindowParkingSide>) -> [WindowPlacement] {
+    guard !sharedEdges.isEmpty else { return placements }
+    return placements.map { placement in
+        guard placement.isVisible, !placement.isFocused,
+              isBeyondSharedEdge(placement.frame, displayFrame: displayFrame, sharedEdges: sharedEdges) else {
+            return placement
+        }
+        return WindowPlacement(windowID: placement.windowID, frame: placement.frame, isVisible: false, isFocused: false)
+    }
+}
+
 /// A window sliding across an edge shared with another display would show there mid-slide.
 func sharedEdgeSafeSlide(from: [String: CGRect], to: [String: CGRect], displayFrame: CGRect,
                          sharedEdges: Set<WindowParkingSide>) -> SharedEdgeSlide {
     var slide = SharedEdgeSlide(from: from, to: to, snappedWindowIDs: [])
     guard !sharedEdges.isEmpty else { return slide }
     func beyondSharedEdge(_ frame: CGRect) -> Bool {
-        (sharedEdges.contains(.left) && frame.minX < displayFrame.minX)
-            || (sharedEdges.contains(.right) && frame.maxX > displayFrame.maxX)
+        isBeyondSharedEdge(frame, displayFrame: displayFrame, sharedEdges: sharedEdges)
     }
     for (windowID, target) in to {
         guard let start = from[windowID] else { continue }
