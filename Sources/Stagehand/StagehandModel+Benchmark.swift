@@ -15,7 +15,11 @@ extension StagehandModel {
     func runBenchmark(probeURL: URL, busy: Bool, switches: Int = 24, rawOutput: URL? = nil) async -> String {
         var record = BenchmarkRecord()
         var lines: [String] = []
+        let ownerInput = OwnerInputMonitor()
+        ownerInput.start()
         await performBenchmark(probeURL: probeURL, busy: busy, switches: switches, record: &record, lines: &lines)
+        record.noteOwnerInput(ownerInput.stop())
+        lines.append("Owner input during run: \(record.ownerInput ?? "unknown")")
         if let rawOutput {
             do {
                 try record.jsonData().write(to: rawOutput)

@@ -1,4 +1,5 @@
 import Foundation
+import StagehandPlatform
 
 /// The raw samples of one `--benchmark` run, written as JSON with `--raw-output`.
 /// A phase that did not run stays nil and is left out of the JSON.
@@ -6,11 +7,17 @@ struct BenchmarkRecord: Encodable {
     static let schema = 1
 
     var failures: [String] = []
+    var ownerInput: String?
     var environment: Environment?
     var settings: Settings?
     var phases = Phases()
 
     var passed: Bool { failures.isEmpty }
+
+    mutating func noteOwnerInput(_ reading: OwnerInputReading) {
+        ownerInput = reading.summary
+        if reading.touched { failures.append("owner input during run: \(reading.summary)") }
+    }
 
     struct Environment: Encodable {
         var displayWidthPoints: Double
@@ -119,7 +126,7 @@ struct BenchmarkRecord: Encodable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schema, result, failures, environment, settings, phases
+        case schema, result, failures, ownerInput, environment, settings, phases
     }
 
     func encode(to encoder: Encoder) throws {
@@ -127,6 +134,7 @@ struct BenchmarkRecord: Encodable {
         try container.encode(Self.schema, forKey: .schema)
         try container.encode(passed ? "pass" : "fail", forKey: .result)
         try container.encode(failures, forKey: .failures)
+        try container.encodeIfPresent(ownerInput, forKey: .ownerInput)
         try container.encodeIfPresent(environment, forKey: .environment)
         try container.encodeIfPresent(settings, forKey: .settings)
         try container.encode(phases, forKey: .phases)

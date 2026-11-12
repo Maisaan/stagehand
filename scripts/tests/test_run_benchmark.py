@@ -59,6 +59,13 @@ class RunBenchmarkTests(unittest.TestCase):
     def meta(self, directory):
         return json.loads((directory / "meta.json").read_text())
 
+    def test_results_folder_with_a_space_in_its_path_works(self):
+        spaced = self.results / "Application Support" / "Benchmarks"
+        result = self.run_runner("busy", BENCHMARK_RESULTS_DIR=str(spaced))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        [directory] = sorted(spaced.iterdir())
+        self.assertTrue((directory / "meta.json").is_file())
+
     def test_each_mode_runs_three_times_by_default(self):
         env = dict(os.environ, STAGEHAND_APP=str(self.app), BENCHMARK_RESULTS_DIR=str(self.results),
                    BENCHMARK_LAUNCH="direct", BENCHMARK_MODES="busy")

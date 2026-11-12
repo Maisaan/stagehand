@@ -77,6 +77,21 @@ class CompareBenchmarksTests(unittest.TestCase):
         self.assertIn("environment.backingScale: baseline 2, candidate 1", output)
         self.assertIn("logging: baseline true, candidate false", output)
 
+    def test_runs_at_different_machine_load_are_refused(self):
+        baseline = fixtures.write_run(self.root / "base", fixtures.meta(load=8.0))
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(sha="b" * 40, load=11.0))
+        status, output = self.run_compare(baseline, candidate)
+        self.assertEqual(status, 1, output)
+        self.assertIn("load at start differs", output)
+        self.assertIn("baseline median 8.0 (range 8.0-8.0), candidate median 11.0", output)
+
+    def test_runs_at_similar_machine_load_compare(self):
+        baseline = fixtures.write_run(self.root / "base", fixtures.meta(load=8.0))
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(sha="b" * 40, load=9.5))
+        status, output = self.run_compare(baseline, candidate)
+        self.assertEqual(status, 0, output)
+        self.assertIn("start load median 9.5", output)
+
     def test_one_side_mixing_builds_is_refused(self):
         fixtures.write_run(self.root / "base/r1", fixtures.meta(sha="a" * 40))
         fixtures.write_run(self.root / "base/r2", fixtures.meta(sha="c" * 40))

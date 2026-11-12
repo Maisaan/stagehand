@@ -36,14 +36,14 @@ def raw(focus_times=(200.0, 220.0, 240.0), tiles=False):
             "settings": settings, "phases": phases}
 
 
-def meta(mode="busy", sha="a" * 40, repeat=1, repeats=1, logging=True, exit_status=0, outcome="pass"):
+def meta(mode="busy", sha="a" * 40, repeat=1, repeats=1, logging=True, exit_status=0, outcome="pass", load=1.0):
     return {"schema": 1, "mode": mode, "flags": ["--busy"], "loggingEnabled": logging,
             "repeat": repeat, "repeats": repeats, "timeoutSeconds": 240,
             "git": {"sha": sha, "branch": "main", "dirty": False, "checkout": "/checkout"},
             "app": {"path": "/checkout/dist/Stagehand.app", "version": sha[:7],
                     "executableModified": "2026-11-12T10:00:00Z"},
             "machine": {"macOS": "27.0", "macOSBuild": "26A1", "model": "Mac14,9", "cpu": "Apple M2 Pro"},
-            "loadAverageAtStart": {"1m": 1.0, "5m": 1.0},
+            "loadAverageAtStart": {"1m": load, "5m": load},
             "startUtc": "2026-11-12T10:01:00Z", "endUtc": "2026-11-12T10:03:00Z",
             "outcome": outcome, "failureReasons": [] if exit_status == 0 else ["report has a line starting with FAIL"],
             "exitStatus": exit_status, "launchExitStatus": 0}

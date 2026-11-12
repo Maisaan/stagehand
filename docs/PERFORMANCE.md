@@ -28,7 +28,7 @@ Set `STAGEHAND_APP` to benchmark another build. To compare against an older comm
 
 #### Saved results
 
-Every run is saved, pass or fail, to `$BENCHMARK_RESULTS_DIR` (default `~/Library/Logs/Stagehand/benchmarks`) as `<UTC start>-<sha7>[-dirty]-<mode>[-r<N>]/`:
+Every run is saved, pass or fail, to `$BENCHMARK_RESULTS_DIR` (default `~/Library/Application Support/Stagehand/Benchmarks`, not under `~/Library/Logs`, which cleaners such as Mole delete) as `<UTC start>-<sha7>[-dirty]-<mode>[-r<N>]/`:
 
 - `report.txt`: the text report, also printed.
 - `raw.json`: the app's raw samples, the only input to comparison.
@@ -42,11 +42,11 @@ Every run is saved, pass or fail, to `$BENCHMARK_RESULTS_DIR` (default `~/Librar
 Put each batch in its own folder and compare the two folders, or two single result directories:
 
 ```sh
-BENCHMARK_RESULTS_DIR=~/Library/Logs/Stagehand/benchmarks/base BENCHMARK_MODES=busy \
+BENCHMARK_RESULTS_DIR=~/Library/Application\ Support/Stagehand/Benchmarks/base BENCHMARK_MODES=busy \
     STAGEHAND_APP=/tmp/sh-base/dist/Stagehand.app scripts/run-benchmark.sh
-BENCHMARK_RESULTS_DIR=~/Library/Logs/Stagehand/benchmarks/change BENCHMARK_MODES=busy \
+BENCHMARK_RESULTS_DIR=~/Library/Application\ Support/Stagehand/Benchmarks/change BENCHMARK_MODES=busy \
     scripts/run-benchmark.sh
-python3 -I scripts/compare-benchmarks.py ~/Library/Logs/Stagehand/benchmarks/base ~/Library/Logs/Stagehand/benchmarks/change
+python3 -I scripts/compare-benchmarks.py ~/Library/Application\ Support/Stagehand/Benchmarks/base ~/Library/Application\ Support/Stagehand/Benchmarks/change
 ```
 
 It reads only `raw.json` and `meta.json`, groups runs by mode, and prints p50, p90 and max per metric for baseline and candidate, with the spread across repeats when a side has two or more. A change that lands inside the baseline's repeat spread is marked **within noise**; with one baseline run, noise is unknown. Failed runs, missing phases, missing keys and missing samples are listed and left out of the numbers, never counted as zero; null focus times count as unconfirmed focus.

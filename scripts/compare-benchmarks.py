@@ -19,6 +19,8 @@ PHASE_KEYS = {
     "interface": ["appBarShowMs", "settingsOpenMs", "quickControlsOpenMs"],
 }
 SWITCH_PHASES = ["sequential", "members", "panes", "spaces"]
+# T4's first comparison (median start load 8 vs 11) showed freezes 2-9 ms worse that vanished at equal load.
+LOAD_TOLERANCE = 2.0
 
 
 @dataclass
@@ -46,6 +48,10 @@ class Run:
     @property
     def passed(self):
         return not self.failures
+
+    @property
+    def start_load(self):
+        return self.meta.get("loadAverageAtStart", {}).get("1m")
 
 
 @dataclass
@@ -310,6 +316,27 @@ def mode_pairs(baseline_modes, candidate_modes):
     return [(mode, mode) for mode in sorted(set(baseline_modes) & set(candidate_modes), key=str)]
 
 
+def median(values):
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def describe_loads(loads):
+    return f"median {median(loads):.1f} (range {min(loads):.1f}-{max(loads):.1f})"
+
+
+def load_difference(baseline_runs, candidate_runs):
+    baseline_loads = [run.start_load for run in baseline_runs if run.start_load is not None]
+    candidate_loads = [run.start_load for run in candidate_runs if run.start_load is not None]
+    if not baseline_loads or not candidate_loads:
+        return []
+    if abs(median(baseline_loads) - median(candidate_loads)) <= LOAD_TOLERANCE:
+        return []
+    return [f"1-minute load at start differs by more than {LOAD_TOLERANCE:.0f}: baseline "
+            f"{describe_loads(baseline_loads)}, candidate {describe_loads(candidate_loads)}"]
+
+
 def mismatches(baseline, candidate):
     differences = side_differences("baseline", baseline) + side_differences("candidate", candidate)
     baseline_modes = group_by_mode(baseline)
@@ -323,6 +350,8 @@ def mismatches(baseline, candidate):
         differences += [f"{baseline_mode}: {difference}" for difference in profile_differences(
             representative(baseline_modes[baseline_mode]), representative(candidate_modes[candidate_mode]),
             "baseline", "candidate")]
+        differences += [f"{baseline_mode}: {difference}" for difference in load_difference(
+            baseline_modes[baseline_mode], candidate_modes[candidate_mode])]
     return differences, pairs
 
 
@@ -452,7 +481,9 @@ def side_header(name, runs):
     builds = sorted({run.build for run in runs}, key=str)
     described = ", ".join(f"{(sha or 'unknown')[:7]}{'-dirty' if dirty else ''}" for sha, dirty, _ in builds)
     modes = ", ".join(sorted({str(run.mode) for run in runs}))
-    return f"{name}: {len(runs)} run(s) of {described}; modes {modes}"
+    loads = [run.start_load for run in runs if run.start_load is not None]
+    load = f"; start load {describe_loads(loads)}" if loads else ""
+    return f"{name}: {len(runs)} run(s) of {described}; modes {modes}{load}"
 
 
 def compare(baseline_path, candidate_path, allow_mismatch):

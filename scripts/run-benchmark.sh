@@ -12,7 +12,7 @@ set -euo pipefail
 # comparing latency or stalls. A -tiles suffix (busy-tiles) is unrelated to
 # -stacking: it arranges two probe windows side by side in one tile first, so
 # switches cross a multi-pane tile, and adds pane switches inside the tile.
-# Each run is saved to BENCHMARK_RESULTS_DIR (default ~/Library/Logs/Stagehand/benchmarks)
+# Each run is saved to BENCHMARK_RESULTS_DIR (default ~/Library/Application Support/Stagehand/Benchmarks)
 # as <UTC>-<sha7>[-dirty]-<mode>[-r<N>]/ with report.txt, raw.json, meta.json and
 # diagnostic.log. BENCHMARK_REPEAT=N runs each mode N times (default 3). BENCHMARK_TIMEOUT caps
 # each run in seconds (default 240). Compare result sets with
@@ -23,7 +23,8 @@ set -euo pipefail
 # Accessibility permission, not Stagehand's.
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app="${STAGEHAND_APP:-$root/dist/Stagehand.app}"
-results_root="${BENCHMARK_RESULTS_DIR:-$HOME/Library/Logs/Stagehand/benchmarks}"
+# Not under ~/Library/Logs: cleaners such as Mole delete that folder, and saved baselines with it.
+results_root="${BENCHMARK_RESULTS_DIR:-$HOME/Library/Application Support/Stagehand/Benchmarks}"
 # Single runs vary by 10 to 30 percent; three give a median and a spread to judge a change by.
 repeats="${BENCHMARK_REPEAT:-3}"
 timeout_seconds="${BENCHMARK_TIMEOUT:-240}"

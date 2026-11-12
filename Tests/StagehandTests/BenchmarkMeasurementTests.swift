@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import Stagehand
+@testable import StagehandPlatform
 
 @MainActor
 @Suite(.serialized)
@@ -62,6 +63,23 @@ struct BenchmarkMeasurementTests {
             "sequential: no focus attempt on switch 4",
             "sequential: final focus does not match the ribbon"
         ])
+    }
+
+    /// Real typing during a run skews its timing; such a run must not count as a result.
+    @Test func ownerInputDuringARunFailsItAndIsRecorded() throws {
+        var touched = BenchmarkRecord()
+        var tally = OwnerInputTally()
+        tally.record(.keyboard, secondsSinceStart: 2)
+        touched.noteOwnerInput(.observed(tally))
+        var untouched = BenchmarkRecord()
+        untouched.noteOwnerInput(.observed(OwnerInputTally()))
+
+        #expect(!touched.passed)
+        #expect(touched.failures.first?.hasPrefix("owner input during run:") == true)
+        #expect(untouched.passed)
+        #expect(untouched.ownerInput == "none")
+        let json = try JSONSerialization.jsonObject(with: untouched.jsonData()) as? [String: Any]
+        #expect(json?["ownerInput"] as? String == "none")
     }
 
     @Test func rawSamplesKeepMissingValuesAsNullAndLeaveOutPhasesThatDidNotRun() throws {
