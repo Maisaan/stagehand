@@ -267,6 +267,8 @@ final class StagehandModel: ObservableObject {
     /// Receives every change's trace as it ends, logged or not.
     var changeTraceSink: ((EndedChangeTrace) -> Void)?
     var lastGestureID = 0
+    var gestureFollow: GestureFollowStart?
+    var settleStart: SettleStart?
     var pointerInteraction: PointerInteraction?
     lazy var focusBorder = FocusBorderController(overlays: overlays) { [weak self] in
         self?.windowSystem.windowNumber(for: $0)
@@ -561,6 +563,7 @@ final class StagehandModel: ObservableObject {
         ribbonMotion.onStall = { [weak self] in
             self?.diagnostics.record("ribbon_animation_stalled")
         }
+        measureGestureFollows()
         refreshLaunchAtLogin()
         focusGate.onNavigationAction = { [weak self] action in self?.navigate(action) }
         focusGate.setShortcutBindings(shortcutBindings)

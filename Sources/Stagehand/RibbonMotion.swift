@@ -121,6 +121,12 @@ struct RibbonAnimationConfiguration: Equatable {
 protocol RibbonFrameDriving: AnyObject {
     func start(display: CGDirectDisplayID, onFrame: @escaping (TimeInterval) -> Void) -> Bool
     func stop()
+    /// The display link's own interval for the tick being delivered, if it reports one.
+    var frameInterval: TimeInterval? { get }
+}
+
+extension RibbonFrameDriving {
+    var frameInterval: TimeInterval? { nil }
 }
 
 func preferredRibbonFrameRate(maximum: Int) -> Float {
@@ -131,6 +137,7 @@ func preferredRibbonFrameRate(maximum: Int) -> Float {
 private final class SystemRibbonFrameDriver: NSObject, RibbonFrameDriving {
     private var displayLink: CADisplayLink?
     private var onFrame: ((TimeInterval) -> Void)?
+    private(set) var frameInterval: TimeInterval?
 
     func start(display: CGDirectDisplayID, onFrame: @escaping (TimeInterval) -> Void) -> Bool {
         stop()
@@ -161,6 +168,7 @@ private final class SystemRibbonFrameDriver: NSObject, RibbonFrameDriving {
     }
 
     @objc private func displayFrame(_ displayLink: CADisplayLink) {
+        frameInterval = displayLink.targetTimestamp - displayLink.timestamp
         onFrame?(displayLink.targetTimestamp)
     }
 }
@@ -201,6 +209,10 @@ final class RibbonMotion {
     var onStall: (() -> Void)?
     /// Benchmark hook: each display tick's timestamp and main-thread seconds spent in it.
     var onFrameTiming: ((_ timestamp: TimeInterval, _ work: TimeInterval) -> Void)?
+    /// Each gesture follow, measured from its start until a cancel or an animation ends it.
+    var onFollowStarted: (() -> Void)?
+    var onFollowEnded: ((RibbonFollowSummary) -> Void)?
+    private var followMeter: RibbonFollowMeter?
 
     init(frameDriver: RibbonFrameDriving = SystemRibbonFrameDriver(),
          currentTime: @escaping () -> TimeInterval = CACurrentMediaTime) {
@@ -299,7 +311,14 @@ final class RibbonMotion {
         animation = nil
         followingFrames = nil
         followingUpdate = nil
+        endFollowMeasurement(handedToAnimation: false)
         cancellation?()
+    }
+
+    private func endFollowMeasurement(handedToAnimation: Bool) {
+        guard let meter = followMeter else { return }
+        followMeter = nil
+        onFollowEnded?(meter.summary(ended: currentTime(), handedToAnimation: handedToAnimation))
     }
 
     /// Trackpad callbacks can arrive between display refreshes. Keep only the newest
@@ -319,6 +338,8 @@ final class RibbonMotion {
             update(frames)
             return
         }
+        followMeter = RibbonFollowMeter(started: currentTime())
+        onFollowStarted?()
     }
 
     func animate(on display: CGDirectDisplayID?, from: [String: CGRect], to: [String: CGRect],
@@ -327,6 +348,7 @@ final class RibbonMotion {
                  update: @escaping ([String: CGRect]) -> Void,
                  cancellation: @escaping () -> Void = {},
                  completion: @escaping () -> Void) {
+        endFollowMeasurement(handedToAnimation: true)
         cancel()
         let currentGeneration = generation
         frames = from
@@ -431,6 +453,7 @@ final class RibbonMotion {
         guard let display else { return false }
         return frameDriver.start(display: display) { [weak self] timestamp in
             guard let self else { return }
+            self.followMeter?.tick(target: timestamp, entered: self.currentTime(), interval: self.frameDriver.frameInterval)
             guard let onFrameTiming = self.onFrameTiming else { return self.advance(to: timestamp) }
             let began = CACurrentMediaTime()
             self.advance(to: timestamp)

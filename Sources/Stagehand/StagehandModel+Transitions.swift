@@ -1102,6 +1102,9 @@ extension StagehandModel {
         }
         var animationConfiguration = ribbonAnimationConfiguration
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { animationConfiguration.duration = 0 }
+        // A follow this settle replaces ends inside animate(), after the reset below.
+        settleStart = SettleStart(operation: operation, changeID: changeID,
+                                  writesBefore: windowSystem.motionWriteSummary(reset: false))
         _ = windowSystem.motionWriteStatistics(reset: true, focusedWindowID: nil)
         diagnostics.record("ribbon_animation_started", details: [
             "curve": animationConfiguration.curve.diagnosticDescription,
