@@ -1,0 +1,187 @@
+import contextlib
+import importlib.util
+import io
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+import fixtures
+
+SCRIPT = Path(__file__).resolve().parents[1] / "compare-benchmarks.py"
+spec = importlib.util.spec_from_file_location("compare_benchmarks", SCRIPT)
+compare_benchmarks = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(compare_benchmarks)
+
+
+class CompareBenchmarksTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def run_compare(self, baseline, candidate, *extra):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            status = compare_benchmarks.main([str(baseline), str(candidate), *extra])
+        return status, out.getvalue() + err.getvalue()
+
+    def section(self, output, phase, metric_key):
+        lines = output.splitlines()
+        start = next(i for i, line in enumerate(lines) if line.strip() == phase)
+        header = next(i for i in range(start, len(lines)) if f"({metric_key}, ms)" in lines[i])
+        return "\n".join(lines[header:header + 4])
+
+    def test_identical_runs_compare(self):
+        baseline = fixtures.write_run(self.root / "base")
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(sha="b" * 40))
+        status, output = self.run_compare(baseline, candidate)
+        self.assertEqual(status, 0, output)
+        self.assertNotIn("Refusing", output)
+        self.assertIn("baseline 1 of 1 runs passed", output)
+        self.assertIn("n=3 p50 220 p90 240 max 240", self.section(output, "sequential", "switches.focusMs"))
+
+    def test_mismatched_mode_is_refused(self):
+        baseline = fixtures.write_run(self.root / "base", fixtures.meta(mode="busy"))
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(mode="responsive"))
+        status, output = self.run_compare(baseline, candidate)
+        self.assertEqual(status, 1)
+        self.assertIn("Refusing to compare", output)
+        self.assertIn('mode: baseline "busy", candidate "responsive"', output)
+        self.assertNotIn("sequential", output)
+
+    def test_mismatched_settings_are_refused_unless_allowed(self):
+        baseline = fixtures.write_run(self.root / "base")
+        changed = fixtures.modified(fixtures.raw(), lambda raw: raw["settings"].update(gap=8))
+        candidate = fixtures.write_run(self.root / "cand", run_raw=changed)
+        status, output = self.run_compare(baseline, candidate)
+        self.assertEqual(status, 1)
+        self.assertIn("settings.gap: baseline -140, candidate 8", output)
+
+        status, output = self.run_compare(baseline, candidate, "--allow-mismatch")
+        self.assertEqual(status, 0)
+        first_lines = output.splitlines()[:2]
+        self.assertIn("Compared despite differences", first_lines[0])
+        self.assertIn("settings.gap", first_lines[1])
+        self.assertIn("sequential", output)
+
+    def test_mismatched_environment_and_logging_are_refused(self):
+        baseline = fixtures.write_run(self.root / "base")
+        changed = fixtures.modified(fixtures.raw(), lambda raw: raw["environment"].update(backingScale=1))
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(logging=False), changed)
+        status, output = self.run_compare(baseline, candidate)
+        self.assertEqual(status, 1)
+        self.assertIn("environment.backingScale: baseline 2, candidate 1", output)
+        self.assertIn("logging: baseline true, candidate false", output)
+
+    def test_one_side_mixing_builds_is_refused(self):
+        fixtures.write_run(self.root / "base/r1", fixtures.meta(sha="a" * 40))
+        fixtures.write_run(self.root / "base/r2", fixtures.meta(sha="c" * 40))
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(sha="b" * 40))
+        status, output = self.run_compare(self.root / "base", candidate)
+        self.assertEqual(status, 1)
+        self.assertIn("baseline mixes builds", output)
+
+    def test_missing_phase_is_reported_not_zero(self):
+        baseline = fixtures.write_run(self.root / "base")
+        without_rapid = fixtures.modified(fixtures.raw(), lambda raw: raw["phases"].pop("rapid"))
+        candidate = fixtures.write_run(self.root / "cand", run_raw=without_rapid)
+        status, output = self.run_compare(baseline, candidate)
+        self.assertEqual(status, 0, output)
+        self.assertIn("GAP candidate cand: phase rapid missing", output)
+        rapid = self.section(output, "rapid", "settledMs")
+        self.assertIn("candidate  missing in every run", rapid)
+        self.assertNotIn("change", rapid)
+
+    def test_missing_members_phase_is_reported_when_columns_ran(self):
+        with_columns = fixtures.raw(columns=True)
+        baseline = fixtures.write_run(self.root / "base", run_raw=with_columns)
+        without_members = fixtures.modified(with_columns, lambda raw: raw["phases"].pop("members"))
+        candidate = fixtures.write_run(self.root / "cand", run_raw=without_members)
+        status, output = self.run_compare(baseline, candidate)
+        self.assertIn("GAP candidate cand: phase members missing", output)
+
+    def test_missing_switch_key_is_reported(self):
+        baseline = fixtures.write_run(self.root / "base")
+        no_focus = fixtures.modified(fixtures.raw(), lambda raw: raw["phases"]["sequential"]["switches"][0].pop("focusMs"))
+        candidate = fixtures.write_run(self.root / "cand", run_raw=no_focus)
+        status, output = self.run_compare(baseline, candidate)
+        self.assertIn("sequential.switches[].focusMs missing in 1 of 3 switches", output)
+
+    def test_null_focus_is_counted_as_unconfirmed_not_zero(self):
+        baseline = fixtures.write_run(self.root / "base")
+        unconfirmed = fixtures.raw(focus_times=(None, 220.0, 240.0))
+        candidate = fixtures.write_run(self.root / "cand", run_raw=unconfirmed)
+        status, output = self.run_compare(baseline, candidate)
+        focus = self.section(output, "sequential", "switches.focusMs")
+        self.assertIn("candidate  n=2 p50 240 p90 240 max 240  (1 focus unconfirmed)", focus)
+
+    def test_failed_run_is_shown_and_left_out(self):
+        fixtures.write_run(self.root / "base/r1", fixtures.meta(repeat=1, repeats=2))
+        fixtures.write_run(self.root / "base/r2", fixtures.meta(repeat=2, repeats=2))
+        fixtures.write_run(self.root / "cand/r1", fixtures.meta(sha="b" * 40, repeat=1, repeats=2))
+        failing = fixtures.modified(fixtures.raw(focus_times=(900.0, 900.0, 900.0)), lambda raw: raw.update(
+            result="fail", failures=["sequential: idle wait timed out after switch 2"]))
+        fixtures.write_run(self.root / "cand/r2", fixtures.meta(sha="b" * 40, repeat=2, repeats=2,
+                                                                exit_status=1, outcome="fail"), failing)
+        status, output = self.run_compare(self.root / "base", self.root / "cand")
+        self.assertEqual(status, 0, output)
+        self.assertIn("candidate 1 of 2 runs passed", output)
+        self.assertIn("FAILED candidate r2: runner marked the run fail", output)
+        self.assertIn("FAILED candidate r2: app reported 'fail': sequential: idle wait timed out after switch 2", output)
+        self.assertNotIn("900", self.section(output, "sequential", "switches.focusMs"))
+
+    def test_missing_raw_json_is_a_failed_run(self):
+        baseline = fixtures.write_run(self.root / "base")
+        candidate = fixtures.write_run(self.root / "cand", write_raw=False)
+        status, output = self.run_compare(baseline, candidate)
+        self.assertIn("FAILED candidate cand: raw.json missing", output)
+        self.assertIn("Nothing to compare", output)
+
+    def test_change_inside_baseline_spread_is_within_noise(self):
+        fixtures.write_run(self.root / "base/r1", fixtures.meta(repeat=1, repeats=2), fixtures.raw((200.0, 200.0, 200.0)))
+        fixtures.write_run(self.root / "base/r2", fixtures.meta(repeat=2, repeats=2), fixtures.raw((240.0, 240.0, 240.0)))
+        fixtures.write_run(self.root / "quiet/r1", fixtures.meta(sha="b" * 40), fixtures.raw((220.0, 220.0, 220.0)))
+        fixtures.write_run(self.root / "slow/r1", fixtures.meta(sha="c" * 40), fixtures.raw((300.0, 300.0, 300.0)))
+
+        status, output = self.run_compare(self.root / "base", self.root / "quiet")
+        focus = self.section(output, "sequential", "switches.focusMs")
+        self.assertIn("spread p50 200-240", focus)
+        self.assertIn("p50 -20.0 ms (-8%), p90 -20.0 ms (-8%), max -20.0 ms (-8%); within noise", focus)
+
+        status, output = self.run_compare(self.root / "base", self.root / "slow")
+        focus = self.section(output, "sequential", "switches.focusMs")
+        self.assertIn("p50 +60.0 ms (+25%), p90 +60.0 ms (+25%), max +60.0 ms (+25%); outside baseline spread", focus)
+
+        fixtures.write_run(self.root / "tail/r1", fixtures.meta(sha="d" * 40), fixtures.raw((220.0, 220.0, 300.0)))
+        status, output = self.run_compare(self.root / "base", self.root / "tail")
+        focus = self.section(output, "sequential", "switches.focusMs")
+        self.assertIn("outside baseline spread: p90, max; within noise: p50", focus)
+
+    def test_single_baseline_run_has_unknown_noise(self):
+        baseline = fixtures.write_run(self.root / "base")
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(sha="b" * 40))
+        status, output = self.run_compare(baseline, candidate)
+        self.assertIn("noise unknown: baseline has fewer than 2 runs", output)
+
+    def test_empty_directory_is_an_error(self):
+        (self.root / "empty").mkdir()
+        baseline = fixtures.write_run(self.root / "base")
+        status, output = self.run_compare(baseline, self.root / "empty")
+        self.assertEqual(status, 1)
+        self.assertIn("no benchmark results", output)
+
+    def test_runs_isolated_as_a_command(self):
+        baseline = fixtures.write_run(self.root / "base")
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(sha="b" * 40))
+        result = subprocess.run([sys.executable, "-I", str(SCRIPT), str(baseline), str(candidate)],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("== busy:", result.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()
