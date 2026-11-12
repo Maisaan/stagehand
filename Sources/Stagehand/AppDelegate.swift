@@ -70,7 +70,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
         let modelBegan = Date()
-        let model = StagehandModel(persistence: isDiagnosticRun ? .ephemeral : .standard)
+        let model = StagehandModel(
+            diagnosticLogURL: argumentValue(after: "--diagnostic-log", in: arguments)
+                .map { URL(fileURLWithPath: $0) } ?? DiagnosticLogger.defaultLogURL,
+            persistence: isDiagnosticRun ? .ephemeral : .standard
+        )
         modelInitMilliseconds = Int(Date().timeIntervalSince(modelBegan) * 1_000)
         self.model = model
         if arguments.contains("--diagnose-permissions") {
@@ -272,7 +276,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func acceptanceOutputPath(in arguments: [String]) -> String? {
-        arguments.firstIndex(of: "--acceptance-output").flatMap {
+        argumentValue(after: "--acceptance-output", in: arguments)
+    }
+
+    private func argumentValue(after flag: String, in arguments: [String]) -> String? {
+        arguments.firstIndex(of: flag).flatMap {
             arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil
         }
     }

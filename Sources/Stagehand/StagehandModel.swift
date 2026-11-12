@@ -342,6 +342,7 @@ final class StagehandModel: ObservableObject {
     init(
         overlays: any NavigationPresenting = NavigationOverlays(),
         diagnostics: DiagnosticLogger? = nil,
+        diagnosticLogURL: URL = DiagnosticLogger.defaultLogURL,
         windowSystem injectedWindowSystem: (any WindowManaging)? = nil,
         input injectedInput: (any InputControlling)? = nil,
         emptySpace injectedEmptySpace: (any EmptySpacePresenting)? = nil,
@@ -372,6 +373,7 @@ final class StagehandModel: ObservableObject {
                                                  shortcutLoadIssues: shortcutLoad.issues)
         diagnosticLoggingEnabled = defaults.bool(forKey: PreferenceKey.diagnosticLoggingEnabled)
         self.diagnostics = diagnostics ?? DiagnosticLogger(
+            logURL: diagnosticLogURL,
             enabled: defaults.bool(forKey: PreferenceKey.diagnosticLoggingEnabled)
         )
         gesturesEnabled = defaults.object(forKey: PreferenceKey.gesturesEnabled) as? Bool ?? false
