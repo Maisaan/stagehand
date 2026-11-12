@@ -179,6 +179,53 @@ struct WindowFrameTests {
         #expect(actual.origin == destination.origin)
         #expect(success == sizeChanged)
     }
+
+    /// 2026-11-12: Chrome opened a window 1800 wide at x=322 on an 1800-wide screen. Resizing it
+    /// there through AX stops at the screen edge, so every recovery read 1478 and blocked Start.
+    @Test(arguments: [CGRect(x: 1660, y: 39, width: 900, height: 1130),
+                      CGRect(x: 322, y: 123, width: 1478, height: 1130)])
+    func aRecordedFramePastTheScreenEdgeReturnsTheWindowAtTheSizeTheAppKeeps(start: CGRect) {
+        let screenMaxX: CGFloat = 1800
+        let recorded = CGRect(x: 322, y: 123, width: 1800, height: 1130)
+        var actual = start
+        let clampAtScreenEdge: (CGSize) -> Bool = { size in
+            actual.size = CGSize(width: min(size.width, screenMaxX - actual.minX), height: size.height)
+            return true
+        }
+        let moveTo: (CGPoint) -> Bool = { actual.origin = $0; return true }
+
+        let result = WindowSystem.frameWriteResult(frame: recorded, readFrame: { actual },
+                                                   setSize: clampAtScreenEdge, setPosition: moveTo)
+
+        #expect(result == .sizeChosenByApp)
+        #expect(result.returnsWindowToOrigin)
+        #expect(actual == CGRect(x: 322, y: 123, width: 1478, height: 1130))
+        #expect(!WindowSystem.writeFrame(frame: recorded, readFrame: { actual },
+                                         setSize: clampAtScreenEdge, setPosition: moveTo))
+    }
+
+    @Test func aSizeWriteTheAppDidNotAnswerKeepsTheWindowPendingRecovery() {
+        var actual = CGRect(x: 1660, y: 39, width: 900, height: 1130)
+        let recorded = CGRect(x: 322, y: 123, width: 1200, height: 900)
+        let result = WindowSystem.frameWriteResult(frame: recorded, readFrame: { actual },
+                                                   setSize: { _ in false },
+                                                   setPosition: { actual.origin = $0; return true })
+
+        #expect(actual.origin == recorded.origin)
+        #expect(result == .failed)
+        #expect(!result.returnsWindowToOrigin)
+    }
+
+    @Test func aWindowLeftAtTheParkingSideIsNeverReturnedWhateverItsSize() {
+        var actual = CGRect(x: 1736, y: 123, width: 900, height: 1130)
+        let recorded = CGRect(x: 322, y: 123, width: 1200, height: 1130)
+        let result = WindowSystem.frameWriteResult(frame: recorded, readFrame: { actual },
+                                                   setSize: { actual.size = $0; return true },
+                                                   setPosition: { _ in false })
+
+        #expect(result == .failed)
+        #expect(!result.returnsWindowToOrigin)
+    }
 }
 
 /// Batched Accessibility reads replace three round trips per frame. Each attribute

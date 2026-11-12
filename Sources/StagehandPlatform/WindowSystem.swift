@@ -397,7 +397,7 @@ public final class WindowSystem {
                 continue
             }
             if let current = readFrame(element), sameBounds(current, record.frame) ||
-                writeFrame(element, frame: record.frame) {
+                returnToRecordedFrame(element, windowID: id, frame: record.frame) {
                 forgetRecovery(windowID: record.windowID)
             } else if minimized {
                 // The Dock tile hides a parked position. Keep the record so the
@@ -505,7 +505,7 @@ public final class WindowSystem {
                 continue
             }
             if let current = readFrame(element), sameBounds(current, record.frame) ||
-                writeFrame(element, frame: record.frame) {
+                returnToRecordedFrame(element, windowID: id, frame: record.frame) {
                 forgetRecovery(windowID: id)
                 if focusDiagnosticsEnabled { logger.notice("Recovery deferred=\(id, privacy: .public) restored=true") }
             }
@@ -521,7 +521,7 @@ public final class WindowSystem {
         }
         guard let deferred else { return }
         if let current = readFrame(tracked.element), sameBounds(current, deferred.frame) ||
-            writeFrame(tracked.element, frame: deferred.frame) {
+            returnToRecordedFrame(tracked.element, windowID: deferred.windowID, frame: deferred.frame) {
             forgetRecovery(windowID: deferred.windowID)
             forgetRecovery(windowID: id)
         }
@@ -1431,7 +1431,9 @@ public final class WindowSystem {
             // restore() never reverses a user's minimize, but the frame can often be
             // written behind the Dock tile. Otherwise wait for de-miniaturization.
             guard let target = tracked.originalFrame ?? tracked.parking.restoreFrame else { return .restored }
-            guard moveWithOwnedWindows(windowID: id, move: { writeFrame(tracked.element, frame: target) }) else {
+            guard moveWithOwnedWindows(windowID: id, move: {
+                returnToRecordedFrame(tracked.element, windowID: id, frame: target)
+            }) else {
                 if recoveryJournal.records[id] != nil {
                     interruptedWindowIDs.insert(id)
                     deferredRecoveryWindowIDs.insert(id)
@@ -1446,7 +1448,7 @@ public final class WindowSystem {
         guard restore(windowID: id) else { return .failed }
         if let originalFrame = tracked.originalFrame {
             guard moveWithOwnedWindows(windowID: id, move: {
-                writeFrame(tracked.element, frame: originalFrame)
+                returnToRecordedFrame(tracked.element, windowID: id, frame: originalFrame)
             }) else { return .failed }
             windows[id]?.originalFrame = nil
             try? recoveryJournal.remove(windowID: id)
@@ -2866,13 +2868,26 @@ public final class WindowSystem {
     }
 
     private func writeFrame(_ element: AXUIElement, frame: CGRect, resizeFirst: Bool = true) -> Bool {
-        Self.writeFrame(frame: frame, resizeFirst: resizeFirst, readFrame: { self.readFrame(element) }, setSize: { requested in
+        frameWriteResult(element, frame: frame, resizeFirst: resizeFirst) == .matched
+    }
+
+    private func frameWriteResult(_ element: AXUIElement, frame: CGRect, resizeFirst: Bool = true) -> FrameWriteResult {
+        Self.frameWriteResult(frame: frame, resizeFirst: resizeFirst, readFrame: { self.readFrame(element) }, setSize: { requested in
             var size = requested
             guard let value = AXValueCreate(.cgSize, &size) else { return false }
             return MainThreadActivity.during("write size pid=\(Self.pid(of: element))") {
                 AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value)
             } == .success
         }, setPosition: { self.writePosition(element, position: $0) })
+    }
+
+    /// An app may clamp an AX resize at the screen edge, so a frame it placed past the edge cannot be written back.
+    private func returnToRecordedFrame(_ element: AXUIElement, windowID: String, frame: CGRect) -> Bool {
+        let result = frameWriteResult(element, frame: frame)
+        if result == .sizeChosenByApp {
+            logger.notice("Recovery window=\(windowID, privacy: .public) sizeChosenByApp=true requested=\(String(describing: frame), privacy: .public) actual=\(String(describing: self.readFrame(element)), privacy: .public)")
+        }
+        return result.returnsWindowToOrigin
     }
 
     /// A busy app can let the unparking write or its readback time out. Retry for
@@ -2890,27 +2905,43 @@ public final class WindowSystem {
         }
     }
 
+    enum FrameWriteResult: Equatable {
+        case matched
+        case sizeChosenByApp
+        case failed
+
+        var returnsWindowToOrigin: Bool { self != .failed }
+    }
+
     static func writeFrame(frame: CGRect, resizeFirst: Bool = true, readFrame: () -> CGRect?,
                            setSize: (CGSize) -> Bool, setPosition: (CGPoint) -> Bool) -> Bool {
+        frameWriteResult(frame: frame, resizeFirst: resizeFirst, readFrame: readFrame,
+                         setSize: setSize, setPosition: setPosition) == .matched
+    }
+
+    static func frameWriteResult(frame: CGRect, resizeFirst: Bool = true, readFrame: () -> CGRect?,
+                                 setSize: (CGSize) -> Bool, setPosition: (CGPoint) -> Bool) -> FrameWriteResult {
         // Navigation usually changes only position. Avoid native resize animations
         // from the parking side, using layout's one-point size tolerance.
-        if let current = readFrame(), abs(current.width - frame.width) <= 1,
-           abs(current.height - frame.height) <= 1 {
-            if samePosition(current.origin, frame.origin) { return true }
+        if let current = readFrame(), sameSize(current.size, frame.size) {
+            if samePosition(current.origin, frame.origin) { return .matched }
             _ = setPosition(frame.origin)
-            guard let actual = readFrame() else { return false }
-            return samePosition(actual.origin, frame.origin) &&
-                abs(actual.width - frame.width) <= 1 && abs(actual.height - frame.height) <= 1
+            guard let actual = readFrame() else { return .failed }
+            return samePosition(actual.origin, frame.origin) && sameSize(actual.size, frame.size) ? .matched : .failed
         }
         // Parked windows must leave the side before resizing. Other frame writes
         // retain size, position, size for display-dependent minimum sizes.
         if resizeFirst { _ = setSize(frame.size) }
         _ = setPosition(frame.origin)
-        guard let moved = readFrame(), samePosition(moved.origin, frame.origin) else { return false }
-        _ = setSize(frame.size)
-        guard let actual = readFrame() else { return false }
-        return samePosition(actual.origin, frame.origin) &&
-            abs(actual.width - frame.width) <= 1 && abs(actual.height - frame.height) <= 1
+        guard let moved = readFrame(), samePosition(moved.origin, frame.origin) else { return .failed }
+        let sizeAccepted = setSize(frame.size)
+        guard let actual = readFrame(), samePosition(actual.origin, frame.origin) else { return .failed }
+        if sameSize(actual.size, frame.size) { return .matched }
+        return sizeAccepted ? .sizeChosenByApp : .failed
+    }
+
+    nonisolated private static func sameSize(_ lhs: CGSize, _ rhs: CGSize) -> Bool {
+        abs(lhs.width - rhs.width) <= 1 && abs(lhs.height - rhs.height) <= 1
     }
 
     nonisolated private static func samePosition(_ lhs: CGPoint, _ rhs: CGPoint) -> Bool {
