@@ -6,7 +6,8 @@ How to measure Stagehand, find where time goes, and check a change. Live checks 
 
 | Tool | Use |
 |---|---|
-| `scripts/run-benchmark.sh` | Live benchmark against disposable probe windows. Quit Stagehand first. |
+| `scripts/run-benchmark.sh` | Live benchmark against disposable probe windows. Quit Stagehand first. Saves every run. |
+| `scripts/compare-benchmarks.py` | Compares two sets of saved benchmark results; refuses runs that are not comparable. |
 | `scripts/run-acceptance.sh` | Focus, typing, and space-switching correctness. Run before and after any change to focus, motion, input, or lifecycle. |
 | `scripts/analyze-log.py` | Summarizes real usage from the diagnostic log. |
 | `scripts/find-dead-code.sh` | Periphery scan for unused code (with and without tests as users); about 30 s, own build directory. |
@@ -23,7 +24,36 @@ How to measure Stagehand, find where time goes, and check a change. Live checks 
 - `busy-quiet`: busy with diagnostic logging off, to measure what logging costs. Motion and focus are measured the same way as with logging on; only `stalls by phase` needs the log's events.
 - `busy-columns` (or `responsive-columns`): stacks two probe windows in one tile before the switches, then sets every tile to 0.75 of the screen width so each switch scrolls whatever the gap and screen (three 640-point probe tiles fit an 1800-point screen at a -140 gap, and nothing slid), so they cross a stacked tile (one synchronous frame write per member as it comes into view), and adds a **Member switches in the stack** section. Not related to `-stacking`, which measures window order.
 
-Set `STAGEHAND_APP` to benchmark another build. To compare against an older commit, check it out in a separate worktree (`git worktree add /tmp/sh-base <commit>`), copy in the current `StagehandModel+Benchmark.swift`, `StagehandModel+Acceptance.swift`, `AppDelegate.swift`, and `scripts/run-benchmark.sh` if they changed, build it, and run both builds back to back. Run each at least twice: single runs vary by 10 to 30 percent, and one-off stalls happen.
+Set `STAGEHAND_APP` to benchmark another build. To compare against an older commit, check it out in a separate worktree (`git worktree add /tmp/sh-base <commit>`), copy in the current `StagehandModel+Benchmark.swift`, `StagehandModel+Acceptance.swift`, and `AppDelegate.swift` if they changed, build it, and run both builds back to back with the current runner. Run each at least twice: single runs vary by 10 to 30 percent, and one-off stalls happen.
+
+#### Saved results
+
+Every run is saved, pass or fail, to `$BENCHMARK_RESULTS_DIR` (default `~/Library/Logs/Stagehand/benchmarks`) as `<UTC start>-<sha7>[-dirty]-<mode>[-r<N>]/`:
+
+- `report.txt`: the text report, also printed.
+- `raw.json`: the app's raw samples, the only input to comparison.
+- `meta.json`: written by the runner: git SHA, branch and dirty flag of the checkout that holds the app (the runner's own checkout when the app lives elsewhere, such as `/Applications`), the app's path, version and executable modification time, macOS version and hardware model, mode, flags, whether logging was on, 1- and 5-minute load average at start, start and end time, and the run's outcome (`pass`, `fail`, `timeout`) with its reasons.
+- `diagnostic.log`: the run's own diagnostic log (`--diagnostic-log`), so probe runs stay out of `stagehand.log`.
+
+`BENCHMARK_REPEAT=N` runs each mode N times in a row (the `-r<N>` suffix). `BENCHMARK_TIMEOUT` caps each run (default 240 s). The runner exits non-zero when any run timed out, has a report line starting with `FAIL`, or does not end with exactly `Result: PASS`; it runs the remaining modes first.
+
+#### Comparing
+
+Put each batch in its own folder and compare the two folders, or two single result directories:
+
+```sh
+BENCHMARK_RESULTS_DIR=~/Library/Logs/Stagehand/benchmarks/base BENCHMARK_REPEAT=3 BENCHMARK_MODES=busy \
+    STAGEHAND_APP=/tmp/sh-base/dist/Stagehand.app scripts/run-benchmark.sh
+BENCHMARK_RESULTS_DIR=~/Library/Logs/Stagehand/benchmarks/change BENCHMARK_REPEAT=3 BENCHMARK_MODES=busy \
+    scripts/run-benchmark.sh
+python3 -I scripts/compare-benchmarks.py ~/Library/Logs/Stagehand/benchmarks/base ~/Library/Logs/Stagehand/benchmarks/change
+```
+
+It reads only `raw.json` and `meta.json`, groups runs by mode, and prints p50, p90 and max per metric for baseline and candidate, with the spread across repeats when a side has two or more. A change that lands inside the baseline's repeat spread is marked **within noise**; with one baseline run, noise is unknown. Failed runs, missing phases, missing keys and missing samples are listed and left out of the numbers, never counted as zero; null focus times count as unconfirmed focus.
+
+It refuses (exit 1) when mode, logging, the `environment` block (display, scale, frame rates, Reduce Motion) or the `settings` block (gap, widths, probe settings) differ, or when one side mixes builds. `--allow-mismatch` compares anyway and lists the differences at the top.
+
+Results from before stage 1 of the benchmark work (no `raw.json`, report text only) are not comparable: the comparison treats them as failed runs. Build both sides with the stage-1 benchmark code, as above.
 
 What it reports, and what each line means:
 
@@ -46,7 +76,7 @@ python3 -I scripts/analyze-log.py --since 2026-10-15T12:00
 python3 -I scripts/analyze-log.py --split <install time, UTC>   # before/after an install
 ```
 
-It reads `stagehand.1.log` and `stagehand.log` and skips acceptance and benchmark runs (`diagnostic_run_began` to `diagnostic_run_ended`). Benchmark runs write a lot and rotate the log, so note install and run times.
+It reads `stagehand.1.log` and `stagehand.log` and skips acceptance and benchmark runs (`diagnostic_run_began` to `diagnostic_run_ended`). The benchmark runner gives each run its own log, but acceptance and older builds without `--diagnostic-log` write into `stagehand.log` and can rotate it, so note install and run times.
 
 ### Events worth knowing
 
