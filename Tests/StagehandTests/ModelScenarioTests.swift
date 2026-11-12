@@ -763,6 +763,57 @@ struct ModelScenarioTests {
         #expect(harness.events("desktop_resumed").count == 1)
     }
 
+    /// The per-display Space readings are logged at Start, so they can be compared with
+    /// CGSGetActiveSpace on the built-in display before an external one is attached.
+    @Test func startLogsTheNativeSpaceReadings() async {
+        let harness = ModelHarness(windowIDs: ["a"], focused: "a")
+        defer { harness.cleanUp() }
+        let builtIn = DisplayID(rawValue: "37D8832A-0000-0000-0000-000000000001")
+        harness.desktop.displays = [builtIn]
+        harness.desktop.displaySpaces = [builtIn: 1]
+        harness.model.start()
+        await harness.settle()
+
+        let readings = harness.events("native_space_readings")
+        #expect(readings.count == 1)
+        let details = readings.first?["details"] as? [String: String]
+        #expect(details?["activeSpace"] == "1")
+        #expect(details?["displaySpaces"] == "37D8832A=1")
+        #expect(details?["tracking"] == "activeSpace")
+        #expect(harness.events("native_space_reader_unavailable").isEmpty)
+    }
+
+    /// With separate Spaces, CGSGetActiveSpace follows the display with keyboard focus:
+    /// focus on a second display read as "away" and suspended Stagehand. Each display is
+    /// now compared with its own home Desktop.
+    @Test func focusOnAnotherDisplayStaysHomeAndASwitchThereSuspends() async {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        let builtIn = DisplayID(rawValue: "37D8832A-0000-0000-0000-000000000001")
+        let external = DisplayID(rawValue: "9A1F2B3C-0000-0000-0000-000000000002")
+        harness.desktop.displays = [builtIn, external]
+        harness.desktop.displaySpaces = [builtIn: 1, external: 5]
+        harness.model.start()
+        await harness.settle()
+
+        harness.desktop.id = 5
+        harness.model.nativeDesktopChanged()
+        #expect(!harness.model.isSuspended)
+
+        harness.desktop.displaySpaces[external] = 6
+        harness.model.nativeDesktopChanged()
+        #expect(harness.model.isSuspended)
+
+        // Unplugging the display that was away leaves only home Desktops.
+        harness.desktop.displays = [builtIn]
+        harness.desktop.id = 1
+        harness.model.screenParametersChanged()
+        await harness.settle()
+        #expect(!harness.model.isSuspended)
+        #expect(harness.events("desktop_resumed").count == 1)
+        #expect(harness.events("native_space_readings").count == 2)
+    }
+
     /// Returning from the lock screen lays out once; the border appears once
     /// instead of showing, hiding for the layout, and showing again.
     @Test func resumingShowsTheBorderOnceAfterOneLayout() async {

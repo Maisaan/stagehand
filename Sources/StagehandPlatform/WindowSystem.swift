@@ -428,7 +428,7 @@ public final class WindowSystem {
                                   target: record.windowNumber, identityAvailable: Self.windowIdentityAvailable,
                                   targetPlacement: {
                                       NativeSpaces.placement(of: NativeSpaces.spaces(windowNumber: record.windowNumber),
-                                                             activeSpace: NativeSpaces.activeSpace())
+                                                             currentSpaces: NativeSpaces.currentSpaces())
                                   })
     }
 

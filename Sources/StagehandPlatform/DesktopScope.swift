@@ -1,6 +1,7 @@
-import Foundation
+import AppKit
 import CoreGraphics
 import Darwin
+import StagehandCore
 
 public enum DesktopRelation: Equatable, Sendable {
     case home
@@ -8,7 +9,53 @@ public enum DesktopRelation: Equatable, Sendable {
     case unknown
 }
 
-/// Tracks the native Desktop selected when Stagehand starts. Refreshing never rebinds it.
+/// Where each display's current Space is read from. `currentSpace` is nil when the
+/// private per-display symbol is missing.
+public struct DisplaySpaceSource {
+    public var connectedDisplays: () -> [DisplayID]
+    public var screensHaveSeparateSpaces: () -> Bool
+    public var currentSpace: ((DisplayID) -> UInt64?)?
+    public var readerSymbol: String?
+    public var managedDisplaySpaces: () -> [String: UInt64]
+
+    public init(connectedDisplays: @escaping () -> [DisplayID],
+                screensHaveSeparateSpaces: @escaping () -> Bool,
+                currentSpace: ((DisplayID) -> UInt64?)?,
+                readerSymbol: String? = nil,
+                managedDisplaySpaces: @escaping () -> [String: UInt64] = { [:] }) {
+        self.connectedDisplays = connectedDisplays
+        self.screensHaveSeparateSpaces = screensHaveSeparateSpaces
+        self.currentSpace = currentSpace
+        self.readerSymbol = readerSymbol
+        self.managedDisplaySpaces = managedDisplaySpaces
+    }
+
+    /// No displays to track: the active Space alone decides, as with one display.
+    public static var activeSpaceOnly: DisplaySpaceSource {
+        DisplaySpaceSource(connectedDisplays: { [] }, screensHaveSeparateSpaces: { true }, currentSpace: nil)
+    }
+
+    @MainActor public static let system = DisplaySpaceSource(
+        connectedDisplays: { ManagedDisplaySpacesReader.connectedDisplays() },
+        screensHaveSeparateSpaces: { NSScreen.screensHaveSeparateSpaces },
+        currentSpace: ManagedDisplaySpacesReader.currentSpace,
+        readerSymbol: ManagedDisplaySpacesReader.symbol,
+        managedDisplaySpaces: { ManagedDisplaySpacesReader.managedDisplaySpaces() })
+}
+
+/// What WindowServer reported when the scope bound its displays.
+public struct NativeSpaceReadings: Equatable, Sendable {
+    public var activeSpace: UInt64?
+    public var displaySpaces: [DisplayID: UInt64]
+    public var managedDisplaySpaces: [String: UInt64]
+    public var screensHaveSeparateSpaces: Bool
+    public var readerSymbol: String?
+    public var tracksEachDisplay: Bool
+}
+
+/// Tracks the native Desktop each display showed when Stagehand started. Refreshing
+/// never rebinds it. The relation is home only when every tracked display is on its
+/// home Desktop, so a switch on one display suspends every display.
 ///
 /// A home or away answer is reused for `cacheMaxAge` unless `invalidate()` is
 /// called first; the model calls it on every Desktop, session, lock and sleep
@@ -20,36 +67,77 @@ public final class DesktopScope {
     /// How long a home or away answer stands without a notification. One switch
     /// asks several times; a missed notification costs at most this much.
     public var cacheMaxAge: Duration = .milliseconds(250)
+    public var onReadings: ((NativeSpaceReadings) -> Void)?
     private let currentDesktopID: () -> UInt64?
+    private let displaySource: DisplaySpaceSource
     private let userSessionIsActive: () -> Bool
     private let now: () -> ContinuousClock.Instant
+    /// The active Space at bind, compared while one reading covers every display.
     private var homeDesktopID: UInt64?
+    private var trackedDisplays: [DisplayID] = []
+    private var displayHomes: [DisplayID: UInt64] = [:]
+    private var screensHaveSeparateSpaces = true
     private var answeredAt: ContinuousClock.Instant?
 
     public init() {
         currentDesktopID = { NativeDesktopReader.currentID() }
+        displaySource = .system
         userSessionIsActive = { NativeUserSessionReader.isActive() }
         now = { .now }
     }
 
-    public init(currentDesktopID: @escaping () -> UInt64?, userSessionIsActive: @escaping () -> Bool = { true },
+    public init(currentDesktopID: @escaping () -> UInt64?, displaySource: DisplaySpaceSource = .activeSpaceOnly,
+                userSessionIsActive: @escaping () -> Bool = { true },
                 now: @escaping () -> ContinuousClock.Instant = { .now }) {
         self.currentDesktopID = currentDesktopID
+        self.displaySource = displaySource
         self.userSessionIsActive = userSessionIsActive
         self.now = now
     }
 
+    public var connectedDisplays: [DisplayID] { displaySource.connectedDisplays() }
+
     public func bindToCurrentDesktop() -> Bool {
         // Repeated starts must not silently adopt a different Desktop. Only reset permits
         // an explicit new binding, such as after the user has disabled Stagehand.
-        if homeDesktopID != nil { return refresh() == .home }
-        guard let id = currentDesktopID(), id != 0 else {
+        if homeDesktopID != nil {
+            bind(displays: connectedDisplays)
+            return refresh() == .home
+        }
+        screensHaveSeparateSpaces = displaySource.screensHaveSeparateSpaces()
+        let displays = connectedDisplays
+        let activeSpace = currentDesktopID().flatMap { $0 == 0 ? nil : $0 }
+        let displaySpaces = readDisplaySpaces(displays)
+        defer { reportReadings(activeSpace: activeSpace, displaySpaces: displaySpaces) }
+        guard let activeSpace else {
             relation = .unknown
             return false
         }
-        homeDesktopID = id
+        homeDesktopID = activeSpace
+        trackedDisplays = displays
+        displayHomes = displaySpaces
         relation = .home
         answeredAt = now()
+        return true
+    }
+
+    /// Tracks exactly `displays`: a display seen for the first time is bound to the
+    /// Desktop it shows now, and a removed one is forgotten. Returns whether the set changed.
+    @discardableResult
+    public func bind(displays: [DisplayID]) -> Bool {
+        guard homeDesktopID != nil, Set(displays) != Set(trackedDisplays) else { return false }
+        let wasTrackingEachDisplay = tracksEachDisplay
+        let added = displays.filter { !trackedDisplays.contains($0) }
+        let addedSpaces = readDisplaySpaces(added)
+        trackedDisplays = displays
+        displayHomes = displayHomes.filter { displays.contains($0.key) }.merging(addedSpaces) { old, _ in old }
+        // Back to one reading: the remaining display's home is in the per-display reader's terms.
+        if wasTrackingEachDisplay, !tracksEachDisplay, displays.count == 1, let home = displayHomes[displays[0]] {
+            homeDesktopID = home
+        }
+        answeredAt = nil
+        reportReadings(activeSpace: currentDesktopID().flatMap { $0 == 0 ? nil : $0 },
+                       displaySpaces: readDisplaySpaces(displays))
         return true
     }
 
@@ -65,13 +153,27 @@ public final class DesktopScope {
             answeredAt = nil
             return relation
         }
-        guard let homeDesktopID, let id = MainThreadActivity.during("desktopScope activeSpace", currentDesktopID),
-              id != 0 else {
+        guard let homeDesktopID else {
             relation = .unknown
             answeredAt = nil
             return relation
         }
-        relation = id == homeDesktopID ? .home : .away
+        let home: Bool?
+        if tracksEachDisplay, let currentSpace = displaySource.currentSpace {
+            let displays = trackedDisplays
+            let spaces = MainThreadActivity.during("desktopScope displaySpaces") { displays.map(currentSpace) }
+            home = spaces.contains { $0 == nil || $0 == 0 }
+                ? nil : zip(displays, spaces).allSatisfy { displayHomes[$0] == $1 }
+        } else {
+            let id = MainThreadActivity.during("desktopScope activeSpace", currentDesktopID)
+            home = id == nil || id == 0 ? nil : id == homeDesktopID
+        }
+        guard let home else {
+            relation = .unknown
+            answeredAt = nil
+            return relation
+        }
+        relation = home ? .home : .away
         answeredAt = now()
         return relation
     }
@@ -83,8 +185,36 @@ public final class DesktopScope {
 
     public func reset() {
         homeDesktopID = nil
+        trackedDisplays = []
+        displayHomes = [:]
         relation = .unknown
         answeredAt = nil
+    }
+
+    /// With Spaces shared across displays, or one display, the active Space is every
+    /// display's Space. A display whose reading failed at bind keeps that single reading.
+    private var tracksEachDisplay: Bool {
+        screensHaveSeparateSpaces && trackedDisplays.count > 1 && displaySource.currentSpace != nil
+            && trackedDisplays.allSatisfy { displayHomes[$0] != nil }
+    }
+
+    private func readDisplaySpaces(_ displays: [DisplayID]) -> [DisplayID: UInt64] {
+        guard let currentSpace = displaySource.currentSpace else { return [:] }
+        var spaces: [DisplayID: UInt64] = [:]
+        for display in displays {
+            if let id = currentSpace(display), id != 0 { spaces[display] = id }
+        }
+        return spaces
+    }
+
+    private func reportReadings(activeSpace: UInt64?, displaySpaces: [DisplayID: UInt64]) {
+        guard let onReadings else { return }
+        onReadings(NativeSpaceReadings(
+            activeSpace: activeSpace, displaySpaces: displaySpaces,
+            managedDisplaySpaces: displaySource.managedDisplaySpaces(),
+            screensHaveSeparateSpaces: screensHaveSeparateSpaces,
+            readerSymbol: displaySource.currentSpace == nil ? nil : displaySource.readerSymbol,
+            tracksEachDisplay: tracksEachDisplay))
     }
 }
 
@@ -101,7 +231,7 @@ private enum NativeDesktopReader {
     // https://github.com/NUIKit/CGSInternal/blob/master/CGSSpace.h
     // https://github.com/jurplel/InstantSpaceSwitcher/blob/main/Sources/ISS/ISS.c
     // IDs are native Space identities, not their reorderable Mission Control positions.
-    // This intentionally covers only the MVP's single-display configuration.
+    // With separate Spaces this follows the display with keyboard focus.
     static let currentID: () -> UInt64? = {
         guard let framework = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_NOW | RTLD_LOCAL),
               let connectionSymbol = dlsym(framework, "CGSMainConnectionID"),

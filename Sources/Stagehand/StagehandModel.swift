@@ -485,6 +485,7 @@ final class StagehandModel: ObservableObject {
         windowSystem.onScreenParametersChange = { [weak self] in
             self?.screenParametersChanged()
         }
+        desktopScope.onReadings = { [weak self] readings in self?.recordNativeSpaceReadings(readings) }
         windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
         if persistence == .standard, injectedWindowSystem == nil {
             mainThreadWatchdog = MainThreadWatchdog { [weak self] waited, activity, measured in
@@ -1266,6 +1267,10 @@ final class StagehandModel: ObservableObject {
     }
 
     func screenParametersChanged() {
+        // A display that left can no longer hold Stagehand away, and a new one starts home.
+        if desktopScope.bind(displays: desktopScope.connectedDisplays), isRunning, isSuspended {
+            nativeDesktopChanged()
+        }
         guard isRunning, !isSuspended else { return }
         let hasBuiltInDisplay = builtInScreen != nil
         diagnostics.record("screen_parameters_changed", details: [
@@ -1289,6 +1294,25 @@ final class StagehandModel: ObservableObject {
             return
         }
         enqueue(.preferences)
+    }
+}
+
+extension StagehandModel {
+    func recordNativeSpaceReadings(_ readings: NativeSpaceReadings) {
+        func spaces<Key>(_ spaces: [Key: UInt64], label: (Key) -> String) -> String {
+            spaces.map { "\(label($0.key))=\($0.value)" }.sorted().joined(separator: " ")
+        }
+        if readings.readerSymbol == nil {
+            diagnostics.record("native_space_reader_unavailable")
+        }
+        diagnostics.record("native_space_readings", details: [
+            "activeSpace": readings.activeSpace.map(String.init) ?? "none",
+            "displaySpaces": spaces(readings.displaySpaces) { $0.logPrefix },
+            "managedDisplaySpaces": spaces(readings.managedDisplaySpaces) { String($0.prefix(8)) },
+            "screensHaveSeparateSpaces": String(readings.screensHaveSeparateSpaces),
+            "reader": readings.readerSymbol ?? "unavailable",
+            "tracking": readings.tracksEachDisplay ? "perDisplay" : "activeSpace"
+        ])
     }
 }
 

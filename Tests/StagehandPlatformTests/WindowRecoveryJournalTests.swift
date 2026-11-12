@@ -184,17 +184,20 @@ import Testing
 /// "maybe published late": a full-screen window blocked every Start until its app quit
 /// (1Password, 2026-10-26), and a second Start while away would have deleted the records
 /// of windows that were only unreachable. WindowServer's Spaces tell them apart.
-@Test func aWindowMissingFromTheListIsPlacedByItsSpaces() {
+@MainActor @Test func aWindowMissingFromTheListIsPlacedByItsSpaces() {
     typealias Space = NativeSpaces.Space
     let desktop = Space(id: 1, type: 0), other = Space(id: 7, type: 0)
     let fullScreen = Space(id: 1384, type: NativeSpaces.fullScreenSpaceType)
-    #expect(NativeSpaces.placement(of: [fullScreen], activeSpace: 1) == .fullScreen)
-    #expect(NativeSpaces.placement(of: [desktop], activeSpace: 1384) == .otherSpace)
-    #expect(NativeSpaces.placement(of: [other, fullScreen], activeSpace: 1) == .otherSpace)
-    #expect(NativeSpaces.placement(of: [desktop], activeSpace: 1) == .currentSpace)
-    #expect(NativeSpaces.placement(of: [], activeSpace: 1) == .nowhere)
-    #expect(NativeSpaces.placement(of: nil, activeSpace: 1) == .unknown)
-    #expect(NativeSpaces.placement(of: [desktop], activeSpace: nil) == .unknown)
+    #expect(NativeSpaces.placement(of: [fullScreen], currentSpaces: [1]) == .fullScreen)
+    #expect(NativeSpaces.placement(of: [desktop], currentSpaces: [1384]) == .otherSpace)
+    #expect(NativeSpaces.placement(of: [other, fullScreen], currentSpaces: [1]) == .otherSpace)
+    #expect(NativeSpaces.placement(of: [desktop], currentSpaces: [1]) == .currentSpace)
+    #expect(NativeSpaces.placement(of: [], currentSpaces: [1]) == .nowhere)
+    #expect(NativeSpaces.placement(of: nil, currentSpaces: [1]) == .unknown)
+    #expect(NativeSpaces.placement(of: [desktop], currentSpaces: []) == .unknown)
+    // With separate Spaces each display shows its own Desktop, and all of them are current.
+    #expect(NativeSpaces.placement(of: [other], currentSpaces: [1, 7]) == .currentSpace)
+    #expect(NativeSpaces.placement(of: [other], currentSpaces: [1, 9]) == .otherSpace)
 
     let elements = [AXUIElementCreateApplication(1)]
     func search(_ placement: NativeSpaces.Placement) -> WindowSystem.RecoverySearch {
@@ -212,7 +215,7 @@ import Testing
     #expect(!asked)
     // A window that does not exist is on no Space.
     #expect(NativeSpaces.placement(of: NativeSpaces.spaces(windowNumber: UInt32.max),
-                                   activeSpace: NativeSpaces.activeSpace()) != .otherSpace)
+                                   currentSpaces: NativeSpaces.currentSpaces()) != .otherSpace)
 }
 
 private func journalFixture() throws -> (directory: URL, url: URL, record: WindowRecoveryRecord) {

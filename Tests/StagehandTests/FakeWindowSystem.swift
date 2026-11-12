@@ -395,6 +395,9 @@ final class ImmediateFrameDriver: RibbonFrameDriving {
 @MainActor
 final class DesktopFixture {
     var id: UInt64? = 1
+    /// Empty: one display, read through the active Space alone.
+    var displays: [DisplayID] = []
+    var displaySpaces: [DisplayID: UInt64] = [:]
 }
 
 /// A model wired to fakes, recording diagnostics to a temporary file.
@@ -435,7 +438,9 @@ struct ModelHarness {
             windowSystem: windows,
             input: FakeInput(),
             emptySpace: FakeEmptySpace(),
-            desktopScope: DesktopScope(currentDesktopID: { desktop.id }),
+            desktopScope: DesktopScope(currentDesktopID: { desktop.id }, displaySource: DisplaySpaceSource(
+                connectedDisplays: { desktop.displays }, screensHaveSeparateSpaces: { true },
+                currentSpace: { desktop.displaySpaces[$0] }, readerSymbol: "SLSManagedDisplayGetCurrentSpace")),
             focusGate: gate,
             ribbonMotion: RibbonMotion(frameDriver: ImmediateFrameDriver()),
             pointer: pointer.tracker,
