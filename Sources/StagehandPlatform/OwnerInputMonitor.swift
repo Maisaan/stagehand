@@ -99,6 +99,7 @@ public final class OwnerInputMonitor: @unchecked Sendable {
     struct Environment {
         var inputHiddenReason: () -> String?
         var createTap: (CGEventMask, @escaping CGEventTapCallBack, UnsafeMutableRawPointer) -> CFMachPort?
+        var setTapEnabled: (CFMachPort, Bool) -> Void = { CGEvent.tapEnable(tap: $0, enable: $1) }
 
         static var live: Environment {
             Environment(
@@ -155,7 +156,7 @@ public final class OwnerInputMonitor: @unchecked Sendable {
             runLoop = CFRunLoopGetCurrent()
             let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
             CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .defaultMode)
-            CGEvent.tapEnable(tap: tap, enable: true)
+            environment.setTapEnabled(tap, true)
             ready.signal()
             // Invalidating the tap from another thread does not wake this run loop, so
             // `stop()` also stops it. The validity check covers a stop that lands first.
@@ -171,14 +172,18 @@ public final class OwnerInputMonitor: @unchecked Sendable {
 
     public func stop() -> OwnerInputReading {
         if let finalReading { return finalReading }
+        if let hidden = environment.inputHiddenReason() { noteBlindSpot(hidden) }
+        // Close the recording before teardown: disabling the tap makes macOS call back with tapDisabledByUserInput.
+        let reading = recorder.withLock { recording in
+            defer { recording = nil }
+            return recording?.reading
+        } ?? .unknown(reason: "the monitor was not started")
+        finalReading = reading
         if let tap {
-            CGEvent.tapEnable(tap: tap, enable: false)
+            environment.setTapEnabled(tap, false)
             CFMachPortInvalidate(tap)
             if let runLoop { CFRunLoopStop(runLoop) }
         }
-        if let hidden = environment.inputHiddenReason() { noteBlindSpot(hidden) }
-        let reading = recorder.withLock { $0?.reading } ?? .unknown(reason: "the monitor was not started")
-        finalReading = reading
         return reading
     }
 
@@ -186,9 +191,15 @@ public final class OwnerInputMonitor: @unchecked Sendable {
         recorder.withLock { $0?.receive(eventType: eventType, sourcePID: sourcePID, at: uptime) }
     }
 
-    fileprivate func tapWasDisabled() {
-        noteBlindSpot("the input tap was paused by macOS during the run")
-        if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+    fileprivate func tapWasDisabled(_ type: CGEventType) {
+        let reason = type == .tapDisabledByTimeout
+            ? "the input tap timed out and macOS paused it during the run"
+            : "macOS disabled the input tap for user input during the run"
+        let stillRecording = recorder.withLock { recording in
+            recording?.noteBlindSpot(reason)
+            return recording != nil
+        }
+        if stillRecording, let tap { environment.setTapEnabled(tap, true) }
     }
 
     private func noteBlindSpot(_ reason: String) {
@@ -200,7 +211,7 @@ private let ownerInputTapCallback: CGEventTapCallBack = { _, type, event, contex
     guard let context else { return Unmanaged.passUnretained(event) }
     let monitor = Unmanaged<OwnerInputMonitor>.fromOpaque(context).takeUnretainedValue()
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        monitor.tapWasDisabled()
+        monitor.tapWasDisabled(type)
     } else {
         let now = ProcessInfo.processInfo.systemUptime
         monitor.receive(eventType: type.rawValue, sourcePID: event.getIntegerValueField(.eventSourceUnixProcessID),

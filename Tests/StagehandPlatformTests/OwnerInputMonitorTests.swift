@@ -87,3 +87,65 @@ private func recorder(startedAt: TimeInterval = 100) -> OwnerInputRecorder {
     #expect(!monitor.stop().touched)
     #expect(monitor.stop() == .unknown(reason: "the monitor was not started"))
 }
+
+/// Delivers tapDisabledByUserInput when the tap is disabled, as macOS does.
+private final class FakeTap: @unchecked Sendable {
+    private var callback: CGEventTapCallBack?
+    private var context: UnsafeMutableRawPointer?
+    private(set) var enableCalls: [Bool] = []
+
+    var environment: OwnerInputMonitor.Environment {
+        .init(
+            inputHiddenReason: { nil },
+            createTap: { [self] _, callback, context in
+                self.callback = callback
+                self.context = context
+                return CFMachPortCreate(kCFAllocatorDefault, { _, _, _, _ in }, nil, nil)
+            },
+            setTapEnabled: { [self] _, enabled in
+                enableCalls.append(enabled)
+                if !enabled { deliver(.tapDisabledByUserInput) }
+            })
+    }
+
+    func deliver(_ type: CGEventType, sourcePID: Int64 = hardwarePID) {
+        guard let callback, let event = CGEvent(source: nil),
+              let proxy = OpaquePointer(bitPattern: 1) else { return }
+        event.setIntegerValueField(.eventSourceUnixProcessID, value: sourcePID)
+        _ = callback(proxy, type, event, context)
+    }
+}
+
+@Test func disablingTheTapToStopIsNotABlindSpot() {
+    let tap = FakeTap()
+    let monitor = OwnerInputMonitor(syntheticSourcePIDs: [], environment: tap.environment)
+    monitor.start()
+    #expect(monitor.stop() == .observed(OwnerInputTally()))
+    #expect(tap.enableCalls == [true, false])
+}
+
+@Test(arguments: [
+    (CGEventType.tapDisabledByTimeout, "the input tap timed out and macOS paused it during the run"),
+    (CGEventType.tapDisabledByUserInput, "macOS disabled the input tap for user input during the run"),
+])
+func aDisableDuringTheRunIsABlindSpotNamedByItsTypeAndReenablesTheTap(type: CGEventType, reason: String) {
+    let tap = FakeTap()
+    let monitor = OwnerInputMonitor(syntheticSourcePIDs: [], environment: tap.environment)
+    monitor.start()
+    tap.deliver(type)
+    #expect(monitor.stop() == .unknown(reason: reason))
+    #expect(tap.enableCalls == [true, true, false])
+}
+
+@Test func inputDuringTheRunCountsAndInputAfterStopDoesNot() {
+    let tap = FakeTap()
+    let monitor = OwnerInputMonitor(syntheticSourcePIDs: [], environment: tap.environment)
+    monitor.start()
+    tap.deliver(.keyDown)
+    let reading = monitor.stop()
+    tap.deliver(.leftMouseDown)
+    #expect(reading.touched)
+    #expect(monitor.stop() == reading)
+    guard case .observed(let tally) = reading else { return }
+    #expect(tally.counts == [.keyboard: 1])
+}
