@@ -5,7 +5,7 @@ from pathlib import Path
 ENVIRONMENT = {"displayWidthPoints": 1800, "displayHeightPoints": 1169, "backingScale": 2,
                "maximumFramesPerSecond": 120, "ribbonFramesPerSecond": 60, "reduceMotion": False}
 SETTINGS = {"gap": -140, "widthPresets": [0.5, 0.75, 1.0], "loggingEnabled": True, "busyProbes": True,
-            "measuresStacking": False, "columnStacks": False, "switches": 3}
+            "measuresStacking": False, "tiles": False, "switches": 3}
 
 
 def switch(focus=220.0, settled=400.0, slid=True):
@@ -20,7 +20,7 @@ def switch_phase(focus_times, slid=True):
             "stalls": [{"waitedMs": 120.0, "label": "read AXPosition", "phase": "ribbon_animation_started"}]}
 
 
-def raw(focus_times=(200.0, 220.0, 240.0), columns=False):
+def raw(focus_times=(200.0, 220.0, 240.0), tiles=False):
     phases = {
         "start": {"callMs": 1.2, "settledMs": 265.0, "timedOut": False, "mainThreadWaitsMs": [4.1, 5.0]},
         "sequential": switch_phase(focus_times),
@@ -29,9 +29,9 @@ def raw(focus_times=(200.0, 220.0, 240.0), columns=False):
         "interface": {"appBarShowMs": [3.1, 3.3], "settingsOpenMs": [80.0, 82.0], "quickControlsOpenMs": [40.0]},
     }
     settings = dict(SETTINGS)
-    if columns:
-        settings["columnStacks"] = True
-        phases["members"] = switch_phase(focus_times)
+    if tiles:
+        settings["tiles"] = True
+        phases["panes"] = switch_phase(focus_times)
     return {"schema": 1, "result": "pass", "failures": [], "environment": dict(ENVIRONMENT),
             "settings": settings, "phases": phases}
 

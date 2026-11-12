@@ -46,9 +46,7 @@ extension StagehandModel {
         defer { MainThreadActivity.setEnabled(activityWasEnabled) }
         let logging = !ProcessInfo.processInfo.arguments.contains("--no-diagnostics")
         let measuresStacking = ProcessInfo.processInfo.arguments.contains("--stacking")
-        // Column stacks, not window stacking order: `--stacking` above measures when a
-        // destination reaches the front of WindowServer's window order.
-        let stacksColumns = ProcessInfo.processInfo.arguments.contains("--column-stacks")
+        let arrangesTile = ProcessInfo.processInfo.arguments.contains("--tiles")
         let ribbonFramesPerSecond = Double(preferredRibbonFrameRate(maximum: screen.maximumFramesPerSecond))
         record.environment = .init(
             displayWidthPoints: screen.frame.width,
@@ -59,7 +57,7 @@ extension StagehandModel {
             reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         )
         record.settings = .init(gap: gap, widthPresets: widthPresets, loggingEnabled: logging, busyProbes: busy,
-                                measuresStacking: measuresStacking, columnStacks: stacksColumns, switches: switches)
+                                measuresStacking: measuresStacking, tiles: arrangesTile, switches: switches)
         diagnostics.isEnabled = logging
         windowSystem.focusDiagnosticsEnabled = logging
         // Marks the probe-driven run so scripts/analyze-log.py can leave it out of real usage.
@@ -106,8 +104,8 @@ extension StagehandModel {
         }
 
         lines.append("Benchmark (\(busy ? "busy" : "responsive") probes, 4 windows, \(switches) switches"
-            + (stacksColumns ? ", two windows stacked in one column, columns "
-                + String(format: "%.2f", Self.columnBenchmarkWidthFraction) + " of the screen wide" : "")
+            + (arrangesTile ? ", two windows side by side in one tile, tiles "
+                + String(format: "%.2f", Self.tileBenchmarkWidthFraction) + " of the screen wide" : "")
             + (logging ? ")" : ", diagnostic logging off)"))
         if let launchFinishedMilliseconds { lines.append("Launch to didFinishLaunching: \(launchFinishedMilliseconds) ms") }
         if let modelInitMilliseconds { lines.append("Model init: \(modelInitMilliseconds) ms") }
@@ -130,26 +128,24 @@ extension StagehandModel {
         lines.append("  main thread: " + Self.stallSummary(startWaits))
         if !startIdle { record.failures.append("start: idle wait timed out") }
         guard isRunning else { return fail("Stagehand did not start. Warning: \(warning ?? "none")") }
-        if stacksColumns {
-            // The focused window joins a neighbor, so every switch below crosses or
-            // reveals a stacked column: several windows written for one slot.
-            var predicted = state
-            let action: NavigationAction = predicted.apply(.stackNext) ? .stackNext : .stackPrevious
-            navigate(action)
-            guard await benchmarkWaitUntilIdle() else { return fail("stacking two probe windows did not settle.") }
-            guard state.currentSpace.columns.contains(where: \.isStack) else {
-                return fail("could not stack two probe windows.")
+        if arrangesTile {
+            // The focused window shares a tile with a neighbor, so every switch between
+            // tiles crosses or reveals a multi-pane tile: several windows written for one place.
+            navigate(.arrangeTile(.sideBySide))
+            guard await benchmarkWaitUntilIdle() else { return fail("arranging two probe windows did not settle.") }
+            guard state.currentSpace.tiles.contains(where: \.isMultiPane) else {
+                return fail("could not arrange two probe windows side by side.")
             }
-            // Stacking leaves three columns at the probes' own 640-point width. With a
-            // negative gap they fit a wide screen (1640 of 1800 points at -140), so no
-            // switch would slide and the run would measure no motion. Columns this wide
-            // overflow the screen for every allowed gap, so each switch scrolls.
-            state = Self.widenedForColumnBenchmark(state)
+            // Three tiles at the probes' own 640-point width fit a wide screen with a
+            // negative gap (1640 of 1800 points at -140), so no switch would slide and
+            // the run would measure no motion. Tiles this wide overflow the screen for
+            // every allowed gap, so each switch between tiles scrolls.
+            state = Self.widenedForTileBenchmark(state)
             enqueue(.refresh)
-            guard await benchmarkWaitUntilIdle() else { return fail("widening the probe columns did not settle.") }
+            guard await benchmarkWaitUntilIdle() else { return fail("widening the probe tiles did not settle.") }
             guard let availableFrame,
-                  Self.everyColumnSwitchScrolls(state, availableFrame: availableFrame, gap: gap) else {
-                return fail("the stacked probe columns fit on screen, so switches would not slide.")
+                  Self.everyTileSwitchScrolls(state, availableFrame: availableFrame, gap: gap, paneGap: paneGap) else {
+                return fail("the probe tiles fit on screen, so switches would not slide.")
             }
         }
         let frameInterval = 1 / ribbonFramesPerSecond
@@ -206,23 +202,23 @@ extension StagehandModel {
         lines.append("  main thread: " + Self.stallSummary(rapidWaits))
         lines.append("Final focus matches the ribbon: \(rapidFocusMatches)" + (rapidFocusMismatch.map { " (\($0))" } ?? ""))
 
-        if stacksColumns, let stack = state.currentSpace.columns.first(where: \.isStack) {
-            // Focus moving up and down inside the stack: no slide, one focus each.
-            focusWindow(stack.windowIDs[0])
+        if arrangesTile, let tile = state.currentSpace.tiles.first(where: \.isMultiPane) {
+            // Focus moving between the two panes of the tile: no slide, one focus each.
+            focusWindow(tile.windowIDs[0])
             if await benchmarkWaitUntilIdle() {
-                var memberIndex = 0
-                let members = await measureSwitchPhase(count: 16, busy: busy, probes: probes,
-                                                       measuresStacking: false, monitor: monitor,
-                                                       frameInterval: frameInterval) {
-                    defer { memberIndex += 1 }
-                    return memberIndex.isMultiple(of: 2) ? .focusMemberBelow : .focusMemberAbove
+                var paneIndex = 0
+                let panes = await measureSwitchPhase(count: 16, busy: busy, probes: probes,
+                                                     measuresStacking: false, monitor: monitor,
+                                                     frameInterval: frameInterval) {
+                    defer { paneIndex += 1 }
+                    return paneIndex.isMultiple(of: 2) ? .focusNext : .focusPrevious
                 }
-                record.phases.members = members
-                record.failures += BenchmarkRecord.switchFailures(members, name: "members")
-                lines.append("Member switches in the stack:")
-                lines += Self.switchPhaseLines(members, measuresStacking: false, attributesStalls: false)
+                record.phases.panes = panes
+                record.failures += BenchmarkRecord.switchFailures(panes, name: "panes")
+                lines.append("Pane switches in the tile:")
+                lines += Self.switchPhaseLines(panes, measuresStacking: false, attributesStalls: false)
             } else {
-                record.failures.append("members: focusing the stack's first window did not settle")
+                record.failures.append("panes: focusing the tile's first pane did not settle")
             }
         }
 
@@ -442,31 +438,33 @@ extension StagehandModel {
         return (front, reorders)
     }
 
-    /// The column width the `--column-stacks` run sets, one of the default presets.
-    static let columnBenchmarkWidthFraction = 0.75
+    /// The tile width the `--tiles` run sets, one of the default presets.
+    static let tileBenchmarkWidthFraction = 0.75
 
-    /// Every column in the current space at `columnBenchmarkWidthFraction`. Three
-    /// such columns overflow the screen for any gap in `GapInput.bounds`.
-    static func widenedForColumnBenchmark(_ state: WorkspaceState) -> WorkspaceState {
+    /// Every tile in the current space at `tileBenchmarkWidthFraction`. Three
+    /// such tiles overflow the screen for any gap in `GapInput.tileGapBounds`.
+    static func widenedForTileBenchmark(_ state: WorkspaceState) -> WorkspaceState {
         var widened = state
-        for column in state.currentSpace.columns {
-            widened.setWidthFraction(columnBenchmarkWidthFraction, for: column.activeWindowID)
+        for tile in state.currentSpace.tiles {
+            widened.setWidthFraction(tileBenchmarkWidthFraction, for: tile.activeWindowID)
         }
         return widened
     }
 
-    /// Whether focusing each column puts the ribbon at a different offset from its
-    /// neighbors', so every switch between adjacent columns slides. False when the
-    /// whole ribbon fits on screen, or a clamped end leaves two columns at one offset.
-    static func everyColumnSwitchScrolls(_ state: WorkspaceState, availableFrame: CGRect, gap: Double) -> Bool {
-        let columns = state.currentSpace.columns
-        guard columns.count > 1 else { return false }
-        let reference = columns[0].windowIDs[0]
+    /// Whether focusing each tile puts the ribbon at a different offset from its
+    /// neighbors', so every switch between adjacent tiles slides. False when the
+    /// whole ribbon fits on screen, or a clamped end leaves two tiles at one offset.
+    static func everyTileSwitchScrolls(_ state: WorkspaceState, availableFrame: CGRect,
+                                       gap: Double, paneGap: Double) -> Bool {
+        let tiles = state.currentSpace.tiles
+        guard tiles.count > 1 else { return false }
+        let reference = tiles[0].windowIDs[0]
         var offsets: [CGFloat] = []
-        for column in columns {
+        for tile in tiles {
             var focused = state
-            focused.focus(windowID: column.activeWindowID)
-            let placements = WindowLayout.placements(for: focused, availableFrame: availableFrame, gap: CGFloat(gap))
+            focused.focus(windowID: tile.activeWindowID)
+            let placements = WindowLayout.placements(for: focused, availableFrame: availableFrame,
+                                                     gap: CGFloat(gap), paneGap: CGFloat(paneGap))
             guard let x = placements.first(where: { $0.windowID == reference })?.frame.minX else { return false }
             offsets.append(x)
         }

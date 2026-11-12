@@ -597,14 +597,14 @@ private func frame(_ placements: [WindowPlacement], _ id: String) throws -> CGRe
 
 @Test func aStackFillsTheHeightSplitByWeightWithAVerticalGap() throws {
     let equal = stacked([["a", "b"]], focus: "a", widths: [0.5])
-    let placements = WindowLayout.placements(for: equal, availableFrame: viewport, gap: 10)
+    let placements = WindowLayout.placements(for: equal, availableFrame: viewport, gap: 10, paneGap: 10)
     #expect(try frame(placements, "a") == CGRect(x: 0, y: 40, width: 500, height: 345))
     #expect(try frame(placements, "b") == CGRect(x: 0, y: 395, width: 500, height: 345))
 
     let weighted = WorkspaceState(spaces: [SpaceState(tiles: [
         Tile(stacking: ["a", "b", "c"], widthFraction: 0.5, weights: [2, 1, 1])
     ])])
-    let thirds = WindowLayout.placements(for: weighted, availableFrame: viewport, gap: 20)
+    let thirds = WindowLayout.placements(for: weighted, availableFrame: viewport, gap: 20, paneGap: 20)
     #expect(try frame(thirds, "a").height == 330)
     #expect(try frame(thirds, "b") == CGRect(x: 0, y: 390, width: 500, height: 165))
     #expect(try frame(thirds, "c").maxY == viewport.maxY)
@@ -612,7 +612,7 @@ private func frame(_ placements: [WindowPlacement], _ id: String) throws -> CGRe
 
 @Test func aNegativeGapOverlapsTilesButNotStackMembers() throws {
     let state = stacked([["a"], ["b", "c"]], focus: "b", widths: [0.5, 0.5])
-    let placements = WindowLayout.placements(for: state, availableFrame: viewport, gap: -100)
+    let placements = WindowLayout.placements(for: state, availableFrame: viewport, gap: -100, paneGap: 0)
     #expect(try frame(placements, "b").minX == frame(placements, "a").maxX - 100)
     #expect(try frame(placements, "b").height == 350)
     #expect(try frame(placements, "c").minY == frame(placements, "b").maxY)
@@ -620,14 +620,14 @@ private func frame(_ placements: [WindowPlacement], _ id: String) throws -> CGRe
 
 @Test func anObservedMemberHeightIsKeptAndTheOthersShareTheRest() throws {
     let state = stacked([["a", "b", "c"]], focus: "a")
-    let placements = WindowLayout.placements(for: state, availableFrame: viewport, gap: 10,
+    let placements = WindowLayout.placements(for: state, availableFrame: viewport, gap: 10, paneGap: 10,
                                              observedHeights: ["b": 380])
     #expect(try frame(placements, "a").height == 150)
     #expect(try frame(placements, "b").height == 380)
     #expect(try frame(placements, "c").maxY == viewport.maxY)
 
     // Windows shorter than their panes are centered in them.
-    let short = WindowLayout.placements(for: stacked([["a", "b"]]), availableFrame: viewport, gap: 10,
+    let short = WindowLayout.placements(for: stacked([["a", "b"]]), availableFrame: viewport, gap: 10, paneGap: 10,
                                         observedHeights: ["a": 200, "b": 200])
     #expect(try frame(short, "a") == CGRect(x: 0, y: viewport.minY + 72.5, width: 950, height: 200))
     #expect(try frame(short, "b").midY == viewport.maxY - 172.5)
@@ -635,7 +635,7 @@ private func frame(_ placements: [WindowPlacement], _ id: String) throws -> CGRe
 
 @Test func aStackIsAsWideAsItsWidestPaneAndNarrowerWindowsAreCentered() throws {
     let state = stacked([["a", "b"], ["c"]], focus: "a", widths: [0.5, 0.5])
-    let placements = WindowLayout.placements(for: state, availableFrame: viewport, gap: 10,
+    let placements = WindowLayout.placements(for: state, availableFrame: viewport, gap: 10, paneGap: 10,
                                              observedWidths: ["a": 420, "b": 610])
     #expect(try frame(placements, "a").midX == frame(placements, "b").midX)
     #expect(try frame(placements, "a").width == 420)
@@ -655,7 +655,7 @@ private func frame(_ placements: [WindowPlacement], _ id: String) throws -> CGRe
 
 @Test func preferredHeightsApplyOnlyToALoneWindow() throws {
     let state = stacked([["a", "b"], ["c"]], focus: "a")
-    let placements = WindowLayout.placements(for: state, availableFrame: viewport, gap: 0,
+    let placements = WindowLayout.placements(for: state, availableFrame: viewport, gap: 0, paneGap: 0,
                                              preferredHeights: ["a": 300, "c": 300])
     #expect(try frame(placements, "a").height == 350)
     #expect(try frame(placements, "c").height == 300)

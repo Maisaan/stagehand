@@ -68,18 +68,18 @@ class RunBenchmarkTests(unittest.TestCase):
         self.assertEqual([d.name.rsplit("-", 1)[1] for d in self.run_dirs()], ["r1", "r2", "r3"])
 
     def test_passing_repeats_save_one_directory_each(self):
-        result = self.run_runner("busy-columns", BENCHMARK_REPEAT="2")
+        result = self.run_runner("busy-tiles", BENCHMARK_REPEAT="2")
         self.assertEqual(result.returncode, 0, result.stderr)
         directories = self.run_dirs()
         self.assertEqual([d.name.rsplit("-", 3)[1:] for d in directories],
-                         [["busy", "columns", "r1"], ["busy", "columns", "r2"]])
+                         [["busy", "tiles", "r1"], ["busy", "tiles", "r2"]])
         for repeat, directory in enumerate(directories, start=1):
-            self.assertRegex(directory.name, r"^\d{8}T\d{6}Z-[0-9a-f]{7}(-dirty)?-busy-columns-r[12]$")
+            self.assertRegex(directory.name, r"^\d{8}T\d{6}Z-[0-9a-f]{7}(-dirty)?-busy-tiles-r[12]$")
             self.assertEqual(sorted(p.name for p in directory.iterdir()),
                              ["diagnostic.log", "meta.json", "raw.json", "report.txt"])
             meta = self.meta(directory)
-            self.assertEqual(meta["mode"], "busy-columns")
-            self.assertEqual(meta["flags"], ["--busy", "--column-stacks"])
+            self.assertEqual(meta["mode"], "busy-tiles")
+            self.assertEqual(meta["flags"], ["--busy", "--tiles"])
             self.assertTrue(meta["loggingEnabled"])
             self.assertEqual((meta["repeat"], meta["repeats"]), (repeat, 2))
             self.assertEqual((meta["outcome"], meta["exitStatus"]), ("pass", 0))

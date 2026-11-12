@@ -13,11 +13,12 @@ PHASE_KEYS = {
     "start": ["callMs", "settledMs", "timedOut", "mainThreadWaitsMs"],
     "sequential": ["switches", "mainThreadWaitsMs", "stalls"],
     "members": ["switches", "mainThreadWaitsMs", "stalls"],
+    "panes": ["switches", "mainThreadWaitsMs", "stalls"],
     "rapid": ["settledMs", "timedOut", "mainThreadWaitsMs", "finalFocusMatches"],
     "spaces": ["switches", "mainThreadWaitsMs", "finalFocusMatches"],
     "interface": ["appBarShowMs", "settingsOpenMs", "quickControlsOpenMs"],
 }
-SWITCH_PHASES = ["sequential", "members", "spaces"]
+SWITCH_PHASES = ["sequential", "members", "panes", "spaces"]
 
 
 @dataclass
@@ -120,7 +121,10 @@ def load_side(path):
 
 def expected_phases(raw):
     phases = list(ALWAYS_PRESENT_PHASES)
-    if (raw.get("settings") or {}).get("columnStacks"):
+    settings = raw.get("settings") or {}
+    if settings.get("tiles"):
+        phases.insert(2, "panes")
+    elif settings.get("columnStacks"):
         phases.insert(2, "members")
     return phases
 

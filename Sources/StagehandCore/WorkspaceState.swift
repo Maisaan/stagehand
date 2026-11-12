@@ -47,12 +47,6 @@ public enum NavigationAction: Equatable, Sendable {
         default: false
         }
     }
-
-    // Kept for StagehandModel+Benchmark.swift until slice B; its stack scenario needs a vertical tile.
-    public static var stackPrevious: Self { .arrangeTile(.stacked) }
-    public static var stackNext: Self { .arrangeTile(.stacked) }
-    public static var focusMemberAbove: Self { .focusPaneAbove }
-    public static var focusMemberBelow: Self { .focusPaneBelow }
 }
 
 /// One place in the ribbon: a width and a layout of panes, each holding one window.
@@ -71,8 +65,6 @@ public struct Tile: Codable, Equatable, Sendable {
     public private(set) var windowIDs: [String]
 
     public var isMultiPane: Bool { windowIDs.count > 1 }
-    // Kept for StagehandModel+Benchmark.swift until slice B.
-    public var isStack: Bool { isMultiPane }
 
     /// Repairs `panes` to canonical form, keeping the first pane of a window
     /// that appears twice. A tile without panes is dropped by `SpaceState`.
@@ -159,8 +151,6 @@ public struct SpaceState: Codable, Equatable, Sendable {
     public fileprivate(set) var tiles: [Tile] {
         didSet { indexMembers() }
     }
-    // Kept for StagehandModel+Benchmark.swift until slice B.
-    public var columns: [Tile] { tiles }
     /// Every window, tile by tile, in reading order. Derived from `tiles` and
     /// rebuilt on each change, so per-frame readers do not allocate.
     public private(set) var windowIDs: [String] = []

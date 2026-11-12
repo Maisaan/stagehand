@@ -290,7 +290,7 @@ private func frame(_ placements: [WindowPlacement], _ id: String) throws -> CGRe
 
 @Test func aMinimumHoldsThePaneWhileASmallerObservedWindowIsCenteredInIt() throws {
     let state = stacked([["a", "b"]], focus: "a")
-    let placements = WindowLayout.placements(for: state, availableFrame: screen, gap: 0,
+    let placements = WindowLayout.placements(for: state, availableFrame: screen, gap: 0, paneGap: 0,
                                              observedHeights: ["a": 200], minimumHeights: ["a": 600])
     #expect(try frame(placements, "a") == CGRect(x: 0, y: 200, width: 950, height: 200))
     #expect(try frame(placements, "b") == CGRect(x: 0, y: 600, width: 950, height: 100))

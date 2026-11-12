@@ -287,7 +287,7 @@ private func frames(_ state: WorkspaceState, paneGap: CGFloat = 0, tileGap: CGFl
 @Test func aNegativeTileGapOverlapsTilesButNeverPanes() {
     let state = space([Tile(panes: .h(.p("a"), .p("b")), widthFraction: 0.6), Tile(panes: .v(.p("c"), .p("d")),
                                                                                   widthFraction: 0.6)], focus: "a")
-    let placements = WindowLayout.placements(for: state, availableFrame: screen, gap: -140)
+    let placements = WindowLayout.placements(for: state, availableFrame: screen, gap: -140, paneGap: 0)
     let placed = Dictionary(uniqueKeysWithValues: placements.map { ($0.windowID, $0.frame) })
     #expect(placed["c"]!.minX == placed["b"]!.maxX - 140)
     #expect(placed["b"]!.minX == placed["a"]!.maxX)

@@ -96,13 +96,26 @@ class CompareBenchmarksTests(unittest.TestCase):
         self.assertIn("candidate  missing in every run", rapid)
         self.assertNotIn("change", rapid)
 
-    def test_missing_members_phase_is_reported_when_columns_ran(self):
-        with_columns = fixtures.raw(columns=True)
-        baseline = fixtures.write_run(self.root / "base", run_raw=with_columns)
-        without_members = fixtures.modified(with_columns, lambda raw: raw["phases"].pop("members"))
-        candidate = fixtures.write_run(self.root / "cand", run_raw=without_members)
+    def test_missing_panes_phase_is_reported_when_tiles_ran(self):
+        with_tiles = fixtures.raw(tiles=True)
+        baseline = fixtures.write_run(self.root / "base", run_raw=with_tiles)
+        without_panes = fixtures.modified(with_tiles, lambda raw: raw["phases"].pop("panes"))
+        candidate = fixtures.write_run(self.root / "cand", run_raw=without_panes)
         status, output = self.run_compare(baseline, candidate)
-        self.assertIn("GAP candidate cand: phase members missing", output)
+        self.assertIn("GAP candidate cand: phase panes missing", output)
+
+    def test_panes_are_a_new_phase_next_to_an_old_column_run(self):
+        columns = fixtures.modified(fixtures.raw(), lambda raw: (
+            raw["settings"].pop("tiles"), raw["settings"].update(columnStacks=True),
+            raw["phases"].update(members=fixtures.switch_phase((200.0, 220.0, 240.0)))))
+        baseline = fixtures.write_run(self.root / "base", fixtures.meta(mode="busy-columns"), columns)
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(mode="busy-tiles", sha="b" * 40),
+                                       fixtures.raw(tiles=True))
+        status, output = self.run_compare(baseline, candidate, "--allow-mismatch")
+        self.assertEqual(status, 0, output)
+        self.assertNotIn("GAP", output)
+        self.assertIn("candidate  missing in every run", self.section(output, "members", "switches.focusMs"))
+        self.assertIn("baseline   missing in every run", self.section(output, "panes", "switches.focusMs"))
 
     def test_missing_switch_key_is_reported(self):
         baseline = fixtures.write_run(self.root / "base")

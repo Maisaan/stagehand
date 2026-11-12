@@ -9,9 +9,9 @@ set -euo pipefail
 # turns diagnostic logging off to measure its cost. A -stacking suffix
 # (busy-stacking) also measures when the destination reaches the front; its
 # window-list polling stalls Stagehand's main thread, so leave it off when
-# comparing latency or stalls. A -columns suffix (busy-columns) is unrelated to
-# -stacking: it stacks two probe windows in one ribbon column first, so switches
-# cross a stacked column, and adds member switches inside the stack.
+# comparing latency or stalls. A -tiles suffix (busy-tiles) is unrelated to
+# -stacking: it arranges two probe windows side by side in one tile first, so
+# switches cross a multi-pane tile, and adds pane switches inside the tile.
 # Each run is saved to BENCHMARK_RESULTS_DIR (default ~/Library/Logs/Stagehand/benchmarks)
 # as <UTC>-<sha7>[-dirty]-<mode>[-r<N>]/ with report.txt, raw.json, meta.json and
 # diagnostic.log. BENCHMARK_REPEAT=N runs each mode N times (default 3). BENCHMARK_TIMEOUT caps
@@ -120,7 +120,7 @@ for mode in ${BENCHMARK_MODES:-responsive busy}; do
         logging=true
         [[ "$mode" == *-quiet* ]] && flags+=(--no-diagnostics) && logging=false
         [[ "$mode" == *-stacking* ]] && flags+=(--stacking)
-        [[ "$mode" == *-columns* ]] && flags+=(--column-stacks)
+        [[ "$mode" == *-tiles* ]] && flags+=(--tiles)
         started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         name="$(date -u -j -f %Y-%m-%dT%H:%M:%SZ "$started" +%Y%m%dT%H%M%SZ)-$name_base-$mode"
         (( repeats > 1 )) && name+="-r$index"

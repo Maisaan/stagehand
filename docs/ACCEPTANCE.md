@@ -106,7 +106,7 @@ Use ordinary apps with Diagnostic logging on and the Tile gap at your usual valu
 - Quit and relaunch an app with a window in a tile; pause and resume; switch spaces and back. The tile comes back whole. A window that returns after you resized the tile keeps your width plus its own share.
 - Open a sheet or confirmation dialog on a pane's window. The border follows the window and its sheet; the dialog does not get a tile and keeps focus when its window is active.
 - With Arrow shortcut swipes on, hold Control + Option + Shift and swipe with three fingers: left/right moves the window in its tile, up/down moves between panes.
-- Run `BENCHMARK_MODES="busy busy-columns" ./scripts/run-benchmark.sh` (hands off) and compare the switch lines: switches that reveal a multi-pane tile write each pane's frame once.
+- Run `BENCHMARK_MODES="busy busy-tiles" ./scripts/run-benchmark.sh` (hands off) and compare the switch lines: switches that reveal a multi-pane tile write each pane's frame once.
 
 ## Spaces and shared windows
 

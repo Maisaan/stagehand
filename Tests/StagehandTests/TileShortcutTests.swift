@@ -115,11 +115,6 @@ private func panes(_ state: WorkspaceState) -> [PaneTree] {
     }
     // Spatial ⌃⌥←/→ stays a window navigation, with its motion.
     #expect(TileChange(.focusNext) == nil)
-    // The benchmark's stack scenario keeps a vertical tile and member steps.
-    #expect(NavigationAction.stackNext == .arrangeTile(.stacked))
-    #expect(NavigationAction.stackPrevious == .arrangeTile(.stacked))
-    #expect(NavigationAction.focusMemberAbove == .focusPaneAbove)
-    #expect(NavigationAction.focusMemberBelow == .focusPaneBelow)
 }
 
 @MainActor
@@ -157,26 +152,34 @@ private func panes(_ state: WorkspaceState) -> [PaneTree] {
     #expect(hints.contains(ShortcutHint(title: "Layouts", modifiers: "⌃ ⌥", keys: ["U", "S", "T", "G", "W"])))
 }
 
-// The 15:46 busy-columns benchmark: three 640-point probe tiles, one stacked, on
-// an 1800-point screen with a -140 gap. The whole ribbon (1640 points) fits, so no
-// switch slid. The benchmark now widens the tiles first.
+// The 15:46 busy-columns benchmark: three 640-point probe tiles, one of two panes,
+// on an 1800-point screen with a -140 gap. The whole ribbon (1640 points) fits, so
+// no switch slid. The tile benchmark widens the tiles first.
 @MainActor
-@Test func theTileStackBenchmarkSlidesOnEverySwitch() {
-    let probes = tiles([["a1"], ["a0"], ["b", "c"]], focus: "c", width: 640.0 / 1800)
+@Test func theTileBenchmarkSlidesOnEverySwitchBetweenTiles() throws {
+    let probeWidth = 640.0 / 1800
+    let sideBySide = try #require(PaneLayout.sideBySide.tree(["b", "c"]))
+    let probes = WorkspaceState(spaces: [SpaceState(tiles: [
+        Tile(windowID: "a1", widthFraction: probeWidth), Tile(windowID: "a0", widthFraction: probeWidth),
+        Tile(panes: sideBySide, widthFraction: probeWidth),
+    ], focusedWindowID: "c")])
     let screen = CGRect(x: 0, y: 0, width: 1800, height: 1130)
-    #expect(!StagehandModel.everyColumnSwitchScrolls(probes, availableFrame: screen, gap: -140))
+    #expect(!StagehandModel.everyTileSwitchScrolls(probes, availableFrame: screen, gap: -140, paneGap: 8))
 
-    let widened = StagehandModel.widenedForColumnBenchmark(probes)
+    let widened = StagehandModel.widenedForTileBenchmark(probes)
     #expect(widened.currentSpace.tiles.allSatisfy {
-        $0.widthFraction == StagehandModel.columnBenchmarkWidthFraction
+        $0.widthFraction == StagehandModel.tileBenchmarkWidthFraction
     })
     #expect(layout(widened) == layout(probes))
     #expect(widened.focusedWindowID == "c")
     for width in [1024.0, 1280, 1440, 1512, 1728, 1800, 2056, 3008] {
         for gap in stride(from: GapInput.tileGapBounds.lowerBound, through: GapInput.tileGapBounds.upperBound, by: 4) {
-            let frame = CGRect(x: 0, y: 25, width: width, height: width * 0.62)
-            #expect(StagehandModel.everyColumnSwitchScrolls(widened, availableFrame: frame, gap: gap),
-                    "screen \(width), gap \(gap)")
+            for paneGap in [GapInput.paneGapBounds.lowerBound, 8, GapInput.paneGapBounds.upperBound] {
+                let frame = CGRect(x: 0, y: 25, width: width, height: width * 0.62)
+                #expect(StagehandModel.everyTileSwitchScrolls(widened, availableFrame: frame, gap: gap,
+                                                              paneGap: paneGap),
+                        "screen \(width), gap \(gap), pane gap \(paneGap)")
+            }
         }
     }
 }

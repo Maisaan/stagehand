@@ -27,7 +27,7 @@ struct BenchmarkRecord: Encodable {
         var loggingEnabled: Bool
         var busyProbes: Bool
         var measuresStacking: Bool
-        var columnStacks: Bool
+        var tiles: Bool
         var switches: Int
     }
 
@@ -35,7 +35,7 @@ struct BenchmarkRecord: Encodable {
         var start: Start?
         var sequential: SwitchPhase?
         var rapid: Rapid?
-        var members: SwitchPhase?
+        var panes: SwitchPhase?
         var spaces: SwitchPhase?
         var interface: Interface?
         var pause: Pause?
