@@ -419,8 +419,9 @@ extension StagehandModel {
                 refreshTask?.cancel()
                 refreshTask = Task { [weak self] in
                     try? await Task.sleep(for: .milliseconds(450))
-                    guard !Task.isCancelled, let self, self.isRunning, !self.isSuspended, !self.changes.isProcessing else { return }
-                    self.refreshWindows()
+                    guard !Task.isCancelled, let self else { return }
+                    // The refresh worker waits out a swipe, motion or layout before it scans.
+                    self.scheduleRefresh(immediately: true)
                 }
             }
         }

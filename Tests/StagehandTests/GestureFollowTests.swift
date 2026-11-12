@@ -151,6 +151,30 @@ struct GestureFollowTests {
         harness.events("gesture_follow_ended").map(details)
     }
 
+    /// An app adjusting its window right after a layout deferred a refresh 450 ms out;
+    /// that refresh ran mid-swipe and cut the follow (found by the gesture benchmark).
+    @Test(.enabled(if: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "Reduce Motion turns off the preview"))
+    func aRefreshDeferredRightAfterALayoutWaitsForASwipeInProgress() async throws {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a", motionDriver: RunningFrameDriver())
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        harness.model.navigate(.focusNext)
+        await harness.settle()
+        let focused = try #require(harness.model.state.focusedWindowID)
+        let frame = try #require(harness.windows.frame(windowID: focused))
+        harness.windows.setFrame(windowID: focused, frame: frame.offsetBy(dx: 0, dy: 20))
+        harness.model.refreshWindows()
+
+        await beginSwipe(harness, touchesLanded: ProcessInfo.processInfo.systemUptime)
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(followEnded(harness).isEmpty)
+        harness.model.handleGesture(.ended(displacement: -0.2, velocity: -1.5, action: .focusNext, mode: .plain))
+        await harness.settle()
+
+        #expect(followEnded(harness).first?["handoff"] == "change")
+    }
+
     @Test(.enabled(if: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "Reduce Motion turns off the preview"))
     func aSwipeThatNavigatesHandsItsFollowToTheChangeItQueued() async throws {
         let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a", motionDriver: RunningFrameDriver())
