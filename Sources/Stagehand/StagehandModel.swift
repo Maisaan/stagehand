@@ -263,6 +263,8 @@ final class StagehandModel: ObservableObject {
     var lastLayoutMilliseconds = 0
     var lastFocusTokenExpired = false
     var lastChangeID = 0
+    var activeChange: ActiveChange?
+    var lastGestureID = 0
     var pointerInteraction: PointerInteraction?
     lazy var focusBorder = FocusBorderController(overlays: overlays) { [weak self] in
         self?.windowSystem.windowNumber(for: $0)
@@ -333,6 +335,15 @@ final class StagehandModel: ObservableObject {
         }
 
         var focusesAlongsideRibbon: Bool { self == .windowRemoval }
+
+        /// Who asked: a command (shortcut, click, menu or a test driver) or Stagehand itself.
+        /// A gesture's change is marked by its gestureID instead.
+        var diagnosticOrigin: String {
+            switch self {
+            case .observedFocus, .windowRemoval, .refresh, .preferences: "system"
+            default: "command"
+            }
+        }
     }
 
     struct PendingChange {
@@ -342,6 +353,18 @@ final class StagehandModel: ObservableObject {
         let initialHorizontalVelocity: CGFloat?
         let previousState: WorkspaceState?
         let motionStart: [String: CGRect]?
+    }
+
+    /// How a queued change ended, other than `change_completed`.
+    enum ChangeEnd: String {
+        case noEffect, merged, superseded, refused, skipped, interrupted, failed, cancelled
+    }
+
+    /// The change being processed until its terminal event is logged.
+    struct ActiveChange {
+        let id: Int
+        let operation: String
+        var supersededBy: Int?
     }
 
     /// Whether this model may read and write the user's saved layout.
@@ -656,7 +679,7 @@ final class StagehandModel: ObservableObject {
         guard isRunning else { return }
         diagnostics.record("system_will_sleep", details: workspaceDetails())
         guard !isSuspended else { return }
-        changes.cancel()
+        cancelChanges(reason: "system_will_sleep")
         refreshTask?.cancel()
         observedFocusTask?.cancel()
         ribbonMotion.cancel()
@@ -876,7 +899,7 @@ final class StagehandModel: ObservableObject {
         ribbonMotion.cancel()
         presentationFrames = nil
         resetGestureTracking()
-        changes.cancel()
+        cancelChanges(reason: reason)
         expiredTokens.removeAll()
         refreshTask?.cancel()
         observedFocusTask?.cancel()
@@ -1005,7 +1028,7 @@ final class StagehandModel: ObservableObject {
         )
     }
 
-    func navigate(_ action: NavigationAction, initialHorizontalVelocity: CGFloat? = nil) {
+    func navigate(_ action: NavigationAction, initialHorizontalVelocity: CGFloat? = nil, gestureID: Int? = nil) {
         switch action {
         case .showSettings: showSettings?()
         case .togglePause: isRunning ? pause() : start()
@@ -1022,7 +1045,7 @@ final class StagehandModel: ObservableObject {
                 input.cancelGestureSequence()
                 resetGestureTracking()
             }
-            enqueue(.action(action), initialHorizontalVelocity: initialHorizontalVelocity)
+            enqueue(.action(action), initialHorizontalVelocity: initialHorizontalVelocity, gestureID: gestureID)
         }
     }
 
@@ -1248,7 +1271,7 @@ final class StagehandModel: ObservableObject {
                     "relation": String(describing: desktopScope.relation)
                 ])
                 isSuspended = true
-                changes.cancel()
+                cancelChanges(reason: "desktop_suspended")
                 refreshTask?.cancel()
                 workspaceRestoration.rollBack(state: &state, windowIDs: windows.map(\.id),
                                               trackedWindowIDs: windowSystem.trackedWindowIDs)

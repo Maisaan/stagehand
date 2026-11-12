@@ -34,6 +34,7 @@ extension StagehandModel {
         switch event {
         case .began(let axis, let displacement, let mode):
             guard desktopScope.refresh() == .home else { return }
+            lastGestureID += 1
             if pointerHoldsAWindow() {
                 // The release then finds no axis and does nothing; log the swipe here.
                 recordGestureIgnoredForPointer(displacement: displacement, recognizerAction: nil)
@@ -65,6 +66,7 @@ extension StagehandModel {
                     // Accessibility call to the app the gesture is leaving.
                     diagnostics.record("gesture_motion_started", details: [
                         "focusedWindowID": state.focusedWindowID ?? "none",
+                        "gestureID": String(lastGestureID),
                         "observedFocusedWindowID": windowSystem.lastObservedFocusedWindowID ?? "none",
                         "preparedWindowCount": String(gesturePrepared.count),
                         "trackedWindowCount": String(frames.count)
@@ -97,6 +99,7 @@ extension StagehandModel {
         diagnostics.record("gesture_ignored_for_pointer", details: [
             "displacement": String(displacement),
             "focusedWindowID": state.focusedWindowID ?? "none",
+            "gestureID": String(lastGestureID),
             "recognizerAction": recognizerAction.map { String(describing: $0) } ?? "none"
         ].merging(pointerDetails()) { current, _ in current })
     }
@@ -125,6 +128,7 @@ extension StagehandModel {
         } else {
             resolvedAction = recognizerAction
         }
+        let gestureID = lastGestureID
         if diagnostics.isEnabled {
             // Recorded after the action this release resolves to has been queued, so
             // the log analyzer pairs the swipe with its own action.
@@ -135,6 +139,7 @@ extension StagehandModel {
                 self.diagnostics.record("gesture_motion_resolved", details: [
                     "displacement": String(displacement),
                     "focusedWindowID": logicalFocus,
+                    "gestureID": String(gestureID),
                     "observedFocusedWindowID": self.windowSystem.lastObservedFocusedWindowID ?? "none",
                     "resolvedAction": resolvedAction.map { String(describing: $0) } ?? "none",
                     "velocity": String(velocity)
@@ -143,7 +148,7 @@ extension StagehandModel {
         }
         gestureAxis = nil
         if mode == .shortcut {
-            if let resolvedAction { navigate(resolvedAction) }
+            if let resolvedAction { navigate(resolvedAction, gestureID: gestureID) }
             return
         }
         let initialHorizontalVelocity = axis == .horizontal && velocity.isFinite
@@ -159,7 +164,7 @@ extension StagehandModel {
             }
             gestureBase = nil
             gesturePrepared.removeAll()
-            navigate(resolvedAction, initialHorizontalVelocity: initialHorizontalVelocity)
+            navigate(resolvedAction, initialHorizontalVelocity: initialHorizontalVelocity, gestureID: gestureID)
         } else {
             restoreGesturePreview(initialHorizontalVelocity: initialHorizontalVelocity)
         }
@@ -225,6 +230,7 @@ extension StagehandModel {
                         details: [
                             "displacement": String(displacement),
                             "frameWriteAccepted": String(frameWritten),
+                            "gestureID": String(lastGestureID),
                             "isLogicalFocused": String(state.focusedWindowID == id),
                             "membershipCount": String(state.spaces.membershipCount(of: id)),
                             "parkedAfter": String(windowSystem.isParked(windowID: id)),
@@ -265,6 +271,7 @@ extension StagehandModel {
         presentationFrames = nil
         gesturePrepared.removeAll()
         let visibleIDs = Set(base.filter { $0.value.intersects(availableFrame) }.keys)
+        let gestureID = lastGestureID
         Task { [weak self] in
             guard let self else { return }
             let completed = await self.settleRibbon(
@@ -272,7 +279,8 @@ extension StagehandModel {
                 to: targets,
                 visibleIDs: visibleIDs,
                 operation: "gesture.preview.restore",
-                initialHorizontalVelocity: initialHorizontalVelocity
+                initialHorizontalVelocity: initialHorizontalVelocity,
+                gestureID: gestureID
             )
             guard completed else { return }
             if let focused = self.state.focusedWindowID,

@@ -34,11 +34,13 @@ final class ChangeQueue<Item> {
         return true
     }
 
-    /// Drops pending items and invalidates the running task.
-    func cancel() {
+    /// Drops pending items, returning them, and invalidates the running task.
+    @discardableResult
+    func cancel() -> [Item] {
         generation += 1
         task?.cancel()
         task = nil
-        items.removeAll()
+        defer { items.removeAll() }
+        return items
     }
 }

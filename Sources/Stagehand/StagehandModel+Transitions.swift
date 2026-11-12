@@ -8,7 +8,8 @@ extension StagehandModel {
         _ change: Change,
         initialHorizontalVelocity: CGFloat? = nil,
         transitionFrom previousState: WorkspaceState? = nil,
-        motionStart: [String: CGRect]? = nil
+        motionStart: [String: CGRect]? = nil,
+        gestureID: Int? = nil
     ) {
         if traceGestures, gestureAxis != nil {
             NSLog("[DEBUG-gesture] layout requested during drag: %@", String(describing: change))
@@ -32,12 +33,15 @@ extension StagehandModel {
             previousState: previousState,
             motionStart: motionStart
         ))
-        diagnostics.record("change_queued", details: [
+        var queuedDetails = [
             "changeID": String(lastChangeID),
             "operation": change.diagnosticName,
+            "origin": gestureID == nil ? change.diagnosticOrigin : "gesture",
             "pendingChanges": String(changes.count),
             "transferToken": token.map(String.init) ?? "none"
-        ])
+        ]
+        if let gestureID { queuedDetails["gestureID"] = String(gestureID) }
+        diagnostics.record("change_queued", details: queuedDetails)
         if change.isWindowNavigation, changes.isProcessing, ribbonMotion.isAnimating {
             ribbonMotion.cancel()
         }
@@ -65,6 +69,7 @@ extension StagehandModel {
                          generation: Int) async -> Bool {
         let change = pendingChange.change
         let token = pendingChange.token
+        activeChange = ActiveChange(id: pendingChange.id, operation: change.diagnosticName)
         // change_completed reports only this change's calls and parking requests.
         _ = MainThreadActivity.takeAppCallCount()
         _ = windowSystem.takeParkingStatistics()
@@ -89,21 +94,33 @@ extension StagehandModel {
         if gestureAxis != nil { input.cancelGestureSequence() }
         resetGestureTracking()
         let stateBeforeChange = state
-        guard applyToState(change) else {
+        let application = applyToState(change)
+        guard application == .applied else {
             if let token { focusGate.cancelTransfer(token: token) }
             workspaceRestoration.endTransition()
+            if application == .refused {
+                endActiveChange(.refused, reason: "tile_refused_before_change")
+            } else {
+                endActiveChange(.noEffect, reason: "state_unchanged")
+            }
             return true
         }
-        if change.isWindowNavigation, changes.first?.change.isWindowNavigation == true,
+        if change.isWindowNavigation, let next = changes.first, next.change.isWindowNavigation,
            let token, focusGate.cancelTransferIfEmpty(token: token) {
             // Keep every navigation step in state, but avoid flashing intermediate
             // windows when no typing belongs to them. Never merge input tokens.
             batch = NavigationBatch(motionStart: motionStart, initialHorizontalVelocity: initialHorizontalVelocity)
+            endActiveChange(.merged, reason: "navigation_batched", successorID: next.id)
             return true
         }
         batch = NavigationBatch()
         guard prepareLayoutState(for: change) else {
             workspaceRestoration.endTransition()
+            if case .observedFocus = change {
+                endActiveChange(.skipped, reason: "focus_changed_before_layout")
+            } else {
+                endActiveChange(.skipped, reason: "no_managed_window_focused")
+            }
             return true
         }
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -114,31 +131,36 @@ extension StagehandModel {
             hadPreview: hadPreview,
             reduceMotion: reduceMotion
         )
-        recordMotionPlan(change: change, previousState: previousState, hadPreview: hadPreview,
-                         motionStartCount: motionStart.count, reduceMotion: reduceMotion, canSlide: canSlide)
+        recordMotionPlan(change: change, changeID: pendingChange.id, previousState: previousState,
+                         hadPreview: hadPreview, motionStartCount: motionStart.count,
+                         reduceMotion: reduceMotion, canSlide: canSlide)
         let outcome = await applyLayout(token: token, request: change.policy,
                                         operation: change.diagnosticName,
                                         slideFrom: canSlide ? motionStart : nil,
                                         initialHorizontalVelocity: canSlide ? initialHorizontalVelocity : nil,
                                         focusAlongsideSlide: change.focusesAlongsideRibbon)
+        // A stale worker's change was already ended by cancelChanges.
         guard changes.isCurrent(generation) else { return false }
         if outcome == .completed, case .tiles(let tileChange) = change,
            undoTileChangeThatDidNotFit(tileChange, stateBefore: stateBeforeChange) {
             // Refused without pausing; the restored tiles are laid out next.
             workspaceRestoration.endTransition()
+            endActiveChange(.refused, reason: "tile_did_not_fit")
             return true
         }
         return finish(pendingChange, outcome: outcome)
     }
 
-    /// Updates the logical workspace for a change. Returns false when it does nothing.
-    private func applyToState(_ change: Change) -> Bool {
+    private enum StateApplication { case applied, unchanged, refused }
+
+    /// Updates the logical workspace for a change.
+    private func applyToState(_ change: Change) -> StateApplication {
         switch change {
         case .action(let action) where action == .shrinkHeight || action == .growHeight:
-            return adjustFocusedWindowHeight(growing: action == .growHeight)
+            return adjustFocusedWindowHeight(growing: action == .growHeight) ? .applied : .unchanged
         case .action(let action):
             let sourceSpaceIndex = state.activeSpaceIndex
-            guard state.apply(action, widthPresets: widthPresets) else { return false }
+            guard state.apply(action, widthPresets: widthPresets) else { return .unchanged }
             if action == .moveWindowUpSpace {
                 workspaceRestoration.compactEmptySpace(state: &state, at: sourceSpaceIndex)
             }
@@ -156,10 +178,14 @@ extension StagehandModel {
         case .focusInSpace(let id, let spaceIndex):
             state.focus(windowID: id, inSpace: spaceIndex)
         case .tiles(let tileChange):
-            return applyTileChange(tileChange) == .applied
+            switch applyTileChange(tileChange) {
+            case .applied: return .applied
+            case .unchanged: return .unchanged
+            case .refused: return .refused
+            }
         case .windowRemoval, .refresh, .preferences, .observedFocus: break
         }
-        return true
+        return .applied
     }
 
     /// Preference changes lay out around the window macOS reports focused. Returns
@@ -194,13 +220,14 @@ extension StagehandModel {
         return true
     }
 
-    private func recordMotionPlan(change: Change, previousState: WorkspaceState, hadPreview: Bool,
+    private func recordMotionPlan(change: Change, changeID: Int, previousState: WorkspaceState, hadPreview: Bool,
                                   motionStartCount: Int, reduceMotion: Bool, canSlide: Bool) {
         guard change.policy == .navigation, diagnostics.isEnabled else { return }
         let destinationID = state.focusedWindowID
         let observedFocus = windowSystem.lastObservedFocusedWindowID
         let membershipCount = destinationID.map { state.spaces.membershipCount(of: $0) } ?? 0
         diagnostics.record("navigation_motion_planned", details: [
+            "changeID": String(changeID),
             "destinationFocusedWindowID": destinationID ?? "none",
             "destinationMembershipCount": String(membershipCount),
             "destinationParked": String(destinationID.map { windowSystem.isParked(windowID: $0) } ?? false),
@@ -227,11 +254,18 @@ extension StagehandModel {
             if let focusedWindowID = state.focusedWindowID { focusHistory.record(windowID: focusedWindowID) }
             // What the change cost the main thread in calls to other apps, and how many
             // parking requests could trust a window already at the side.
-            diagnostics.record("change_completed", details: [
-                "changeID": String(pendingChange.id),
-                "operation": change.diagnosticName,
+            let cost = [
                 "appCallsOnMain": String(MainThreadActivity.takeAppCallCount())
-            ].merging(windowSystem.takeParkingStatistics()) { current, _ in current })
+            ].merging(windowSystem.takeParkingStatistics()) { current, _ in current }
+            if let successorID = activeChange?.supersededBy {
+                endActiveChange(.superseded, reason: "slide_cut_short", successorID: successorID, details: cost)
+            } else {
+                activeChange = nil
+                diagnostics.record("change_completed", details: [
+                    "changeID": String(pendingChange.id),
+                    "operation": change.diagnosticName
+                ].merging(cost) { current, _ in current })
+            }
             if recoveryInProgress && change == .refresh {
                 recoveryInProgress = false
                 automaticResumeAttempted = false
@@ -243,18 +277,52 @@ extension StagehandModel {
             // The destination disappeared without a notification. Drop it like any
             // other unavailable window; its removal layout is now pending and keeps
             // this transition's rollback.
+            endActiveChange(.failed, reason: "focus_target_unavailable")
             if dropUnavailableWindow(windowID, reason: reason, detectedBy: "focus") { return true }
             failureReason = "focus_target_unavailable"
         case .failed(let reason):
+            endActiveChange(.failed, reason: reason)
             failureReason = reason
         case .interrupted:
             // Interruptions normally end this worker's generation first.
             failureReason = "layout_stopped_unexpectedly"
+            endActiveChange(.interrupted, reason: failureReason)
         }
         workspaceRestoration.rollBack(state: &state, windowIDs: windows.map(\.id),
                                       trackedWindowIDs: windowSystem.trackedWindowIDs)
         stop(reason: failureReason, automatic: true, details: ["operation": change.diagnosticName])
         return false
+    }
+
+    /// Logs the active change's terminal event. Every queued change gets exactly
+    /// one: change_completed, or change_ended from here or from cancelChanges.
+    func endActiveChange(_ outcome: ChangeEnd, reason: String, successorID: Int? = nil,
+                         details: [String: String] = [:]) {
+        guard let ended = activeChange else { return }
+        activeChange = nil
+        recordChangeEnded(id: ended.id, operation: ended.operation, outcome: outcome, reason: reason,
+                          successorID: successorID, details: details)
+    }
+
+    /// Drops pending changes and invalidates the worker, ending each change's trace.
+    func cancelChanges(reason: String) {
+        let dropped = changes.cancel()
+        endActiveChange(.interrupted, reason: reason)
+        for pending in dropped {
+            recordChangeEnded(id: pending.id, operation: pending.change.diagnosticName, outcome: .cancelled,
+                              reason: reason)
+        }
+    }
+
+    private func recordChangeEnded(id: Int, operation: String, outcome: ChangeEnd, reason: String,
+                                   successorID: Int? = nil, details: [String: String] = [:]) {
+        var context = details
+        context["changeID"] = String(id)
+        context["operation"] = operation
+        context["outcome"] = outcome.rawValue
+        context["reason"] = reason
+        if let successorID { context["successorChangeID"] = String(successorID) }
+        diagnostics.record("change_ended", details: context)
     }
 
     func adjustFocusedWindowHeight(growing: Bool) -> Bool {
@@ -336,7 +404,8 @@ extension StagehandModel {
     }
 
     func focusManagedWindow(_ record: WindowRecord, token: UInt64?,
-                                    request: LayoutRequestPolicy, operation: String) async -> LayoutOutcome {
+                                    request: LayoutRequestPolicy, operation: String,
+                                    changeID: Int? = nil) async -> LayoutOutcome {
         // Diagnostics use the focus already observed; a new read would wait on the
         // outgoing app, on the main thread, before the attempt even starts.
         let observedFocusBefore = diagnostics.isEnabled ? windowSystem.lastObservedFocusedWindowID : nil
@@ -370,6 +439,7 @@ extension StagehandModel {
             if observedFocusBefore != record.id, let report = windowSystem.lastFocusReport {
                 details["focusReport"] = report.summary
             }
+            if let changeID { details["changeID"] = String(changeID) }
             diagnostics.record("navigation_focus_confirmed", details: details)
         }
         if request == .preferences, !focused { return .completed }
@@ -406,6 +476,8 @@ extension StagehandModel {
                              initialHorizontalVelocity: CGFloat? = nil,
                              focusAlongsideSlide: Bool = false) async -> LayoutOutcome {
         let layoutStart = ContinuousClock.now
+        // Read before any await: work that outlives the change keeps its own ID.
+        let changeID = activeChange?.id
         guard desktopScope.refresh() == .home else {
             nativeDesktopChanged()
             return .interrupted
@@ -519,7 +591,8 @@ extension StagehandModel {
                         case .completed: break
                         }
                     }
-                    let focus = await focusManagedWindow(record, token: token, request: request, operation: operation)
+                    let focus = await focusManagedWindow(record, token: token, request: request, operation: operation,
+                                                         changeID: changeID)
                     guard focus == .completed else { return focus }
                     destinationPID = record.pid
                 }
@@ -641,7 +714,8 @@ extension StagehandModel {
                     visibleIDs: visibleIDs,
                     operation: operation,
                     initialHorizontalVelocity: initialHorizontalVelocity,
-                    snappedBeforeMotion: snappedBeforeMotion
+                    snappedBeforeMotion: snappedBeforeMotion,
+                    changeID: changeID
                 )
                 if completed {
                     slideFinished = true
@@ -663,7 +737,7 @@ extension StagehandModel {
                     return false
                 }
                 focusOutcome = await self.focusManagedWindow(
-                    record, token: token, request: request, operation: operation
+                    record, token: token, request: request, operation: operation, changeID: changeID
                 )
                 guard focusOutcome == .completed else { return false }
                 destinationPID = record.pid
@@ -714,7 +788,9 @@ extension StagehandModel {
                 )
             }
             switch outcome {
-            case .superseded: return .completed
+            case .superseded:
+                if let changeID, activeChange?.id == changeID { activeChange?.supersededBy = changes.first?.id }
+                return .completed
             case .failed: return focusOutcome == .completed ? .interrupted : focusOutcome
             case .completed: break
             }
@@ -973,7 +1049,11 @@ extension StagehandModel {
 
     func settleRibbon(from: [String: CGRect], to: [String: CGRect], visibleIDs: Set<String>,
                               operation: String, initialHorizontalVelocity: CGFloat? = nil,
-                              snappedBeforeMotion: Set<String> = []) async -> Bool {
+                              snappedBeforeMotion: Set<String> = [],
+                              changeID: Int? = nil, gestureID: Int? = nil) async -> Bool {
+        var trace: [String: String] = [:]
+        if let changeID { trace["changeID"] = String(changeID) }
+        if let gestureID { trace["gestureID"] = String(gestureID) }
         let arrangement = displayArrangement
         let display = focusedDisplay(in: arrangement)
         let slide = display.map {
@@ -1000,7 +1080,7 @@ extension StagehandModel {
             "initialHorizontalVelocity": initialHorizontalVelocity.map { String(Double($0)) } ?? "none",
             "operation": operation,
             "windowCount": String(to.count)
-        ])
+        ].merging(trace) { current, _ in current })
         let animationStart = ProcessInfo.processInfo.systemUptime
         let completed = await ribbonMotion.animate(
             on: display?.number,
@@ -1065,7 +1145,7 @@ extension StagehandModel {
                 "observedFocusedWindowID": windowSystem.lastObservedFocusedWindowID ?? "none",
                 "operation": operation,
                 "windowCount": String(to.count)
-            ]) { _, new in new })
+            ].merging(trace) { current, _ in current }) { _, new in new })
         }
         switch await parkHiddenWindows(keeping: visibleIDs, layoutFrames: to) {
         case .interrupted: return false

@@ -436,6 +436,12 @@ extension DisplayArrangement {
     ])
 }
 
+/// Starts but never ticks, so a slide stays in flight until it is cancelled or its watchdog fires.
+final class HeldFrameDriver: RibbonFrameDriving {
+    func start(display: CGDirectDisplayID, onFrame: @escaping (TimeInterval) -> Void) -> Bool { true }
+    func stop() {}
+}
+
 @MainActor
 final class DesktopFixture {
     var id: UInt64? = 1
@@ -460,7 +466,8 @@ struct ModelHarness {
     let desktop: DesktopFixture
 
     init(windowIDs: [String], focused: String, layoutStore: WorkspaceLayoutStore? = nil,
-         transferTimeoutMilliseconds: Int = 4_000) {
+         transferTimeoutMilliseconds: Int = 4_000,
+         motionDriver: (any RibbonFrameDriving)? = nil) {
         let desktop = DesktopFixture()
         self.desktop = desktop
         let windows = FakeWindowSystem()
@@ -488,7 +495,7 @@ struct ModelHarness {
                 connectedDisplays: { desktop.displays }, screensHaveSeparateSpaces: { true },
                 currentSpace: { desktop.displaySpaces[$0] }, readerSymbol: "SLSManagedDisplayGetCurrentSpace")),
             focusGate: gate,
-            ribbonMotion: RibbonMotion(frameDriver: frameDriver),
+            ribbonMotion: RibbonMotion(frameDriver: motionDriver ?? frameDriver),
             pointer: pointer.tracker,
             layoutStore: layoutStore,
             preferences: UserDefaults(suiteName: preferencesSuite)!
