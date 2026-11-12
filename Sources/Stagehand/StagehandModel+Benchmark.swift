@@ -53,6 +53,13 @@ extension StagehandModel {
         let measuresStacking = ProcessInfo.processInfo.arguments.contains("--stacking")
         let arrangesTile = ProcessInfo.processInfo.arguments.contains("--tiles")
         let drivesGestures = ProcessInfo.processInfo.arguments.contains("--gestures")
+        let arguments = ProcessInfo.processInfo.arguments
+        let requestedWindows = arguments.firstIndex(of: "--probe-windows")
+            .flatMap { arguments.indices.contains($0 + 1) ? Int(arguments[$0 + 1]) : nil }
+        guard let probeWindows = Self.probeWindows(total: requestedWindows ?? Self.defaultProbeWindowCount) else {
+            return fail("--probe-windows needs a whole number of at least \(Self.probeLabels.count).")
+        }
+        let windowCount = probeWindows.reduce(0, +)
         let ribbonFramesPerSecond = Double(preferredRibbonFrameRate(maximum: screen.maximumFramesPerSecond))
         record.environment = .init(
             displayWidthPoints: screen.frame.width,
@@ -64,7 +71,7 @@ extension StagehandModel {
         )
         record.settings = .init(gap: gap, widthPresets: widthPresets, loggingEnabled: logging, busyProbes: busy,
                                 measuresStacking: measuresStacking, tiles: arrangesTile, switches: switches,
-                                gestures: drivesGestures)
+                                gestures: drivesGestures, probeWindows: probeWindows)
         let stallKinds = BenchmarkRecord.StallKind.Thresholds()
         record.stallKindThresholds = stallKinds
         diagnostics.isEnabled = logging
@@ -88,7 +95,7 @@ extension StagehandModel {
             diagnostics.isEnabled = loggingWasEnabled
             windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
         }
-        for (label, count) in [("a", 2), ("b", 1), ("c", 1)] {
+        for (label, count) in zip(Self.probeLabels, probeWindows) {
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.createsNewApplicationInstance = true
             configuration.arguments = ["--windows", String(count), "--report", reports.path, "--label", label]
@@ -100,10 +107,10 @@ extension StagehandModel {
         }
         system.managedBundleIdentifiers = ["dev.stagehand.AcceptanceProbe"]
         let discoveryDeadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while system.scanWindows().count < 4, ContinuousClock.now < discoveryDeadline {
+        while system.scanWindows().count < windowCount, ContinuousClock.now < discoveryDeadline {
             try? await Task.sleep(for: .milliseconds(50))
         }
-        guard system.scanWindows().count == 4 else { return fail("the probe windows did not appear.") }
+        guard system.scanWindows().count == windowCount else { return fail("the probe windows did not appear.") }
         try? await Task.sleep(for: .milliseconds(400))
         var scans: [Double] = []
         for _ in 0..<9 {
@@ -112,14 +119,15 @@ extension StagehandModel {
             scans.append((CACurrentMediaTime() - began) * 1_000)
         }
 
-        lines.append("Benchmark (\(busy ? "busy" : "responsive") probes, 4 windows, \(switches) switches"
+        lines.append("Benchmark (\(busy ? "busy" : "responsive") probes, \(windowCount) windows in "
+            + "\(probeWindows.count) apps (\(probeWindows.map(String.init).joined(separator: "+"))), \(switches) switches"
             + (arrangesTile ? ", two windows side by side in one tile, tiles "
                 + String(format: "%.2f", Self.tileBenchmarkWidthFraction) + " of the screen wide" : "")
             + (drivesGestures ? ", synthetic gestures" : "")
             + (logging ? ")" : ", diagnostic logging off)"))
         if let launchFinishedMilliseconds { lines.append("Launch to didFinishLaunching: \(launchFinishedMilliseconds) ms") }
         if let modelInitMilliseconds { lines.append("Model init: \(modelInitMilliseconds) ms") }
-        lines.append("Window scan (3 apps): " + Self.percentiles(scans, digits: 1))
+        lines.append("Window scan (\(probeWindows.count) apps): " + Self.percentiles(scans, digits: 1))
         let monitor = MainThreadLatencyMonitor()
 
         // Startup: Start through the first settled layout.
@@ -343,6 +351,17 @@ extension StagehandModel {
         record.phases.pause = .init(callMs: pauseMilliseconds, resourceCost: pauseCost)
         lines.append(String(format: "Pause and restore frames: %.0f ms", pauseMilliseconds))
         lines.append("  cost: " + Self.costSummary(pauseCost))
+    }
+
+    static let probeLabels = ["a", "b", "c"]
+    static let defaultProbeWindowCount = 4
+
+    /// `total` windows over the probe processes, the first ones taking one more when it
+    /// does not divide: 4 is 2+1+1, 12 is 4+4+4. Nil when a process would have none.
+    static func probeWindows(total: Int) -> [Int]? {
+        let processes = probeLabels.count
+        guard total >= processes else { return nil }
+        return (0..<processes).map { total / processes + ($0 < total % processes ? 1 : 0) }
     }
 
     static let idleDuration: Duration = .seconds(10)

@@ -39,6 +39,8 @@ struct BenchmarkRecord: Encodable {
         var tiles: Bool
         var switches: Int
         var gestures: Bool
+        /// Windows per probe process, in launch order.
+        var probeWindows: [Int]
     }
 
     struct Phases: Encodable {

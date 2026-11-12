@@ -384,7 +384,7 @@ def describe_dict_differences(prefix, left, right, left_name, right_name):
 
 
 # Settings added after older results were saved, with the value those runs had.
-SETTINGS_DEFAULTS = {"gestures": False}
+SETTINGS_DEFAULTS = {"gestures": False, "probeWindows": [2, 1, 1]}
 
 
 def comparable_profile(run):

@@ -14,8 +14,10 @@ set -euo pipefail
 # switches cross a multi-pane tile, and adds pane switches inside the tile. A
 # -gestures suffix (busy-gestures) adds synthetic swipes through the model's
 # gesture handler (model path: not trackpad recognition) after the rapid switches.
+# BENCHMARK_WINDOWS=N opens N probe windows over the three probe apps (default 4:
+# 2+1+1; 12 is 4+4+4); results with different counts are not compared.
 # Each run is saved to BENCHMARK_RESULTS_DIR (default ~/Library/Application Support/Stagehand/Benchmarks)
-# as <UTC>-<sha7>[-dirty]-<mode>[-r<N>]/ with report.txt, raw.json, meta.json and
+# as <UTC>-<sha7>[-dirty]-<mode>[-w<windows>][-r<N>]/ with report.txt, raw.json, meta.json and
 # diagnostic.log. BENCHMARK_REPEAT=N runs each mode N times (default 3). BENCHMARK_TIMEOUT caps
 # each run in seconds (default 240). Compare result sets with
 # scripts/compare-benchmarks.py. Exits non-zero when any run times out or fails,
@@ -31,6 +33,7 @@ results_root="${BENCHMARK_RESULTS_DIR:-$HOME/Library/Application Support/Stageha
 repeats="${BENCHMARK_REPEAT:-3}"
 timeout_seconds="${BENCHMARK_TIMEOUT:-240}"
 launch="${BENCHMARK_LAUNCH:-open}"
+probe_windows="${BENCHMARK_WINDOWS:-}"
 probe="$root/dist/AcceptanceProbe.app"
 
 if ! [[ "$repeats" =~ ^[1-9][0-9]*$ ]]; then
@@ -39,6 +42,10 @@ if ! [[ "$repeats" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if ! [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
     echo "BENCHMARK_TIMEOUT must be a positive whole number of seconds, not '$timeout_seconds'." >&2
+    exit 1
+fi
+if [[ -n "$probe_windows" ]] && ! [[ "$probe_windows" =~ ^[0-9]+$ && "$probe_windows" -ge 3 ]]; then
+    echo "BENCHMARK_WINDOWS must be a whole number of at least 3 (one window per probe app), not '$probe_windows'." >&2
     exit 1
 fi
 if [[ "$launch" != open && "$launch" != direct ]]; then
@@ -133,8 +140,10 @@ for mode in ${BENCHMARK_MODES:-responsive busy}; do
         [[ "$mode" == *-stacking* ]] && flags+=(--stacking)
         [[ "$mode" == *-tiles* ]] && flags+=(--tiles)
         [[ "$mode" == *-gestures* ]] && flags+=(--gestures)
+        [[ -n "$probe_windows" ]] && flags+=(--probe-windows "$probe_windows")
         started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         name="$(date -u -j -f %Y-%m-%dT%H:%M:%SZ "$started" +%Y%m%dT%H%M%SZ)-$name_base-$mode"
+        [[ -n "$probe_windows" ]] && name+="-w$probe_windows"
         (( repeats > 1 )) && name+="-r$index"
         dir="$results_root/$name"
         mkdir "$dir"

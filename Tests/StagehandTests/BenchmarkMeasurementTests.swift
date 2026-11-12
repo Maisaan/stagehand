@@ -277,6 +277,21 @@ struct BenchmarkMeasurementTests {
             .allSatisfy { $0.mainThreadCPUMilliseconds == nil })
     }
 
+    /// The default workspace stays 2+1+1; a larger one keeps every probe app busy.
+    @Test func probeWindowsAreSpreadOverTheProbeApps() throws {
+        #expect(StagehandModel.probeWindows(total: StagehandModel.defaultProbeWindowCount) == [2, 1, 1])
+        #expect(StagehandModel.probeWindows(total: 12) == [4, 4, 4])
+        #expect(StagehandModel.probeWindows(total: 13) == [5, 4, 4])
+        #expect(StagehandModel.probeWindows(total: 2) == nil)
+
+        var record = BenchmarkRecord()
+        record.settings = .init(gap: 8, widthPresets: [0.5], loggingEnabled: true, busyProbes: true,
+                                measuresStacking: false, tiles: false, switches: 24, gestures: false,
+                                probeWindows: [4, 4, 4])
+        let json = try JSONSerialization.jsonObject(with: record.jsonData()) as? [String: Any]
+        #expect((json?["settings"] as? [String: Any])?["probeWindows"] as? [Int] == [4, 4, 4])
+    }
+
     /// The runner's checkout can differ from the binary that ran, so raw samples name the binary.
     @Test func rawSamplesNameTheBuildThatRan() throws {
         var record = BenchmarkRecord()

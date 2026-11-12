@@ -299,6 +299,21 @@ class CompareBenchmarksTests(unittest.TestCase):
         status, output = self.run_compare(baseline, candidate)
         self.assertIn("GAP candidate cand: phase gestures missing", output)
 
+    def test_runs_from_before_the_topology_was_saved_compare_with_the_default_workspace(self):
+        baseline = fixtures.write_run(self.root / "base")
+        recorded = fixtures.modified(fixtures.raw(), lambda raw: raw["settings"].update(probeWindows=[2, 1, 1]))
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(sha="b" * 40), recorded)
+        status, output = self.run_compare(baseline, candidate)
+        self.assertEqual(status, 0, output)
+
+    def test_a_larger_workspace_is_not_compared_with_the_default(self):
+        baseline = fixtures.write_run(self.root / "base")
+        larger = fixtures.modified(fixtures.raw(), lambda raw: raw["settings"].update(probeWindows=[4, 4, 4]))
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(sha="b" * 40), larger)
+        status, output = self.run_compare(baseline, candidate)
+        self.assertEqual(status, 1)
+        self.assertIn("settings.probeWindows: baseline [2, 1, 1], candidate [4, 4, 4]", output)
+
     def test_null_focus_is_counted_as_unconfirmed_not_zero(self):
         baseline = fixtures.write_run(self.root / "base")
         unconfirmed = fixtures.raw(focus_times=(None, 220.0, 240.0))

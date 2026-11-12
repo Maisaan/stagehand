@@ -130,6 +130,20 @@ class RunBenchmarkTests(unittest.TestCase):
         [directory] = self.run_dirs()
         self.assertEqual(self.meta(directory)["flags"], ["--busy", "--no-diagnostics", "--gestures"])
 
+    def test_a_larger_workspace_is_passed_to_the_app_and_named(self):
+        result = self.run_runner("busy", BENCHMARK_WINDOWS="12")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        [directory] = self.run_dirs()
+        self.assertTrue(directory.name.endswith("-busy-w12"))
+        self.assertEqual(self.meta(directory)["flags"], ["--busy", "--probe-windows", "12"])
+
+    def test_too_few_windows_for_the_probe_apps_are_rejected(self):
+        for value in ["2", "twelve"]:
+            result = self.run_runner("busy", BENCHMARK_WINDOWS=value)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("BENCHMARK_WINDOWS must be a whole number of at least 3", result.stderr)
+        self.assertEqual(self.run_dirs(), [])
+
     def test_failing_mode_still_runs_the_rest_then_exits_non_zero(self):
         result = self.run_runner("busy responsive", STUB_BUSY_BEHAVIOR="fail-line")
         self.assertEqual(result.returncode, 1)
