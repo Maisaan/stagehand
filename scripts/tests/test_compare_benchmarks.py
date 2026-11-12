@@ -189,6 +189,53 @@ class CompareBenchmarksTests(unittest.TestCase):
         self.assertNotIn("GAP", output)
         self.assertIn("switches.focusMs", output)
 
+    def with_cost(self, raw, cpu=300.0, idle_cpu=40.0, unavailable_phase=None):
+        def cost(cpu_ms, seconds):
+            return {"available": True, "durationMs": seconds * 1000, "cpuMs": cpu_ms,
+                    "cpuPercent": cpu_ms / seconds / 10, "idleWakeups": int(20 * seconds),
+                    "idleWakeupsPerSecond": 20.0, "interruptWakeups": int(150 * seconds),
+                    "interruptWakeupsPerSecond": 150.0}
+        for phase in ["start", "sequential", "rapid", "spaces", "interface"]:
+            raw["phases"][phase]["resourceCost"] = cost(cpu, 3.0)
+        raw["phases"]["idle"] = {"seconds": 10.0, "latencyMonitorStopped": True, "resourceCost": cost(idle_cpu, 10.0)}
+        if unavailable_phase:
+            raw["phases"][unavailable_phase]["resourceCost"].update(
+                available=False, cpuMs=None, cpuPercent=None, idleWakeups=None, idleWakeupsPerSecond=None,
+                interruptWakeups=None, interruptWakeupsPerSecond=None)
+        return raw
+
+    def test_phase_resource_cost_and_idle_are_compared_when_both_sides_have_them(self):
+        baseline = fixtures.write_run(self.root / "base", run_raw=self.with_cost(fixtures.raw()))
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(sha="b" * 40),
+                                       self.with_cost(fixtures.raw(), cpu=360.0, idle_cpu=55.0))
+        status, output = self.run_compare(baseline, candidate)
+        self.assertEqual(status, 0, output)
+        sequential = self.section(output, "sequential", "resourceCost.cpuMs")
+        self.assertIn("baseline   n=1 p50 300", sequential)
+        self.assertIn("candidate  n=1 p50 360", sequential)
+        idle = self.section(output, "idle", "resourceCost.cpuMs")
+        self.assertIn("p50 +15.0 ms", idle)
+        self.assertIn("idle wakeups (resourceCost.idleWakeupsPerSecond, /s)", output)
+        self.assertIn("p50 +0.0 /s", output)
+        self.assertNotIn("GAP", output)
+
+    def test_phase_resource_cost_is_left_out_when_one_side_predates_it(self):
+        baseline = fixtures.write_run(self.root / "base")
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(sha="b" * 40), self.with_cost(fixtures.raw()))
+        status, output = self.run_compare(baseline, candidate)
+        self.assertEqual(status, 0, output)
+        self.assertNotIn("resourceCost", output)
+        self.assertNotIn("  idle", output.splitlines())
+        self.assertNotIn("GAP", output)
+
+    def test_an_unreadable_resource_sample_is_unavailable_not_zero(self):
+        baseline = fixtures.write_run(self.root / "base", run_raw=self.with_cost(fixtures.raw()))
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(sha="b" * 40),
+                                       self.with_cost(fixtures.raw(), unavailable_phase="sequential"))
+        status, output = self.run_compare(baseline, candidate)
+        self.assertEqual(status, 0, output)
+        self.assertIn("candidate  no samples  (1 unavailable)", self.section(output, "sequential", "resourceCost.cpuMs"))
+
     def test_null_focus_is_counted_as_unconfirmed_not_zero(self):
         baseline = fixtures.write_run(self.root / "base")
         unconfirmed = fixtures.raw(focus_times=(None, 220.0, 240.0))

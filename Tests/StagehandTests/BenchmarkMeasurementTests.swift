@@ -162,6 +162,49 @@ struct BenchmarkMeasurementTests {
         #expect((spaces?["stalls"] as? [[String: Any]])?.first?["changeStep"] is NSNull)
     }
 
+    private func usage(cpuMilliseconds: UInt64, idleWakeups: UInt64, interruptWakeups: UInt64) -> ResourceSampler.Usage {
+        ResourceSampler.Usage(footprintBytes: 1, cpuNanoseconds: cpuMilliseconds * 1_000_000, idleWakeups: idleWakeups,
+                              interruptWakeups: interruptWakeups, threads: 4, uptime: 0)
+    }
+
+    @Test func aPhaseCostsTheCPUAndWakeupsBetweenItsMarks() throws {
+        let start = BenchmarkRecord.ResourceMark(uptime: 100,
+                                                 usage: usage(cpuMilliseconds: 1_000, idleWakeups: 50, interruptWakeups: 400))
+        let end = BenchmarkRecord.ResourceMark(uptime: 102,
+                                               usage: usage(cpuMilliseconds: 1_150, idleWakeups: 90, interruptWakeups: 700))
+        let cost = BenchmarkRecord.ResourceCost(from: start, to: end)
+
+        #expect(cost.durationMs == 2_000)
+        #expect(cost.cpuMs == 150)
+        #expect(cost.cpuPercent == 7.5)
+        #expect(cost.idleWakeupsPerSecond == 20)
+        #expect(cost.interruptWakeupsPerSecond == 150)
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(cost)) as? [String: Any]
+        #expect(json?["available"] as? Bool == true)
+        #expect(json?["interruptWakeups"] as? Int == 300)
+    }
+
+    /// A failed kernel read is unavailable, never a zero cost.
+    @Test func aPhaseWhoseUsageCouldNotBeReadIsUnavailableNotFree() throws {
+        let start = BenchmarkRecord.ResourceMark(uptime: 100, usage: nil)
+        let end = BenchmarkRecord.ResourceMark(uptime: 110,
+                                               usage: usage(cpuMilliseconds: 1, idleWakeups: 1, interruptWakeups: 1))
+        var record = BenchmarkRecord()
+        record.phases.idle = .init(seconds: 10, resourceCost: .init(from: start, to: end))
+
+        let json = try JSONSerialization.jsonObject(with: record.jsonData()) as? [String: Any]
+        let idle = try #require((json?["phases"] as? [String: Any])?["idle"] as? [String: Any])
+        let cost = try #require(idle["resourceCost"] as? [String: Any])
+        #expect(idle["latencyMonitorStopped"] as? Bool == true)
+        #expect(cost["available"] as? Bool == false)
+        #expect(cost["durationMs"] as? Double == 10_000)
+        for key in ["cpuMs", "cpuPercent", "idleWakeups", "idleWakeupsPerSecond", "interruptWakeups",
+                    "interruptWakeupsPerSecond"] {
+            #expect(cost[key] is NSNull, "\(key)")
+        }
+        #expect(StagehandModel.costSummary(record.phases.idle!.resourceCost).hasPrefix("unavailable"))
+    }
+
     /// The runner's checkout can differ from the binary that ran, so raw samples name the binary.
     @Test func rawSamplesNameTheBuildThatRan() throws {
         var record = BenchmarkRecord()

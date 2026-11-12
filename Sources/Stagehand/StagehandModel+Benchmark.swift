@@ -119,18 +119,21 @@ extension StagehandModel {
 
         // Startup: Start through the first settled layout.
         monitor.start()
+        let startCostBegan = BenchmarkRecord.ResourceMark.now()
         let startBegan = CACurrentMediaTime()
         start()
         let startReturned = CACurrentMediaTime()
         let startIdle = await benchmarkWaitUntilIdle()
         let startSettled = CACurrentMediaTime()
         let startWaits = monitor.stop().map(\.milliseconds)
+        let startCost = BenchmarkRecord.ResourceCost(from: startCostBegan, to: .now())
         record.phases.start = .init(callMs: (startReturned - startBegan) * 1_000,
                                     settledMs: (startSettled - startBegan) * 1_000,
-                                    timedOut: !startIdle, mainThreadWaitsMs: startWaits)
+                                    timedOut: !startIdle, mainThreadWaitsMs: startWaits, resourceCost: startCost)
         lines.append(String(format: "Start: call %.0f ms, settled %.0f ms", (startReturned - startBegan) * 1_000,
                             (startSettled - startBegan) * 1_000) + (startIdle ? "" : " (timed out)"))
         lines.append("  main thread: " + Self.stallSummary(startWaits))
+        lines.append("  cost: " + Self.costSummary(startCost))
         if !startIdle { record.failures.append("start: idle wait timed out") }
         guard isRunning else { return fail("Stagehand did not start. Warning: \(warning ?? "none")") }
         if arrangesTile {
@@ -175,6 +178,7 @@ extension StagehandModel {
             if event == "navigation_focus_rejected" { rapidRejections += 1 }
         }
         monitor.start()
+        let rapidCostBegan = BenchmarkRecord.ResourceMark.now()
         let rapidBegan = CACurrentMediaTime()
         var predicted = state
         for index in 0..<switches {
@@ -191,6 +195,7 @@ extension StagehandModel {
         let rapidIdle = await benchmarkWaitUntilIdle()
         let rapidSettled = (CACurrentMediaTime() - rapidBegan) * 1_000
         let rapidWaits = monitor.stop().map(\.milliseconds)
+        let rapidCost = BenchmarkRecord.ResourceCost(from: rapidCostBegan, to: .now())
         diagnostics.eventObserver = nil
         // A busy probe spins 150 ms on activation, longer than the 100 ms Accessibility
         // timeout, so focus is read after the same pause the other phases leave.
@@ -198,13 +203,14 @@ extension StagehandModel {
         let rapidFocusMismatch = finalFocusMismatch()
         let rapidFocusMatches = rapidFocusMismatch == nil
         record.phases.rapid = .init(settledMs: rapidSettled, timedOut: !rapidIdle, mainThreadWaitsMs: rapidWaits,
-                                    finalFocusMatches: rapidFocusMatches)
+                                    finalFocusMatches: rapidFocusMatches, resourceCost: rapidCost)
         if !rapidIdle { record.failures.append("rapid: idle wait timed out") }
         if rapidRejections > 0 { record.failures.append("rapid: focus rejected \(rapidRejections) times") }
         if let rapidFocusMismatch { record.failures.append("rapid: final focus does not match the ribbon: \(rapidFocusMismatch)") }
         lines.append(String(format: "Rapid switches: settled %.0f ms after the first", rapidSettled)
             + (rapidIdle ? "" : " (timed out)"))
         lines.append("  main thread: " + Self.stallSummary(rapidWaits))
+        lines.append("  cost: " + Self.costSummary(rapidCost))
         lines.append("Final focus matches the ribbon: \(rapidFocusMatches)" + (rapidFocusMismatch.map { " (\($0))" } ?? ""))
 
         if arrangesTile, let tile = state.currentSpace.tiles.first(where: \.isMultiPane) {
@@ -248,6 +254,7 @@ extension StagehandModel {
         }
 
         // Interface load times.
+        let interfaceCostBegan = BenchmarkRecord.ResourceMark.now()
         var appBar: [Double] = []
         for _ in 0..<5 {
             let began = CACurrentMediaTime()
@@ -281,15 +288,35 @@ extension StagehandModel {
             try? await Task.sleep(for: .milliseconds(100))
         }
         lines.append("Quick controls open: " + quickTimes.map { String(format: "%.0f", $0) }.joined(separator: ", ") + " ms")
-        record.phases.interface = .init(appBarShowMs: appBar, settingsOpenMs: settingsTimes, quickControlsOpenMs: quickTimes)
+        let interfaceCost = BenchmarkRecord.ResourceCost(from: interfaceCostBegan, to: .now())
+        record.phases.interface = .init(appBarShowMs: appBar, settingsOpenMs: settingsTimes,
+                                        quickControlsOpenMs: quickTimes, resourceCost: interfaceCost)
+        lines.append("Interface cost: " + Self.costSummary(interfaceCost))
+
+        // Idle: nothing driven and no latency monitor, so the cost is Stagehand's own.
+        _ = await benchmarkWaitUntilIdle()
+        try? await Task.sleep(for: Self.idleSettleDelay)
+        let idleBegan = BenchmarkRecord.ResourceMark.now()
+        try? await Task.sleep(for: Self.idleDuration)
+        let idleCost = BenchmarkRecord.ResourceCost(from: idleBegan, to: .now())
+        record.phases.idle = .init(seconds: idleCost.durationMs / 1_000, resourceCost: idleCost)
+        lines.append(String(format: "Idle %.0f s, latency monitor stopped: ", idleCost.durationMs / 1_000)
+            + Self.costSummary(idleCost))
 
         // The restore runs inside the call, so the call's duration is the main-thread stall.
+        let pauseCostBegan = BenchmarkRecord.ResourceMark.now()
         let pauseBegan = CACurrentMediaTime()
         pause()
         let pauseMilliseconds = (CACurrentMediaTime() - pauseBegan) * 1_000
-        record.phases.pause = .init(callMs: pauseMilliseconds)
+        let pauseCost = BenchmarkRecord.ResourceCost(from: pauseCostBegan, to: .now())
+        record.phases.pause = .init(callMs: pauseMilliseconds, resourceCost: pauseCost)
         lines.append(String(format: "Pause and restore frames: %.0f ms", pauseMilliseconds))
+        lines.append("  cost: " + Self.costSummary(pauseCost))
     }
+
+    static let idleDuration: Duration = .seconds(10)
+    /// Lets the app bar shown by the interface phase dismiss (after 1.5 s) before idle is measured.
+    static let idleSettleDelay: Duration = .seconds(2)
 
     /// Runs `count` navigations, each settled before the next, and times motion, focus and frames.
     private func measureSwitchPhase(count: Int, busy: Bool, probes: [NSRunningApplication], measuresStacking: Bool,
@@ -306,6 +333,7 @@ extension StagehandModel {
         }
         var phase = BenchmarkRecord.SwitchPhase()
         monitor.start()
+        let costBegan = BenchmarkRecord.ResourceMark.now()
         for _ in 0..<count {
             let action = nextAction()
             let began = CACurrentMediaTime()
@@ -333,6 +361,7 @@ extension StagehandModel {
             try? await Task.sleep(for: .milliseconds(busy ? 300 : 150))
         }
         let waits = monitor.stop()
+        phase.resourceCost = BenchmarkRecord.ResourceCost(from: costBegan, to: .now())
         phase.mainThreadWaitsMs = waits.map(\.milliseconds)
         phase.stalls = waits.filter { $0.milliseconds > MainThreadLatencyMonitor.stallMilliseconds }.map {
             BenchmarkRecord.Stall(
@@ -391,6 +420,7 @@ extension StagehandModel {
             lines.append("  longest freeze of any moving window: " + percentiles(switches.compactMap(\.largestGapMs)))
         }
         lines.append("  main thread: " + stallSummary(phase.mainThreadWaitsMs))
+        if let cost = phase.resourceCost { lines.append("  cost: " + costSummary(cost)) }
         if attributesStalls {
             func totals(_ key: (BenchmarkRecord.Stall) -> String) -> [(String, Double)] {
                 Dictionary(grouping: phase.stalls, by: key).mapValues { $0.reduce(0) { $0 + $1.waitedMs } }
@@ -506,6 +536,16 @@ extension StagehandModel {
         let format = "%.\(digits)f"
         return "n=\(sorted.count) p50=" + String(format: format, at(0.5)) + " p90=" + String(format: format, at(0.9))
             + " max=" + String(format: format, sorted.last!) + " ms"
+    }
+
+    /// The whole process's CPU and wakeups over a phase, the latency monitor's own included unless stopped.
+    static func costSummary(_ cost: BenchmarkRecord.ResourceCost) -> String {
+        guard let cpu = cost.cpuMs, let percent = cost.cpuPercent, let idle = cost.idleWakeupsPerSecond,
+              let interrupt = cost.interruptWakeupsPerSecond else {
+            return String(format: "unavailable (resource usage could not be read) over %.1f s", cost.durationMs / 1_000)
+        }
+        return String(format: "CPU %.0f ms (%.1f%% of %.1f s), wakeups %.0f/s idle, %.0f/s interrupt",
+                      cpu, percent, cost.durationMs / 1_000, idle, interrupt)
     }
 
     /// Main-thread wait for a posted block: the worst cases and total time beyond one frame.

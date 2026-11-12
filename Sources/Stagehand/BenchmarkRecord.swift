@@ -46,7 +46,71 @@ struct BenchmarkRecord: Encodable {
         var panes: SwitchPhase?
         var spaces: SwitchPhase?
         var interface: Interface?
+        var idle: Idle?
         var pause: Pause?
+    }
+
+    /// The whole process's CPU time and wakeups over one phase, read from the kernel at its
+    /// start and end, logged or not. Nil counts mean a read failed: unavailable, not zero.
+    struct ResourceCost: Encodable, Equatable {
+        var durationMs: Double
+        var cpuMs: Double?
+        var idleWakeups: Int?
+        var interruptWakeups: Int?
+
+        init(from start: ResourceMark, to end: ResourceMark) {
+            durationMs = (end.uptime - start.uptime) * 1_000
+            guard let before = start.usage, let after = end.usage else { return }
+            cpuMs = Double(after.cpuNanoseconds &- before.cpuNanoseconds) / 1e6
+            idleWakeups = Int(after.idleWakeups &- before.idleWakeups)
+            interruptWakeups = Int(after.interruptWakeups &- before.interruptWakeups)
+        }
+
+        var available: Bool { cpuMs != nil }
+        var cpuPercent: Double? { cpuMs.flatMap { durationMs > 0 ? $0 / durationMs * 100 : nil } }
+        var idleWakeupsPerSecond: Double? { idleWakeups.flatMap(perSecond) }
+        var interruptWakeupsPerSecond: Double? { interruptWakeups.flatMap(perSecond) }
+
+        private func perSecond(_ count: Int) -> Double? {
+            durationMs > 0 ? Double(count) / durationMs * 1_000 : nil
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case available, durationMs, cpuMs, cpuPercent, idleWakeups, idleWakeupsPerSecond,
+                 interruptWakeups, interruptWakeupsPerSecond
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(available, forKey: .available)
+            try container.encode(durationMs, forKey: .durationMs)
+            try container.encode(cpuMs, forKey: .cpuMs)
+            try container.encode(cpuPercent, forKey: .cpuPercent)
+            try container.encode(idleWakeups, forKey: .idleWakeups)
+            try container.encode(idleWakeupsPerSecond, forKey: .idleWakeupsPerSecond)
+            try container.encode(interruptWakeups, forKey: .interruptWakeups)
+            try container.encode(interruptWakeupsPerSecond, forKey: .interruptWakeupsPerSecond)
+        }
+    }
+
+    /// A point to measure a phase's resource cost from: when, and the process's usage then.
+    struct ResourceMark {
+        let uptime: TimeInterval
+        let usage: ResourceSampler.Usage?
+
+        static func now(read: () -> ResourceSampler.Usage? = ResourceSampler.currentUsage) -> ResourceMark {
+            ResourceMark(uptime: ProcessInfo.processInfo.systemUptime, usage: read())
+        }
+    }
+
+    /// Stagehand left alone: no switches and the benchmark's own latency monitor stopped,
+    /// so its cost is Stagehand's idle cost (with logging on, the watchdog's and sampler's too).
+    struct Idle: Encodable {
+        var seconds: Double
+        let latencyMonitorStopped = true
+        var resourceCost: ResourceCost
+
+        private enum CodingKeys: String, CodingKey { case seconds, latencyMonitorStopped, resourceCost }
     }
 
     struct Start: Encodable {
@@ -54,6 +118,7 @@ struct BenchmarkRecord: Encodable {
         var settledMs: Double
         var timedOut: Bool
         var mainThreadWaitsMs: [Double]
+        var resourceCost: ResourceCost?
     }
 
     struct SwitchPhase: Encodable {
@@ -62,6 +127,7 @@ struct BenchmarkRecord: Encodable {
         var stalls: [Stall] = []
         var finalFocusMatches: Bool?
         var finalFocusMismatch: String?
+        var resourceCost: ResourceCost?
     }
 
     struct Switch: Encodable {
@@ -156,16 +222,19 @@ struct BenchmarkRecord: Encodable {
         var timedOut: Bool
         var mainThreadWaitsMs: [Double]
         var finalFocusMatches: Bool
+        var resourceCost: ResourceCost?
     }
 
     struct Interface: Encodable {
         var appBarShowMs: [Double]
         var settingsOpenMs: [Double]
         var quickControlsOpenMs: [Double]
+        var resourceCost: ResourceCost?
     }
 
     struct Pause: Encodable {
         var callMs: Double
+        var resourceCost: ResourceCost?
     }
 
     private enum CodingKeys: String, CodingKey {

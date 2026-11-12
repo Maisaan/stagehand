@@ -17,6 +17,8 @@ PHASE_KEYS = {
     "rapid": ["settledMs", "timedOut", "mainThreadWaitsMs", "finalFocusMatches"],
     "spaces": ["switches", "mainThreadWaitsMs", "finalFocusMatches"],
     "interface": ["appBarShowMs", "settingsOpenMs", "quickControlsOpenMs"],
+    "idle": ["seconds", "resourceCost"],
+    "pause": ["callMs"],
 }
 SWITCH_PHASES = ["sequential", "members", "panes", "spaces"]
 # T4's first comparison (median start load 8 vs 11) showed freezes 2-9 ms worse that vanished at equal load.
@@ -85,6 +87,7 @@ class Metric:
     null_label: str = "null"
     # Added after older results were saved: shown only when both sides have it.
     optional: bool = False
+    unit: str = "ms"
 
 
 @dataclass
@@ -188,7 +191,18 @@ def numbers(value, samples):
             samples.values.append(float(item))
 
 
+RESOURCE_METRICS = [
+    Metric("resourceCost.cpuMs", "process CPU over the phase", "unavailable", optional=True),
+    Metric("resourceCost.idleWakeupsPerSecond", "idle wakeups", "unavailable", optional=True, unit="/s"),
+    Metric("resourceCost.interruptWakeupsPerSecond", "interrupt wakeups", "unavailable", optional=True, unit="/s"),
+]
+
+
 def metric_definitions(phase):
+    return phase_metric_definitions(phase) + RESOURCE_METRICS
+
+
+def phase_metric_definitions(phase):
     if phase == "start":
         return [Metric("callMs", "start call"), Metric("settledMs", "to settled"),
                 Metric("mainThreadWaitsMs", "main-thread waits")]
@@ -197,6 +211,10 @@ def metric_definitions(phase):
     if phase == "interface":
         return [Metric("appBarShowMs", "app bar show"), Metric("settingsOpenMs", "settings open"),
                 Metric("quickControlsOpenMs", "quick controls open")]
+    if phase == "idle":
+        return []
+    if phase == "pause":
+        return [Metric("callMs", "pause call, restoring frames")]
     metrics = [
         Metric("switches.motionScheduledMs", "to motion scheduled", "not slid"),
         Metric("switches.focusMs", "to focus confirmed", "focus unconfirmed"),
@@ -220,7 +238,7 @@ def count_definitions(phase):
         return [Count("timedOut", "timed out")]
     if phase == "rapid":
         return [Count("timedOut", "timed out"), Count("finalFocusMatches=false", "final focus wrong")]
-    if phase == "interface":
+    if phase in ("interface", "idle", "pause"):
         return []
     counts = [Count("switches.timedOut", "switches timed out"),
               Count("switches.focusRejected", "focus rejected"),
@@ -243,6 +261,8 @@ def extract_metric(phase_data, key):
         numbers(phase_data[field_name], samples)
         return samples
     items = phase_data.get(container)
+    if isinstance(items, dict):
+        items = [items]
     if not isinstance(items, list):
         return None
     present = [item for item in items if field_name in item]
@@ -400,12 +420,12 @@ def format_spread(per_run):
     return "spread " + " ".join(parts)
 
 
-def format_change(baseline_stats, candidate_stats, baseline_per_run):
+def format_change(baseline_stats, candidate_stats, baseline_per_run, unit="ms"):
     parts = []
     within, outside = [], []
     for name in ["p50", "p90", "max"]:
         before, after = baseline_stats[name], candidate_stats[name]
-        change = f"{name} {after - before:+.1f} ms"
+        change = f"{name} {after - before:+.1f} {unit}"
         if before:
             change += f" ({(after - before) / before:+.0%})"
         parts.append(change)
@@ -480,18 +500,19 @@ def compare_mode(lines, baseline_runs, candidate_runs, title):
             if phase in PHASE_KEYS and phase not in phases:
                 phases.append(phase)
     for phase in phases:
-        lines.append(f"  {phase}")
+        phase_lines = []
         for metric in metric_definitions(phase):
             baseline = collect_metric(baseline_ok, phase, metric)
             candidate = collect_metric(candidate_ok, phase, metric)
             if metric.optional and (len(baseline[2]) == len(baseline_ok) or len(candidate[2]) == len(candidate_ok)):
                 continue
-            lines.append(f"   {metric.label} ({metric.key}, ms)")
-            lines.append(side_line("baseline", *baseline, len(baseline_ok), metric))
-            lines.append(side_line("candidate", *candidate, len(candidate_ok), metric))
+            phase_lines.append(f"   {metric.label} ({metric.key}, {metric.unit})")
+            phase_lines.append(side_line("baseline", *baseline, len(baseline_ok), metric))
+            phase_lines.append(side_line("candidate", *candidate, len(candidate_ok), metric))
             if baseline[0].values and candidate[0].values:
-                lines.append("    change     " + format_change(summarize(baseline[0].values),
-                                                               summarize(candidate[0].values), baseline[1]))
+                phase_lines.append("    change     " + format_change(summarize(baseline[0].values),
+                                                                     summarize(candidate[0].values), baseline[1],
+                                                                     metric.unit))
         for count in count_definitions(phase):
             sides = []
             for runs in [baseline_ok, candidate_ok]:
@@ -503,7 +524,10 @@ def compare_mode(lines, baseline_runs, candidate_runs, title):
             if count.optional and any(all(value is None for value in values) for values in sides):
                 continue
             cells = [", ".join("missing" if value is None else str(value) for value in values) for values in sides]
-            lines.append(f"   {count.label} per run: baseline {cells[0]}; candidate {cells[1]}")
+            phase_lines.append(f"   {count.label} per run: baseline {cells[0]}; candidate {cells[1]}")
+        if phase_lines:
+            lines.append(f"  {phase}")
+            lines += phase_lines
     lines.append("")
 
 
