@@ -344,6 +344,9 @@ public struct LegacyWorkspace: Codable, Equatable, Sendable {
         // Stacking came after this model; with one window per column there is no stack.
         case .stackPrevious, .stackNext, .focusMemberAbove, .focusMemberBelow:
             return false
+        // Displays came after this model; with one display there is no other to move a space to.
+        case .moveSpaceToDisplay:
+            return false
         }
     }
 

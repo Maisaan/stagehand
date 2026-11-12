@@ -35,13 +35,31 @@ private func randomSpaces(_ rng: inout SplitMix64) -> (ids: [[String]], focus: [
     return (ids, focus, widths)
 }
 
-private func makeStates(_ rng: inout SplitMix64) -> (WorkspaceState, LegacyWorkspace) {
+private let displayPool = ["A", "B", "C"].map(DisplayID.init(rawValue:))
+
+/// Up to one connected display, and anchors and shown spaces naming any display.
+private func setRandomDisplays(_ state: inout WorkspaceState, _ rng: inout SplitMix64) {
+    let connected = Array(displayPool.shuffled(using: &rng).prefix(Int.random(in: 0...1, using: &rng)))
+    state.setDisplays(connected, fallback: Bool.random(using: &rng) ? displayPool.randomElement(using: &rng) : nil)
+}
+
+private func makeStates(_ rng: inout SplitMix64, withDisplays: Bool = false) -> (WorkspaceState, LegacyWorkspace) {
     let spaces = randomSpaces(&rng)
     let paused = Int.random(in: 0..<10, using: &rng) == 0
     let active = Int.random(in: -1...9, using: &rng)
-    let current = WorkspaceState(isPaused: paused, spaces: spaces.ids.indices.map {
+    var current = WorkspaceState(isPaused: paused, spaces: spaces.ids.indices.map {
         SpaceState(windowIDs: spaces.ids[$0], focusedWindowID: spaces.focus[$0], widthFractions: spaces.widths[$0])
     }, activeSpaceIndex: active)
+    if withDisplays {
+        let anchored = current.spaces.map { space in
+            SpaceState(tiles: space.tiles, focusedWindowID: space.focusedWindowID,
+                       displayAnchor: Bool.random(using: &rng) ? displayPool.randomElement(using: &rng) : nil)
+        }
+        let shown = Dictionary(displayPool.filter { _ in Bool.random(using: &rng) }
+            .map { ($0, Int.random(in: 0..<WorkspaceState.spaceCount, using: &rng)) }, uniquingKeysWith: { a, _ in a })
+        current = WorkspaceState(isPaused: paused, spaces: anchored, activeSpaceIndex: active, shownSpaceIndices: shown)
+        setRandomDisplays(&current, &rng)
+    }
     let legacy = LegacyWorkspace(isPaused: paused, spaces: spaces.ids.indices.map {
         LegacySpace(windowIDs: spaces.ids[$0], focusedWindowID: spaces.focus[$0], widthFractions: spaces.widths[$0])
     }, activeSpaceIndex: active)
@@ -55,17 +73,18 @@ private let actions: [NavigationAction] = [
     .shareToSpace(index: 0), .shareToSpace(index: 2), .shrinkWidth, .growWidth, .nextWidthPreset,
     .previousWidthPreset, .shrinkHeight, .growHeight, .togglePause, .showSettings, .toggleShortcutHints
 ]
+private let displayActions: [NavigationAction] = [.moveSpaceToDisplay(direction: -1), .moveSpaceToDisplay(direction: 1)]
 
 /// Applies the same random operation to both models and returns its name and
 /// whether both reported the same result.
 private func applyRandomOperation(_ current: inout WorkspaceState, _ legacy: inout LegacyWorkspace,
-                                  _ rng: inout SplitMix64) -> (String, Bool) {
+                                  _ rng: inout SplitMix64, withDisplays: Bool = false) -> (String, Bool) {
     let id = pool.randomElement(using: &rng)!
     let space = Int.random(in: -1...9, using: &rng)
     let other = Int.random(in: -1...9, using: &rng)
     let position = Int.random(in: -2...8, using: &rng)
     let width = widthSamples.randomElement(using: &rng)!
-    switch Int.random(in: 0..<18, using: &rng) {
+    switch Int.random(in: 0..<(withDisplays ? 22 : 18), using: &rng) {
     case 0:
         let live = pool.filter { _ in Int.random(in: 0..<4, using: &rng) != 0 }.shuffled(using: &rng)
         let initial = Dictionary(live.filter { _ in Bool.random(using: &rng) }
@@ -74,7 +93,7 @@ private func applyRandomOperation(_ current: inout WorkspaceState, _ legacy: ino
         legacy.reconcile(windowIDs: live, initialWidthFractions: initial)
         return ("reconcile \(live) \(initial)", true)
     case 1:
-        let (savedCurrent, savedLegacy) = makeStates(&rng)
+        let (savedCurrent, savedLegacy) = makeStates(&rng, withDisplays: withDisplays)
         let returning = Set(pool.filter { _ in Bool.random(using: &rng) })
         current.restoreMemberships(windowIDs: returning, from: savedCurrent)
         legacy.restoreMemberships(windowIDs: returning, from: savedLegacy)
@@ -128,6 +147,23 @@ private func applyRandomOperation(_ current: inout WorkspaceState, _ legacy: ino
         return ("move \(id) \(space) to \(other)",
                 current.move(windowID: id, fromSpace: space, toSpace: other)
                     == legacy.move(windowID: id, fromSpace: space, toSpace: other))
+    case 18:
+        setRandomDisplays(&current, &rng)
+        return ("setDisplays \(current.displays)", true)
+    case 19:
+        let direction = [-1, 1].randomElement(using: &rng)!
+        return ("focus crossing displays \(direction)",
+                current.focusWindowCrossingDisplays(by: direction, visibleTiles: { _ in 0...0 })
+                    == legacy.apply(direction > 0 ? .focusNext : .focusPrevious))
+    case 20:
+        let live = pool.filter { _ in Int.random(in: 0..<4, using: &rng) != 0 }.shuffled(using: &rng)
+        let hint = displayPool.randomElement(using: &rng)!
+        current.reconcile(windowIDs: live, displayOfWindow: { _ in hint })
+        legacy.reconcile(windowIDs: live)
+        return ("reconcile \(live) on \(hint)", true)
+    case 21:
+        let action = displayActions.randomElement(using: &rng)!
+        return ("apply \(action)", current.apply(action) == legacy.apply(action))
     default:
         let action = actions.randomElement(using: &rng)!
         let presets = Bool.random(using: &rng) ? SpaceState.defaultWidthPresets : [0.4, .nan, 0.9, 0.4]
@@ -206,6 +242,24 @@ private func invariantViolations(_ state: WorkspaceState) -> [String] {
         for step in 0..<40 {
             let (operation, sameResult) = applyRandomOperation(&current, &legacy, &rng)
             let equal = observablyEqual(current, legacy)
+            #expect(sameResult && equal, "seed \(seed) step \(step): \(operation)\n\(current)\n\(legacy)")
+            if !(sameResult && equal) { return }
+        }
+    }
+}
+
+@Test func withNoneOrOneDisplaySingletonTilesBehaveExactlyLikeTheFlatModel() {
+    for seed in UInt64(0)..<400 {
+        var rng = SplitMix64(state: seed)
+        var (current, legacy) = makeStates(&rng, withDisplays: true)
+        #expect(observablyEqual(current, legacy), "seed \(seed) initial")
+        for step in 0..<40 {
+            let (operation, sameResult) = applyRandomOperation(&current, &legacy, &rng, withDisplays: true)
+            let equal = observablyEqual(current, legacy)
+            if let only = current.displays.ids.first {
+                #expect(current.spaces.indices.allSatisfy { current.display(ofSpace: $0) == only })
+                #expect(current.shownSpaceIndex(on: only) == current.activeSpaceIndex)
+            }
             #expect(sameResult && equal, "seed \(seed) step \(step): \(operation)\n\(current)\n\(legacy)")
             if !(sameResult && equal) { return }
         }

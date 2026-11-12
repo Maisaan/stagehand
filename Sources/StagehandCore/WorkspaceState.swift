@@ -33,6 +33,8 @@ public enum NavigationAction: Equatable, Sendable {
     case focusMemberAbove
     /// Focuses the window below the focused one in its tile.
     case focusMemberBelow
+    /// Anchors the focused space to the display on that side (negative: left); focus follows it.
+    case moveSpaceToDisplay(direction: Int)
 
     /// Commands for Stagehand itself. They never move focus, so their chords pass
     /// through the keyboard tap to Carbon instead of reserving a focus transfer.
@@ -356,8 +358,11 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
 
     public var currentSpace: SpaceState { spaces[activeSpaceIndex] }
     public var focusedWindowID: String? { currentSpace.focusedWindowID }
+    /// The focused display's picker: its occupied spaces and the active space.
     public var displayedSpaceIndices: [Int] {
-        spaces.indices.filter { $0 == activeSpaceIndex || !spaces[$0].windowIDs.isEmpty }
+        spaces.indices.filter {
+            $0 == activeSpaceIndex || (!spaces[$0].windowIDs.isEmpty && display(ofSpace: $0) == focusedDisplay)
+        }
     }
 
     public init(
@@ -404,10 +409,12 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     }
 
     /// Reconcile against all live managed windows, including windows in other spaces.
-    /// Only globally unknown windows are added to the active space.
+    /// Only globally unknown windows are added: to the space shown on the display
+    /// `displayOfWindow` names, else to the active space.
     public mutating func reconcile(
         windowIDs: [String],
-        initialWidthFractions: [String: Double] = [:]
+        initialWidthFractions: [String: Double] = [:],
+        displayOfWindow: ((String) -> DisplayID?)? = nil
     ) {
         let wasOccupied = !currentSpace.windowIDs.isEmpty
         let liveIDs = Set(windowIDs)
@@ -418,7 +425,8 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         }
         var knownIDs = Set(spaces.flatMap(\.windowIDs))
         for windowID in windowIDs where !windowID.isEmpty && knownIDs.insert(windowID).inserted {
-            spaces[activeSpaceIndex].insert(
+            let space = displayOfWindow?(windowID).flatMap(shownSpaceIndex(on:)) ?? activeSpaceIndex
+            spaces[space].insert(
                 windowID: windowID,
                 width: initialWidthFractions[windowID] ?? SpaceState.defaultWidthFraction,
                 focus: true
@@ -426,27 +434,30 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         }
         if wasOccupied && currentSpace.windowIDs.isEmpty {
             // Keep numbered shortcuts stable; empty spaces disappear from the picker.
-            activeSpaceIndex = spaces.indices.last(where: { $0 < activeSpaceIndex && !spaces[$0].windowIDs.isEmpty })
-                ?? spaces.indices.first(where: { !spaces[$0].windowIDs.isEmpty }) ?? 0
+            activate(spaceAt: spaces.indices.last(where: { $0 < activeSpaceIndex && !spaces[$0].windowIDs.isEmpty })
+                ?? spaces.indices.first(where: { !spaces[$0].windowIDs.isEmpty }) ?? 0)
         }
     }
 
-    /// Remove an empty numbered space so later spaces move down together.
+    /// Remove an empty numbered space so later spaces move down together. A
+    /// display's only space stays, so the display keeps its number.
     @discardableResult
     public mutating func closeEmptySpace(at index: Int) -> Bool {
         guard spaces.indices.contains(index), spaces[index].windowIDs.isEmpty,
-              spaces[(index + 1)...].contains(where: { !$0.windowIDs.isEmpty }) else { return false }
+              spaces[(index + 1)...].contains(where: { !$0.windowIDs.isEmpty }),
+              !isOnlySpaceOfItsDisplay(index) else { return false }
         discardSpace(at: index)
         return true
     }
 
     /// Opens an empty numbered space at `index`; it and later spaces move up one.
-    /// Fails when the last space is occupied or active, since it would be dropped.
+    /// Fails when the last space is occupied, active or a display's only space,
+    /// since it would be dropped.
     @discardableResult
     public mutating func openSpace(at index: Int) -> Bool {
         let last = Self.spaceCount - 1
         guard spaces.indices.contains(index), spaces[last].windowIDs.isEmpty,
-              activeSpaceIndex != last else { return false }
+              activeSpaceIndex != last, !isOnlySpaceOfItsDisplay(last) else { return false }
         spaces.removeLast()
         spaces.insert(SpaceState(), at: index)
         if activeSpaceIndex >= index { activeSpaceIndex += 1 }
@@ -454,6 +465,7 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
             let moved = shown >= index ? shown + 1 : shown
             return moved < Self.spaceCount ? moved : nil
         }
+        dropFocusedDisplayFromShownSpaces()
         return true
     }
 
@@ -481,6 +493,7 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     }
 
     /// Keep a saved membership snapshot aligned after the corresponding live space closes.
+    /// A display left without a space takes the lowest empty unanchored one.
     public mutating func discardSpace(at index: Int) {
         guard spaces.indices.contains(index) else { return }
         spaces.remove(at: index)
@@ -489,6 +502,8 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         shownSpaceIndices = shownSpaceIndices.compactMapValues { shown in
             shown == index ? nil : shown > index ? shown - 1 : shown
         }
+        anchorDisplaysWithoutSpaces()
+        dropFocusedDisplayFromShownSpaces()
     }
 
     @discardableResult
@@ -500,7 +515,7 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     public mutating func focus(windowID: String, inSpace index: Int) -> Bool {
         guard spaces.indices.contains(index), spaces[index].contains(windowID: windowID),
               activeSpaceIndex != index || spaces[index].focusedWindowID != windowID else { return false }
-        activeSpaceIndex = index
+        activate(spaceAt: index)
         spaces[index].setFocus(windowID: windowID)
         return true
     }
@@ -516,7 +531,7 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
             let anchorIndex = spaces[index].tileIndex(of: anchor) ?? spaces[index].tiles.endIndex - 1
             spaces[index].tiles.insert(tile, at: anchorIndex + 1)
         }
-        activeSpaceIndex = index
+        activate(spaceAt: index)
         spaces[index].setFocus(windowID: windowID)
         return true
     }
@@ -851,6 +866,9 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
             return moveFocusedWindowAcrossTiles(by: action == .stackNext ? 1 : -1)
         case .focusMemberAbove, .focusMemberBelow:
             return focusPane(direction: action == .focusMemberBelow ? .down : .up)
+        case .moveSpaceToDisplay(let direction):
+            guard let display = displayBesideFocused(by: direction) else { return false }
+            return moveSpace(activeSpaceIndex, toDisplay: display)
         }
     }
 
@@ -869,7 +887,7 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
 
     private mutating func goToSpace(index: Int) -> Bool {
         guard spaces.indices.contains(index), index != activeSpaceIndex else { return false }
-        activeSpaceIndex = index
+        activate(spaceAt: index)
         return true
     }
 
@@ -879,10 +897,142 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         spaces[index].insert(windowID: windowID, width: currentSpace.paneWidthFraction(of: windowID), focus: false)
         spaces[activeSpaceIndex].remove(windowID: windowID)
         if follow {
-            activeSpaceIndex = index
+            activate(spaceAt: index)
             spaces[index].setFocus(windowID: windowID)
         }
         return true
+    }
+
+    // MARK: - Displays
+
+    /// The display that holds the focused space; nil while displays are not modeled.
+    public var focusedDisplay: DisplayID? { display(ofSpace: activeSpaceIndex) }
+
+    /// Sets the connected displays, left to right. A display with no space takes
+    /// the lowest-numbered empty space that has no anchor and is not shown,
+    /// which is returned; without one it stays unmanaged. Anchors are never
+    /// cleared here, so a display's spaces return when it reconnects.
+    @discardableResult
+    public mutating func setDisplays(_ ids: [DisplayID], fallback: DisplayID?) -> [DisplayID: Int] {
+        var connected: [DisplayID] = []
+        for id in ids where !connected.contains(id) { connected.append(id) }
+        displays = DisplayList(ids: connected,
+                               fallback: fallback.flatMap { connected.contains($0) ? $0 : nil } ?? connected.first)
+        let anchored = anchorDisplaysWithoutSpaces()
+        dropFocusedDisplayFromShownSpaces()
+        return anchored
+    }
+
+    /// The space's anchor while that display is connected, else the fallback.
+    public func display(ofSpace index: Int) -> DisplayID? {
+        guard spaces.indices.contains(index), let fallback = displays.fallback else { return nil }
+        guard let anchor = spaces[index].displayAnchor, displays.ids.contains(anchor) else { return fallback }
+        return anchor
+    }
+
+    /// The focused display shows the active space. Another shows the space it
+    /// last showed while that space is still on it, else its lowest-numbered
+    /// occupied space, else its lowest-numbered space; nil when it has none.
+    public func shownSpaceIndex(on display: DisplayID) -> Int? {
+        guard displays.ids.contains(display) else { return nil }
+        if display == focusedDisplay { return activeSpaceIndex }
+        if let shown = shownSpaceIndices[display], self.display(ofSpace: shown) == display { return shown }
+        let onDisplay = spaces.indices.filter { self.display(ofSpace: $0) == display }
+        return onDisplay.first { !spaces[$0].windowIDs.isEmpty } ?? onDisplay.first
+    }
+
+    /// A display's picker: its occupied spaces and the space it shows.
+    public func displayedSpaceIndices(on display: DisplayID) -> [Int] {
+        guard let shown = shownSpaceIndex(on: display) else { return [] }
+        return spaces.indices.filter {
+            $0 == shown || (!spaces[$0].windowIDs.isEmpty && self.display(ofSpace: $0) == display)
+        }
+    }
+
+    /// Anchors a space to a connected display. The active space keeps focus,
+    /// so the focused display becomes `display`; another space is shown there.
+    @discardableResult
+    public mutating func moveSpace(_ index: Int, toDisplay display: DisplayID) -> Bool {
+        guard displays.ids.count > 1, displays.ids.contains(display), let source = self.display(ofSpace: index),
+              source != display else { return false }
+        spaces[index].displayAnchor = display
+        if shownSpaceIndices[source] == index { shownSpaceIndices[source] = nil }
+        if index != activeSpaceIndex { shownSpaceIndices[display] = index }
+        anchorDisplaysWithoutSpaces()
+        dropFocusedDisplayFromShownSpaces()
+        return true
+    }
+
+    /// ⌃⌥←/→ from the keyboard: the ribbon step, and at the ribbon's end, the
+    /// space shown on the neighboring display that way. Focus enters it at the
+    /// facing edge of `visibleTiles(space)` (its tile indices on screen; nil
+    /// means its focused tile), then by the pane entry rule. Swipes never cross.
+    @discardableResult
+    public mutating func focusWindowCrossingDisplays(
+        by direction: Int,
+        visibleTiles: (Int) -> ClosedRange<Int>? = { _ in nil }
+    ) -> Bool {
+        guard direction != 0 else { return false }
+        if apply(direction > 0 ? .focusNext : .focusPrevious) { return true }
+        guard let display = displayBesideFocused(by: direction),
+              let target = shownSpaceIndex(on: display) else { return false }
+        let origin = focusedWindowID.flatMap { id in
+            currentSpace.tileIndex(of: id).flatMap { currentSpace.tiles[$0].panes.unitFrame(of: id) }
+        }
+        let space = spaces[target]
+        let entryTile = space.tiles.isEmpty ? nil : visibleTiles(target)
+            .map { min(max(direction > 0 ? $0.lowerBound : $0.upperBound, 0), space.tiles.count - 1) }
+            ?? space.focusedTileIndex
+        activate(spaceAt: target)
+        if let entryTile {
+            let tile = space.tiles[entryTile]
+            let entry = tile.panes.entryPane(movingToward: direction > 0 ? .right : .left,
+                                             verticalRange: origin.map { $0.minY...$0.maxY } ?? 0...1,
+                                             active: tile.activeWindowID) ?? tile.activeWindowID
+            spaces[target].setFocus(windowID: entry)
+        }
+        return true
+    }
+
+    private func displayBesideFocused(by direction: Int) -> DisplayID? {
+        guard direction != 0, displays.ids.count > 1, let focused = focusedDisplay,
+              let position = displays.ids.firstIndex(of: focused) else { return nil }
+        let neighbor = position + direction.signum()
+        return displays.ids.indices.contains(neighbor) ? displays.ids[neighbor] : nil
+    }
+
+    /// Makes `index` the active space. The display focus leaves keeps showing
+    /// the space it had.
+    private mutating func activate(spaceAt index: Int) {
+        let previous = activeSpaceIndex
+        let previousDisplay = focusedDisplay
+        activeSpaceIndex = index
+        if let previousDisplay, previousDisplay != focusedDisplay { shownSpaceIndices[previousDisplay] = previous }
+        dropFocusedDisplayFromShownSpaces()
+    }
+
+    private mutating func dropFocusedDisplayFromShownSpaces() {
+        if let focusedDisplay { shownSpaceIndices[focusedDisplay] = nil }
+    }
+
+    private func isOnlySpaceOfItsDisplay(_ index: Int) -> Bool {
+        guard displays.ids.count > 1, let display = display(ofSpace: index) else { return false }
+        return !spaces.indices.contains { $0 != index && self.display(ofSpace: $0) == display }
+    }
+
+    @discardableResult
+    private mutating func anchorDisplaysWithoutSpaces() -> [DisplayID: Int] {
+        guard displays.ids.count > 1 else { return [:] }
+        var anchored: [DisplayID: Int] = [:]
+        for display in displays.ids where !spaces.indices.contains(where: { self.display(ofSpace: $0) == display }) {
+            let shown = Set(displays.ids.compactMap(shownSpaceIndex(on:)))
+            guard let free = spaces.indices.first(where: {
+                spaces[$0].windowIDs.isEmpty && spaces[$0].displayAnchor == nil && !shown.contains($0)
+            }) else { continue }
+            spaces[free].displayAnchor = display
+            anchored[display] = free
+        }
+        return anchored
     }
 
     private enum CodingKeys: String, CodingKey {
