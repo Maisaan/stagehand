@@ -14,6 +14,8 @@ protocol NavigationPresenting: AnyObject {
     /// True while the pointer carries another app's drag-and-drop; the app bar then
     /// ignores the pointer so a drop near the notch reaches the window under it.
     var pointerCarriesDrop: (() -> Bool)? { get set }
+    /// Called on every pointer move while set; setting it installs the pointer monitor.
+    var onPointerMoved: (() -> Void)? { get set }
 
     func setBorderColor(_ color: NSColor)
     /// `sheet` is an attached sheet whose silhouette joins the window's outline.

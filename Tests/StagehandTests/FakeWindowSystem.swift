@@ -380,6 +380,7 @@ final class FakeOverlays: NavigationPresenting {
     var onRemoveWindow: ((String) -> Void)?
     var canRevealNavigation: (() -> Bool)?
     var pointerCarriesDrop: (() -> Bool)?
+    var onPointerMoved: (() -> Void)?
     private(set) var shortcutHintToggles = 0
     private(set) var warnings: [String] = []
     private(set) var borderFrame: CGRect?
@@ -410,6 +411,37 @@ final class FakeOverlays: NavigationPresenting {
         suspensions += 1
         hide()
     }
+}
+
+/// Records the placeholders the model shows without opening panels.
+@MainActor
+final class FakePlaceholders: ContestedPlaceholderPresenting {
+    var onClick: ((String, DisplayID) -> Void)?
+    private(set) var shown: [ContestedPlaceholder] = []
+    private(set) var calls = 0
+
+    func show(_ placeholders: [ContestedPlaceholder]) {
+        calls += 1
+        shown = placeholders
+    }
+
+    func move(_ frames: [String: CGRect], on display: DisplayID) {
+        calls += 1
+        for index in shown.indices where shown[index].display == display {
+            if let frame = frames[shown[index].windowID] { shown[index].frame = frame }
+        }
+    }
+
+    func hide() {
+        calls += 1
+        shown = []
+    }
+
+    func frame(of windowID: String, on display: DisplayID) -> CGRect? {
+        shown.first { $0.windowID == windowID && $0.display == display }?.frame
+    }
+
+    func click(_ windowID: String, on display: DisplayID) { onClick?(windowID, display) }
 }
 
 /// Finishes every ribbon animation immediately, as with Reduce Motion.
@@ -469,6 +501,7 @@ struct ModelHarness {
     let model: StagehandModel
     let windows: FakeWindowSystem
     let overlays: FakeOverlays
+    let placeholders = FakePlaceholders()
     let pointer = FakePointer()
     let logURL: URL
     let preferencesSuite = "stagehand-tests-\(UUID().uuidString)"
@@ -504,6 +537,7 @@ struct ModelHarness {
             windowSystem: windows,
             input: FakeInput(),
             emptySpace: FakeEmptySpace(),
+            placeholders: placeholders,
             desktopScope: DesktopScope(currentDesktopID: { desktop.id }, displaySource: DisplaySpaceSource(
                 connectedDisplays: { desktop.displays }, screensHaveSeparateSpaces: { true },
                 currentSpace: { desktop.displaySpaces[$0] }, readerSymbol: "SLSManagedDisplayGetCurrentSpace")),

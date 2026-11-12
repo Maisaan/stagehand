@@ -159,13 +159,28 @@ final class StagehandModel: ObservableObject {
     /// The last complete preview. Resting fingers repeat a displacement every display tick.
     var gesturePreviewCache: (displacement: Double, frames: [String: CGRect])?
     var gesturePrepared: Set<String> = []
-    /// Windows whose first preview move was refused and whose frame could not be read:
-    /// closing, or their app is not answering. The preview stops retrying them.
+    /// Windows the preview never writes: ones only another display shows, and ones whose
+    /// first move was refused and whose frame could not be read (closing, or their app
+    /// is not answering), which it stops retrying.
     var gestureUnwritable: Set<String> = []
     /// Windows the preview held back from an edge shared with another display, logged once each.
     var gestureSharedEdgeSnaps: Set<String> = []
     /// The frames last written for each other display's shown space, by display.
     var otherDisplayFrames: [DisplayID: [String: CGRect]] = [:]
+    let placeholders: any ContestedPlaceholderPresenting
+    /// The display each window shown on two displays is on, as the last layout picked it.
+    var contestedHolders: [String: DisplayID] = [:]
+    /// The placeholders shown, by display, at the frames last given to them.
+    var placeholderFrames: [DisplayID: [String: CGRect]] = [:]
+    var contestedHolderTrigger = ContestedHolderTrigger.layout
+    /// The managed displays and the one under the pointer, while some window is contested.
+    var contestedPointerDisplays: [Display] = []
+    var contestedPointerDisplay: DisplayID?
+    /// In Accessibility coordinates. Tests substitute it.
+    var pointerLocationProvider: @MainActor () -> CGPoint = {
+        let location = NSEvent.mouseLocation
+        return CGPoint(x: location.x, y: (NSScreen.screens.first?.frame.maxY ?? 0) - location.y)
+    }
     var gestureAxis: GestureAxis?
     var motionWrittenPositions: [String: CGPoint] = [:]
     var motionBackingScaleFactor: CGFloat = 1
@@ -389,6 +404,7 @@ final class StagehandModel: ObservableObject {
         windowSystem injectedWindowSystem: (any WindowManaging)? = nil,
         input injectedInput: (any InputControlling)? = nil,
         emptySpace injectedEmptySpace: (any EmptySpacePresenting)? = nil,
+        placeholders injectedPlaceholders: (any ContestedPlaceholderPresenting)? = nil,
         desktopScope: DesktopScope = DesktopScope(),
         focusGate: FocusInputGate = FocusInputGate(),
         ribbonMotion: RibbonMotion = RibbonMotion(),
@@ -405,6 +421,7 @@ final class StagehandModel: ObservableObject {
         self.layoutStore = layoutStore
             ?? (injectedWindowSystem == nil && persistence == .standard ? WorkspaceLayoutStore() : nil)
         emptySpace = injectedEmptySpace ?? EmptySpaceWindow()
+        placeholders = injectedPlaceholders ?? ContestedWindowPlaceholders()
         self.desktopScope = desktopScope
         self.focusGate = focusGate
         self.ribbonMotion = ribbonMotion
@@ -454,6 +471,7 @@ final class StagehandModel: ObservableObject {
             self?.shareMembership(windowID: id, spaceIndex: index)
         }
         overlays.onRemoveWindow = { [weak self] id in self?.removeMembership(windowID: id) }
+        placeholders.onClick = { [weak self] id, display in self?.placeholderClicked(windowID: id, on: display) }
         overlays.canRevealNavigation = { [weak self] in
             guard let self, self.isRunning, !self.isSuspended else { return false }
             return self.desktopScope.refresh() == .home
@@ -926,6 +944,7 @@ final class StagehandModel: ObservableObject {
         focusBorder.reset()
         overlays.hide()
         emptySpace.hide()
+        clearContestedWindows()
         windowSystem.stop(windowsReachable: windowsReachable)
         if windowSystem.hasPendingRecovery {
             diagnostics.record("restore_deferred", details: [
@@ -1296,6 +1315,7 @@ final class StagehandModel: ObservableObject {
                 // Resume returns to this Desktop; keep the panels instead of rebuilding them.
                 overlays.suspend()
                 emptySpace.hide()
+                clearContestedWindows()
                 updateInputStatus()
                 onStateChange?()
             }

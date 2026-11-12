@@ -516,6 +516,7 @@ extension StagehandModel {
         let availableFrame = display.visibleFrame
         let sharedEdges = arrangement.sharedEdges(of: display.id)
         var snappedBeforeMotion: Set<String> = []
+        var heldElsewhere: Set<String> = []
         // Native frame setters and focus confirmation are separate operations. Never
         // leave the old outline on screen or follow their intermediate notifications.
         isLayingOutWindows = true
@@ -555,7 +556,6 @@ extension StagehandModel {
                                         minimumWidths: learnedMinimumWidths,
                                         minimumHeights: learnedMinimumHeights),
                 displayFrame: display.frame, sharedEdges: sharedEdges)
-            let visible = placements.filter { $0.isVisible || slideFrom?[$0.windowID]?.intersects(availableFrame) == true }
             var slideStarts = slideFrom
             if let slideFrom, !sharedEdges.isEmpty {
                 let slide = sharedEdgeSafeSlide(
@@ -566,6 +566,14 @@ extension StagehandModel {
                 )
                 slideStarts = slide.from
                 if pass == 0 { snappedBeforeMotion = slide.snappedWindowIDs }
+            }
+            if pass == 0 {
+                heldElsewhere = holdContestedWindows(on: display, placements: placements, slideFrom: slideFrom,
+                                                     slideStarts: slideStarts, in: arrangement)
+            }
+            let visible = placements.filter {
+                !heldElsewhere.contains($0.windowID)
+                    && ($0.isVisible || slideFrom?[$0.windowID]?.intersects(availableFrame) == true)
             }
             // Position neighbors first. Raising the focused real window last keeps clamped neighbors behind it.
             for placement in visible.sorted(by: { !$0.isFocused && $1.isFocused }) {
@@ -608,7 +616,7 @@ extension StagehandModel {
                         // windows before the slow part, the app's activation. Waiting
                         // for activation kept the old space on screen until it finished.
                         windowSystem.raiseWithoutActivating(windowID: record.id)
-                        let shownIDs = Set(placements.filter(\.isVisible).map(\.windowID))
+                        let shownIDs = Set(placements.filter(\.isVisible).map(\.windowID)).subtracting(heldElsewhere)
                         let frames = Dictionary(placements.map { ($0.windowID, $0.frame) },
                                                 uniquingKeysWith: { first, _ in first })
                         switch await parkHiddenWindows(keeping: shownIDs, layoutFrames: frames) {
@@ -709,7 +717,7 @@ extension StagehandModel {
             }
             break
         }
-        let visibleIDs = Set(placements.filter(\.isVisible).map(\.windowID))
+        let visibleIDs = Set(placements.filter(\.isVisible).map(\.windowID)).subtracting(heldElsewhere)
         let sliding = placements.filter {
             $0.isVisible || slideFrom?[$0.windowID]?.intersects(availableFrame) == true
         }
@@ -728,9 +736,12 @@ extension StagehandModel {
         guard preferenceFocusStillMatches(request) else { return .completed }
         preferencesNeedLayout = false
         if slideFrom != nil {
-            // Pass 0 left every sliding window at its accepted frame.
+            // Pass 0 left every sliding window at its accepted frame, and each placeholder at its start.
+            let placeholderStarts = focusedDisplayPlaceholderFrames
             let starts = Dictionary(sliding.compactMap { placement in
-                (acceptedFrames[placement.windowID] ?? windowSystem.frame(windowID: placement.windowID))
+                (heldElsewhere.contains(placement.windowID)
+                    ? placeholderStarts[placement.windowID]
+                    : acceptedFrames[placement.windowID] ?? windowSystem.frame(windowID: placement.windowID))
                     .map { (placement.windowID, $0) }
             }, uniquingKeysWith: { first, _ in first })
             let targets = Dictionary(sliding.map { ($0.windowID, $0.frame) }, uniquingKeysWith: { first, _ in first })
@@ -857,7 +868,10 @@ extension StagehandModel {
                 focusBorder.hide()
             }
         }
-        layoutOtherDisplays(in: arrangement, besides: visibleIDs)
+        let otherLayouts = otherDisplayLayouts(in: arrangement)
+        layoutOtherDisplays(otherLayouts, besides: visibleIDs)
+        settleContestedPlaceholders(on: display, placements: placements, heldElsewhere: heldElsewhere,
+                                    otherLayouts: otherLayouts)
         overlays.setBorderColor(focusBorderColor)
         if request == .navigation { overlays.showNavigation(state: state, windows: windows) }
         else { overlays.updateNavigation(state: state, windows: windows) }
@@ -890,8 +904,9 @@ extension StagehandModel {
                                     observedWidths: actual.mapValues(\.width),
                                     observedHeights: actual.mapValues(\.height)),
             displayFrame: display.frame, sharedEdges: arrangement.sharedEdges(of: display.id))
+        let shownAsPlaceholders = focusedDisplayPlaceholderFrames
         var frames = Dictionary(placements.map {
-            ($0.windowID, $0.isVisible ? actual[$0.windowID] ?? $0.frame : $0.frame)
+            ($0.windowID, $0.isVisible ? shownAsPlaceholders[$0.windowID] ?? actual[$0.windowID] ?? $0.frame : $0.frame)
         }, uniquingKeysWith: { first, _ in first })
         if ribbonMotion.isRunning { frames.merge(ribbonMotion.frames) { _, moving in moving } }
         if let presentationFrames { frames.merge(presentationFrames) { _, moving in moving } }
@@ -977,28 +992,23 @@ extension StagehandModel {
 
     /// Static frames only: no slide, no focus. A display is written again only when its
     /// layout changed; a size an app refuses is learned and applied by the next layout.
-    /// A window the focused display also shows stays there.
-    func layoutOtherDisplays(in arrangement: DisplayArrangement, besides focusedDisplayWindowIDs: Set<String>) {
-        let layouts = otherDisplayLayouts(in: arrangement)
+    /// A contested window is written only on its holder.
+    func layoutOtherDisplays(_ layouts: [DisplayLayout], besides focusedDisplayWindowIDs: Set<String>) {
         otherDisplayFrames = otherDisplayFrames.filter { id, _ in layouts.contains { $0.display.id == id } }
-        var placed = focusedDisplayWindowIDs
-        for layout in layouts {
-            var targets: [String: CGRect] = [:]
-            for placement in layout.placements where placement.isVisible && !placed.contains(placement.windowID) {
-                targets[placement.windowID] = placement.frame
-            }
-            placed.formUnion(targets.keys)
-            guard otherDisplayFrames[layout.display.id] != targets else { continue }
-            for (windowID, target) in targets {
-                if !windowSystem.isParked(windowID: windowID), let known = knownFrames[windowID],
-                   framesMatch(observed: known, target: target) { continue }
-                let written = windowSystem.setFrame(windowID: windowID, frame: target)
-                let actual = written ? target : windowSystem.frame(windowID: windowID)
-                if let actual { noteLayoutSize(windowID: windowID, requested: target.size, actual: actual.size) }
-                noteAppliedFrame(actual, windowID: windowID)
-            }
-            otherDisplayFrames[layout.display.id] = targets
+        for (display, targets) in otherDisplayTargets(layouts, besides: focusedDisplayWindowIDs) {
+            guard otherDisplayFrames[display] != targets else { continue }
+            for (windowID, target) in targets { writeStaticFrame(target, windowID: windowID) }
+            otherDisplayFrames[display] = targets
         }
+    }
+
+    func writeStaticFrame(_ target: CGRect, windowID: String) {
+        if !windowSystem.isParked(windowID: windowID), let known = knownFrames[windowID],
+           framesMatch(observed: known, target: target) { return }
+        let written = windowSystem.setFrame(windowID: windowID, frame: target)
+        let actual = written ? target : windowSystem.frame(windowID: windowID)
+        if let actual { noteLayoutSize(windowID: windowID, requested: target.size, actual: actual.size) }
+        noteAppliedFrame(actual, windowID: windowID)
     }
 
     /// The managed display holding most of `frame`; nil while fewer than two are managed.
@@ -1058,7 +1068,7 @@ extension StagehandModel {
             return
         }
         writeRibbonPositions(
-            frames: frames,
+            frames: movePlaceholders(in: frames),
             writtenPositions: &motionWrittenPositions,
             backingScaleFactor: motionBackingScaleFactor,
             setPosition: { windowSystem.setMotionPosition(windowID: $0, position: $1) }
@@ -1136,7 +1146,9 @@ extension StagehandModel {
         }
         guard completed else { return false }
         guard isRunning, !isSuspended, !Task.isCancelled, desktopScope.refresh() == .home else { return false }
-        var visibleFrames = to.filter { visibleIDs.contains($0.key) }
+        let windowTargets = movePlaceholders(in: to)
+        let visibleIDs = windowTargets.count == to.count ? visibleIDs : visibleIDs.filter { windowTargets[$0] != nil || to[$0] == nil }
+        var visibleFrames = windowTargets.filter { visibleIDs.contains($0.key) }
         var commitFailures = commitRibbonPositions(
             frames: visibleFrames,
             backingScaleFactor: motionBackingScaleFactor,

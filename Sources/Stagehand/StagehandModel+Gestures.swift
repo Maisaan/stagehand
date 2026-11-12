@@ -55,7 +55,7 @@ extension StagehandModel {
                         || !isBeyondSharedEdge(frame, displayFrame: display?.frame ?? .zero, sharedEdges: sharedEdges))
                 }
                 gesturePrepared = Set(presentationFrames?.keys.map { $0 } ?? [])
-                gestureUnwritable.removeAll()
+                gestureUnwritable = windowsOnlyOnOtherDisplays(in: arrangement)
                 gestureSharedEdgeSnaps.removeAll()
                 motionBackingScaleFactor = display?.backingScaleFactor ?? 1
                 motionWrittenPositions = presentationFrames?.mapValues {

@@ -1018,6 +1018,31 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         return true
     }
 
+    /// The display each window shown on two or more displays is really on. The focused
+    /// window stays on the focused display; another goes to the pointer's display, else
+    /// to the display of its lowest-numbered shown space.
+    public func contestedWindowHolders(shownOn shown: [DisplayID: Set<String>],
+                                       pointerDisplay: DisplayID?) -> [String: DisplayID] {
+        guard shown.count > 1 else { return [:] }
+        var displaysByWindow: [String: [DisplayID]] = [:]
+        for (display, windowIDs) in shown {
+            for windowID in windowIDs { displaysByWindow[windowID, default: []].append(display) }
+        }
+        var holders: [String: DisplayID] = [:]
+        for (windowID, candidates) in displaysByWindow where candidates.count > 1 {
+            if windowID == focusedWindowID, let focusedDisplay, candidates.contains(focusedDisplay) {
+                holders[windowID] = focusedDisplay
+            } else if let pointerDisplay, candidates.contains(pointerDisplay) {
+                holders[windowID] = pointerDisplay
+            } else {
+                holders[windowID] = candidates.min {
+                    (shownSpaceIndex(on: $0) ?? Int.max, $0.rawValue) < (shownSpaceIndex(on: $1) ?? Int.max, $1.rawValue)
+                }
+            }
+        }
+        return holders
+    }
+
     private func displayBesideFocused(by direction: Int) -> DisplayID? {
         guard direction != 0, displays.ids.count > 1, let focused = focusedDisplay,
               let position = displays.ids.firstIndex(of: focused) else { return nil }

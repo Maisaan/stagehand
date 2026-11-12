@@ -409,3 +409,27 @@ private struct SeededGenerator: RandomNumberGenerator {
         return z ^ (z >> 31)
     }
 }
+
+// MARK: - Contested windows
+
+@Test func aContestedWindowIsHeldByTheFocusedDisplayThenThePointerThenItsLowestShownSpace() {
+    // Space 0 (built-in, focused) and space 1 (external) both show "s"; space 2 is on the third display.
+    var state = workspace([["a", "s"], ["s", "f"], ["s"]], anchors: [1: external, 2: third])
+    state.setDisplays([builtIn, external, third], fallback: builtIn)
+    let shown: [DisplayID: Set<String>] = [builtIn: ["a", "s"], external: ["s", "f"], third: ["s"]]
+
+    #expect(state.contestedWindowHolders(shownOn: shown, pointerDisplay: external) == ["s": external])
+    #expect(state.contestedWindowHolders(shownOn: shown, pointerDisplay: third) == ["s": third])
+    #expect(state.contestedWindowHolders(shownOn: shown, pointerDisplay: nil) == ["s": builtIn])
+    #expect(state.contestedWindowHolders(shownOn: [external: ["s"], third: ["s"]], pointerDisplay: builtIn)
+        == ["s": external])
+
+    state.focus(windowID: "s")
+    #expect(state.contestedWindowHolders(shownOn: shown, pointerDisplay: external) == ["s": builtIn])
+}
+
+@Test func aWindowShownOnOneDisplayIsNotContested() {
+    let state = twoDisplays(workspace([["a", "s"], ["s"]], anchors: [1: external]))
+    #expect(state.contestedWindowHolders(shownOn: [builtIn: ["a", "s"], external: ["f"]], pointerDisplay: external).isEmpty)
+    #expect(state.contestedWindowHolders(shownOn: [builtIn: ["a", "s"]], pointerDisplay: builtIn).isEmpty)
+}

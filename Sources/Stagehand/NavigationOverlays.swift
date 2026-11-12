@@ -92,6 +92,9 @@ final class NavigationOverlays {
     var onRemoveWindow: ((String) -> Void)?
     var canRevealNavigation: (() -> Bool)?
     var pointerCarriesDrop: (() -> Bool)?
+    var onPointerMoved: (() -> Void)? {
+        didSet { if onPointerMoved != nil { installMouseMonitors() } }
+    }
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
     private var hoverFrame: CGRect?
@@ -272,6 +275,7 @@ final class NavigationOverlays {
     }
 
     func pointerMoved() {
+        onPointerMoved?()
         let point = pointerLocation()
         // A press keeps the panel as it was, so a press on the bar keeps its release,
         // and a drag that started elsewhere is not taken over.
