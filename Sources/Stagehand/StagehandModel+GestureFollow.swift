@@ -31,11 +31,48 @@ extension StagehandModel {
         gestureFollow = nil
         let settle = summary.handedToAnimation ? settleStart : nil
         let writes = settle?.writesBefore ?? windowSystem.motionWriteSummary(reset: false)
+        let handoff: GestureFollowEnded.Handoff
+        if let settle {
+            handoff = .settle(operation: settle.operation, changeID: settle.changeID)
+        } else if let active = activeChange {
+            handoff = .change(id: active.id)
+        } else {
+            handoff = .cancelled
+        }
+        let ended = GestureFollowEnded(gestureID: follow?.gestureID, summary: summary,
+                                       touchesLanded: follow?.input?.touchesLandedUptime, writes: writes,
+                                       handoff: handoff)
+        gestureFollowSink?(ended)
+        diagnostics.record("gesture_follow_ended", details: ended.details)
+    }
+}
+
+/// One live follow as it ended: logged as `gesture_follow_ended` and given to the benchmark, logged or not.
+struct GestureFollowEnded {
+    enum Handoff: Equatable {
+        /// A change started and cut the follow: the swipe's own when it navigated.
+        case change(id: Int)
+        /// An animation replaced it: `gesture.preview.restore` for a swipe that went back.
+        case settle(operation: String, changeID: Int?)
+        case cancelled
+    }
+
+    let gestureID: Int?
+    let summary: RibbonFollowSummary
+    let touchesLanded: TimeInterval?
+    /// The follow's own writes: statistics restart when it starts.
+    let writes: MotionWriteSummary
+    let handoff: Handoff
+
+    var followStartedAfterTouch: TimeInterval? { touchesLanded.map { summary.started - $0 } }
+    var firstAcknowledgedWriteAfterTouch: TimeInterval? {
+        touchesLanded.flatMap { landed in writes.firstAcknowledgedUptime.values.min().map { $0 - landed } }
+    }
+
+    var details: [String: String] {
         func milliseconds(_ seconds: TimeInterval?) -> String {
             seconds.map { String(Int(($0 * 1_000).rounded())) } ?? "none"
         }
-        let landed = follow?.input?.touchesLandedUptime
-        let firstAcknowledged = writes.firstAcknowledgedUptime.values.min()
         var details = [
             "durationMilliseconds": milliseconds(summary.ended - summary.started),
             "ticks": String(summary.ticks),
@@ -43,25 +80,25 @@ extension StagehandModel {
             "largestTickGapMilliseconds": milliseconds(summary.largestTargetGap),
             "largestCallbackGapMilliseconds": milliseconds(summary.largestCallbackGap),
             "lateCallbacks": String(summary.lateCallbacks),
-            "followStartedAfterTouchMilliseconds": milliseconds(landed.map { summary.started - $0 }),
-            "firstAcknowledgedWriteAfterTouchMilliseconds": milliseconds(
-                landed.flatMap { landed in firstAcknowledged.map { $0 - landed } }),
+            "followStartedAfterTouchMilliseconds": milliseconds(followStartedAfterTouch),
+            "firstAcknowledgedWriteAfterTouchMilliseconds": milliseconds(firstAcknowledgedWriteAfterTouch),
             "motionWritesSent": String(writes.sent),
             "motionWritesAcknowledged": String(writes.acknowledged),
             "motionWritesUnacknowledged": String(writes.unacknowledged),
             "motionWritesFailed": String(writes.failed)
         ]
-        if let follow { details["gestureID"] = String(follow.gestureID) }
-        if let settle {
+        if let gestureID { details["gestureID"] = String(gestureID) }
+        switch handoff {
+        case .settle(let operation, let changeID):
             details["handoff"] = "settle"
-            details["settleOperation"] = settle.operation
-            if let changeID = settle.changeID { details["handoffChangeID"] = String(changeID) }
-        } else if let active = activeChange {
+            details["settleOperation"] = operation
+            if let changeID { details["handoffChangeID"] = String(changeID) }
+        case .change(let id):
             details["handoff"] = "change"
-            details["handoffChangeID"] = String(active.id)
-        } else {
+            details["handoffChangeID"] = String(id)
+        case .cancelled:
             details["handoff"] = "cancelled"
         }
-        diagnostics.record("gesture_follow_ended", details: details)
+        return details
     }
 }

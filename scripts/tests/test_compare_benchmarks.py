@@ -263,6 +263,42 @@ class CompareBenchmarksTests(unittest.TestCase):
         self.assertNotIn("computing stalls", output)
         self.assertNotIn("GAP", output)
 
+    def test_gesture_scenarios_are_compared_one_scenario_at_a_time(self):
+        baseline = fixtures.write_run(self.root / "base", fixtures.meta(mode="busy-gestures"),
+                                      fixtures.with_gestures(fixtures.raw()))
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(mode="busy-gestures", sha="b" * 40),
+                                       fixtures.with_gestures(fixtures.raw(), touch_to_write=35.0))
+        status, output = self.run_compare(baseline, candidate)
+        self.assertEqual(status, 0, output)
+        self.assertNotIn("GAP", output)
+        lines = output.splitlines()
+        header = lines.index("   flick: touch to first acknowledged follow write "
+                             "(gestures.follow.firstAcknowledgedWriteAfterTouchMs, ms)")
+        self.assertIn("baseline   n=1 p50 20", lines[header + 1])
+        self.assertIn("candidate  n=1 p50 35", lines[header + 2])
+        slow = lines.index("   slowDrag: touch to first acknowledged follow write "
+                           "(gestures.follow.firstAcknowledgedWriteAfterTouchMs, ms)")
+        self.assertIn("candidate  n=1 p50 20", lines[slow + 2])
+        self.assertIn("reversal: release to settled", output)
+        self.assertNotIn("reversal: release to focus confirmed", output)
+        self.assertIn("gestures not ending as their schedule should per run: baseline 0; candidate 0", output)
+
+    def test_a_gesture_run_is_not_compared_with_one_without_gestures(self):
+        baseline = fixtures.write_run(self.root / "base")
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(sha="b" * 40),
+                                       fixtures.with_gestures(fixtures.raw()))
+        status, output = self.run_compare(baseline, candidate)
+        self.assertEqual(status, 1)
+        self.assertIn('settings.gestures: baseline false, candidate true', output)
+
+    def test_a_missing_gesture_phase_is_reported_when_gestures_ran(self):
+        baseline = fixtures.write_run(self.root / "base", run_raw=fixtures.with_gestures(fixtures.raw()))
+        no_phase = fixtures.with_gestures(fixtures.raw())
+        del no_phase["phases"]["gestures"]
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(sha="b" * 40), no_phase)
+        status, output = self.run_compare(baseline, candidate)
+        self.assertIn("GAP candidate cand: phase gestures missing", output)
+
     def test_null_focus_is_counted_as_unconfirmed_not_zero(self):
         baseline = fixtures.write_run(self.root / "base")
         unconfirmed = fixtures.raw(focus_times=(None, 220.0, 240.0))

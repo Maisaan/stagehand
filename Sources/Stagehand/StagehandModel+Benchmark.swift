@@ -52,6 +52,7 @@ extension StagehandModel {
         let logging = !ProcessInfo.processInfo.arguments.contains("--no-diagnostics")
         let measuresStacking = ProcessInfo.processInfo.arguments.contains("--stacking")
         let arrangesTile = ProcessInfo.processInfo.arguments.contains("--tiles")
+        let drivesGestures = ProcessInfo.processInfo.arguments.contains("--gestures")
         let ribbonFramesPerSecond = Double(preferredRibbonFrameRate(maximum: screen.maximumFramesPerSecond))
         record.environment = .init(
             displayWidthPoints: screen.frame.width,
@@ -62,7 +63,8 @@ extension StagehandModel {
             reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         )
         record.settings = .init(gap: gap, widthPresets: widthPresets, loggingEnabled: logging, busyProbes: busy,
-                                measuresStacking: measuresStacking, tiles: arrangesTile, switches: switches)
+                                measuresStacking: measuresStacking, tiles: arrangesTile, switches: switches,
+                                gestures: drivesGestures)
         let stallKinds = BenchmarkRecord.StallKind.Thresholds()
         record.stallKindThresholds = stallKinds
         diagnostics.isEnabled = logging
@@ -113,6 +115,7 @@ extension StagehandModel {
         lines.append("Benchmark (\(busy ? "busy" : "responsive") probes, 4 windows, \(switches) switches"
             + (arrangesTile ? ", two windows side by side in one tile, tiles "
                 + String(format: "%.2f", Self.tileBenchmarkWidthFraction) + " of the screen wide" : "")
+            + (drivesGestures ? ", synthetic gestures" : "")
             + (logging ? ")" : ", diagnostic logging off)"))
         if let launchFinishedMilliseconds { lines.append("Launch to didFinishLaunching: \(launchFinishedMilliseconds) ms") }
         if let modelInitMilliseconds { lines.append("Model init: \(modelInitMilliseconds) ms") }
@@ -230,6 +233,16 @@ extension StagehandModel {
         lines += Self.stallAttributionLines(rapidStalls)
         lines.append("  cost: " + Self.costSummary(rapidCost))
         lines.append("Final focus matches the ribbon: \(rapidFocusMatches)" + (rapidFocusMismatch.map { " (\($0))" } ?? ""))
+
+        if drivesGestures {
+            let gestures = await measureGesturePhase(busy: busy, monitor: monitor, frameInterval: frameInterval,
+                                                     stallKinds: stallKinds)
+            record.phases.gestures = gestures
+            record.failures += BenchmarkRecord.gestureFailures(gestures)
+            lines.append("Gestures (model path: fixed displacement schedules through the gesture handler, "
+                + "not trackpad recognition or delivery):")
+            lines += Self.gesturePhaseLines(gestures)
+        }
 
         if arrangesTile, let tile = state.currentSpace.tiles.first(where: \.isMultiPane) {
             // Focus moving between the two panes of the tile: no slide, one focus each.
@@ -564,7 +577,7 @@ extension StagehandModel {
     }
 
     /// False when the change queue or ribbon motion was still busy at the timeout.
-    private func benchmarkWaitUntilIdle(timeout: Duration = .seconds(8)) async -> Bool {
+    func benchmarkWaitUntilIdle(timeout: Duration = .seconds(8)) async -> Bool {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while changes.isProcessing || ribbonMotion.isRunning {
             guard ContinuousClock.now < deadline else { return false }
@@ -573,7 +586,7 @@ extension StagehandModel {
         return true
     }
 
-    private static func percentiles(_ values: [Double], digits: Int = 0) -> String {
+    static func percentiles(_ values: [Double], digits: Int = 0) -> String {
         guard !values.isEmpty else { return "n=0" }
         let sorted = values.sorted()
         let at = { (p: Double) in sorted[min(sorted.count - 1, Int(Double(sorted.count) * p))] }
@@ -593,7 +606,7 @@ extension StagehandModel {
     }
 
     /// Main-thread wait for a posted block: the worst cases and total time beyond one frame.
-    private static func stallSummary(_ samples: [Double]) -> String {
+    static func stallSummary(_ samples: [Double]) -> String {
         guard !samples.isEmpty else { return "no samples" }
         let sorted = samples.sorted()
         let beyondFrame = samples.reduce(0) { $0 + max(0, $1 - 16.7) }

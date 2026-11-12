@@ -284,6 +284,8 @@ final class StagehandModel: ObservableObject {
     var activeChange: ActiveChange?
     /// Receives every change's trace as it ends, logged or not.
     var changeTraceSink: ((EndedChangeTrace) -> Void)?
+    /// Receives every gesture follow as it ends, logged or not.
+    var gestureFollowSink: ((GestureFollowEnded) -> Void)?
     var lastGestureID = 0
     var gestureFollow: GestureFollowStart?
     var settleStart: SettleStart?

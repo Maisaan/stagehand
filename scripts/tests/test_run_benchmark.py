@@ -124,6 +124,12 @@ class RunBenchmarkTests(unittest.TestCase):
         self.assertEqual(meta["flags"], ["--busy", "--no-diagnostics"])
         self.assertFalse(meta["loggingEnabled"])
 
+    def test_gestures_suffix_asks_the_app_for_synthetic_gestures(self):
+        result = self.run_runner("busy-quiet-gestures")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        [directory] = self.run_dirs()
+        self.assertEqual(self.meta(directory)["flags"], ["--busy", "--no-diagnostics", "--gestures"])
+
     def test_failing_mode_still_runs_the_rest_then_exits_non_zero(self):
         result = self.run_runner("busy responsive", STUB_BUSY_BEHAVIOR="fail-line")
         self.assertEqual(result.returncode, 1)

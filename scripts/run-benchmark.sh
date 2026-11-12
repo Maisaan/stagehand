@@ -11,7 +11,9 @@ set -euo pipefail
 # window-list polling stalls Stagehand's main thread, so leave it off when
 # comparing latency or stalls. A -tiles suffix (busy-tiles) is unrelated to
 # -stacking: it arranges two probe windows side by side in one tile first, so
-# switches cross a multi-pane tile, and adds pane switches inside the tile.
+# switches cross a multi-pane tile, and adds pane switches inside the tile. A
+# -gestures suffix (busy-gestures) adds synthetic swipes through the model's
+# gesture handler (model path: not trackpad recognition) after the rapid switches.
 # Each run is saved to BENCHMARK_RESULTS_DIR (default ~/Library/Application Support/Stagehand/Benchmarks)
 # as <UTC>-<sha7>[-dirty]-<mode>[-r<N>]/ with report.txt, raw.json, meta.json and
 # diagnostic.log. BENCHMARK_REPEAT=N runs each mode N times (default 3). BENCHMARK_TIMEOUT caps
@@ -130,6 +132,7 @@ for mode in ${BENCHMARK_MODES:-responsive busy}; do
         [[ "$mode" == *-quiet* ]] && flags+=(--no-diagnostics) && logging=false
         [[ "$mode" == *-stacking* ]] && flags+=(--stacking)
         [[ "$mode" == *-tiles* ]] && flags+=(--tiles)
+        [[ "$mode" == *-gestures* ]] && flags+=(--gestures)
         started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         name="$(date -u -j -f %Y-%m-%dT%H:%M:%SZ "$started" +%Y%m%dT%H%M%SZ)-$name_base-$mode"
         (( repeats > 1 )) && name+="-r$index"

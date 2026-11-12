@@ -27,7 +27,7 @@ private final class SteppedFrameDriver: RibbonFrameDriving {
 
 /// Ticks on its own at about 120 Hz, reporting a 60 Hz cadence, like a running display link.
 @MainActor
-private final class RunningFrameDriver: RibbonFrameDriving {
+final class RunningFrameDriver: RibbonFrameDriving {
     private var ticker: Task<Void, Never>?
     let frameInterval: TimeInterval? = 1.0 / 60
 

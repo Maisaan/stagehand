@@ -17,6 +17,7 @@ PHASE_KEYS = {
     "rapid": ["settledMs", "timedOut", "mainThreadWaitsMs", "finalFocusMatches"],
     "spaces": ["switches", "mainThreadWaitsMs", "finalFocusMatches"],
     "interface": ["appBarShowMs", "settingsOpenMs", "quickControlsOpenMs"],
+    "gestures": ["coverage", "gestures", "mainThreadWaitsMs", "stalls"],
     "idle": ["seconds", "resourceCost"],
     "pause": ["callMs"],
 }
@@ -88,6 +89,8 @@ class Metric:
     # Added after older results were saved: shown only when both sides have it.
     optional: bool = False
     unit: str = "ms"
+    # Only list items whose fields have these values, e.g. one gesture scenario.
+    match: dict | None = None
 
 
 @dataclass
@@ -156,6 +159,8 @@ def expected_phases(raw):
         phases.insert(2, "panes")
     elif settings.get("columnStacks"):
         phases.insert(2, "members")
+    if settings.get("gestures"):
+        phases.insert(phases.index("rapid") + 1, "gestures")
     return phases
 
 
@@ -191,6 +196,34 @@ def numbers(value, samples):
             samples.values.append(float(item))
 
 
+GESTURE_SCENARIOS = {"flick": "commit", "slowDrag": "commit", "reversal": "restore"}
+
+
+def gesture_metric_definitions():
+    metrics = []
+    for scenario, expected in GESTURE_SCENARIOS.items():
+        match = {"scenario": scenario}
+        metrics += [
+            Metric("gestures.follow.startedAfterTouchMs", f"{scenario}: touch to follow start", "no follow", match=match),
+            Metric("gestures.follow.firstAcknowledgedWriteAfterTouchMs",
+                   f"{scenario}: touch to first acknowledged follow write", "none acknowledged", match=match),
+            Metric("gestures.follow.largestCallbackGapMs", f"{scenario}: longest follow callback gap", "no follow",
+                   match=match),
+            Metric("gestures.release.motionScheduledMs", f"{scenario}: release to motion scheduled", "not slid",
+                   match=match),
+        ]
+        if expected == "commit":
+            metrics.append(Metric("gestures.release.focusMs", f"{scenario}: release to focus confirmed",
+                                  "focus unconfirmed", match=match))
+        metrics += [
+            Metric("gestures.release.settledMs", f"{scenario}: release to settled", match=match),
+            Metric("gestures.release.focusedGapMs", f"{scenario}: longest freeze of the destination", "not slid",
+                   match=match),
+            Metric("gestures.largestStimulusLagMs", f"{scenario}: stimulus lag (the replay's own)", match=match),
+        ]
+    return metrics
+
+
 RESOURCE_METRICS = [
     Metric("resourceCost.cpuMs", "process CPU over the phase", "unavailable", optional=True),
     Metric("resourceCost.idleWakeupsPerSecond", "idle wakeups", "unavailable", optional=True, unit="/s"),
@@ -214,6 +247,9 @@ def phase_metric_definitions(phase):
                 Metric("quickControlsOpenMs", "quick controls open")]
     if phase == "idle":
         return []
+    if phase == "gestures":
+        return gesture_metric_definitions() + [Metric("mainThreadWaitsMs", "main-thread waits"),
+                                              Metric("stalls.waitedMs", "stalls")]
     if phase == "pause":
         return [Metric("callMs", "pause call, restoring frames")]
     metrics = [
@@ -245,6 +281,10 @@ def count_definitions(phase):
         return [Count("timedOut", "timed out"), Count("finalFocusMatches=false", "final focus wrong")] + STALL_KIND_COUNTS
     if phase in ("interface", "idle", "pause"):
         return []
+    if phase == "gestures":
+        return [Count("gestures.outcomeMatches=false", "gestures not ending as their schedule should"),
+                Count("gestures.follow.droppedTicks", "dropped follow ticks"),
+                Count("stalls", "stalls")] + STALL_KIND_COUNTS
     counts = [Count("switches.timedOut", "switches timed out"),
               Count("switches.focusRejected", "focus rejected"),
               Count("switches.droppedFrames", "dropped frames"),
@@ -257,49 +297,72 @@ def count_definitions(phase):
     return counts + STALL_KIND_COUNTS
 
 
-def extract_metric(phase_data, key):
-    container, _, field_name = key.rpartition(".")
-    samples = Samples()
-    if not container:
-        if field_name not in phase_data:
-            return None
-        numbers(phase_data[field_name], samples)
-        return samples
+MISSING = object()
+
+
+def lookup(item, path):
+    for part in path.split("."):
+        if not isinstance(item, dict) or part not in item:
+            return MISSING
+        item = item[part]
+    return item
+
+
+def matching_items(phase_data, container, match):
+    """The items of a list (or the one dict) under `container`, keeping those whose fields equal `match`."""
     items = phase_data.get(container)
     if isinstance(items, dict):
         items = [items]
     if not isinstance(items, list):
         return None
-    present = [item for item in items if field_name in item]
+    return [item for item in items if all(item.get(name) == value for name, value in (match or {}).items())]
+
+
+def extract_metric(phase_data, key, match=None):
+    container, _, path = key.partition(".")
+    samples = Samples()
+    if not path:
+        if container not in phase_data:
+            return None
+        numbers(phase_data[container], samples)
+        return samples
+    items = matching_items(phase_data, container, match)
+    if items is None:
+        return None
+    present = [value for value in (lookup(item, path) for item in items) if value is not MISSING]
     if items and not present:
         return None
-    for item in present:
-        numbers(item[field_name], samples)
+    for value in present:
+        numbers(value, samples)
     return samples
 
 
 def extract_count(phase_data, key):
-    if key.endswith("=false"):
+    if key.endswith("=false") and "." not in key:
         name = key.removesuffix("=false")
         return None if name not in phase_data else int(phase_data[name] is False)
     if "=" in key:
         # "stalls.kind=starved": items whose field has that value; missing when no item has the field.
         path, _, wanted = key.partition("=")
-        container, _, field_name = path.rpartition(".")
+        container, _, field_path = path.partition(".")
+        wanted = {"true": True, "false": False}.get(wanted, wanted)
         items = phase_data.get(container)
-        if not isinstance(items, list) or (items and all(field_name not in item for item in items)):
+        if not isinstance(items, list) or (items and all(lookup(item, field_path) is MISSING for item in items)):
             return None
-        return sum(1 for item in items if item.get(field_name) == wanted)
-    container, _, field_name = key.rpartition(".")
-    if not container:
-        value = phase_data.get(field_name)
+        return sum(1 for item in items if lookup(item, field_path) == wanted)
+    container, _, path = key.partition(".")
+    if not path:
+        value = phase_data.get(container)
         if value is None:
             return None
         return len(value) if isinstance(value, list) else int(bool(value))
     items = phase_data.get(container)
-    if not isinstance(items, list) or any(field_name not in item for item in items):
+    if not isinstance(items, list):
         return None
-    return sum(int(item[field_name] or 0) for item in items)
+    values = [lookup(item, path) for item in items]
+    if any(value is MISSING for value in values):
+        return None
+    return sum(int(value or 0) for value in values)
 
 
 def percentile(sorted_values, fraction):
@@ -320,12 +383,16 @@ def describe_dict_differences(prefix, left, right, left_name, right_name):
     return differences
 
 
+# Settings added after older results were saved, with the value those runs had.
+SETTINGS_DEFAULTS = {"gestures": False}
+
+
 def comparable_profile(run):
     return {
         "mode": run.mode,
         "logging": run.meta.get("loggingEnabled"),
         "environment": None if run.raw is None else run.raw.get("environment") or {},
-        "settings": None if run.raw is None else run.raw.get("settings") or {},
+        "settings": None if run.raw is None else {**SETTINGS_DEFAULTS, **(run.raw.get("settings") or {})},
     }
 
 
@@ -463,7 +530,7 @@ def collect_metric(runs, phase, metric):
     missing = []
     for run in runs:
         phase_data = (run.raw.get("phases") or {}).get(phase)
-        samples = None if phase_data is None else extract_metric(phase_data, metric.key)
+        samples = None if phase_data is None else extract_metric(phase_data, metric.key, metric.match)
         if samples is None:
             missing.append(run.name)
             continue

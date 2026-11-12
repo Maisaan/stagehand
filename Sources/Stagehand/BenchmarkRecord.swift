@@ -38,12 +38,14 @@ struct BenchmarkRecord: Encodable {
         var measuresStacking: Bool
         var tiles: Bool
         var switches: Int
+        var gestures: Bool
     }
 
     struct Phases: Encodable {
         var start: Start?
         var sequential: SwitchPhase?
         var rapid: Rapid?
+        var gestures: GesturePhase?
         var panes: SwitchPhase?
         var spaces: SwitchPhase?
         var interface: Interface?
@@ -261,6 +263,165 @@ struct BenchmarkRecord: Encodable {
         var stalls: [Stall] = []
         var finalFocusMatches: Bool
         var resourceCost: ResourceCost?
+    }
+
+    /// Synthetic swipes: fixed displacement schedules through the model's gesture handler, so the
+    /// production follow and settle run. Not trackpad recognition or delivery.
+    struct GesturePhase: Encodable {
+        let coverage = "modelPath"
+        var gestures: [Gesture] = []
+        var mainThreadWaitsMs: [Double] = []
+        var stalls: [Stall] = []
+        var resourceCost: ResourceCost?
+
+        private enum CodingKeys: String, CodingKey { case coverage, gestures, mainThreadWaitsMs, stalls, resourceCost }
+    }
+
+    struct Gesture: Encodable {
+        enum Outcome: String, Encodable {
+            /// The release queued the swipe's change.
+            case commit
+            /// The follow was handed to `gesture.preview.restore`.
+            case restore
+            /// A change that was not the swipe's own cut its follow.
+            case interrupted
+            case none
+        }
+
+        var scenario: String
+        var expected: Outcome
+        var outcome: Outcome = .none
+        var gestureID: Int?
+        /// The change the release queued; nil when it queued none.
+        var changeID: Int?
+        /// Stimulus times from the gesture's planned start; actual is when main ran the handler.
+        var plannedStimulusMs: [Double] = []
+        var actualStimulusMs: [Double] = []
+        /// Nil when no live follow ran.
+        var follow: Follow?
+        /// From the release, measured as a switch is.
+        var release = Switch()
+
+        var largestStimulusLagMs: Double { zip(actualStimulusMs, plannedStimulusMs).map { $0 - $1 }.max() ?? 0 }
+
+        private enum CodingKeys: String, CodingKey {
+            case scenario, expected, outcome, outcomeMatches, gestureID, changeID, plannedStimulusMs,
+                 actualStimulusMs, largestStimulusLagMs, follow, release
+        }
+
+        /// From what ended the follow and what the release queued.
+        static func outcome(changeID: Int?, follow: Follow?) -> Outcome {
+            if let follow, follow.handoff == "change", follow.handoffChangeID != changeID { return .interrupted }
+            if changeID != nil { return .commit }
+            return follow?.settleOperation == "gesture.preview.restore" ? .restore : .none
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(scenario, forKey: .scenario)
+            try container.encode(expected, forKey: .expected)
+            try container.encode(outcome, forKey: .outcome)
+            try container.encode(outcome == expected, forKey: .outcomeMatches)
+            try container.encode(gestureID, forKey: .gestureID)
+            try container.encode(changeID, forKey: .changeID)
+            try container.encode(plannedStimulusMs, forKey: .plannedStimulusMs)
+            try container.encode(actualStimulusMs, forKey: .actualStimulusMs)
+            try container.encode(largestStimulusLagMs, forKey: .largestStimulusLagMs)
+            try container.encode(follow, forKey: .follow)
+            try container.encode(release, forKey: .release)
+        }
+    }
+
+    /// A gesture's live follow, from `gesture_follow_ended`'s numbers. Touch times are the stimulus's planned start.
+    struct Follow: Encodable {
+        var handoff: String
+        var settleOperation: String?
+        var handoffChangeID: Int?
+        var durationMs: Double
+        var ticks: Int
+        var droppedTicks: Int?
+        var largestTickGapMs: Double?
+        var largestCallbackGapMs: Double?
+        var lateCallbacks: Int
+        var startedAfterTouchMs: Double?
+        var firstAcknowledgedWriteAfterTouchMs: Double?
+        var motionWritesSent: Int
+        var motionWritesAcknowledged: Int
+        var motionWritesUnacknowledged: Int
+        var motionWritesFailed: Int
+
+        init(_ ended: GestureFollowEnded) {
+            func milliseconds(_ seconds: TimeInterval?) -> Double? { seconds.map { $0 * 1_000 } }
+            switch ended.handoff {
+            case .change(let id):
+                handoff = "change"
+                handoffChangeID = id
+            case .settle(let operation, let changeID):
+                handoff = "settle"
+                settleOperation = operation
+                handoffChangeID = changeID
+            case .cancelled: handoff = "cancelled"
+            }
+            let summary = ended.summary
+            durationMs = (summary.ended - summary.started) * 1_000
+            ticks = summary.ticks
+            droppedTicks = summary.droppedTicks
+            largestTickGapMs = milliseconds(summary.largestTargetGap)
+            largestCallbackGapMs = milliseconds(summary.largestCallbackGap)
+            lateCallbacks = summary.lateCallbacks
+            startedAfterTouchMs = milliseconds(ended.followStartedAfterTouch)
+            firstAcknowledgedWriteAfterTouchMs = milliseconds(ended.firstAcknowledgedWriteAfterTouch)
+            motionWritesSent = ended.writes.sent
+            motionWritesAcknowledged = ended.writes.acknowledged
+            motionWritesUnacknowledged = ended.writes.unacknowledged
+            motionWritesFailed = ended.writes.failed
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case handoff, settleOperation, handoffChangeID, durationMs, ticks, droppedTicks, largestTickGapMs, largestCallbackGapMs,
+                 lateCallbacks, startedAfterTouchMs, firstAcknowledgedWriteAfterTouchMs, motionWritesSent,
+                 motionWritesAcknowledged, motionWritesUnacknowledged, motionWritesFailed
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(handoff, forKey: .handoff)
+            try container.encode(settleOperation, forKey: .settleOperation)
+            try container.encode(handoffChangeID, forKey: .handoffChangeID)
+            try container.encode(durationMs, forKey: .durationMs)
+            try container.encode(ticks, forKey: .ticks)
+            try container.encode(droppedTicks, forKey: .droppedTicks)
+            try container.encode(largestTickGapMs, forKey: .largestTickGapMs)
+            try container.encode(largestCallbackGapMs, forKey: .largestCallbackGapMs)
+            try container.encode(lateCallbacks, forKey: .lateCallbacks)
+            try container.encode(startedAfterTouchMs, forKey: .startedAfterTouchMs)
+            try container.encode(firstAcknowledgedWriteAfterTouchMs, forKey: .firstAcknowledgedWriteAfterTouchMs)
+            try container.encode(motionWritesSent, forKey: .motionWritesSent)
+            try container.encode(motionWritesAcknowledged, forKey: .motionWritesAcknowledged)
+            try container.encode(motionWritesUnacknowledged, forKey: .motionWritesUnacknowledged)
+            try container.encode(motionWritesFailed, forKey: .motionWritesFailed)
+        }
+    }
+
+    /// A gesture that did not do what its schedule should, had no live follow, or whose commit was not confirmed.
+    static func gestureFailures(_ phase: GesturePhase) -> [String] {
+        var failures: [String] = []
+        for (index, gesture) in phase.gestures.enumerated() {
+            let name = "gestures: \(gesture.scenario) (gesture \(index + 1))"
+            if gesture.outcome == .interrupted {
+                failures.append("\(name): change \(gesture.follow?.handoffChangeID.map(String.init) ?? "?")"
+                    + " cut its follow before the release")
+            } else if gesture.outcome != gesture.expected {
+                failures.append("\(name) ended \(gesture.outcome.rawValue), expected \(gesture.expected.rawValue)")
+            }
+            if gesture.follow == nil { failures.append("\(name) had no live follow") }
+            if gesture.release.timedOut { failures.append("\(name): idle wait timed out") }
+            if gesture.release.focusRejected { failures.append("\(name): focus rejected") }
+            if gesture.expected == .commit, gesture.outcome == .commit, !gesture.release.focusAttempted {
+                failures.append("\(name): no focus attempt")
+            }
+        }
+        return failures
     }
 
     struct Interface: Encodable {

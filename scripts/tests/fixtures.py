@@ -36,6 +36,30 @@ def raw(focus_times=(200.0, 220.0, 240.0), tiles=False):
             "settings": settings, "phases": phases}
 
 
+def gesture(scenario="flick", expected="commit", outcome=None, touch_to_write=20.0, settled=400.0):
+    outcome = outcome or expected
+    return {"scenario": scenario, "expected": expected, "outcome": outcome, "outcomeMatches": outcome == expected,
+            "gestureID": 1, "changeID": 2 if outcome == "commit" else None,
+            "plannedStimulusMs": [0.0, 8.0], "actualStimulusMs": [0.5, 9.0], "largestStimulusLagMs": 1.0,
+            "follow": {"handoff": "change" if outcome == "commit" else "settle",
+                       "settleOperation": None if outcome == "commit" else "gesture.preview.restore",
+                       "handoffChangeID": None, "durationMs": 60.0, "ticks": 7, "droppedTicks": 0,
+                       "largestTickGapMs": 16.7, "largestCallbackGapMs": 18.0, "lateCallbacks": 0,
+                       "startedAfterTouchMs": 4.0, "firstAcknowledgedWriteAfterTouchMs": touch_to_write,
+                       "motionWritesSent": 14, "motionWritesAcknowledged": 14, "motionWritesUnacknowledged": 0,
+                       "motionWritesFailed": 0},
+            "release": dict(switch(focus=220.0 if expected == "commit" else None, settled=settled))}
+
+
+def with_gestures(raw_document, **overrides):
+    raw_document["settings"]["gestures"] = True
+    raw_document["phases"]["gestures"] = {
+        "coverage": "modelPath",
+        "gestures": [gesture(**overrides), gesture("slowDrag"), gesture("reversal", "restore")],
+        "mainThreadWaitsMs": [4.0, 5.0], "stalls": []}
+    return raw_document
+
+
 def meta(mode="busy", sha="a" * 40, repeat=1, repeats=1, logging=True, exit_status=0, outcome="pass", load=1.0):
     return {"schema": 1, "mode": mode, "flags": ["--busy"], "loggingEnabled": logging,
             "repeat": repeat, "repeats": repeats, "timeoutSeconds": 240,

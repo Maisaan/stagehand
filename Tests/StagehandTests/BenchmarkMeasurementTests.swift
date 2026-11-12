@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import QuartzCore
 import Testing
@@ -288,5 +289,108 @@ struct BenchmarkMeasurementTests {
         #expect(build == ["version": "ae0cfcd-dirty", "buildNumber": "812",
                           "executableModified": "2026-11-13T01:00:00Z"])
         #expect(json?["schema"] as? Int == 1)
+    }
+}
+
+/// The `--gestures` scenarios: model-path swipes with planned stimulus times.
+@MainActor
+@Suite(.serialized)
+struct BenchmarkGestureTests {
+    @Test func scenariosFlickSlowDragAndReturnToTheirStart() {
+        let configuration = RibbonAnimationConfiguration.default
+        for scenario in StagehandModel.GestureScenario.all {
+            let events = scenario.events(towardNext: true, action: .focusNext)
+            #expect(events.count == scenario.schedule.count)
+            #expect(zip(events.dropFirst(), events).allSatisfy { $0.milliseconds - $1.milliseconds == 8 })
+            guard case .began(.horizontal, let first, .plain) = events.first?.event,
+                  case .ended(let last, let velocity, _, .plain) = events.last?.event else {
+                Issue.record("\(scenario.name) does not begin and end as a swipe")
+                continue
+            }
+            #expect(first < 0, "toward the next window is a negative displacement")
+            switch scenario.name {
+            case "flick":
+                #expect(-velocity >= configuration.flickVelocity && -last >= configuration.flickDistance)
+                #expect(events.last!.milliseconds == 56)
+            case "slowDrag":
+                #expect(-velocity < configuration.flickVelocity)
+            default:
+                #expect(last == 0)
+                #expect(velocity > 0, "released moving back")
+            }
+        }
+        guard case .began(_, let displacement, _) = StagehandModel.GestureScenario.flick
+            .events(towardNext: false, action: .focusPrevious).first?.event else { return }
+        #expect(displacement > 0)
+    }
+
+    private func follow(_ handoff: GestureFollowEnded.Handoff) -> BenchmarkRecord.Follow {
+        BenchmarkRecord.Follow(GestureFollowEnded(
+            gestureID: 7, summary: RibbonFollowSummary(started: 1, ended: 1.2, ticks: 12, droppedTicks: 0,
+                                                       largestTargetGap: 0.017, largestCallbackGap: 0.02,
+                                                       lateCallbacks: 0, handedToAnimation: false),
+            touchesLanded: 0.99, writes: MotionWriteSummary(), handoff: handoff))
+    }
+
+    /// A follow cut by another change (a refresh mid-swipe) is not the swipe's own commit.
+    @Test func aGestureIsJudgedByWhatEndedItsFollowAndWhatItsReleaseQueued() {
+        typealias Gesture = BenchmarkRecord.Gesture
+        #expect(Gesture.outcome(changeID: 5, follow: follow(.change(id: 5))) == .commit)
+        #expect(Gesture.outcome(changeID: 5, follow: follow(.settle(operation: "action.focusNext", changeID: 5)))
+            == .commit)
+        #expect(Gesture.outcome(changeID: nil, follow: follow(.settle(operation: "gesture.preview.restore",
+                                                                       changeID: nil))) == .restore)
+        #expect(Gesture.outcome(changeID: nil, follow: follow(.change(id: 4))) == .interrupted)
+        #expect(Gesture.outcome(changeID: 6, follow: follow(.change(id: 4))) == .interrupted)
+        #expect(Gesture.outcome(changeID: nil, follow: follow(.cancelled)) == .none)
+        #expect(Gesture.outcome(changeID: nil, follow: nil) == .none)
+
+        var cut = Gesture(scenario: "slowDrag", expected: .commit)
+        cut.follow = follow(.change(id: 4))
+        cut.outcome = .interrupted
+        #expect(BenchmarkRecord.gestureFailures(.init(gestures: [cut]))
+            == ["gestures: slowDrag (gesture 1): change 4 cut its follow before the release"])
+        #expect(abs((cut.follow?.startedAfterTouchMs ?? 0) - 10) < 1e-9)
+    }
+
+    @Test(.enabled(if: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "Reduce Motion turns off the preview"))
+    func theGesturePhaseCommitsFlicksAndDragsAndRestoresAReversal() async throws {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c", "d"], focused: "a", motionDriver: RunningFrameDriver())
+        defer { harness.cleanUp() }
+        // As a real scan does; the fake's own reports the frames it was created with.
+        harness.windows.scansReportLiveFrames = true
+        harness.model.start()
+        await harness.settle()
+        harness.model.diagnostics.isEnabled = false
+
+        let phase = await harness.model.measureGesturePhase(repetitions: 1, busy: false, monitor: MainThreadLatencyMonitor(),
+                                                            frameInterval: 1.0 / 60, stallKinds: .init())
+
+        #expect(phase.gestures.map(\.scenario) == ["flick", "slowDrag", "reversal"])
+        #expect(phase.gestures.map(\.outcome) == [.commit, .commit, .restore])
+        #expect(BenchmarkRecord.gestureFailures(phase) == [])
+        #expect(harness.model.gestureFollowSink == nil && harness.model.changeTraceSink == nil)
+        for gesture in phase.gestures {
+            let schedule = StagehandModel.GestureScenario.all.first { $0.name == gesture.scenario }!.schedule
+            #expect(gesture.plannedStimulusMs == schedule.map(\.milliseconds))
+            #expect(gesture.actualStimulusMs.count == schedule.count)
+            #expect(zip(gesture.actualStimulusMs, gesture.plannedStimulusMs).allSatisfy { $0 >= $1 - 1 })
+            let follow = try #require(gesture.follow)
+            #expect(follow.ticks > 0)
+            #expect(follow.startedAfterTouchMs != nil)
+            #expect(gesture.release.timedOut == false)
+        }
+        #expect(phase.gestures[2].follow?.settleOperation == "gesture.preview.restore")
+        #expect(phase.gestures[0].release.changeOutcome == "completed")
+        #expect(phase.gestures[0].release.focusMs != nil)
+        #expect(phase.gestures[2].release.changeOutcome == nil)
+        #expect(phase.resourceCost != nil)
+
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(phase)) as? [String: Any]
+        #expect(json?["coverage"] as? String == "modelPath")
+        let first = try #require((json?["gestures"] as? [[String: Any]])?.first)
+        #expect(first["outcomeMatches"] as? Bool == true)
+        #expect(first["largestStimulusLagMs"] is Double)
+        #expect((first["follow"] as? [String: Any])?["handoff"] != nil)
     }
 }
