@@ -1171,6 +1171,49 @@ public final class WindowSystem {
         return tracked.logicalFrame ?? readFrame(tracked.element)
     }
 
+    /// frame(windowID:) for each window, with the Accessibility reads on a background queue,
+    /// concurrently. Windows it cannot answer for are left out.
+    public func framesOffMain(_ windowIDs: [String]) async -> [String: CGRect] {
+        var frames: [String: CGRect] = [:]
+        var appReads: [(windowID: String, element: AXUIElement)] = []
+        for windowID in windowIDs {
+            if nativeWindows.contains(windowID: windowID) {
+                frames[windowID] = nativeWindows.frame(windowID: windowID)
+            } else if let tracked = windows[windowID] {
+                if let logicalFrame = tracked.logicalFrame {
+                    frames[windowID] = logicalFrame
+                } else {
+                    appReads.append((windowID, tracked.element))
+                }
+            }
+        }
+        guard !appReads.isEmpty else { return frames }
+        let request = FrameReadRequest(system: self, elements: appReads.map(\.element))
+        let readFrames = await withCheckedContinuation { (continuation: CheckedContinuation<[CGRect?], Never>) in
+            Self.frameReadQueue.async {
+                let results = OSAllocatedUnfairLock(initialState: [CGRect?](repeating: nil,
+                                                                            count: request.elements.count))
+                DispatchQueue.concurrentPerform(iterations: request.elements.count) { index in
+                    let frame = request.system.readFrame(request.elements[index])
+                    results.withLock { $0[index] = frame }
+                }
+                continuation.resume(returning: results.withLock { $0 })
+            }
+        }
+        for (read, frame) in zip(appReads, readFrames) {
+            frames[read.windowID] = frame
+        }
+        return frames
+    }
+
+    private struct FrameReadRequest: @unchecked Sendable {
+        let system: WindowSystem
+        let elements: [AXUIElement]
+    }
+
+    nonisolated private static let frameReadQueue = DispatchQueue(label: "app.stagehand.frame-read",
+                                                                  qos: .userInitiated, attributes: .concurrent)
+
     /// Where the window's focused sheet sits when the window is at `frame`. A sheet can be
     /// taller or wider than its window, such as Xcode's sign-in sheet over its short Settings window.
     public func sheetFrame(windowID: String, over frame: CGRect) -> CGRect? {

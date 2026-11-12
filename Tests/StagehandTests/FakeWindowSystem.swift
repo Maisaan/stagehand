@@ -180,6 +180,31 @@ final class FakeWindowSystem: WindowManaging {
         return window.frame
     }
 
+    /// While set, off-main frame reads are taken when asked but answer only at
+    /// releaseHeldFrameReads(), like a busy app replying at the messaging timeout.
+    var holdsFrameReadsOffMain = false
+    private var heldFrameReads: [CheckedContinuation<Void, Never>] = []
+    var heldFrameReadCount: Int { heldFrameReads.count }
+    private(set) var frameReadsOffMain: [[String]] = []
+
+    func releaseHeldFrameReads() {
+        let held = heldFrameReads
+        heldFrameReads.removeAll()
+        for read in held { read.resume() }
+    }
+
+    func framesOffMain(_ windowIDs: [String]) async -> [String: CGRect] {
+        frameReadsOffMain.append(windowIDs)
+        var frames: [String: CGRect] = [:]
+        for windowID in windowIDs {
+            if let frame = frame(windowID: windowID) { frames[windowID] = frame }
+        }
+        if holdsFrameReadsOffMain {
+            await withCheckedContinuation { heldFrameReads.append($0) }
+        }
+        return frames
+    }
+
     func observedFrame(windowID: String) -> CGRect? {
         observedFrameReads += 1
         guard !unreadableFrames.contains(windowID) else { return nil }

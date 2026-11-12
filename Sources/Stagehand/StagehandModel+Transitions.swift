@@ -637,14 +637,24 @@ extension StagehandModel {
                     destinationPID = record.pid
                 }
                 var constrained = false
+                // A slide's windows were matched or written just above. A space
+                // switch reads back after activation, when an app may have resized.
+                let actualFrames: [String: CGRect]
+                if slideFrom != nil {
+                    actualFrames = acceptedFrames
+                } else {
+                    actualFrames = await windowSystem.framesOffMain(visible.map(\.windowID))
+                    guard desktopScope.refresh() == .home else {
+                        nativeDesktopChanged()
+                        return .interrupted
+                    }
+                    guard isRunning, !isSuspended, !Task.isCancelled else {
+                        if let token { focusGate.cancelTransfer(token: token) }
+                        return .interrupted
+                    }
+                }
                 for placement in visible {
-                    // A slide's windows were matched or written just above. A space
-                    // switch reads back after activation, when an app may have resized.
-                    guard let actual = slideFrom != nil
-                        ? acceptedFrames[placement.windowID]
-                        : MainThreadActivity.during("layout readback after focus", {
-                            windowSystem.frame(windowID: placement.windowID)
-                        }) else { continue }
+                    guard let actual = actualFrames[placement.windowID] else { continue }
                     acceptedFrames[placement.windowID] = actual
                     var constrainedAxes: [String] = []
                     if actual.width.isFinite, actual.width > 0,
@@ -846,11 +856,13 @@ extension StagehandModel {
             }
             if !focusAlongsideSlide, let focusedID = state.focusedWindowID {
                 // An app can resize its window while activating. Correct it now that
-                // the motion has ended. Each frame read is a blocking AX round trip,
-                // so read once and again only after a write.
-                var frame = MainThreadActivity.during("layout readback after motion") {
-                    windowSystem.frame(windowID: focusedID)
+                // the motion has ended: read once, and again only after a write.
+                var frame = await windowSystem.framesOffMain([focusedID])[focusedID]
+                guard desktopScope.refresh() == .home else {
+                    nativeDesktopChanged()
+                    return .interrupted
                 }
+                guard isRunning, !isSuspended, !Task.isCancelled else { return .interrupted }
                 if let target = placements.first(where: { $0.windowID == focusedID })?.frame,
                    let actual = frame, !framesMatch(observed: actual, target: target) {
                     let written = MainThreadActivity.during("layout frame write") {
@@ -878,9 +890,18 @@ extension StagehandModel {
                 try? await Task.sleep(for: .milliseconds(12))
                 guard isRunning, !isSuspended, !Task.isCancelled else { return .interrupted }
             }
-            if let focused = state.focusedWindowID,
-               let frame = MainThreadActivity.during("layout border frame read", { windowSystem.frame(windowID: focused) }) {
-                updateFocusBorder(windowID: focused, frame: frame, raiseBorder: true)
+            if let focused = state.focusedWindowID {
+                let frame = await windowSystem.framesOffMain([focused])[focused]
+                guard desktopScope.refresh() == .home else {
+                    nativeDesktopChanged()
+                    return .interrupted
+                }
+                guard isRunning, !isSuspended, !Task.isCancelled else { return .interrupted }
+                if let frame {
+                    updateFocusBorder(windowID: focused, frame: frame, raiseBorder: true)
+                } else {
+                    focusBorder.hide()
+                }
             } else {
                 focusBorder.hide()
             }

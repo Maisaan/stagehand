@@ -54,6 +54,8 @@ public protocol WindowManaging: AnyObject {
     func record(windowID: String) -> WindowRecord?
 
     func frame(windowID: String) -> CGRect?
+    /// The same frames, read without waiting on the windows' apps on the main thread.
+    func framesOffMain(_ windowIDs: [String]) async -> [String: CGRect]
     func observedFrame(windowID: String) -> CGRect?
     /// Where the window's focused attached sheet sits when the window is at `frame`.
     func sheetFrame(windowID: String, over frame: CGRect) -> CGRect?
