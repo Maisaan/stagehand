@@ -374,10 +374,12 @@ final class FakeEmptySpace: EmptySpacePresenting {
 /// Records what the app bar and border would show without opening windows.
 @MainActor
 final class FakeOverlays: NavigationPresenting {
-    var onFocusWindow: ((String) -> Void)?
+    var onFocusWindow: ((String, Int?) -> Void)?
     var onSelectSpace: ((Int) -> Void)?
     var onShareWindow: ((String, Int) -> Void)?
-    var onRemoveWindow: ((String) -> Void)?
+    var onRemoveWindow: ((String, Int?) -> Void)?
+    var navigationDisplays: (() -> [NavigationDisplay])?
+    private(set) var navigationShown = 0
     var canRevealNavigation: (() -> Bool)?
     var pointerCarriesDrop: (() -> Bool)?
     var onPointerMoved: (() -> Void)?
@@ -396,7 +398,7 @@ final class FakeOverlays: NavigationPresenting {
         borderFrame = visible ? frame : nil
         borderSheet = visible ? sheet : nil
     }
-    func showNavigation(state: WorkspaceState, windows: [WindowRecord]) {}
+    func showNavigation(state: WorkspaceState, windows: [WindowRecord]) { navigationShown += 1 }
     func updateNavigation(state: WorkspaceState, windows: [WindowRecord]) {}
     func showWarning(_ message: String) { warnings.append(message) }
     private(set) var notices: [String] = []
@@ -475,6 +477,14 @@ extension ScreenDescription {
 
 extension DisplayArrangement {
     @MainActor static var testBuiltIn: DisplayArrangement { DisplayArrangement(screens: [.testBuiltIn]) }
+    /// A 1920 × 1080 external display touching the built-in display's right edge.
+    @MainActor static var builtInBesideExternal: DisplayArrangement {
+        let builtIn = ScreenDescription.testBuiltIn
+        return DisplayArrangement(screens: [builtIn, .external(
+            number: 2,
+            frame: CGRect(x: builtIn.frame.maxX, y: builtIn.frame.minY, width: 1920, height: 1080),
+            visibleFrame: CGRect(x: builtIn.frame.maxX, y: builtIn.frame.minY, width: 1920, height: 1055))])
+    }
     /// Clamshell: an external display and no built-in one.
     static let externalOnly = DisplayArrangement(screens: [
         .external(number: 2, frame: CGRect(x: 0, y: 0, width: 2560, height: 1440))

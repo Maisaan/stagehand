@@ -86,10 +86,11 @@ final class NavigationOverlays {
     private var dismissTask: Task<Void, Never>?
     let hudModel = NavigationHUDModel()
     private let shortcutHints: ShortcutHintsRibbon
-    var onFocusWindow: ((String) -> Void)?
+    var onFocusWindow: ((String, Int?) -> Void)?
     var onSelectSpace: ((Int) -> Void)?
     var onShareWindow: ((String, Int) -> Void)?
-    var onRemoveWindow: ((String) -> Void)?
+    var onRemoveWindow: ((String, Int?) -> Void)?
+    var navigationDisplays: (() -> [NavigationDisplay])?
     var canRevealNavigation: (() -> Bool)?
     var pointerCarriesDrop: (() -> Bool)?
     var onPointerMoved: (() -> Void)? {
@@ -97,8 +98,12 @@ final class NavigationOverlays {
     }
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
-    private var hoverFrame: CGRect?
+    /// The pointer over one of these reveals the bar on that display.
+    private var hoverFrames: [(frame: CGRect, display: NavigationDisplay)] = []
     private var contentFrame: CGRect?
+    /// The display the bar was last presented on, and the workspace it last published.
+    private var presentedDisplay: NavigationDisplay?
+    private var navigationState: (state: WorkspaceState, windows: [WindowRecord])?
     private var pointerKeepsHUDVisible = false
     private let reduceMotion: () -> Bool
     private let pointerLocation: () -> CGPoint
@@ -109,10 +114,11 @@ final class NavigationOverlays {
         self.reduceMotion = reduceMotion
         self.pointerLocation = pointerLocation
         shortcutHints = ShortcutHintsRibbon(reduceMotion: reduceMotion)
-        hudModel.onFocusWindow = { [weak self] id in self?.onFocusWindow?(id) }
+        shortcutHints.screen = { [weak self] in self?.screen(of: self?.focusedNavigationDisplay) }
+        hudModel.onFocusWindow = { [weak self] id in self?.onFocusWindow?(id, self?.presentedOtherSpaceIndex) }
         hudModel.onSelectSpace = { [weak self] index in self?.onSelectSpace?(index) }
         hudModel.onShareWindow = { [weak self] id, index in self?.onShareWindow?(id, index) }
-        hudModel.onRemoveWindow = { [weak self] id in self?.onRemoveWindow?(id) }
+        hudModel.onRemoveWindow = { [weak self] id in self?.onRemoveWindow?(id, self?.presentedOtherSpaceIndex) }
         hudModel.onContentChange = { [weak self] in
             self?.presentHUD(dismissAfter: .milliseconds(1_500))
         }
@@ -201,6 +207,7 @@ final class NavigationOverlays {
     }
 
     func showNavigation(state: WorkspaceState, windows: [WindowRecord]) {
+        presentedDisplay = focusedNavigationDisplay
         updateNavigation(state: state, windows: windows)
         hudModel.showingSpaces = false
         hudModel.warning = nil
@@ -217,25 +224,50 @@ final class NavigationOverlays {
 
     /// Keep hover content current without opening the bar during background reconciliation.
     func updateNavigation(state: WorkspaceState, windows: [WindowRecord]) {
+        navigationState = (state, windows)
+        if let presented = presentedDisplay {
+            presentedDisplay = navigationDisplays?().first { $0.number == presented.number } ?? focusedNavigationDisplay
+        }
         // Publishing to the app bar's model re-renders its SwiftUI content synchronously.
-        MainThreadActivity.during("hudModel update") { publishNavigation(state: state, windows: windows) }
-        if canRevealNavigation != nil { installMouseMonitors() }
+        MainThreadActivity.during("hudModel update") { publishNavigation() }
+        if canRevealNavigation != nil {
+            installMouseMonitors()
+            if hoverFrames.map(\.display.number) != navigationDisplays?().map(\.number) { updateHoverFrames() }
+        }
     }
 
-    private func publishNavigation(state: WorkspaceState, windows: [WindowRecord]) {
-        let recordsByID = Dictionary(windows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let records = state.currentSpace.windowIDs.compactMap { recordsByID[$0] }
-        let tiles = NavigationHUDModel.tiles(of: state.currentSpace, records: recordsByID)
-        let space = state.activeSpaceIndex + 1
-        let availableSpaceIndices = state.displayedSpaceIndices
+    /// The bar shows the space of the display it is on: the focused space, or the space
+    /// another display shows while the pointer is over that display's bar.
+    private func publishNavigation() {
+        guard let navigationState else { return }
+        let state = navigationState.state
+        let content = NavigationHUDContent(state: state, otherSpaceIndex: presentedOtherSpaceIndex,
+                                           display: presentedDisplay?.id)
+        let recordsByID = Dictionary(navigationState.windows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let records = content.space.windowIDs.compactMap { recordsByID[$0] }
+        let tiles = NavigationHUDModel.tiles(of: content.space, records: recordsByID)
+        let space = content.spaceIndex + 1
         if hudModel.space != space { hudModel.space = space }
         if hudModel.windows != records { hudModel.windows = records }
         if hudModel.tiles != tiles { hudModel.tiles = tiles }
-        hudModel.setFocusedID(state.focusedWindowID, animate: hud?.isVisible == true)
+        hudModel.setFocusedID(content.space.focusedWindowID, animate: hud?.isVisible == true)
         if hudModel.spaces != state.spaces { hudModel.spaces = state.spaces }
-        if hudModel.availableSpaceIndices != availableSpaceIndices {
-            hudModel.availableSpaceIndices = availableSpaceIndices
+        if hudModel.availableSpaceIndices != content.availableSpaceIndices {
+            hudModel.availableSpaceIndices = content.availableSpaceIndices
         }
+    }
+
+    private var focusedNavigationDisplay: NavigationDisplay? {
+        navigationDisplays?().first(where: \.isFocused)
+    }
+
+    /// Set while the bar shows a display other than the focused one.
+    private var presentedOtherSpaceIndex: Int? {
+        presentedDisplay.flatMap { $0.isFocused ? nil : $0.spaceIndex }
+    }
+
+    private func screen(of display: NavigationDisplay?) -> NSScreen? {
+        display.flatMap { NSScreen.screen(displayNumber: $0.number) } ?? NSScreen.screens.first
     }
 
     private func installMouseMonitors() {
@@ -250,20 +282,25 @@ final class NavigationOverlays {
             self?.pointerMoved()
             return event
         }
-        updateHoverFrame()
+        updateHoverFrames()
     }
 
-    private func updateHoverFrame() {
-        guard let screen = NSScreen.managedDisplay else { return }
+    private func updateHoverFrames() {
+        hoverFrames = (navigationDisplays?() ?? []).compactMap { display in
+            NSScreen.screen(displayNumber: display.number).map { (hoverFrame(on: $0), display) }
+        }
+    }
+
+    private func hoverFrame(on screen: NSScreen) -> CGRect {
         let geometry = NavigationHUDGeometry.layout(
             screenFrame: screen.frame, visibleFrame: screen.visibleFrame,
             safeAreaTop: screen.safeAreaInsets.top,
             auxiliaryLeft: screen.auxiliaryTopLeftArea, auxiliaryRight: screen.auxiliaryTopRightArea,
             windowCount: hudModel.displayedItemCount)
         let width = max(120, (screen.auxiliaryTopRightArea?.minX ?? 0) - (screen.auxiliaryTopLeftArea?.maxX ?? 0))
-        hoverFrame = CGRect(x: geometry.contentFrame.midX - width / 2,
-                            y: geometry.contentFrame.maxY - 4, width: width,
-                            height: screen.frame.maxY - geometry.contentFrame.maxY + 4)
+        return CGRect(x: geometry.contentFrame.midX - width / 2,
+                      y: geometry.contentFrame.maxY - 4, width: width,
+                      height: screen.frame.maxY - geometry.contentFrame.maxY + 4)
     }
 
     /// A panel that accepts mouse events catches every click in its frame, including the
@@ -282,9 +319,9 @@ final class NavigationOverlays {
         if let hud, hud.ignoresMouseEvents != hudIgnoresPointer(at: point), NSEvent.pressedMouseButtons == 0 {
             hud.ignoresMouseEvents.toggle()
         }
-        let insideTrigger = hoverFrame?.contains(point) == true
+        let hovered = hoverFrames.first { $0.frame.contains(point) }?.display
         let insideBar = hud?.isVisible == true && hudModel.warning == nil && contentFrame?.contains(point) == true
-        let inside = insideTrigger || insideBar
+        let inside = hovered != nil || insideBar
         guard inside != pointerKeepsHUDVisible else { return }
         guard inside else {
             pointerKeepsHUDVisible = false
@@ -294,11 +331,15 @@ final class NavigationOverlays {
         guard NSEvent.pressedMouseButtons == 0, canRevealNavigation?() == true else { return }
         pointerKeepsHUDVisible = true
         hudModel.warning = nil
+        if let hovered, hovered.number != presentedDisplay?.number {
+            presentedDisplay = navigationDisplays?().first { $0.number == hovered.number } ?? hovered
+            MainThreadActivity.during("hudModel update") { publishNavigation() }
+        }
         presentHUD(dismissAfter: .milliseconds(1_500))
     }
 
     private func presentHUD(dismissAfter: Duration) {
-        guard let screen = NSScreen.managedDisplay else { return }
+        guard let screen = screen(of: presentedDisplay ?? focusedNavigationDisplay) else { return }
         let hud = hudPanel()
         guard let container = hud.contentView as? HUDContainerView else { return }
         hudModel.reduceMotion = reduceMotion()
@@ -316,7 +357,7 @@ final class NavigationOverlays {
             windowCount: hudModel.displayedItemCount, warningHeight: warningHeight)
         contentFrame = geometry.contentFrame
         hud.ignoresMouseEvents = hudIgnoresPointer(at: pointerLocation())
-        updateHoverFrame()
+        updateHoverFrames()
         // Successive navigations usually keep the same geometry. Avoid a forced
         // synchronous layout and redraw just as ribbon motion starts.
         if hud.frame != geometry.panelFrame || container.attachedToNotch != geometry.attachedToNotch
@@ -418,8 +459,9 @@ final class NavigationOverlays {
         if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
         globalMouseMonitor = nil
         localMouseMonitor = nil
-        hoverFrame = nil
+        hoverFrames = []
         contentFrame = nil
+        presentedDisplay = nil
         pointerKeepsHUDVisible = false
         hudModel.showingSpaces = false
         dismissTask?.cancel()
@@ -434,6 +476,7 @@ final class NavigationOverlays {
     }
 
     func showWarning(_ message: String) {
+        presentOnFocusedDisplay()
         hudModel.warning = message
         hudModel.warningIsNotice = false
         presentHUD(dismissAfter: .seconds(5))
@@ -442,9 +485,16 @@ final class NavigationOverlays {
     /// The warning's place in the bar, for a short note that needs no action. Like a
     /// warning, it ignores the pointer and the panel never becomes key.
     func showNotice(_ message: String) {
+        presentOnFocusedDisplay()
         hudModel.warning = message
         hudModel.warningIsNotice = true
         presentHUD(dismissAfter: .milliseconds(2_500))
+    }
+
+    private func presentOnFocusedDisplay() {
+        guard presentedDisplay?.isFocused == false else { return }
+        presentedDisplay = focusedNavigationDisplay
+        MainThreadActivity.during("hudModel update") { publishNavigation() }
     }
 }
 
@@ -582,19 +632,6 @@ final class HUDContainerView: NSView {
 /// Receives the first click while the managed app remains the key application.
 final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-}
-
-extension NSScreen {
-    /// The display Stagehand manages. NSScreen.main follows the key window, which
-    /// moves the app bar and Quick Controls to whichever screen last had focus;
-    /// the built-in panel is the only display this version arranges.
-    static var managedDisplay: NSScreen? {
-        screens.first { screen in
-            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
-            else { return false }
-            return CGDisplayIsBuiltin(number.uint32Value) != 0
-        } ?? screens.first
-    }
 }
 
 final class OverlayPanel: NSPanel {
@@ -759,6 +796,25 @@ struct AppIcon: View {
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
+    }
+}
+
+/// What the app bar lists: the focused space with the focused display's picker, or the
+/// space another display shows with that display's picker.
+struct NavigationHUDContent {
+    let spaceIndex: Int
+    let availableSpaceIndices: [Int]
+    let space: SpaceState
+
+    init(state: WorkspaceState, otherSpaceIndex: Int?, display: DisplayID?) {
+        if let otherSpaceIndex, let display, state.spaces.indices.contains(otherSpaceIndex) {
+            spaceIndex = otherSpaceIndex
+            availableSpaceIndices = state.displayedSpaceIndices(on: display)
+        } else {
+            spaceIndex = state.activeSpaceIndex
+            availableSpaceIndices = state.displayedSpaceIndices
+        }
+        space = state.spaces[spaceIndex]
     }
 }
 

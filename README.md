@@ -2,13 +2,13 @@
 
 > Stagehand is built almost entirely by AI. The code gets plenty of scrutiny, but this is still experimental software.
 
-A scrolling window manager for a MacBook's built-in display, built around the trackpad. Windows sit side by side in a horizontal ribbon; nine spaces stack vertically. Swipe or use Control + Option + arrows to move between them.
+A scrolling window manager for a Mac's displays, built around the trackpad. Windows sit side by side in a horizontal ribbon; nine spaces stack vertically. Swipe or use Control + Option + arrows to move between them.
 
 Stagehand moves real app windows, so apps keep their own menus and input. It is native Swift, AppKit, and SwiftUI with no third-party packages or network access. Inspired by [KiwiDesk](https://github.com/KiwiCanopy/KiwiDesk).
 
 ## Requirements
 
-- macOS 14 or newer, on a MacBook using only its built-in display
+- macOS 14 or newer, on a Mac; external displays are supported
 - Swift 6.2 or newer (Xcode 26 or newer)
 - Accessibility permission
 
@@ -44,6 +44,7 @@ Each space keeps its own window order, focus, and widths for the session. A wind
 | Go to space 1–9 | ⌃⌥ 1–9 |
 | Move window to space 1–9 | ⌃⌥⌘ 1–9 |
 | Share window with space 1–9 | ⌃⌥⇧ 1–9 |
+| Move space to the display on the left / right | ⌃⌥⌘⇧ ← / → |
 | Shrink / grow width | ⌃⌥ - / + |
 | Cycle width presets | ⌃⌥ 0, ⌃⌥⇧ 0 |
 | Shrink / grow height | ⌃⌥⌘ - / + |
@@ -70,9 +71,21 @@ A tile is one place in the ribbon. It can hold several windows, each in a pane: 
 
 The **app bar** appears under the notch (or top center) when you navigate or hover there. It shows the active app and space; click an app or space number to jump to it. A tile's apps sit together on one shared backing, and each can still be clicked. Each space can have its own accent color.
 
+### Displays
+
+Each of the nine spaces belongs to one display, and each display shows one of its spaces. A display that connects with no space of its own takes the lowest-numbered empty space. Unplugging a display moves its spaces to the built-in display (or, with the lid closed, the main display); they return when it is plugged in again.
+
+- Swipes and shortcuts act on the focused display: the one showing the space with keyboard focus. ⌃⌥ ↑ / ↓ cycles only that display's spaces. ⌃⌥ 1–9 to a space on another display focuses that display.
+- ⌃⌥ ← / → at the end of a ribbon crosses to the display on that side, entering its space at the facing edge. Three-finger swipes never leave the focused display.
+- ⌃⌥⌘⇧ ← / → moves the current space to the display on that side; focus goes with it.
+- A window shared into spaces shown on two displays is on the display under the pointer, unless it has keyboard focus; the other display shows a placeholder in its place. Click the placeholder to bring the window there.
+- The app bar appears on the focused display when you navigate, and on any display when you hover under its notch or top center.
+- Stagehand reads each display's macOS Desktop when "Displays have separate Spaces" is on (System Settings > Desktop & Dock). Switching the Desktop on any display pauses Stagehand on every display until you return.
+
 ## Limitations
 
-- One built-in display and the macOS Desktop where you pressed Start. Minimized and native full-screen windows are ignored.
+- The macOS Desktop each display showed when you pressed Start. Minimized and native full-screen windows are ignored.
+- Each display needs a free left or right edge to hide windows at. When a display has displays on both sides, Stagehand manages the built-in display alone, and pauses if the built-in display is the one in the middle.
 - Hidden windows are parked just past the screen edge. Apps that refuse to move off-screen can be listed under Settings > Layout > Parked edge.
 - Typing during a switch is buffered and replayed into the new window. macOS can't confirm delivery, so don't rely on Stagehand where a misdirected keystroke could do damage.
 - Uses private macOS APIs (Desktop tracking, `MultitouchSupport`) that may break after an update.

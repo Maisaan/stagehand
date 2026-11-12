@@ -4,16 +4,17 @@ import Testing
 @testable import Stagehand
 @testable import StagehandPlatform
 
-/// The built-in display's visible frame flipped against the menu-bar display, as
-/// `availableFrame` read it from `builtInScreenProvider` before the arrangement.
-private func screenProviderAvailableFrame(_ screens: [ScreenDescription]) -> CGRect? {
-    guard let builtIn = screens.first(where: \.isBuiltIn), let primary = screens.first else { return nil }
-    let frame = builtIn.visibleFrame
+/// The fallback display's visible frame (the built-in display, else the menu-bar
+/// display) flipped against the menu-bar display.
+private func fallbackAvailableFrame(_ screens: [ScreenDescription]) -> CGRect? {
+    guard let primary = screens.first else { return nil }
+    let frame = (screens.first(where: \.isBuiltIn) ?? primary).visibleFrame
     return CGRect(x: frame.minX, y: primary.frame.maxY - frame.maxY, width: frame.width, height: frame.height)
 }
 
+/// An external menu-bar display with the built-in display to its right.
 @MainActor
-private func builtInBesideExternal(builtInScale: CGFloat = 3) -> [ScreenDescription] {
+private func builtInRightOfExternal() -> [ScreenDescription] {
     let size = ScreenDescription.testBuiltIn
     let external = ScreenDescription.external(number: 2, frame: CGRect(x: 0, y: 0, width: 2560, height: 1440),
                                               visibleFrame: CGRect(x: 0, y: 0, width: 2560, height: 1415))
@@ -23,8 +24,19 @@ private func builtInBesideExternal(builtInScale: CGFloat = 3) -> [ScreenDescript
         id: size.id, number: 1,
         frame: CGRect(x: 2560, y: 120, width: size.frame.width, height: size.frame.height),
         visibleFrame: inset.offsetBy(dx: 2560, dy: 120),
-        isBuiltIn: true, backingScaleFactor: builtInScale, maximumFramesPerSecond: 120)
+        isBuiltIn: true, backingScaleFactor: 3, maximumFramesPerSecond: 120)
     return [external, builtIn]
+}
+
+/// The built-in menu-bar display, where the harness's windows are, with an external display to its right.
+@MainActor
+private func builtInLeftOfExternal(builtInScale: CGFloat = 3) -> [ScreenDescription] {
+    let size = ScreenDescription.testBuiltIn
+    let builtIn = ScreenDescription(id: size.id, number: 1, frame: size.frame, visibleFrame: size.visibleFrame,
+                                    isBuiltIn: true, backingScaleFactor: builtInScale, maximumFramesPerSecond: 120)
+    let external = ScreenDescription.external(
+        number: 2, frame: CGRect(x: size.frame.maxX, y: size.frame.minY, width: 2560, height: 1440))
+    return [builtIn, external]
 }
 
 private var reduceMotionIsOff: Bool { !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
@@ -32,7 +44,7 @@ private var reduceMotionIsOff: Bool { !NSWorkspace.shared.accessibilityDisplaySh
 @MainActor
 @Suite(.serialized)
 struct DisplayModelTests {
-    @Test func theAvailableFrameIsTheBuiltInVisibleFrameAsTheScreenProviderGaveIt() {
+    @Test func beforeStartTheAvailableFrameIsTheFallbackDisplaysVisibleFrame() {
         let harness = ModelHarness(windowIDs: ["a"], focused: "a")
         defer { harness.cleanUp() }
         let below = ScreenDescription(
@@ -43,36 +55,23 @@ struct DisplayModelTests {
         let primary = ScreenDescription.external(number: 2, frame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
                                                  visibleFrame: CGRect(x: 0, y: 0, width: 1920, height: 1055))
         let cases: [[ScreenDescription]] = [
-            [.testBuiltIn], builtInBesideExternal(), [primary, below],
+            [.testBuiltIn], builtInRightOfExternal(), [primary, below],
             [.external(number: 2, frame: CGRect(x: 0, y: 0, width: 2560, height: 1440))],
             []
         ]
         for screens in cases {
             harness.model.displayArrangementProvider = { DisplayArrangement(screens: screens) }
-            #expect(harness.model.availableFrame == screenProviderAvailableFrame(screens))
-            #expect(harness.model.focusedDisplay?.number == screens.first(where: \.isBuiltIn)?.number)
+            #expect(harness.model.availableFrame == fallbackAvailableFrame(screens))
+            #expect(harness.model.focusedDisplay?.number == (screens.first(where: \.isBuiltIn) ?? screens.first)?.number)
         }
     }
 
-    /// Until the model sets its displays, an external display is never managed (070bfa8),
-    /// even though it is the arrangement's fallback once the lid is closed.
-    @Test func withoutABuiltInDisplayNothingIsLaidOut() async {
-        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
-        defer { harness.cleanUp() }
-        harness.model.displayArrangementProvider = { .externalOnly }
-
-        #expect(DisplayArrangement.externalOnly.fallback != nil)
-        #expect(harness.model.availableFrame == nil)
-        harness.model.start()
-        #expect(!harness.model.isRunning)
-    }
-
     @Test func navigationLaysOutOnTheBuiltInDisplayAndMovesAtItsScale() async throws {
-        let screens = builtInBesideExternal(builtInScale: 3)
+        let screens = builtInLeftOfExternal(builtInScale: 3)
         let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
         defer { harness.cleanUp() }
         harness.model.displayArrangementProvider = { DisplayArrangement(screens: screens) }
-        let available = try #require(screenProviderAvailableFrame(screens))
+        let available = try #require(fallbackAvailableFrame(screens))
 
         harness.model.start()
         await harness.settle()
@@ -93,7 +92,7 @@ struct DisplayModelTests {
     func aSwipeFollowsTheBuiltInDisplaysLinkAndScale() async {
         let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
         defer { harness.cleanUp() }
-        harness.model.displayArrangementProvider = { DisplayArrangement(screens: builtInBesideExternal(builtInScale: 3)) }
+        harness.model.displayArrangementProvider = { DisplayArrangement(screens: builtInLeftOfExternal(builtInScale: 3)) }
         harness.model.start()
         await harness.settle()
         harness.model.motionBackingScaleFactor = 1

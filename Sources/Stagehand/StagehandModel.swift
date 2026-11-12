@@ -176,6 +176,9 @@ final class StagehandModel: ObservableObject {
     /// The managed displays and the one under the pointer, while some window is contested.
     var contestedPointerDisplays: [Display] = []
     var contestedPointerDisplay: DisplayID?
+    /// The displays the last arrangement left Stagehand to manage, and their numbers.
+    var managedDisplays: ManagedDisplays?
+    var managedDisplayNumbers: [DisplayID: CGDirectDisplayID] = [:]
     /// In Accessibility coordinates. Tests substitute it.
     var pointerLocationProvider: @MainActor () -> CGPoint = {
         let location = NSEvent.mouseLocation
@@ -251,8 +254,8 @@ final class StagehandModel: ObservableObject {
     /// Read live, as NSScreen is: visible frames change with the Dock and menu bar. Tests substitute displays.
     var displayArrangementProvider: @MainActor () -> DisplayArrangement = { DisplayArrangement.current() }
     var displayCheckTask: Task<Void, Never>?
-    /// Display sets change in steps (clamshell, wake, a cable). Wait this long
-    /// after the built-in display disappears before pausing on it.
+    /// Display sets change in steps (clamshell, wake, a cable). Wait this long after
+    /// the set changes before giving a new display a space and laying out again.
     var displayCheckDelay: Duration = .seconds(1)
     /// Consecutive checks that found no Desktop identity. The first few repeat
     /// quickly for the unlock case; after that, checks slow down and session
@@ -308,6 +311,9 @@ final class StagehandModel: ObservableObject {
         case removeMembership(windowID: String, fromSpaceIndex: Int)
         case reorderWindow(windowID: String, toIndex: Int, spaceIndex: Int)
         case focusInSpace(windowID: String, spaceIndex: Int)
+        /// The pointer crossed onto a display showing a placeholder: only the contested
+        /// windows move to their holders. No app bar, typing hold or focus change.
+        case contestedWindowsFollowPointer
         /// A change to the active space's tiles that is refused, without
         /// pausing, when a tile would not fit.
         case tiles(TileChange)
@@ -319,7 +325,7 @@ final class StagehandModel: ObservableObject {
         var policy: LayoutRequestPolicy {
             switch self {
             case .preferences, .observedFocus, .moveMembership,
-                 .shareMembership, .removeMembership, .reorderWindow: .preferences
+                 .shareMembership, .removeMembership, .reorderWindow, .contestedWindowsFollowPointer: .preferences
             default: .navigation
             }
         }
@@ -345,6 +351,7 @@ final class StagehandModel: ObservableObject {
             case .removeMembership: "removeMembershipFromSettings"
             case .reorderWindow: "reorderWindow"
             case .focusInSpace: "focusWindowFromSettings"
+            case .contestedWindowsFollowPointer: "contestedWindowsFollowPointer"
             case .tiles(let change): "tiles.\(change.diagnosticName)"
             case .observedFocus: "observedFocus"
             case .windowRemoval: "windowRemoval"
@@ -373,6 +380,8 @@ final class StagehandModel: ObservableObject {
         let previousState: WorkspaceState?
         let motionStart: [String: CGRect]?
         let trace: ChangeTrace
+        /// ⌃⌥←/→ from the keyboard: at the ribbon's end, focus crosses to the next display.
+        let crossesDisplays: Bool
     }
 
     /// How a queued change ended, other than `change_completed`.
@@ -463,14 +472,25 @@ final class StagehandModel: ObservableObject {
         ) ?? Array(repeating: defaultBorderColor, count: WorkspaceState.spaceCount)
         input.reverseShortcutSwipeDirection = reverseShortcutSwipeDirection
         onTileChangeRefused = { [weak self] refusal in self?.showTileRefusal(refusal) }
-        input.onAction = { [weak self] action in self?.navigate(action) }
+        input.onAction = { [weak self] action in self?.navigateFromKeyboard(action) }
         input.onGesture = { [weak self] event in self?.handleGesture(event) }
-        overlays.onFocusWindow = { [weak self] id in self?.focusWindow(id) }
+        overlays.onFocusWindow = { [weak self] id, spaceIndex in
+            guard let self else { return }
+            if let spaceIndex { self.focusWindow(id, inSpace: spaceIndex) } else { self.focusWindow(id) }
+        }
         overlays.onSelectSpace = { [weak self] index in self?.navigate(.goToSpace(index: index)) }
         overlays.onShareWindow = { [weak self] id, index in
             self?.shareMembership(windowID: id, spaceIndex: index)
         }
-        overlays.onRemoveWindow = { [weak self] id in self?.removeMembership(windowID: id) }
+        overlays.onRemoveWindow = { [weak self] id, spaceIndex in
+            guard let self else { return }
+            if let spaceIndex {
+                self.removeMembership(windowID: id, fromSpaceIndex: spaceIndex)
+            } else {
+                self.removeMembership(windowID: id)
+            }
+        }
+        overlays.navigationDisplays = { [weak self] in self?.navigationDisplays() ?? [] }
         placeholders.onClick = { [weak self] id, display in self?.placeholderClicked(windowID: id, on: display) }
         overlays.canRevealNavigation = { [weak self] in
             guard let self, self.isRunning, !self.isSuspended else { return false }
@@ -583,7 +603,7 @@ final class StagehandModel: ObservableObject {
         }
         measureGestureFollows()
         refreshLaunchAtLogin()
-        focusGate.onNavigationAction = { [weak self] action in self?.navigate(action) }
+        focusGate.onNavigationAction = { [weak self] action in self?.navigateFromKeyboard(action) }
         focusGate.setShortcutBindings(shortcutBindings)
         focusGate.setPendingGestureCompletionCheck { InputController.hasPendingGestureCompletion() }
         focusGate.onBeforeKeyboardEvent = { [weak self] in
@@ -830,11 +850,12 @@ final class StagehandModel: ObservableObject {
             warning = "Stagehand couldn't restore every window from its interrupted session. Try Start again when their apps respond."
             return
         }
-        guard displayArrangement.builtIn != nil else {
+        let arrangement = displayArrangement
+        guard arrangement.managedDisplays.isManageable else {
             diagnostics.record("start_failed", details: [
-                "reason": "built_in_display_unavailable", "screenCount": String(NSScreen.screens.count)
+                "reason": "display_arrangement_unsupported", "screenCount": String(arrangement.displays.count)
             ])
-            warning = "Stagehand manages only the built-in display, and none is available right now. Open the lid or disconnect from clamshell mode, then start it again."
+            warning = Self.unsupportedArrangementWarning
             return
         }
         guard desktopScope.bindToCurrentDesktop() else {
@@ -863,6 +884,7 @@ final class StagehandModel: ObservableObject {
                 }
             }
         }
+        applyDisplays(arrangement, anchoringNewDisplays: true)
         // Pausing returned every window to its frame from before Stagehand, so a
         // known window keeps the height chosen while Stagehand ran; only a window
         // seen for the first time takes its current height.
@@ -875,7 +897,10 @@ final class StagehandModel: ObservableObject {
         // Windows restored while paused keep their saved places on resume.
         minimizedWindowIDs.subtract(windows.map(\.id))
         if let focused = windowSystem.focusedWindowID() {
-            state.focus(windowID: focused)
+            // One display keeps focus to the active space; several follow the window to its display.
+            let space = managedDisplay(holdingWindow: focused)
+                .flatMap { state.spaceIndex(followingFocusTo: focused, onDisplay: $0) } ?? state.activeSpaceIndex
+            state.focus(windowID: focused, inSpace: space)
             focusHistory.record(windowID: focused)
         }
         isRunning = true
@@ -934,6 +959,7 @@ final class StagehandModel: ObservableObject {
         desktopCheckAttempts = 0
         displayCheckTask?.cancel()
         displayCheckTask = nil
+        managedDisplays = nil
         if !automatic { desktopScope.reset() }
         pointerInteraction = nil
         preferencesNeedLayout = false
@@ -1056,7 +1082,13 @@ final class StagehandModel: ObservableObject {
         )
     }
 
-    func navigate(_ action: NavigationAction, initialHorizontalVelocity: CGFloat? = nil, gestureID: Int? = nil) {
+    /// Keys alone cross displays at a ribbon's end (owner decision 5); swipes never do.
+    func navigateFromKeyboard(_ action: NavigationAction) {
+        navigate(action, crossingDisplays: action == .focusNext || action == .focusPrevious)
+    }
+
+    func navigate(_ action: NavigationAction, initialHorizontalVelocity: CGFloat? = nil, gestureID: Int? = nil,
+                  crossingDisplays: Bool = false) {
         switch action {
         case .showSettings: showSettings?()
         case .togglePause: isRunning ? pause() : start()
@@ -1073,7 +1105,8 @@ final class StagehandModel: ObservableObject {
                 input.cancelGestureSequence()
                 resetGestureTracking()
             }
-            enqueue(.action(action), initialHorizontalVelocity: initialHorizontalVelocity, gestureID: gestureID)
+            enqueue(.action(action), initialHorizontalVelocity: initialHorizontalVelocity, gestureID: gestureID,
+                    crossingDisplays: crossingDisplays)
         }
     }
 
@@ -1278,6 +1311,7 @@ final class StagehandModel: ObservableObject {
             desktopCheckAttempts = 0
             unlockDesktopChecks = 0
             guard isSuspended else { return }
+            guard applyDisplays(displayArrangement, anchoringNewDisplays: true) else { return }
             isSuspended = false
             diagnostics.record("desktop_resumed", details: workspaceDetails())
             input.gesturesEnabled = gesturesEnabled
@@ -1351,28 +1385,34 @@ final class StagehandModel: ObservableObject {
         if desktopScope.bind(displays: desktopScope.connectedDisplays), isRunning, isSuspended {
             nativeDesktopChanged()
         }
-        guard isRunning, !isSuspended else { return }
-        let hasBuiltInDisplay = displayArrangement.builtIn != nil
+        guard isRunning else { return }
+        let previousDisplays = Set(state.displays.ids)
+        let arrangement = displayArrangement
+        // At once, even while away: a layout must never target a display that left.
+        guard applyDisplays(arrangement, anchoringNewDisplays: false), !isSuspended else { return }
         diagnostics.record("screen_parameters_changed", details: [
-            "builtInDisplay": String(hasBuiltInDisplay),
-            "screenCount": String(NSScreen.screens.count)
+            "builtInDisplay": String(arrangement.builtIn != nil),
+            "screenCount": String(arrangement.displays.count)
         ])
         ribbonMotion.cancel()
         focusBorder.reset()
         displayCheckTask?.cancel()
-        guard hasBuiltInDisplay else {
-            // Lid closed or clamshell: there is no frame to lay out in. Give the
-            // reconfiguration a moment to finish, then pause and restore rather
-            // than manage whatever display macOS moved the windows to.
-            let delay = displayCheckDelay
-            displayCheckTask = Task { [weak self] in
-                do { try await Task.sleep(for: delay) } catch { return }
-                guard !Task.isCancelled, let self else { return }
-                self.displayCheckTask = nil
-                self.pauseIfBuiltInDisplayMissing()
-            }
+        displayCheckTask = nil
+        guard Set(state.displays.ids) != previousDisplays else {
+            enqueue(.preferences)
             return
         }
+        let delay = displayCheckDelay
+        displayCheckTask = Task { [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard !Task.isCancelled, let self else { return }
+            self.displayCheckTask = nil
+            self.displayArrangementSettled()
+        }
+    }
+
+    func displayArrangementSettled() {
+        guard isRunning, !isSuspended, applyDisplays(displayArrangement, anchoringNewDisplays: true) else { return }
         enqueue(.preferences)
     }
 }

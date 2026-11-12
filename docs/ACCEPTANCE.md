@@ -122,6 +122,25 @@ Use ordinary apps with Diagnostic logging on and the Tile gap at your usual valu
 - Create a new window. It is inserted after the current window and receives focus.
 - Quit an app whose window sits between two others (in a space of its own, too) and reopen it, or let it relaunch for an update, while another window is focused. Its windows return to their old spaces, order, widths, and heights; a space it left empty reopens in its old place. The log shows `relaunch_places_remembered` and `relaunched_window_placed`.
 
+## Multiple displays
+
+With only the built-in display, everything above behaves as before, the app bar sits under the notch, Quick Controls under its menu icon, and the shortcut hints at the bottom right. These checks need an external display.
+
+1. Connect the display beside the MacBook (one side free on each). The new display gets the lowest empty space (`display_arrangement` logs it under `anchored`), and nothing moves on the built-in display.
+2. ⌃⌥⌘⇧ → moves the current space to the external display; focus and typing follow. ⌃⌥⌘⇧ ← brings it back.
+3. ⌃⌥ N to a space on the other display focuses that display. Swipes and ⌃⌥ ←/→/↑/↓ act only on the focused display, and ⌃⌥ ↑/↓ cycles only that display's spaces. ⌃⌥ ←/→ at the end of a ribbon crosses to the neighboring display and enters its space at the facing edge; a three-finger swipe at the end of a ribbon does not cross.
+4. Click a window on the other display: focus moves there, with no layout on the first display and no `desktop_suspended`.
+5. Parking: navigate on each display. No window ever shows on the neighboring display, at rest or mid-slide (`shared_edge_motion_snapped` counts the snaps). Windows park at the free edge, with no `window_parking_failed`.
+6. Arrange the external display between two others: Stagehand keeps managing the built-in display alone and logs `display_arrangement_unsupported`, with no warning. Arrange the MacBook between two displays: Stagehand pauses, and Start refuses until it is fixed.
+7. Unplug the external display: its spaces show on the built-in display, nothing is lost, and `automatic_pause` stays at 0. Replug it: the spaces return to it, with the same shown space.
+8. Close the lid with the external display attached (clamshell): every space is on the external display, and there is no pause. Open the lid: anchored spaces return.
+9. Share a window into the shown spaces of both displays. The real window is on the pointer's display and a placeholder on the other. Move the pointer across: the window follows, unless it is focused, without the app bar appearing; the log shows a `contestedWindowsFollowPointer` change, not a `refresh`. Type in the focused shared window while moving the pointer across: it never moves mid-typing. Click the placeholder: the window moves there and takes focus. Check the `contested_window_holder` triggers.
+10. Switch the native Desktop on one display only: Stagehand suspends on every display and resumes on return.
+11. Turn "Displays have separate Spaces" off (this needs a log-out) and repeat checks 1, 4, 5 and 10. Compare `native_space_readings`.
+12. Use displays with different scaling and refresh rates: slides on each display run at its own rate, and the app bar sits under the right menu bar. Hover under each display's top center: the bar shows that display's space; clicking an app there focuses it on that display.
+13. Drag a window by its title bar onto the other display: it joins that display's shown space at the drop position.
+14. Run the whole procedure above, plus the Tiles checks, with the external display as the focused one. Then run the benchmark with the external display attached.
+
 ## Input and gestures
 
 - Turn individual shortcuts off and confirm that they pass through without acting. Record replacements, including a Caps Lock chord, restart Stagehand, and confirm they persist. Reset each row and confirm the original enabled binding returns.
@@ -165,7 +184,7 @@ Use ordinary apps with Diagnostic logging on and the Tile gap at your usual valu
 - The current application owns the macOS menu bar, except while Stagehand settings or an empty-space placeholder is active.
 - Open Settings and confirm Stagehand appears in the Dock. Close Settings and confirm its Dock icon disappears while the menu bar item remains.
 - Settings stay usable at the built-in display's current scaling.
-- Change display scaling, Dock position, and menu-bar visibility while Stagehand is running. The ribbon and parking bounds must use the new visible frame without restarting. The system stage of `run-acceptance.sh` automates the scaling change; Dock position, menu-bar visibility, and connecting or disconnecting an external display stay manual.
+- Change display scaling, Dock position, and menu-bar visibility while Stagehand is running. The ribbon and parking bounds must use the new visible frame without restarting. The system stage of `run-acceptance.sh` automates the scaling change; Dock position, menu-bar visibility, and connecting or disconnecting an external display (see Multiple displays) stay manual.
 - Stagehand settings joins the ribbon, can be reordered, and regains focus through the same navigation controls.
 - Swipe to a native fullscreen Space. The focus border must not follow or flash over the destination; it returns on the home Desktop.
 - Resize settings to its minimum size and enlarge it. Content should adapt and scroll without clipping controls.

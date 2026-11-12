@@ -69,9 +69,10 @@ private func contacts(count: Int = 3, dx: Double = 0, dy: Double = 0) -> [Gestur
                                       bindings: bindings, reverseDirection: reversed) == .moveWindowDownInTile)
         #expect(gestureShortcutAction(axis: .vertical, displacement: 0.1 * sign, modifiers: commandShifted,
                                       bindings: bindings, reverseDirection: reversed) == .moveWindowUpInTile)
-        // No ⌃⌥⌘⇧ ←/→ default until spaces move between displays.
         #expect(gestureShortcutAction(axis: .horizontal, displacement: 0.1 * sign, modifiers: commandShifted,
-                                      bindings: bindings, reverseDirection: reversed) == nil)
+                                      bindings: bindings, reverseDirection: reversed) == .moveSpaceToDisplay(direction: 1))
+        #expect(gestureShortcutAction(axis: .horizontal, displacement: -0.1 * sign, modifiers: commandShifted,
+                                      bindings: bindings, reverseDirection: reversed) == .moveSpaceToDisplay(direction: -1))
     }
 }
 
@@ -82,11 +83,14 @@ private func contacts(count: Int = 3, dx: Double = 0, dy: Double = 0) -> [Gestur
     // Load turns off the later of two equal chords, so bindings added later must
     // come last for a user's recorded chord to win over a new default. The four
     // stack bindings were replaced in place.
-    #expect(defaults.suffix(11).map(\.id) == [
+    #expect(defaults.suffix(13).map(\.id) == [
         "moveWindowLeftInTile", "moveWindowRightInTile", "focusPaneAbove", "focusPaneBelow",
         "moveWindowUpInTile", "moveWindowDownInTile",
         "layoutSingle", "layoutSideBySide", "layoutStacked", "layoutGrid", "layoutWideOverTwo",
+        "moveSpaceToPreviousDisplay", "moveSpaceToNextDisplay",
     ])
+    #expect(defaults.filter { $0.group == .displayMoving }.map(\.action)
+        == [.moveSpaceToDisplay(direction: -1), .moveSpaceToDisplay(direction: 1)])
     #expect(defaults.filter { $0.group == .tileLayout }.count == 5)
 }
 

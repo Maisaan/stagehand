@@ -932,17 +932,18 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     /// The display that holds the focused space; nil while displays are not modeled.
     public var focusedDisplay: DisplayID? { display(ofSpace: activeSpaceIndex) }
 
-    /// Sets the connected displays, left to right. A display with no space takes
-    /// the lowest-numbered empty space that has no anchor and is not shown,
-    /// which is returned; without one it stays unmanaged. Anchors are never
-    /// cleared here, so a display's spaces return when it reconnects.
+    /// Sets the connected displays, left to right. Unless `anchoringNewDisplays` is
+    /// false, a display with no space takes the lowest-numbered empty space that has
+    /// no anchor and is not shown, which is returned; without one it stays unmanaged.
+    /// Anchors are never cleared here, so a display's spaces return when it reconnects.
     @discardableResult
-    public mutating func setDisplays(_ ids: [DisplayID], fallback: DisplayID?) -> [DisplayID: Int] {
+    public mutating func setDisplays(_ ids: [DisplayID], fallback: DisplayID?,
+                                     anchoringNewDisplays: Bool = true) -> [DisplayID: Int] {
         var connected: [DisplayID] = []
         for id in ids where !connected.contains(id) { connected.append(id) }
         displays = DisplayList(ids: connected,
                                fallback: fallback.flatMap { connected.contains($0) ? $0 : nil } ?? connected.first)
-        let anchored = anchorDisplaysWithoutSpaces()
+        let anchored = anchoringNewDisplays ? anchorDisplaysWithoutSpaces() : [:]
         dropFocusedDisplayFromShownSpaces()
         return anchored
     }

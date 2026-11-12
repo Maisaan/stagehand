@@ -108,9 +108,55 @@ extension StagehandModel {
         contestedPointerDisplay = display
         guard let display, isRunning, !isSuspended,
               placeholderFrames[display]?.keys.contains(where: { $0 != state.focusedWindowID }) == true,
-              !changes.contains(where: { $0.change == .refresh }) else { return }
+              !changes.contains(where: { $0.change == .contestedWindowsFollowPointer }) else { return }
+        enqueue(.contestedWindowsFollowPointer)
+    }
+
+    /// Re-picks the holders of contested windows other than the focused one, and swaps
+    /// each window that changes holder with its placeholder. Nothing else is laid out.
+    /// Returns whether a window moved.
+    func moveContestedWindowsToPointer() -> Bool {
+        guard gestureBase == nil, !contestedHolders.isEmpty, let focusedDisplay = state.focusedDisplay else {
+            return false
+        }
+        let pointerDisplay = managedDisplay(at: pointerLocationProvider(), in: displayArrangement)
+        var shown: [DisplayID: Set<String>] = [:]
+        for (windowID, holder) in contestedHolders { shown[holder, default: []].insert(windowID) }
+        for (display, frames) in placeholderFrames { shown[display, default: []].formUnion(frames.keys) }
+        var holders = state.contestedWindowHolders(shownOn: shown, pointerDisplay: pointerDisplay)
+        if let focusedWindowID = state.focusedWindowID { holders[focusedWindowID] = contestedHolders[focusedWindowID] }
+        var movedOntoFocusedDisplay = false
+        var moved = false
+        for (windowID, holder) in holders {
+            guard let previous = contestedHolders[windowID], previous != holder,
+                  let target = placeholderFrames[holder]?[windowID],
+                  let vacated = previous == focusedDisplay ? knownFrames[windowID] : otherDisplayFrames[previous]?[windowID]
+            else {
+                holders[windowID] = contestedHolders[windowID]
+                continue
+            }
+            writeStaticFrame(target, windowID: windowID)
+            moved = true
+            placeholderFrames[holder]?[windowID] = nil
+            placeholderFrames[previous, default: [:]][windowID] = vacated
+            otherDisplayFrames[previous]?[windowID] = nil
+            if holder == focusedDisplay {
+                movedOntoFocusedDisplay = true
+            } else {
+                otherDisplayFrames[holder, default: [:]][windowID] = target
+            }
+        }
+        placeholderFrames = placeholderFrames.filter { !$0.value.isEmpty }
         contestedHolderTrigger = .pointer
-        enqueue(.refresh)
+        recordHolderChanges(holders)
+        contestedHolderTrigger = .layout
+        contestedHolders = holders
+        presentPlaceholders()
+        // Negative tile gaps overlap neighbors; keep the focused window above the arrival.
+        if movedOntoFocusedDisplay, let focusedWindowID = state.focusedWindowID {
+            windowSystem.raiseWithoutActivating(windowID: focusedWindowID)
+        }
+        return moved
     }
 
     func placeholderClicked(windowID: String, on display: DisplayID) {
@@ -169,8 +215,12 @@ extension StagehandModel {
         }
         guard framesByDisplay != placeholderFrames else { return }
         placeholderFrames = framesByDisplay
+        presentPlaceholders()
+    }
+
+    private func presentPlaceholders() {
         let records = Dictionary(windows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        placeholders.show(framesByDisplay.flatMap { display, frames in
+        placeholders.show(placeholderFrames.flatMap { display, frames in
             let color = focusBorderColor(forSpace: state.shownSpaceIndex(on: display) ?? state.activeSpaceIndex)
             return frames.compactMap { windowID, frame in
                 records[windowID].map {

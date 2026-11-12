@@ -102,6 +102,28 @@ public struct DisplayArrangement: Equatable, Sendable {
     public var displayWithoutFreeEdge: Display? {
         displays.first { sharedEdges(of: $0.id).count == 2 }
     }
+
+    /// Every display, unless one has no free edge: then the fallback display alone, or
+    /// none when the fallback is such a display itself.
+    public var managedDisplays: ManagedDisplays {
+        guard let unsupported = displayWithoutFreeEdge else {
+            return ManagedDisplays(ids: ids, fallback: fallback, displayWithoutFreeEdge: nil)
+        }
+        guard let fallback, sharedEdges(of: fallback).count < 2 else {
+            return ManagedDisplays(ids: [], fallback: nil, displayWithoutFreeEdge: unsupported)
+        }
+        return ManagedDisplays(ids: [fallback], fallback: fallback, displayWithoutFreeEdge: unsupported)
+    }
+}
+
+public struct ManagedDisplays: Equatable, Sendable {
+    public let ids: [DisplayID]
+    public let fallback: DisplayID?
+    /// Set when the arrangement is refused: a display with displays on both sides.
+    public let displayWithoutFreeEdge: Display?
+
+    /// False only when the arrangement is refused and the fallback display has no free edge either.
+    public var isManageable: Bool { !ids.isEmpty || displayWithoutFreeEdge == nil }
 }
 
 public extension DisplayID {

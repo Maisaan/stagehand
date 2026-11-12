@@ -51,7 +51,8 @@ struct ShortcutHintSection: Equatable, Identifiable {
                                          "moveWindowUpInTile", "moveWindowDownInTile"])
                 + hints("Up or down", ["moveWindowUpSpace", "moveWindowDownSpace"])
                 + hints("To space", spaces.map { "moveToSpace.\($0)" }, collapsingRuns: true)
-                + hints("Share with", spaces.map { "shareToSpace.\($0)" }, collapsingRuns: true)),
+                + hints("Share with", spaces.map { "shareToSpace.\($0)" }, collapsingRuns: true)
+                + hints("Space to display", ["moveSpaceToPreviousDisplay", "moveSpaceToNextDisplay"])),
             Self(title: "Tile", hints:
                 hints("Layouts", ["layoutSingle", "layoutSideBySide", "layoutStacked", "layoutGrid",
                                   "layoutWideOverTwo"])),
@@ -184,7 +185,7 @@ private struct TrackpadGlyph: View {
     }
 }
 
-/// The shortcut ribbon in the bottom-right corner of the managed display. It ignores the
+/// The shortcut ribbon in the bottom-right corner of the focused display. It ignores the
 /// pointer and never becomes key, so it cannot take focus or input from the real app.
 /// The toggle shortcut shows it for `visibleDuration`; pressing it again while it
 /// shows hides it early. The pointer over it holds it open: the panel cannot see the
@@ -210,6 +211,7 @@ final class ShortcutHintsRibbon {
     private(set) var pointerInside = false
     /// The timer ran out while the pointer was inside; dismiss when it leaves.
     private var dismissWhenPointerLeaves = false
+    var screen: () -> NSScreen? = { NSScreen.screens.first }
 
     init(reduceMotion: @escaping () -> Bool,
          pointerLocation: @escaping () -> CGPoint = { NSEvent.mouseLocation }) {
@@ -272,7 +274,7 @@ final class ShortcutHintsRibbon {
     }
 
     private func present() {
-        guard !model.sections.isEmpty, let screen = NSScreen.managedDisplay else { return }
+        guard !model.sections.isEmpty, let screen = screen() else { return }
         let panel = self.panel ?? makePanel()
         guard let container = panel.contentView as? HUDContainerView else { return }
         let size: CGSize

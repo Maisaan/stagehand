@@ -577,6 +577,8 @@ struct SettingsView: View {
                         spaceShortcutGroup("Share current window", group: .spaceSharing)
                         Divider()
                         spaceShortcutGroup("Move current window", group: .spaceMoving)
+                        Divider()
+                        shortcutRows(groups: [.displayMoving])
                     case .stagehand:
                         shortcutRows(groups: [.stagehand])
                     }
@@ -704,7 +706,7 @@ struct SettingsView: View {
 
                     SettingsDisclosureRow("Current limits", initiallyExpanded: expandAboutDetails) {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Stagehand manages standard windows on the built-in display and one macOS desktop. It ignores full-screen windows.")
+                            Text("Stagehand manages standard windows on each display, on the macOS desktop each one showed at Start. Each display needs a free left or right edge; when one has displays on both sides, Stagehand manages the built-in display alone. It ignores full-screen windows.")
                             Text("Pause or quit Stagehand to restore each window to the position and size captured at startup.")
                         }
                     }

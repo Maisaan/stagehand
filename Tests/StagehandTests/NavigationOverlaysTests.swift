@@ -78,7 +78,7 @@ import StagehandCore
     // A narrow list of four groups.
     #expect(abs(panel.frame.width - padding - ShortcutHintsView.width) <= 1)
     #expect(panel.frame.height - padding > 300)
-    let visible = try #require(NSScreen.managedDisplay).visibleFrame
+    let visible = try #require(ribbon.screen()).visibleFrame
     #expect(abs(panel.frame.maxX - HUDContainerView.padding - (visible.maxX - ShortcutHintsRibbon.edgeInset)) <= 1)
     #expect(abs(panel.frame.minY + HUDContainerView.padding - (visible.minY + ShortcutHintsRibbon.edgeInset)) <= 1)
     #expect(panel.ignoresMouseEvents)

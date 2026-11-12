@@ -9,7 +9,8 @@ extension StagehandModel {
         initialHorizontalVelocity: CGFloat? = nil,
         transitionFrom previousState: WorkspaceState? = nil,
         motionStart: [String: CGRect]? = nil,
-        gestureID: Int? = nil
+        gestureID: Int? = nil,
+        crossingDisplays: Bool = false
     ) {
         if traceGestures, gestureAxis != nil {
             NSLog("[DEBUG-gesture] layout requested during drag: %@", String(describing: change))
@@ -32,7 +33,8 @@ extension StagehandModel {
             initialHorizontalVelocity: initialHorizontalVelocity,
             previousState: previousState,
             motionStart: motionStart,
-            trace: ChangeTrace(input: InputArrival.beingDelivered)
+            trace: ChangeTrace(input: InputArrival.beingDelivered),
+            crossesDisplays: crossingDisplays
         ))
         var queuedDetails = [
             "changeID": String(lastChangeID),
@@ -82,6 +84,13 @@ extension StagehandModel {
             "pendingChanges": String(changes.count),
             "transferToken": token.map(String.init) ?? "none"
         ])
+        if change == .contestedWindowsFollowPointer {
+            guard moveContestedWindowsToPointer() else {
+                endActiveChange(.noEffect, reason: "no_holder_change")
+                return true
+            }
+            return finish(pendingChange, outcome: .completed)
+        }
         let previousState = pendingChange.previousState
             ?? workspaceRestoration.transitionStart(
                 windowIDs: windows.map(\.id),
@@ -97,7 +106,7 @@ extension StagehandModel {
         if gestureAxis != nil { input.cancelGestureSequence() }
         resetGestureTracking()
         let stateBeforeChange = state
-        let application = applyToState(change)
+        let application = applyToState(change, crossingDisplays: pendingChange.crossesDisplays)
         guard application == .applied else {
             if let token { focusGate.cancelTransfer(token: token) }
             workspaceRestoration.endTransition()
@@ -157,10 +166,13 @@ extension StagehandModel {
     private enum StateApplication { case applied, unchanged, refused }
 
     /// Updates the logical workspace for a change.
-    private func applyToState(_ change: Change) -> StateApplication {
+    private func applyToState(_ change: Change, crossingDisplays: Bool) -> StateApplication {
         switch change {
         case .action(let action) where action == .shrinkHeight || action == .growHeight:
             return adjustFocusedWindowHeight(growing: action == .growHeight) ? .applied : .unchanged
+        case .action(let action) where crossingDisplays && (action == .focusNext || action == .focusPrevious):
+            return state.focusWindowCrossingDisplays(by: action == .focusNext ? 1 : -1,
+                                                     visibleTiles: visibleTileRange(ofSpace:)) ? .applied : .unchanged
         case .action(let action):
             let sourceSpaceIndex = state.activeSpaceIndex
             guard state.apply(action, widthPresets: widthPresets) else { return .unchanged }
@@ -186,7 +198,7 @@ extension StagehandModel {
             case .unchanged: return .unchanged
             case .refused: return .refused
             }
-        case .windowRemoval, .refresh, .preferences, .observedFocus: break
+        case .windowRemoval, .refresh, .preferences, .observedFocus, .contestedWindowsFollowPointer: break
         }
         return .applied
     }
@@ -371,32 +383,17 @@ extension StagehandModel {
 
     var displayArrangement: DisplayArrangement { displayArrangementProvider() }
 
-    /// The display showing the focused space. Until the model sets its displays, that is
-    /// the built-in display alone (README), so an external one is never laid out (070bfa8).
+    /// The display showing the focused space; before Start sets the displays, the
+    /// arrangement's fallback: the built-in display, else the menu-bar display.
     var focusedDisplay: Display? { focusedDisplay(in: displayArrangement) }
 
     func focusedDisplay(in arrangement: DisplayArrangement) -> Display? {
-        guard let id = state.focusedDisplay else { return arrangement.builtIn }
-        return arrangement.display(id)
+        (state.focusedDisplay ?? arrangement.fallback).flatMap(arrangement.display)
     }
 
     // Kept for StagehandModel+Benchmark.swift until slice B.
     var builtInScreen: NSScreen? {
         displayArrangement.builtIn.flatMap { NSScreen.screen(displayNumber: $0.number) }
-    }
-
-    static let missingDisplayWarning = "Stagehand paused because the built-in display is unavailable. It manages only the built-in display, so it restored your windows. Press Start once the display is back."
-
-    /// Pauses if the built-in display is still missing after display changes settled.
-    func pauseIfBuiltInDisplayMissing() {
-        guard isRunning, !isSuspended else { return }
-        guard displayArrangement.builtIn == nil else {
-            enqueue(.preferences)
-            return
-        }
-        stop(reason: "built_in_display_unavailable", automatic: false,
-             details: ["screenCount": String(NSScreen.screens.count)])
-        warning = Self.missingDisplayWarning
     }
 
     var availableFrame: CGRect? { focusedDisplay?.visibleFrame }

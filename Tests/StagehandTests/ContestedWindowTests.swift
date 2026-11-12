@@ -106,6 +106,30 @@ struct ContestedWindowTests {
         #expect(harness.events("automatic_pause").isEmpty)
     }
 
+    /// A crossing re-lays out only the contested windows: no navigation layout, so no app
+    /// bar, no typing hold and no focus change (decided after M5c, which used a refresh).
+    @Test func aPointerCrossingMovesOnlyTheContestedWindowWithoutTheAppBarOrATypingHold() async throws {
+        let (harness, arrangement, pointer) = await contestedHarness()
+        defer { harness.cleanUp() }
+        let external = arrangement.displays[1]
+        let shown = harness.overlays.navigationShown
+        let queued = harness.events("change_queued").count
+        harness.windows.setFrameWrites.removeAll()
+
+        await moveRealWindow(harness, to: CGPoint(x: external.frame.midX, y: external.frame.midY), pointer: pointer)
+
+        let changes = harness.events("change_queued").dropFirst(queued).compactMap { $0["details"] as? [String: String] }
+        #expect(changes.map { $0["operation"] } == ["contestedWindowsFollowPointer"])
+        #expect(changes.first?["transferToken"] == "none")
+        #expect(harness.events("change_completed").contains {
+            ($0["details"] as? [String: String])?["operation"] == "contestedWindowsFollowPointer"
+        })
+        #expect(harness.overlays.navigationShown == shown)
+        #expect(harness.windows.setFrameWrites.map(\.windowID) == ["s"])
+        #expect(harness.windows.focusedWindowID() == "a")
+        #expect(harness.model.contestedHolders == ["s": external.id])
+    }
+
     @Test func theFocusedWindowStaysOnTheFocusedDisplayUntilFocusLeavesIt() async throws {
         let (harness, arrangement, pointer) = await contestedHarness()
         defer { harness.cleanUp() }

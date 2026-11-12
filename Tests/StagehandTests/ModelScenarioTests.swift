@@ -942,52 +942,58 @@ struct ModelScenarioTests {
         })
     }
 
-    /// README: one built-in display only. With the lid closed on an external
-    /// display, Stagehand used to fall back to NSScreen.main and manage that
-    /// display. Now it pauses once the display change settles, and refuses to
-    /// start without the built-in display.
-    @Test func losingTheBuiltInDisplayPausesAndRestoresAfterTheChangeSettles() async {
+    /// Replaces 070bfa8's pause: a display that leaves hands its spaces to the built-in
+    /// display at once, without pausing, and they return with it.
+    @Test func unpluggingADisplayReanchorsItsSpacesWithoutPausingAndReplugReturnsThem() async throws {
+        let both = DisplayArrangement.builtInBesideExternal
+        let builtIn = try #require(both.builtIn).id
+        let external = try #require(both.displays.first { !$0.isBuiltIn }).id
         let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
         defer { harness.cleanUp() }
-        let originals = harness.windows.windows.mapValues(\.original)
         harness.model.displayCheckDelay = .milliseconds(60)
+        harness.model.displayArrangementProvider = { both }
         harness.model.start()
         await harness.settle()
-        harness.model.navigate(.focusNext)
+        let externalSpace = try #require(harness.model.state.shownSpaceIndex(on: external))
+        #expect(harness.model.state.spaces[externalSpace].displayAnchor == external)
+        harness.model.navigate(.moveToSpace(index: externalSpace, follow: false))
         await harness.settle()
-        #expect(harness.windows.windows.mapValues(\.frame) != originals)
+        #expect(harness.model.state.spaces[externalSpace].windowIDs == ["a"])
 
-        // A transient change that comes back within the delay does not pause.
-        harness.model.displayArrangementProvider = { .externalOnly }
-        harness.model.screenParametersChanged()
         harness.model.displayArrangementProvider = { .testBuiltIn }
+        harness.model.screenParametersChanged()
+        #expect(harness.model.state.display(ofSpace: externalSpace) == builtIn)
+        try? await Task.sleep(for: .milliseconds(150))
+        await harness.settle()
+        #expect(harness.model.isRunning)
+        #expect(harness.events("automatic_pause").isEmpty)
+        #expect(harness.events("paused").isEmpty)
+        #expect(harness.model.state.spaces[externalSpace].displayAnchor == external)
+
+        harness.model.displayArrangementProvider = { both }
         harness.model.screenParametersChanged()
         try? await Task.sleep(for: .milliseconds(150))
         await harness.settle()
         #expect(harness.model.isRunning)
-
-        harness.model.displayArrangementProvider = { .externalOnly }
-        harness.model.screenParametersChanged()
-        #expect(harness.model.isRunning)
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while harness.model.isRunning, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-
-        #expect(!harness.model.isRunning)
-        #expect(harness.windows.windows.mapValues(\.frame) == originals)
-        #expect((harness.events("paused").last?["details"] as? [String: String])?["reason"] == "built_in_display_unavailable")
-        #expect(harness.model.warning == StagehandModel.missingDisplayWarning)
+        #expect(harness.model.state.display(ofSpace: externalSpace) == external)
+        #expect(harness.model.state.shownSpaceIndex(on: external) == externalSpace)
         #expect(harness.events("automatic_pause").isEmpty)
+    }
 
-        harness.model.start()
-        #expect(!harness.model.isRunning)
-        #expect((harness.events("start_failed").last?["details"] as? [String: String])?["reason"] == "built_in_display_unavailable")
-
-        harness.model.displayArrangementProvider = { .testBuiltIn }
+    /// 070bfa8 reversed: with the lid closed, Stagehand starts and lays out on the external display.
+    @Test func withTheLidClosedTheExternalDisplayIsManaged() async throws {
+        let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
+        defer { harness.cleanUp() }
+        let arrangement = DisplayArrangement.externalOnly
+        harness.model.displayArrangementProvider = { arrangement }
         harness.model.start()
         await harness.settle()
         #expect(harness.model.isRunning)
+        let external = try #require(arrangement.displays.first)
+        #expect(harness.model.state.focusedDisplay == external.id)
+        let focused = try #require(harness.windows.windows["a"]?.frame)
+        #expect(external.visibleFrame.insetBy(dx: -1, dy: -1).contains(focused))
+        #expect(harness.events("start_failed").isEmpty)
     }
 
     /// Revoking Accessibility in System Settings sends no notification. The

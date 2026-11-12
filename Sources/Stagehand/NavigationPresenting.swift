@@ -2,14 +2,25 @@ import AppKit
 import StagehandCore
 import StagehandPlatform
 
+/// A managed display as the app bar sees it: its screen and the space it shows.
+struct NavigationDisplay: Equatable {
+    let id: DisplayID
+    let number: CGDirectDisplayID
+    let spaceIndex: Int
+    let isFocused: Bool
+}
+
 /// The app bar, focus border, shortcut ribbon, and warnings, as used by the model. Tests use a
 /// headless implementation so nothing appears on screen.
 @MainActor
 protocol NavigationPresenting: AnyObject {
-    var onFocusWindow: ((String) -> Void)? { get set }
+    /// The space index is set when the bar showed another display's space, not the focused one.
+    var onFocusWindow: ((String, Int?) -> Void)? { get set }
     var onSelectSpace: ((Int) -> Void)? { get set }
     var onShareWindow: ((String, Int) -> Void)? { get set }
-    var onRemoveWindow: ((String) -> Void)? { get set }
+    var onRemoveWindow: ((String, Int?) -> Void)? { get set }
+    /// The managed displays: navigation shows the bar on the focused one, hover on the one hovered.
+    var navigationDisplays: (() -> [NavigationDisplay])? { get set }
     var canRevealNavigation: (() -> Bool)? { get set }
     /// True while the pointer carries another app's drag-and-drop; the app bar then
     /// ignores the pointer so a drop near the notch reaches the window under it.

@@ -11,6 +11,7 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
         case spaceSwitching
         case spaceSharing
         case spaceMoving
+        case displayMoving
         case windowSize
         case stagehand
     }
@@ -173,6 +174,15 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
             .init(id: "layoutWideOverTwo", title: "One wide over two", group: .tileLayout,
                   key: UInt32(kVK_ANSI_W), modifiers: base, keyLabel: "W", isEnabled: true,
                   action: .arrangeTile(.wideOverTwo)),
+        ]
+        // Added with multiple displays, after the tile bindings for the same reason.
+        bindings += [
+            .init(id: "moveSpaceToPreviousDisplay", title: "Move space to the display on the left",
+                  group: .displayMoving, key: UInt32(kVK_LeftArrow), modifiers: base | command | shift,
+                  keyLabel: "←", isEnabled: true, action: .moveSpaceToDisplay(direction: -1)),
+            .init(id: "moveSpaceToNextDisplay", title: "Move space to the display on the right",
+                  group: .displayMoving, key: UInt32(kVK_RightArrow), modifiers: base | command | shift,
+                  keyLabel: "→", isEnabled: true, action: .moveSpaceToDisplay(direction: 1)),
         ]
         return bindings
     }()
