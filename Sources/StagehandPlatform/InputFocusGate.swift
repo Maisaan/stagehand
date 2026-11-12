@@ -603,10 +603,12 @@ public final class FocusInputGate {
 }
 
 private extension NavigationAction {
-    /// Actions a held chord may repeat. Space switches and window moves run once per press.
+    /// Actions a held chord may repeat. Space switches and window moves, stacking
+    /// moves included, run once per press.
     var repeatsWhileHeld: Bool {
         switch self {
-        case .focusPrevious, .focusNext, .shrinkWidth, .growWidth, .shrinkHeight, .growHeight: true
+        case .focusPrevious, .focusNext, .focusMemberAbove, .focusMemberBelow,
+             .shrinkWidth, .growWidth, .shrinkHeight, .growHeight: true
         default: false
         }
     }

@@ -393,6 +393,7 @@ final class StagehandModel: ObservableObject {
             alpha: BorderView.defaultColor.alphaComponent
         ) ?? Array(repeating: defaultBorderColor, count: WorkspaceState.spaceCount)
         input.reverseShortcutSwipeDirection = reverseShortcutSwipeDirection
+        onColumnChangeRefused = { [weak self] refusal in self?.showColumnRefusal(refusal) }
         input.onAction = { [weak self] action in self?.navigate(action) }
         input.onGesture = { [weak self] event in self?.handleGesture(event) }
         overlays.onFocusWindow = { [weak self] id in self?.focusWindow(id) }
@@ -980,6 +981,12 @@ final class StagehandModel: ObservableObject {
         case .togglePause: isRunning ? pause() : start()
         case .toggleShortcutHints: overlays.toggleShortcutHints()
         default:
+            // Stacking goes through the column change queue, which refuses a stack
+            // that would not fit instead of pausing.
+            if let columnChange = ColumnChange(action) {
+                changeColumns(columnChange)
+                return
+            }
             guard isRunning, !isSuspended else { return }
             if gestureAxis != nil {
                 input.cancelGestureSequence()

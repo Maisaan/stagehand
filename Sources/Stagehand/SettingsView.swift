@@ -556,8 +556,9 @@ struct SettingsView: View {
         }
     }
 
-    private func shortcutRows(groups: Set<ShortcutBinding.Group>) -> some View {
-        let bindings = model.shortcutBindings.filter { groups.contains($0.group) }
+    /// The rows of each group in turn, so a binding added later still sits with its group.
+    private func shortcutRows(groups: [ShortcutBinding.Group]) -> some View {
+        let bindings = groups.flatMap { group in model.shortcutBindings.filter { $0.group == group } }
         return Group {
             ForEach(Array(bindings.enumerated()), id: \.element.id) { index, binding in
                 if index > 0 { Divider() }

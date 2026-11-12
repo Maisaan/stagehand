@@ -37,6 +37,8 @@ Each space keeps its own window order, focus, and widths for the session. A wind
 | Previous / next space | ⌃⌥ ↑ / ↓ |
 | Move window left / right | ⌃⌥⌘ ← / → |
 | Move window up / down a space | ⌃⌥⌘ ↑ / ↓ |
+| Stack or unstack window left / right | ⌃⌥⇧ ← / → |
+| Window above / below in a stack | ⌃⌥⇧ ↑ / ↓ |
 | Go to space 1–9 | ⌃⌥ 1–9 |
 | Move window to space 1–9 | ⌃⌥⌘ 1–9 |
 | Share window with space 1–9 | ⌃⌥⇧ 1–9 |
@@ -49,9 +51,20 @@ Each space keeps its own window order, focus, and widths for the session. A wind
 
 Every shortcut can be changed or turned off in Settings > Controls.
 
+### Stacks
+
+A ribbon slot can hold several windows, one above the other: a stack. The ribbon scrolls by slot, so a stack comes into view as one.
+
+- ⌃⌥⇧ ← / → moves the current window sideways. Alone in its slot, it joins the stack (or window) on that side, at the bottom. In a stack, it leaves and becomes its own slot on that side. It keeps focus.
+- ⌃⌥⇧ ↑ / ↓ focuses the window above or below in the same stack. It stops at the ends; hold the keys to keep going.
+- ⌃⌥ ← / → enters the next slot at the window you last used there. ⌃⌥⌘ ← / → moves the whole stack.
+- The windows share the screen's height and the slot's width. Drag a window's top or bottom edge to trade height with its neighbor, or a side edge to set the stack's width. Drag a window by its title bar up or down within its stack to reorder it, or out of the stack to make it its own slot.
+- If the windows can't get short enough to fit (some apps have a minimum height), Stagehand leaves them as they were and says so in the app bar. It keeps running.
+- New and restored windows always get their own slot. With Arrow shortcut swipes on, the same keys work with a three-finger swipe.
+
 **Gestures** are off by default; turn them on in Settings > General > Gestures. Three-finger swipes move between windows (left/right) and spaces (up/down). You can keep swiping with two fingers while a third holds a drag-and-drop. Set macOS's own navigation gestures to four fingers to avoid overlap.
 
-The **app bar** appears under the notch (or top center) when you navigate or hover there. It shows the active app and space; click an app or space number to jump to it. Each space can have its own accent color.
+The **app bar** appears under the notch (or top center) when you navigate or hover there. It shows the active app and space; click an app or space number to jump to it. A stack's apps sit together on one shared backing, and each can still be clicked. Each space can have its own accent color.
 
 ## Limitations
 

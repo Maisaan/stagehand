@@ -42,10 +42,12 @@ struct ShortcutHintSection: Equatable, Identifiable {
         let sections = [
             Self(title: "Navigate", hints:
                 hints("Window", ["focusPrevious", "focusNext"])
+                + hints("In stack", ["focusMemberAbove", "focusMemberBelow"])
                 + hints("Space", ["previousSpace", "nextSpace"])
                 + hints("Go to space", spaces.map { "goToSpace.\($0)" })),
             Self(title: "Move window", hints:
                 hints("Reorder", ["reorderPrevious", "reorderNext"])
+                + hints("Stack or unstack", ["stackPrevious", "stackNext"])
                 + hints("Up or down", ["moveWindowUpSpace", "moveWindowDownSpace"])
                 + hints("To space", spaces.map { "moveToSpace.\($0)" })
                 + hints("Share with", spaces.map { "shareToSpace.\($0)" })),

@@ -341,6 +341,9 @@ public struct LegacyWorkspace: Codable, Equatable, Sendable {
             return true
         case .showSettings, .toggleShortcutHints:
             return false
+        // Stacking came after this model; with one window per column there is no stack.
+        case .stackPrevious, .stackNext, .focusMemberAbove, .focusMemberBelow:
+            return false
         }
     }
 

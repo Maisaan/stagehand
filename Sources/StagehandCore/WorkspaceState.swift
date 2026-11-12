@@ -23,6 +23,15 @@ public enum NavigationAction: Equatable, Sendable {
     case showSettings
     /// Shows or hides the shortcut ribbon at the bottom of the screen.
     case toggleShortcutHints
+    /// Alone in its column, the focused window joins the column before it, at the
+    /// bottom; in a stack, it leaves as its own column before the stack.
+    case stackPrevious
+    /// The same move toward the column after it.
+    case stackNext
+    /// Focuses the window above the focused one in its column.
+    case focusMemberAbove
+    /// Focuses the window below the focused one in its column.
+    case focusMemberBelow
 
     /// Commands for Stagehand itself. They never move focus, so their chords pass
     /// through the keyboard tap to Carbon instead of reserving a focus transfer.
@@ -707,6 +716,10 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
             return true
         case .showSettings, .toggleShortcutHints:
             return false
+        case .stackPrevious, .stackNext:
+            return moveFocusedWindowAcrossColumns(by: action == .stackNext ? 1 : -1)
+        case .focusMemberAbove, .focusMemberBelow:
+            return focusMember(by: action == .focusMemberBelow ? 1 : -1)
         }
     }
 

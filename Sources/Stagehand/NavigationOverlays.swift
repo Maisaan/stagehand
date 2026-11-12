@@ -222,10 +222,12 @@ final class NavigationOverlays {
     private func publishNavigation(state: WorkspaceState, windows: [WindowRecord]) {
         let recordsByID = Dictionary(windows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let records = state.currentSpace.windowIDs.compactMap { recordsByID[$0] }
+        let columns = NavigationHUDModel.columns(of: state.currentSpace, records: recordsByID)
         let space = state.activeSpaceIndex + 1
         let availableSpaceIndices = state.displayedSpaceIndices
         if hudModel.space != space { hudModel.space = space }
         if hudModel.windows != records { hudModel.windows = records }
+        if hudModel.columns != columns { hudModel.columns = columns }
         hudModel.setFocusedID(state.focusedWindowID, animate: hud?.isVisible == true)
         if hudModel.spaces != state.spaces { hudModel.spaces = state.spaces }
         if hudModel.availableSpaceIndices != availableSpaceIndices {
@@ -429,7 +431,16 @@ final class NavigationOverlays {
 
     func showWarning(_ message: String) {
         hudModel.warning = message
+        hudModel.warningIsNotice = false
         presentHUD(dismissAfter: .seconds(5))
+    }
+
+    /// The warning's place in the bar, for a short note that needs no action. Like a
+    /// warning, it ignores the pointer and the panel never becomes key.
+    func showNotice(_ message: String) {
+        hudModel.warning = message
+        hudModel.warningIsNotice = true
+        presentHUD(dismissAfter: .milliseconds(2_500))
     }
 }
 
@@ -747,13 +758,23 @@ struct AppIcon: View {
     }
 }
 
+/// One ribbon column in the app bar: a lone window, or a stack's windows top to bottom.
+struct AppBarColumn: Equatable, Identifiable {
+    let id: String
+    let windows: [WindowRecord]
+}
+
 @MainActor
 final class NavigationHUDModel: ObservableObject {
 
     @Published var space = 1
     @Published var windows: [WindowRecord] = []
+    /// `windows` grouped by ribbon column, so a stack shows as one group.
+    @Published var columns: [AppBarColumn] = []
     @Published var focusedID: String?
     @Published var warning: String?
+    /// The message is a note, such as a refused stack, rather than a warning.
+    @Published var warningIsNotice = false
     @Published var reduceMotion = false
     @Published var attachedToNotch = false
     @Published var spaces: [SpaceState] = []
@@ -788,6 +809,15 @@ final class NavigationHUDModel: ObservableObject {
         guard workspaceTitledEditors.contains(window.bundleIdentifier),
               let workspace = window.title.components(separatedBy: " — ").last else { return window.title }
         return workspace
+    }
+
+    /// The app bar's groups: each column's windows top to bottom, leaving out
+    /// windows without a record and columns left empty by that.
+    static func columns(of space: SpaceState, records: [String: WindowRecord]) -> [AppBarColumn] {
+        space.columns.compactMap { column in
+            let windows = column.windowIDs.compactMap { records[$0] }
+            return windows.isEmpty ? nil : AppBarColumn(id: column.id, windows: windows)
+        }
     }
 
     func setFocusedID(
@@ -858,9 +888,9 @@ private struct NavigationHUD: View {
         Group {
             if let warning = model.warning {
                 HStack(alignment: .top, spacing: 12) {
-                    PhosphorIcon(.warning)
+                    PhosphorIcon(model.warningIsNotice ? .info : .warning)
                         .frame(width: 16, height: 16)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(model.warningIsNotice ? Color(nsColor: model.appBarColor) : .orange)
                     Text(warning).font(.system(size: 12)).foregroundStyle(.white)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -906,44 +936,21 @@ private struct NavigationHUD: View {
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 4) {
-                            ForEach(model.windows) { window in
-                                Button { model.selectWindow(id: window.id) } label: {
-                                    AppIcon(bundleIdentifier: window.bundleIdentifier, size: 24)
-                                    .padding(4)
-                                    .background {
-                                        if window.id == model.focusedID {
-                                            RoundedRectangle(cornerRadius: 10)
-                                                .fill(appBarColor.opacity(0.25))
-                                                .overlay { RoundedRectangle(cornerRadius: 10).stroke(appBarColor.opacity(0.8), lineWidth: 1) }
-                                                .matchedGeometryEffect(id: "selection", in: selection)
-                                                .transition(.identity)
+                            ForEach(model.columns) { column in
+                                if column.windows.count == 1, let window = column.windows.first {
+                                    windowButton(window, appBarColor: appBarColor)
+                                } else {
+                                    // A stack: its windows side by side on one shared
+                                    // backing, each still its own button.
+                                    HStack(spacing: 0) {
+                                        ForEach(column.windows) { window in
+                                            windowButton(window, appBarColor: appBarColor)
                                         }
                                     }
+                                    .background(.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 11))
+                                    .accessibilityElement(children: .contain)
+                                    .accessibilityLabel("Stack of \(column.windows.count) windows")
                                 }
-                                .buttonStyle(ResponsiveButtonStyle(
-                                    reduceMotion: model.reduceMotion,
-                                    configuration: model.interfaceAnimationConfiguration
-                                ))
-                                .help(window.title.isEmpty ? window.appName : "\(window.appName): \(window.title)")
-                                .accessibilityLabel("Focus \(window.appName)\(window.title.isEmpty ? "" : ", \(window.title)")")
-                                .contextMenu {
-                                    let destinations = model.shareDestinations(for: window.id)
-                                    if !destinations.isEmpty {
-                                        Menu("Share with") {
-                                            ForEach(destinations, id: \.self) { index in
-                                                Button("Space \(index + 1)") {
-                                                    model.shareWindow(id: window.id, withSpace: index)
-                                                }
-                                            }
-                                        }
-                                    }
-                                    if model.canRemoveFromCurrentSpace(windowID: window.id) {
-                                        Button("Remove from Space \(model.space)") {
-                                            model.removeWindowFromCurrentSpace(id: window.id)
-                                        }
-                                    }
-                                }
-                                .id(window.id)
                             }
                         }
                         .frame(minWidth: 1)
@@ -985,6 +992,46 @@ private struct NavigationHUD: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    private func windowButton(_ window: WindowRecord, appBarColor: Color) -> some View {
+        Button { model.selectWindow(id: window.id) } label: {
+            AppIcon(bundleIdentifier: window.bundleIdentifier, size: 24)
+            .padding(4)
+            .background {
+                if window.id == model.focusedID {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(appBarColor.opacity(0.25))
+                        .overlay { RoundedRectangle(cornerRadius: 10).stroke(appBarColor.opacity(0.8), lineWidth: 1) }
+                        .matchedGeometryEffect(id: "selection", in: selection)
+                        .transition(.identity)
+                }
+            }
+        }
+        .buttonStyle(ResponsiveButtonStyle(
+            reduceMotion: model.reduceMotion,
+            configuration: model.interfaceAnimationConfiguration
+        ))
+        .help(window.title.isEmpty ? window.appName : "\(window.appName): \(window.title)")
+        .accessibilityLabel("Focus \(window.appName)\(window.title.isEmpty ? "" : ", \(window.title)")")
+        .contextMenu {
+            let destinations = model.shareDestinations(for: window.id)
+            if !destinations.isEmpty {
+                Menu("Share with") {
+                    ForEach(destinations, id: \.self) { index in
+                        Button("Space \(index + 1)") {
+                            model.shareWindow(id: window.id, withSpace: index)
+                        }
+                    }
+                }
+            }
+            if model.canRemoveFromCurrentSpace(windowID: window.id) {
+                Button("Remove from Space \(model.space)") {
+                    model.removeWindowFromCurrentSpace(id: window.id)
+                }
+            }
+        }
+        .id(window.id)
     }
 
     private var spacePicker: some View {

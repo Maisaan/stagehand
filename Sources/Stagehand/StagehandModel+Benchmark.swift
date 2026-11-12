@@ -103,6 +103,9 @@ extension StagehandModel {
         defer { MainThreadActivity.setEnabled(activityWasEnabled) }
         let logging = !ProcessInfo.processInfo.arguments.contains("--no-diagnostics")
         let measuresStacking = ProcessInfo.processInfo.arguments.contains("--stacking")
+        // Column stacks, not window stacking order: `--stacking` above measures when a
+        // destination reaches the front of WindowServer's window order.
+        let stacksColumns = ProcessInfo.processInfo.arguments.contains("--column-stacks")
         diagnostics.isEnabled = logging
         windowSystem.focusDiagnosticsEnabled = logging
         // Marks the probe-driven run so scripts/analyze-log.py can leave it out of real usage.
@@ -149,6 +152,7 @@ extension StagehandModel {
         }
 
         var lines = ["Benchmark (\(busy ? "busy" : "responsive") probes, 4 windows, \(switches) switches"
+            + (stacksColumns ? ", two windows stacked in one column" : "")
             + (logging ? ")" : ", diagnostic logging off)")]
         if let launchFinishedMilliseconds { lines.append("Launch to didFinishLaunching: \(launchFinishedMilliseconds) ms") }
         if let modelInitMilliseconds { lines.append("Model init: \(modelInitMilliseconds) ms") }
@@ -166,6 +170,17 @@ extension StagehandModel {
                             (startSettled - startBegan) * 1_000))
         lines.append("  main thread: " + Self.stallSummary(monitor.stop()))
         guard isRunning else { return "FAIL: Stagehand did not start. Warning: \(warning ?? "none")" }
+        if stacksColumns {
+            // The focused window joins a neighbor, so every switch below crosses or
+            // reveals a stacked column: several windows written for one slot.
+            var predicted = state
+            let action: NavigationAction = predicted.apply(.stackNext) ? .stackNext : .stackPrevious
+            navigate(action)
+            await benchmarkWaitUntilIdle()
+            guard state.currentSpace.columns.contains(where: \.isStack) else {
+                return "FAIL: could not stack two probe windows."
+            }
+        }
 
         // Sequential switches: one at a time, settled between them.
         var timings: [SwitchTiming] = []
@@ -269,6 +284,37 @@ extension StagehandModel {
         lines.append(String(format: "Rapid switches: settled %.0f ms after the first", (CACurrentMediaTime() - rapidBegan) * 1_000))
         lines.append("  main thread: " + Self.stallSummary(monitor.stop()))
         lines.append("Final focus matches the ribbon: \(isRunning && state.focusedWindowID == windowSystem.focusedWindowID())")
+
+        if stacksColumns, let stack = state.currentSpace.columns.first(where: \.isStack) {
+            // Focus moving up and down inside the stack: no slide, one focus each.
+            focusWindow(stack.windowIDs[0])
+            await benchmarkWaitUntilIdle()
+            var memberFocus: [Double] = []
+            var memberSettled: [Double] = []
+            var memberBegan = 0.0
+            var memberFocused: Double?
+            diagnostics.eventObserver = { event in
+                if event == "navigation_focus_confirmed", memberFocused == nil {
+                    memberFocused = (CACurrentMediaTime() - memberBegan) * 1_000
+                }
+            }
+            monitor.start()
+            for index in 0..<16 {
+                memberFocused = nil
+                memberBegan = CACurrentMediaTime()
+                navigate(index.isMultiple(of: 2) ? .focusMemberBelow : .focusMemberAbove)
+                await benchmarkWaitUntilIdle()
+                memberSettled.append((CACurrentMediaTime() - memberBegan) * 1_000)
+                if let memberFocused { memberFocus.append(memberFocused) }
+                try? await Task.sleep(for: .milliseconds(busy ? 300 : 150))
+            }
+            diagnostics.eventObserver = nil
+            lines.append("Member switches in the stack:")
+            lines.append("  to focus confirmed: " + Self.percentiles(memberFocus))
+            lines.append("  to settled: " + Self.percentiles(memberSettled))
+            lines.append("  main thread: " + Self.stallSummary(monitor.stop()))
+            lines.append("Final focus matches the ribbon: \(isRunning && state.focusedWindowID == windowSystem.focusedWindowID())")
+        }
 
         // Space switches: no slide; the outgoing space is parked as a whole.
         navigate(.moveToSpace(index: 1, follow: false))

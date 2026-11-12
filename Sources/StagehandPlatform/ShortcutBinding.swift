@@ -135,6 +135,23 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
                 action: .moveToSpace(index: index, follow: true)
             ))
         }
+        // Added with column stacking. They stay after every older binding: on load a
+        // later duplicate is the one turned off, so a chord a user already recorded
+        // keeps working and a new default that collides with it is turned off.
+        bindings += [
+            .init(id: "stackPrevious", title: "Stack or unstack current window left", group: .windowOrder,
+                  key: UInt32(kVK_LeftArrow), modifiers: base | shift, keyLabel: "←", isEnabled: true,
+                  action: .stackPrevious),
+            .init(id: "stackNext", title: "Stack or unstack current window right", group: .windowOrder,
+                  key: UInt32(kVK_RightArrow), modifiers: base | shift, keyLabel: "→", isEnabled: true,
+                  action: .stackNext),
+            .init(id: "focusMemberAbove", title: "Window above in stack", group: .windowNavigation,
+                  key: UInt32(kVK_UpArrow), modifiers: base | shift, keyLabel: "↑", isEnabled: true,
+                  action: .focusMemberAbove),
+            .init(id: "focusMemberBelow", title: "Window below in stack", group: .windowNavigation,
+                  key: UInt32(kVK_DownArrow), modifiers: base | shift, keyLabel: "↓", isEnabled: true,
+                  action: .focusMemberBelow),
+        ]
         return bindings
     }()
 
@@ -209,16 +226,21 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
             return binding
         }
         var usedChords: [UInt64: String] = [:]
+        var newDefaultTurnedOff = false
         for index in bindings.indices where bindings[index].isEnabled {
             let chord = bindings[index].chordIgnoringCapsLock
             if let owner = usedChords[chord] {
                 bindings[index].isEnabled = false
                 issues.append("\(bindings[index].title) was turned off because \(bindings[index].label) is also assigned to \(owner).")
+                // A binding added after these were saved has no saved state, so it
+                // would collide and be reported again at every launch. Saving it as
+                // off reports it once; the user can record another chord for it.
+                if savedByID[bindings[index].id] == nil { newDefaultTurnedOff = true }
             } else {
                 usedChords[chord] = bindings[index].title
             }
         }
-        if migrated { save(bindings, to: userDefaults) }
+        if migrated || newDefaultTurnedOff { save(bindings, to: userDefaults) }
         return LoadResult(bindings: bindings, issues: issues)
     }
 

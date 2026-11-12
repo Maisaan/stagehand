@@ -4,7 +4,7 @@ Use disposable documents or text fields for typing checks, not a shell or a prod
 
 ## Short cleanup check for focus and navigation
 
-`./scripts/run-acceptance.sh` automates steps 2 to 4 against disposable probe windows. Quit Stagehand first, and keep hands off the keyboard and trackpad until it prints PASS or FAIL. It exits 0 only on PASS; an empty report, a FAIL verdict, or a run longer than `STAGEHAND_ACCEPTANCE_TIMEOUT` seconds (default 180, after which it stops Stagehand) exits 1. It tests `STAGEHAND_APP` when set, otherwise `dist/Stagehand.app` from the last `scripts/build-app.sh`, otherwise `/Applications/Stagehand.app`; the chosen build needs its own Accessibility grant. It manages only the probe's windows, makes rapid switches in both directions with reversals, switches between two spaces, checks where typing lands during and after transitions, pauses, verifies restored frames, and summarizes focus times and any pauses from the log. It does not cover trackpad gestures, Desktop changes, or other apps; run the relevant manual checks below for those.
+`./scripts/run-acceptance.sh` automates steps 2 to 4 against disposable probe windows. Quit Stagehand first, and keep hands off the keyboard and trackpad until it prints PASS or FAIL. It exits 0 only on PASS; an empty report, a FAIL verdict, or a run longer than `STAGEHAND_ACCEPTANCE_TIMEOUT` seconds (default 180, after which it stops Stagehand) exits 1. It tests `STAGEHAND_APP` when set, otherwise `dist/Stagehand.app` from the last `scripts/build-app.sh`, otherwise `/Applications/Stagehand.app`; the chosen build needs its own Accessibility grant. It manages only the probe's windows, makes rapid switches in both directions with reversals, switches between two spaces, stacks all three windows in one column with the stacking shortcuts and switches between them (`Stack steps: 12 of 12`), checks where typing lands during and after transitions, pauses, verifies restored frames, and summarizes focus times and any pauses from the log. It does not cover trackpad gestures, Desktop changes, or other apps; run the relevant manual checks below for those.
 
 Run this on the build before and after a cleanup that touches focus, input, gestures, window ordering, parking, overlays, or lifecycle. Use the same apps, display, shortcuts, and signing identity for both runs. Confirm the rebuilt app still has Accessibility permission. Keep Diagnostic logging enabled.
 
@@ -68,6 +68,22 @@ Record the app pairs, pass/fail result, and any relevant log timestamps in the c
 - Drag the top edge of a centered half-height window to the top of the available screen. On release, it should fill the available height in one drag.
 - Open a new window while Stagehand is running. Its first layout should keep its original width within the allowed range.
 
+## Stacks
+
+Use ordinary apps with Diagnostic logging on. A refused stack logs `column_change_refused` with `decided` (`before_change` when known minimum heights already rule it out, `after_layout` when the stack's own layout found it too tall and undid it); neither may log `automatic_pause`.
+
+- With three lone windows, press Control + Option + Shift + Left on the right one: it joins the middle window's slot at the bottom, snaps without a slide, and keeps focus. Type right away; the text lands in the moved window. Repeat with Right from the left window to make a stack of three.
+- In the stack, press Control + Option + Shift + Up and Down, and hold them. Focus walks the stack without wrapping, the ribbon does not slide, and the focus border outlines only the focused window. Type immediately after each switch and while holding; each string lands in the window that was focused when it was typed.
+- Control + Option + Left/Right from a neighbor enters the stack at the window last used there. Control + Option + Command + Left/Right moves the whole stack.
+- In a stack, Control + Option + Shift + Right on a member: it leaves as its own slot to the right and keeps focus. Its height when alone returns (the one it had before stacking).
+- Stack a window that has a minimum height, such as System Settings or a fixed-height dialog app, with one or two others until the stack cannot fit. The windows stay where they were (or snap back after one layout), the app bar shows a short note for about two seconds without taking focus, Stagehand keeps running, and typing after the note goes to the focused window. A second attempt is refused at once.
+- Drag a member's title bar up or down within its stack, then out to the side of the stack: within the stack it changes places; outside, it becomes its own slot at the drop position. A lone window dropped onto a stack never joins it.
+- Drag the edge between two members: the pair trades height and the other members keep theirs. Drag a member's side edge: the whole stack takes that width.
+- Open a sheet or confirmation dialog on a stacked window. The border follows the window and its sheet; the dialog does not get a slot and keeps focus when its window is active.
+- With Arrow shortcut swipes on, Control + Option + Shift with a three-finger swipe does the same as the arrows, in both direction modes.
+- Quit and relaunch an app with a stacked window; pause and resume; switch spaces and back. The stack comes back whole.
+- Run `BENCHMARK_MODES="busy busy-columns" ./scripts/run-benchmark.sh` (hands off) and compare the switch lines: switches that reveal a stacked column write each member's frame once.
+
 ## Spaces and shared windows
 
 - Move a window to an empty space without following. The outgoing space remains active.
@@ -110,6 +126,7 @@ Record the app pairs, pass/fail result, and any relevant log timestamps in the c
 ## Interface
 
 - The temporary app bar appears beneath the notch and disappears after navigation stops.
+- A stack's apps share one backing in the app bar. Click each member: each one focuses directly.
 - Navigate repeatedly while the bar is entering, visible, and exiting. It stays present during successive changes, moves its active indicator, and dismisses only after the latest change. An old dismissal must never hide a refreshed bar.
 - Enable Reduce Motion. The bar uses a fade without drop/scale movement; indicator changes do not travel between icons.
 - Resize the active window continuously. The border follows its actual frame without easing behind it, and its corners match the target window.

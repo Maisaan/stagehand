@@ -17,6 +17,17 @@ enum ColumnChange: Equatable {
         case .focusMember(let direction): direction < 0 ? "focusMemberAbove" : "focusMemberBelow"
         }
     }
+
+    /// The column change a stacking shortcut or arrow shortcut swipe asks for.
+    init?(_ action: NavigationAction) {
+        switch action {
+        case .stackPrevious: self = .moveFocusedWindowAcrossColumns(direction: -1)
+        case .stackNext: self = .moveFocusedWindowAcrossColumns(direction: 1)
+        case .focusMemberAbove: self = .focusMember(direction: -1)
+        case .focusMemberBelow: self = .focusMember(direction: 1)
+        default: return nil
+        }
+    }
 }
 
 /// Why a column change was not made. A refusal leaves the layout as it was and
@@ -119,6 +130,21 @@ extension StagehandModel {
             ])
         }
         onColumnChangeRefused?(refusal)
+    }
+
+    /// The short message for a refusal. It names no app or window: it shows on
+    /// screen while the user is looking at those windows.
+    static func message(for refusal: ColumnRefusal) -> String {
+        switch refusal {
+        case .stackDoesNotFit:
+            "Not stacked: these windows can't get short enough to fit one above the other."
+        }
+    }
+
+    /// The default `onColumnChangeRefused`: a brief note in the app bar, which never
+    /// takes focus. Stagehand keeps running and the layout stays as it was.
+    func showColumnRefusal(_ refusal: ColumnRefusal) {
+        overlays.showNotice(Self.message(for: refusal))
     }
 
     // MARK: - Learned minimum heights

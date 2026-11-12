@@ -9,7 +9,9 @@ set -euo pipefail
 # turns diagnostic logging off to measure its cost. A -stacking suffix
 # (busy-stacking) also measures when the destination reaches the front; its
 # window-list polling stalls Stagehand's main thread, so leave it off when
-# comparing latency or stalls.
+# comparing latency or stalls. A -columns suffix (busy-columns) is unrelated to
+# -stacking: it stacks two probe windows in one ribbon column first, so switches
+# cross a stacked column, and adds member switches inside the stack.
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app="${STAGEHAND_APP:-$root/dist/Stagehand.app}"
 if pgrep -f "Stagehand.app/Contents/MacOS/Stagehand" >/dev/null; then
@@ -23,6 +25,7 @@ for mode in ${BENCHMARK_MODES:-responsive busy}; do
     [[ "$mode" == busy* ]] && extra=(--busy)
     [[ "$mode" == *-quiet* ]] && extra+=(--no-diagnostics)
     [[ "$mode" == *-stacking* ]] && extra+=(--stacking)
+    [[ "$mode" == *-columns* ]] && extra+=(--column-stacks)
     open -W -n "$app" --args --benchmark "$root/dist/AcceptanceProbe.app" ${extra[@]+"${extra[@]}"} --acceptance-output "$report" &
     open_pid=$!
     deadline=$((SECONDS + 240))

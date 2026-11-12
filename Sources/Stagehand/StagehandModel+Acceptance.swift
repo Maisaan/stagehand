@@ -133,6 +133,13 @@ extension StagehandModel {
             }
         }
         await waitUntilIdle()
+
+        // Stacks, after the checks above so they run as before: all three windows into
+        // one column with the stacking shortcuts, typing during and after member
+        // switches and a stack move, then back to one window per column.
+        let stack = await acceptanceStacks(system: system, typed: &typed)
+        lines0 += stack.failures
+        await waitUntilIdle()
         try? await Task.sleep(for: .milliseconds(400))
 
         var lines: [String] = lines0
@@ -142,6 +149,7 @@ extension StagehandModel {
         failures += lines0.count
         lines.append("Space switches: \(spacesReady ? spaceSwitches : 0) of \(spaceSwitches)")
         if !spacesReady { failures += 1 }
+        lines.append("Stack steps: \(stack.steps) of \(Self.acceptanceStackSteps)")
         lines.append("Final focus matches the ribbon: \(finalFocusMatches)")
         for probe in typed {
             let landed = titles.compactMap { id, title -> String? in
@@ -163,8 +171,88 @@ extension StagehandModel {
             lines.append("Frame restored for \(titles[id] ?? id): \(restored ? "ok" : "FAIL")")
         }
         lines.append(contentsOf: acceptanceLogSummary(since: startedAt, failures: &failures))
-        lines.insert("\(failures == 0 ? "PASS" : "FAIL"): \(switches) switches, \(spaceSwitches) space switches, \(typed.count) typed checks, \(failures) failures", at: 0)
+        lines.insert("\(failures == 0 ? "PASS" : "FAIL"): \(switches) switches, \(spaceSwitches) space switches, "
+            + "\(stack.steps) stack steps, \(typed.count) typed checks, \(failures) failures", at: 0)
         return lines.joined(separator: "\n")
+    }
+
+    /// Shortcut steps the stack check makes when every one of them applies.
+    private static let acceptanceStackSteps = 12
+
+    /// Gathers the three probe windows into the active space, stacks them with the
+    /// stacking shortcuts, checks the stack's live frames, switches between members
+    /// with typing during and after, then unstacks them. Returns the steps that
+    /// applied and a FAIL line for each check that did not hold.
+    private func acceptanceStacks(system: WindowSystem,
+                                  typed: inout [TypedProbe]) async -> (steps: Int, failures: [String]) {
+        var failures: [String] = []
+        var steps = 0
+        let home = state.activeSpaceIndex
+        if let away = state.spaces.indices.first(where: { $0 != home && !state.spaces[$0].windowIDs.isEmpty }) {
+            navigate(.goToSpace(index: away))
+            await waitUntilIdle()
+            navigate(.moveToSpace(index: home, follow: true))
+            await waitUntilIdle()
+        }
+        guard state.activeSpaceIndex == home, state.currentSpace.windowIDs.count == 3 else {
+            return (0, ["FAIL: could not gather the three windows into one space for the stack check"])
+        }
+        /// Makes one shortcut step and checks that the columns and focus became what
+        /// the workspace predicts. A refused or ignored step counts as a failure.
+        func step(_ action: NavigationAction, typeDuring index: Int? = nil) async -> Bool {
+            var predicted = state
+            guard predicted.apply(action) else {
+                failures.append("FAIL: stack step \(action) did not apply")
+                return false
+            }
+            navigate(action)
+            if let index, let destination = predicted.focusedWindowID {
+                let text = Self.probeText(index)
+                await type(text)
+                typed.append(TypedProbe(text: text, expectedWindowID: destination, duringTransition: true))
+            }
+            await waitUntilIdle()
+            guard state.currentSpace.columns.map(\.windowIDs) == predicted.currentSpace.columns.map(\.windowIDs),
+                  state.focusedWindowID == predicted.focusedWindowID else {
+                failures.append("FAIL: stack step \(action) was refused or ended elsewhere")
+                return false
+            }
+            steps += 1
+            return true
+        }
+        func typeAfter(_ index: Int) async {
+            guard let destination = state.focusedWindowID else { return }
+            let text = Self.probeText(index)
+            await type(text)
+            typed.append(TypedProbe(text: text, expectedWindowID: destination, duringTransition: false))
+        }
+        // Build: the last column joins the middle one, then the first joins them.
+        for _ in 0..<2 where state.currentSpace.focusedColumnIndex.map({ $0 < 2 }) == true {
+            navigate(.focusNext)
+            await waitUntilIdle()
+        }
+        guard await step(.stackPrevious, typeDuring: 4_000),
+              await step(.focusPrevious),
+              await step(.stackNext, typeDuring: 4_001) else { return (steps, failures) }
+        await typeAfter(4_002)
+        let members = state.currentSpace.columns.first?.windowIDs ?? []
+        let frames = members.compactMap { system.observedFrame(windowID: $0) }
+        let stacked = members.count == 3 && frames.count == 3
+            && frames.allSatisfy { abs($0.minX - frames[0].minX) <= 2 }
+            && zip(frames, frames.dropFirst()).allSatisfy { $0.maxY <= $1.minY + 1 }
+        if !stacked { failures.append("FAIL: the three stacked windows are not laid out top to bottom in one column") }
+        // Member switches: typing right after each, during the switch and once it settled.
+        for (index, action) in [NavigationAction.focusMemberAbove, .focusMemberAbove, .focusMemberBelow,
+                                .focusMemberAbove, .focusMemberBelow, .focusMemberBelow].enumerated() {
+            guard await step(action, typeDuring: index.isMultiple(of: 2) ? 4_010 + index : nil) else { break }
+            if !index.isMultiple(of: 2) { await typeAfter(4_020 + index) }
+        }
+        // Unstack: the bottom member leaves to the right, then the member the stack
+        // keeps focused leaves to the left.
+        _ = await step(.stackNext, typeDuring: 4_030)
+        if await step(.focusPrevious) { _ = await step(.stackPrevious) }
+        if state.currentSpace.columns.count != 3 { failures.append("FAIL: the stack did not come apart into three columns") }
+        return (steps, failures)
     }
 
     /// Lowercase letters only: harmless if focus ever escapes to another app.
