@@ -23,6 +23,25 @@ struct ModelScenarioTests {
         #expect(details?["executableModified"] != nil)
     }
 
+    /// Holding ⌃⌥→ past the end of the ribbon (2026-11-12): the steps before the end
+    /// were merged into the next one, which had no effect, so nothing laid them out and
+    /// the next refresh followed system focus back to the start.
+    @Test func navigationStepsMergedIntoAStepWithNoEffectAreStillLaidOut() async {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+
+        harness.model.navigate(.focusNext)
+        harness.model.navigate(.focusNext)
+        harness.model.navigate(.focusNext)
+        await harness.settle()
+
+        #expect(harness.model.state.focusedWindowID == "c")
+        #expect(harness.windows.focusedWindowID() == "c")
+        #expect(harness.events("automatic_pause").isEmpty)
+    }
+
     @Test func navigationMovesFocusAndParksTheRibbonsHiddenWindows() async {
         let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
         defer { harness.cleanUp() }

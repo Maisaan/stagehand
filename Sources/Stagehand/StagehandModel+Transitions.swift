@@ -107,7 +107,9 @@ extension StagehandModel {
         resetGestureTracking()
         let stateBeforeChange = state
         let application = applyToState(change, crossingDisplays: pendingChange.crossesDisplays)
-        guard application == .applied else {
+        // Steps merged into this one are already in state and wait for its layout.
+        let completesMergedSteps = batch.motionStart != nil
+        guard application == .applied || completesMergedSteps else {
             if let token { focusGate.cancelTransfer(token: token) }
             workspaceRestoration.endTransition()
             if application == .refused {
