@@ -70,15 +70,15 @@ Record the app pairs, pass/fail result, and any relevant log timestamps in the c
 
 ## Stacks
 
-Use ordinary apps with Diagnostic logging on. A refused stack logs `tile_change_refused` with `decided` (`before_change` when known minimum heights already rule it out, `after_layout` when the stack's own layout found it too tall and undid it); neither may log `automatic_pause`.
+Use ordinary apps with Diagnostic logging on. A refused stack logs `tile_change_refused` with `decided` (`before_change` when known minimum sizes already rule it out, `after_layout` when the stack's own layout found it too big and undid it), plus `requiredWidth` and `requiredHeight`; neither may log `automatic_pause`.
 
 - With three lone windows, press Control + Option + Shift + Left on the right one: it joins the middle window's tile at the bottom, snaps without a slide, and keeps focus. Type right away; the text lands in the moved window. Repeat with Right from the left window to make a stack of three.
 - In the stack, press Control + Option + Shift + Up and Down, and hold them. Focus walks the stack without wrapping, the ribbon does not slide, and the focus border outlines only the focused window. Type immediately after each switch and while holding; each string lands in the window that was focused when it was typed.
 - Control + Option + Left/Right from a neighbor enters the stack at the window last used there. Control + Option + Command + Left/Right moves the whole stack.
 - In a stack, Control + Option + Shift + Right on a member: it leaves as its own tile to the right and keeps focus. Its height when alone returns (the one it had before stacking).
 - Stack a window that has a minimum height, such as System Settings or a fixed-height dialog app, with one or two others until the stack cannot fit. The windows stay where they were (or snap back after one layout), the app bar shows a short note for about two seconds without taking focus, Stagehand keeps running, and typing after the note goes to the focused window. A second attempt is refused at once.
-- Drag a member's title bar up or down within its stack, then out to the side of the stack: within the stack it changes places; outside, it becomes its own tile at the drop position. A lone window dropped onto a stack never joins it.
-- Drag the edge between two members: the pair trades height and the other members keep theirs. Drag a member's side edge: the whole stack takes that width.
+- Drag a member's title bar onto another member, then out to the side of the stack: on a member, the two swap places; outside, it becomes its own tile at the drop position. A lone window dropped onto a stack never joins it.
+- Drag the edge between two members: the pair trades height and the other members keep theirs. Drag a member's side edge: the whole stack takes that width. Drag the stack's own top or bottom edge: the window returns to the screen's edge.
 - Open a sheet or confirmation dialog on a stacked window. The border follows the window and its sheet; the dialog does not get a tile and keeps focus when its window is active.
 - With Arrow shortcut swipes on, Control + Option + Shift with a three-finger swipe does the same as the arrows, in both direction modes.
 - Quit and relaunch an app with a stacked window; pause and resume; switch spaces and back. The stack comes back whole.

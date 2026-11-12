@@ -248,6 +248,7 @@ extension StagehandModel {
             focusGate.cancelAll()
         }
         preferredHeights = preferredHeights.filter { !removedIDs.contains($0.key) }
+        learnedMinimumWidths = learnedMinimumWidths.filter { !removedIDs.contains($0.key) }
         learnedMinimumHeights = learnedMinimumHeights.filter { !removedIDs.contains($0.key) }
         lastAppliedFrames = lastAppliedFrames.filter { !removedIDs.contains($0.key) }
         knownFrames = knownFrames.filter { !removedIDs.contains($0.key) }
@@ -360,7 +361,9 @@ extension StagehandModel {
             if pointerInteraction == nil, let focused = focusedWindow, let frame = availableFrame {
                 pointerInteraction = PointerInteraction(
                     windowID: focused.id,
-                    placements: WindowLayout.placements(for: oldState, availableFrame: frame, gap: gap),
+                    placements: WindowLayout.placements(for: oldState, availableFrame: frame, gap: gap,
+                                                        minimumWidths: learnedMinimumWidths,
+                                                        minimumHeights: learnedMinimumHeights),
                     needsLayout: oldState != state
                 )
             } else if oldState != state {
@@ -399,23 +402,18 @@ extension StagehandModel {
             let moved = abs(focused.frame.minX - previous.minX) > 3 ||
                 abs(focused.frame.minY - previous.minY) > 3
             if (resized || moved) && (interaction != nil || Date().timeIntervalSince(lastTransition) > 0.4) {
-                let stacked = state.currentSpace.tileIndex(of: focused.id)
-                    .map { state.currentSpace.tiles[$0].isMultiPane } ?? false
-                if resized, stacked {
-                    applyStackedResize(windowID: focused.id, previous: previous, observed: focused.frame,
-                                       available: frame)
-                } else if resized {
-                    state.setWidthFraction(focused.frame.width / frame.width, for: focused.id)
-                    preferredHeights[focused.id] = preferredHeightAfterResize(
-                        previous: previous, observed: focused.frame, available: frame
-                    )
+                if resized {
+                    applyPaneResize(windowID: focused.id, previous: previous, observed: focused.frame,
+                                    available: frame)
                 }
                 if moved && !resized {
                     let placements: [WindowPlacement]
                     if let interaction, interaction.windowID == focused.id {
                         placements = interaction.placements
                     } else {
-                        placements = WindowLayout.placements(for: oldState, availableFrame: frame, gap: gap)
+                        placements = WindowLayout.placements(for: oldState, availableFrame: frame, gap: gap,
+                                                             minimumWidths: learnedMinimumWidths,
+                                                             minimumHeights: learnedMinimumHeights)
                     }
                     applyWindowDrop(windowID: focused.id, frame: focused.frame, placements: placements)
                 }

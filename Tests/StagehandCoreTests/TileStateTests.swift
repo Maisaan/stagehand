@@ -293,10 +293,7 @@ private func invariantViolations(_ state: WorkspaceState) -> [String] {
             case 8, 9:
                 state.focusPane(direction: paneDirection)
                 operation = "focusPane \(paneDirection)"
-            case 10:
-                state.reorderPane(windowID: id, to: position, inSpace: space)
-                operation = "reorderPane \(id) \(position) space \(space)"
-            case 11:
+            case 10, 11:
                 state.swapPane(windowID: id, direction: paneDirection, inSpace: space)
                 operation = "swapPane \(id) \(paneDirection) space \(space)"
             case 12:
@@ -410,16 +407,6 @@ private func stacked(_ tiles: [[String]], focus: String? = nil, widths: [Double]
     #expect(state.reorderWindow(windowID: "d", to: 0) == true)
     #expect(state.currentSpace.tiles.map(\.windowIDs) == [["b", "c", "d"], ["a"], ["e"]])
     #expect(state.focusedWindowID == "c")
-}
-
-@Test func reorderingAPaneMovesItsWeightAndKeepsFocus() {
-    var state = WorkspaceState(spaces: [SpaceState(tiles: [
-        Tile(stacking: ["a", "b", "c"], weights: [3, 1, 2])
-    ], focusedWindowID: "b")])
-    #expect(state.reorderPane(windowID: "a", to: 9, inSpace: 0) == true)
-    #expect(state.currentSpace.tiles[0].panes == .stack(["b", "c", "a"], weights: [1, 2, 3]))
-    #expect(state.focusedWindowID == "b")
-    #expect(state.reorderPane(windowID: "a", to: 2, inSpace: 0) == false)
 }
 
 @Test func widthBelongsToTheTile() {

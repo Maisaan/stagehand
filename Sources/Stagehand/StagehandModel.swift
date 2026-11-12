@@ -194,9 +194,10 @@ final class StagehandModel: ObservableObject {
     var preferredHeights: [String: CGFloat] = [:] {
         didSet { if isRunning, preferredHeights != oldValue { scheduleLayoutSave() } }
     }
-    /// Heights apps refused to go below, learned from layouts and kept across
-    /// them, so a stack is sized to fit at once and a stack that cannot fit is
-    /// refused before it is made. Only in memory; forgotten with the window.
+    /// Sizes apps refused to go below, learned from layouts and kept across
+    /// them, so a multi-pane tile is sized to fit at once and a tile that cannot
+    /// fit is refused before it is made. Only in memory; forgotten with the window.
+    var learnedMinimumWidths: [String: CGFloat] = [:]
     var learnedMinimumHeights: [String: CGFloat] = [:]
     /// A tile change was refused instead of applied; Stagehand keeps running.
     var onTileChangeRefused: ((TileRefusal) -> Void)?

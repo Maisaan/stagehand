@@ -18,11 +18,13 @@ public enum WindowLayout {
         observedWidths: [String: CGFloat] = [:],
         preferredHeights: [String: CGFloat] = [:],
         observedHeights: [String: CGFloat] = [:],
+        minimumWidths: [String: CGFloat] = [:],
         minimumHeights: [String: CGFloat] = [:]
     ) -> [WindowPlacement] {
         placements(for: state.currentSpace, availableFrame: availableFrame, tileGap: gap, paneGap: gap,
                    observedWidths: observedWidths, preferredHeights: preferredHeights,
-                   observedHeights: observedHeights, minimumHeights: minimumHeights)
+                   observedHeights: observedHeights, minimumWidths: minimumWidths,
+                   minimumHeights: minimumHeights)
     }
 
     /// Uses the caller's coordinate system without converting between AppKit and

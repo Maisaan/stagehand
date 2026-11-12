@@ -283,7 +283,8 @@ public struct SpaceState: Codable, Equatable, Sendable {
     /// saved tile-mate (in the saved reading order, earlier ones first). When
     /// that tile is the saved one minus this window, the saved layout returns
     /// whole; otherwise the window goes beside that mate, on the side it had.
-    /// False when no mate is here.
+    /// The tile widens by the width the window adds to its saved mates' span,
+    /// so its panes keep the widths they had. False when no mate is here.
     fileprivate mutating func rejoin(windowID: String, savedTile: Tile) -> Bool {
         let savedOrder = savedTile.windowIDs
         guard !contains(windowID: windowID), let position = savedOrder.firstIndex(of: windowID) else { return false }
@@ -300,6 +301,12 @@ public struct SpaceState: Codable, Equatable, Sendable {
             tiles[tile].setPanes(current.inserting(windowID, beside: mate,
                                                    along: saved.separatingAxis(windowID, mate) ?? .vertical,
                                                    after: earlier != nil))
+        }
+        let mates = Set(saved.windowIDs).subtracting([windowID])
+        let matesSpan = savedTile.panes.horizontalSpan(of: mates)
+        if matesSpan > 0 {
+            let widened = savedTile.panes.horizontalSpan(of: mates.union([windowID])) / matesSpan
+            tiles[tile].widthFraction = Self.clampedWidth(tiles[tile].widthFraction * Double(widened))
         }
         return true
     }
@@ -537,17 +544,6 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     }
 
     // MARK: - Panes
-
-    /// Moves a pane to `position` among its split's children. Its weight moves
-    /// with it; focus and width do not change.
-    @discardableResult
-    public mutating func reorderPane(windowID: String, to position: Int, inSpace spaceIndex: Int) -> Bool {
-        guard spaces.indices.contains(spaceIndex),
-              let tile = spaces[spaceIndex].tileIndex(of: windowID),
-              let panes = spaces[spaceIndex].tiles[tile].panes.reordering(windowID, to: position) else { return false }
-        spaces[spaceIndex].tiles[tile].setPanes(panes)
-        return true
-    }
 
     /// Adds a window as a pane spanning the `edge` of the tile at `tileIndex`,
     /// taking it out of its own tile. Joining at a side adds the window's width

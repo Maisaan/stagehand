@@ -71,7 +71,7 @@ public indirect enum PaneTree: Equatable, Sendable, Codable {
     /// keep their relative weights, so they grow into its space; a flattened
     /// split's children share its weight in proportion, so every pane keeps its
     /// size. Nil when no pane is kept.
-    func restricted(to keep: (String) -> Bool) -> PaneTree? {
+    public func restricted(to keep: (String) -> Bool) -> PaneTree? {
         switch self {
         case .pane(let windowID):
             return keep(windowID) ? self : nil
@@ -156,23 +156,6 @@ public indirect enum PaneTree: Equatable, Sendable, Codable {
                       weights: [Self.defaultWeight, Self.defaultWeight])
     }
 
-    /// Moves the pane of `windowID` to `position` among its parent split's
-    /// children. Its weight moves with it.
-    func reordering(_ windowID: String, to position: Int) -> PaneTree? {
-        guard case .split(let axis, var children, var weights) = self,
-              let index = children.firstIndex(where: { $0.contains(windowID) }) else { return nil }
-        if case .pane = children[index] {
-            let destination = min(max(position, 0), children.count - 1)
-            guard destination != index else { return nil }
-            children.insert(children.remove(at: index), at: destination)
-            weights.insert(weights.remove(at: index), at: destination)
-            return .split(axis: axis, children: children, weights: weights)
-        }
-        guard let child = children[index].reordering(windowID, to: position) else { return nil }
-        children[index] = child
-        return .split(axis: axis, children: children, weights: weights)
-    }
-
     /// Gives the child holding `windowID` `fraction` of the weight it shares
     /// with the child holding `neighborID`, in the split that separates them.
     func settingShares(_ windowID: String, _ neighborID: String, fraction: Double) -> PaneTree? {
@@ -198,10 +181,16 @@ public indirect enum PaneTree: Equatable, Sendable, Codable {
 
     /// The axis of the split that separates two panes, if any.
     func separatingAxis(_ first: String, _ second: String) -> SplitAxis? {
+        separatingSides(first, second)?.axis
+    }
+
+    /// The split that separates two panes: its axis and the children holding each.
+    public func separatingSides(_ first: String, _ second: String)
+        -> (axis: SplitAxis, first: PaneTree, second: PaneTree)? {
         guard case .split(let axis, let children, _) = self,
               let index = children.firstIndex(where: { $0.contains(first) }),
               let other = children.firstIndex(where: { $0.contains(second) }) else { return nil }
-        return index == other ? children[index].separatingAxis(first, second) : axis
+        return index == other ? children[index].separatingSides(first, second) : (axis, children[index], children[other])
     }
 
     // MARK: - The unit square
@@ -234,8 +223,15 @@ public indirect enum PaneTree: Equatable, Sendable, Codable {
         }
     }
 
-    func unitFrame(of windowID: String) -> CGRect? {
+    public func unitFrame(of windowID: String) -> CGRect? {
         unitFrames().first { $0.windowID == windowID }?.frame
+    }
+
+    /// The width the panes of `windowIDs` span together in the unit square.
+    func horizontalSpan(of windowIDs: Set<String>) -> CGFloat {
+        let frames = unitFrames().filter { windowIDs.contains($0.windowID) }.map(\.frame)
+        guard let minX = frames.map(\.minX).min(), let maxX = frames.map(\.maxX).max() else { return 0 }
+        return maxX - minX
     }
 
     private static let edgeTolerance: CGFloat = 1e-9
@@ -247,7 +243,7 @@ public indirect enum PaneTree: Equatable, Sendable, Codable {
     /// The pane on `direction`'s side of `windowID`'s pane: its facing edge
     /// touches that pane's edge and it overlaps that pane across the move. Ties go
     /// to the greatest overlap, then to the topmost or leftmost pane.
-    func neighbor(of windowID: String, toward direction: PaneDirection) -> String? {
+    public func neighbor(of windowID: String, toward direction: PaneDirection) -> String? {
         let frames = unitFrames()
         guard let origin = frames.first(where: { $0.windowID == windowID })?.frame else { return nil }
         let across = { (frame: CGRect) in

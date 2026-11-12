@@ -95,6 +95,46 @@ private func stacked(_ tiles: [[String]], focus: String? = nil, widths: [Double]
     #expect(front.currentSpace.tiles[0].panes == .v(.h(.p("a"), .p("b")), .p("x")))
 }
 
+@Test func aWholeSideBySideTileReturnsAtItsWidthWithItsPanesWidths() {
+    let saved = WorkspaceState(spaces: [SpaceState(tiles: [
+        Tile(windowID: "x", widthFraction: 0.5),
+        Tile(panes: .h(.p("a"), .p("b"), .p("c"), weights: [2, 1, 1]), widthFraction: 0.8)
+    ], focusedWindowID: "x")])
+    var state = saved
+    state.reconcile(windowIDs: ["x"])
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["x"]])
+
+    state.restoreMemberships(windowIDs: ["a", "b", "c"], from: saved)
+
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["x"], ["a", "b", "c"]])
+    #expect(state.currentSpace.tiles[1].panes == saved.currentSpace.tiles[1].panes)
+    #expect(abs(state.currentSpace.tileWidthFraction(containing: "a") - 0.8) < 1e-9)
+    #expect(state.focusedWindowID == "x")
+}
+
+@Test func aWindowRejoiningAGridKeepsTheOtherPanesWidths() {
+    let grid = Tile(panes: .v(.h(.p("a"), .p("b")), .h(.p("c"), .p("d"))), widthFraction: 1)
+    // d was away and the rest of the tile kept its layout: the tile is as wide as before.
+    var whole = WorkspaceState(spaces: [SpaceState(tiles: [
+        Tile(panes: .v(.h(.p("a"), .p("b")), .p("c")), widthFraction: 1)
+    ])])
+    #expect(whole.rejoin(windowID: "d", savedTile: grid, inSpace: 0) == true)
+    #expect(whole.currentSpace.tiles[0].panes == grid.panes)
+    #expect(whole.currentSpace.tileWidthFraction(containing: "d") == 1)
+
+    // Only c is here, alone at its pane's width: d beside it doubles the width.
+    var alone = WorkspaceState(spaces: [SpaceState(tiles: [Tile(windowID: "c", widthFraction: 0.5)])])
+    #expect(alone.rejoin(windowID: "d", savedTile: grid, inSpace: 0) == true)
+    #expect(alone.currentSpace.tiles[0].panes == .h(.p("c"), .p("d")))
+    #expect(alone.currentSpace.tileWidthFraction(containing: "d") == 1)
+
+    // Below its mate it adds no width.
+    var stacked = WorkspaceState(spaces: [SpaceState(tiles: [Tile(windowID: "b", widthFraction: 0.5)])])
+    #expect(stacked.rejoin(windowID: "d", savedTile: grid, inSpace: 0) == true)
+    #expect(stacked.currentSpace.tiles[0].panes == .v(.p("b"), .p("d")))
+    #expect(stacked.currentSpace.tileWidthFraction(containing: "d") == 0.5)
+}
+
 // MARK: - Drops and resizes
 
 @Test func aStackedWindowDroppedOutsideItsTileBecomesItsOwnTileThere() {

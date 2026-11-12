@@ -176,8 +176,8 @@ struct TileShortcutScenarioTests {
         await harness.settle()
 
         #expect(harness.model.state == before)
-        #expect(harness.overlays.notices == [StagehandModel.message(for: .stackDoesNotFit(
-            windowIDs: [], requiredHeight: 0, availableHeight: 0))])
+        #expect(harness.overlays.notices == [StagehandModel.message(for: .tileDoesNotFit(
+            windowIDs: [], required: .zero, available: .zero))])
         #expect(harness.overlays.warnings.isEmpty)
         #expect(harness.model.warning == nil)
         #expect(noPause(harness))

@@ -416,6 +416,9 @@ extension StagehandModel {
         for window in windows where preferredHeights[window.id] == nil {
             preferredHeights[window.id] = windowSystem.frame(windowID: window.id)?.height ?? window.frame.height
         }
+        if !learnedMinimumWidths.isEmpty {
+            learnedMinimumWidths = learnedMinimumWidths.filter { knownIDs.contains($0.key) }
+        }
         if !learnedMinimumHeights.isEmpty {
             learnedMinimumHeights = learnedMinimumHeights.filter { knownIDs.contains($0.key) }
         }
@@ -434,6 +437,7 @@ extension StagehandModel {
             placements = WindowLayout.placements(for: state, availableFrame: availableFrame, gap: gap,
                                                  observedWidths: observedWidths, preferredHeights: preferredHeights,
                                                  observedHeights: observedHeights,
+                                                 minimumWidths: learnedMinimumWidths,
                                                  minimumHeights: learnedMinimumHeights)
             let visible = placements.filter { $0.isVisible || slideFrom?[$0.windowID]?.intersects(availableFrame) == true }
             // Position neighbors first. Raising the focused real window last keeps clamped neighbors behind it.
@@ -491,10 +495,6 @@ extension StagehandModel {
                     destinationPID = record.pid
                 }
                 var constrained = false
-                // Stack members share their tile's requested width. The widest
-                // width a member insisted on, per tile, becomes the tile's width
-                // once all are read, so members never overwrite each other's.
-                var widestStackWidths: [Int: CGFloat] = [:]
                 for placement in visible {
                     // A slide's windows were matched or written just above. A space
                     // switch reads back after activation, when an app may have resized.
@@ -507,11 +507,7 @@ extension StagehandModel {
                        abs(actual.width - placement.frame.width) > 1 {
                         observedWidths[placement.windowID] = actual.width
                         if let tile = state.currentSpace.tileIndex(of: placement.windowID),
-                           state.currentSpace.tiles[tile].isMultiPane {
-                            if actual.width > placement.frame.width {
-                                widestStackWidths[tile] = max(widestStackWidths[tile] ?? 0, actual.width)
-                            }
-                        } else {
+                           !state.currentSpace.tiles[tile].isMultiPane {
                             state.setWidthFraction(actual.width / availableFrame.width, for: placement.windowID)
                         }
                         constrained = true
@@ -523,8 +519,8 @@ extension StagehandModel {
                         constrained = true
                         constrainedAxes.append("height")
                     }
-                    noteLayoutHeight(windowID: placement.windowID, requested: placement.frame.height,
-                                     actual: actual.height)
+                    noteLayoutSize(windowID: placement.windowID, requested: placement.frame.size,
+                                   actual: actual.size)
                     if !constrainedAxes.isEmpty {
                         constraintObservations.append((
                             pass: pass + 1,
@@ -535,11 +531,7 @@ extension StagehandModel {
                         ))
                     }
                 }
-                for (tile, width) in widestStackWidths
-                where width / availableFrame.width > state.currentSpace.tiles[tile].widthFraction {
-                    state.setWidthFraction(width / availableFrame.width,
-                                           for: state.currentSpace.tiles[tile].windowIDs[0])
-                }
+                widenTilesToLearnedMinimums(holding: visible.map(\.windowID), availableWidth: availableFrame.width)
                 if constrained {
                     guard pass < maximumPass else {
                         if let token { focusGate.cancelTransfer(token: token) }
