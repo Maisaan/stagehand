@@ -1,6 +1,7 @@
 import CoreGraphics
 import Testing
 @testable import Stagehand
+@testable import StagehandPlatform
 
 private let builtInVisible = CGRect(x: 0, y: 38, width: 1512, height: 944)
 private let externalVisible = CGRect(x: 1512, y: 25, width: 1920, height: 1055)
@@ -50,4 +51,31 @@ private let externalVisible = CGRect(x: 1512, y: 25, width: 1920, height: 1055)
     let held = await events.wait(for: .milliseconds(50)) { false }
     #expect(!held)
     #expect(ContinuousClock.now - started >= .milliseconds(50))
+}
+
+@MainActor @Test func acceptanceReportsAnUntouchedRunAsNoneAndKeepsItsVerdict() {
+    let untouched = OwnerInputReading.observed(OwnerInputTally())
+    #expect(StagehandModel.ownerInputLine(untouched) == "Owner input during run: none")
+    #expect(StagehandModel.acceptanceVerdict(failures: 0, ownerInput: untouched) == "PASS")
+    #expect(StagehandModel.acceptanceVerdict(failures: 2, ownerInput: untouched) == "FAIL")
+}
+
+@MainActor @Test func acceptanceMarksATouchedRunInvalidWhateverItsFailures() {
+    var tally = OwnerInputTally()
+    tally.record(.keyboard, secondsSinceStart: 4.2)
+    tally.record(.keyboard, secondsSinceStart: 4.3)
+    tally.record(.mouse, secondsSinceStart: 6)
+    let touched = OwnerInputReading.observed(tally)
+    #expect(StagehandModel.ownerInputLine(touched)
+        == "Owner input during run: 3 (keyboard 2, mouse 1), first at 4.2 s; result INVALID")
+    #expect(StagehandModel.acceptanceVerdict(failures: 0, ownerInput: touched) == "INVALID (owner input)")
+    #expect(StagehandModel.acceptanceVerdict(failures: 3, ownerInput: touched) == "INVALID (owner input)")
+}
+
+@MainActor @Test func acceptanceShowsUnknownOwnerInputInTheVerdict() {
+    let unknown = OwnerInputReading.unknown(reason: "the input tap could not be created")
+    #expect(StagehandModel.ownerInputLine(unknown)
+        == "Owner input during run: unknown (the input tap could not be created)")
+    #expect(StagehandModel.acceptanceVerdict(failures: 0, ownerInput: unknown) == "PASS (owner input unknown)")
+    #expect(StagehandModel.acceptanceVerdict(failures: 1, ownerInput: unknown) == "FAIL (owner input unknown)")
 }

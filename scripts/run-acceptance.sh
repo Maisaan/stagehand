@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 # Runs the short focus and navigation acceptance check against disposable windows.
-# Quit the normal Stagehand first. Do not type or click until it prints a result.
-# Exits 0 only when the report starts with PASS. STAGEHAND_APP selects the build;
+# Quit the normal Stagehand first. Do not type or click until it prints a result:
+# any real input makes the verdict INVALID. Exits 0 only when the report starts with PASS. STAGEHAND_APP selects the build;
 # it defaults to dist/Stagehand.app when present, otherwise /Applications.
 # STAGEHAND_ACCEPTANCE_TIMEOUT caps the run in seconds (default 180).
 # ACCEPTANCE_SYSTEM=1 adds the system stage: a display scaling change and a native
@@ -59,7 +59,7 @@ if [[ ! -s "$report" ]]; then
     exit 1
 fi
 cat "$report"
-# The first line of the report is the verdict: "PASS: ..." or "FAIL: ...".
+# The first line of the report is the verdict: "PASS", "FAIL", or "INVALID (owner input)".
 if head -n 1 "$report" | grep -q '^PASS'; then
     exit 0
 fi

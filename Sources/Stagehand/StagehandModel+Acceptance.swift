@@ -25,6 +25,9 @@ extension StagehandModel {
         guard NSRunningApplication.runningApplications(withBundleIdentifier: ownID).count <= 1 else {
             return "FAIL: another Stagehand is running. Quit it first so only one controller manages windows."
         }
+        let ownerInput = OwnerInputMonitor()
+        ownerInput.start()
+        defer { _ = ownerInput.stop() }
         // Log this run without persisting the preference; the published property's
         // observer writes UserDefaults. Restored after the deferred pause below.
         let loggingWasEnabled = diagnostics.isEnabled
@@ -178,10 +181,25 @@ extension StagehandModel {
             lines.append("Frame restored for \(titles[id] ?? id): \(restored ? "ok" : "FAIL")")
         }
         lines.append(contentsOf: acceptanceLogSummary(since: startedAt, failures: &failures))
-        lines.insert("\(failures == 0 ? "PASS" : "FAIL"): \(switches) switches, \(spaceSwitches) space switches, "
+        let ownerInputReading = ownerInput.stop()
+        lines.insert(Self.ownerInputLine(ownerInputReading), at: 0)
+        lines.insert("\(Self.acceptanceVerdict(failures: failures, ownerInput: ownerInputReading)): "
+            + "\(switches) switches, \(spaceSwitches) space switches, "
             + "\(tile.steps) tile steps, \(typed.count) typed checks, \(failures) failures"
             + (systemReport.map { ", system stage: \($0.summary)" } ?? ""), at: 0)
         return lines.joined(separator: "\n")
+    }
+
+    static func ownerInputLine(_ reading: OwnerInputReading) -> String {
+        "Owner input during run: \(reading.summary)" + (reading.touched ? "; result INVALID" : "")
+    }
+
+    /// A touched run is not evidence either way, so it is neither PASS nor FAIL.
+    static func acceptanceVerdict(failures: Int, ownerInput: OwnerInputReading) -> String {
+        if ownerInput.touched { return "INVALID (owner input)" }
+        let verdict = failures == 0 ? "PASS" : "FAIL"
+        if case .unknown = ownerInput { return verdict + " (owner input unknown)" }
+        return verdict
     }
 
     /// Shortcut steps the tile check makes when every one of them applies.
