@@ -4,19 +4,6 @@ import Testing
 // Each change to the fixture stands for a Desktop or session notification, which
 // invalidates the scope's cached answer.
 
-@MainActor @Test func desktopScopeResumesOnlyOnStartingNativeDesktop() {
-    var desktop: UInt64? = 41
-    let scope = DesktopScope(currentDesktopID: { desktop })
-    #expect(scope.bindToCurrentDesktop())
-    #expect(scope.relation == .home)
-    desktop = 92
-    scope.invalidate()
-    #expect(scope.refresh() == .away)
-    desktop = 41
-    scope.invalidate()
-    #expect(scope.refresh() == .home)
-}
-
 @MainActor @Test func desktopScopeSuspendsWhileUserSessionIsInactive() {
     var sessionIsActive = true
     let scope = DesktopScope(

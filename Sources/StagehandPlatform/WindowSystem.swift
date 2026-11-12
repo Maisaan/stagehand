@@ -165,19 +165,11 @@ public final class WindowSystem {
     /// when no notification says it moved: a backstop for apps that move windows silently.
     nonisolated static let parkCheckLifetime: TimeInterval = 30
 
-    /// Whether a parking request for a window already at the side can skip its reads.
+    /// Why a parking request must read the window, or nil when it can skip.
     /// Each layout made up to three parking rounds, and each read the minimized state and
     /// frame of every parked window and verified it again: ~45 main-thread round trips
     /// to other apps per switch (2026-10-26 launch trace). e31ae1f added the read because
     /// a parked window can come back onscreen; its move notification now says so.
-    nonisolated static func canSkipParkCheck(isParked: Bool, observationComplete: Bool, check: ParkCheck?,
-                                             side: WindowParkingSide?, remnantWidth: CGFloat,
-                                             now: TimeInterval) -> Bool {
-        parkCheckReason(isParked: isParked, observationComplete: observationComplete, check: check,
-                        side: side, remnantWidth: remnantWidth, now: now) == nil
-    }
-
-    /// Why a parking request must read the window, or nil when it can skip.
     nonisolated static func parkCheckReason(isParked: Bool, observationComplete: Bool, check: ParkCheck?,
                                             side: WindowParkingSide?, remnantWidth: CGFloat,
                                             now: TimeInterval) -> String? {

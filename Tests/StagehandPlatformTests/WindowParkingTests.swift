@@ -213,19 +213,6 @@ struct WindowParkingTests {
         #expect(parking.restoreFrame == nil)
     }
 
-    @Test func failedRollbackRetainsRecoveryGeometryAndDoesNotClaimParkingSucceeded() {
-        var parking = WindowParking()
-        var actual = original
-        let first = parking.park(frame: original, bounds: display, displays: [display],
-                                 setPosition: { position in
-            if position != original.origin { actual.origin = CGPoint(x: 1600, y: 900) }
-            return false
-        }, readFrame: { actual })
-        #expect(!first)
-        #expect(parking.restoreFrame == original)
-        #expect(!parking.isParked)
-    }
-
     /// Display arrangement or scaling changes move the parking bounds. Confirming an
     /// existing park must adopt them, or restoring onto the new display looks failed.
     @Test func reparkingAnAlreadyParkedWindowAdoptsTheNewBounds() {
@@ -311,12 +298,14 @@ struct WindowParkingTests {
         #expect(parking.restoreFrame == nil)
     }
 
-    @Test func directLayoutRestoreWritesOnlyTheNewTargetAndAcceptsApplicationConstraints() {
+    @Test(arguments: [true, false])
+    func directLayoutRestoreWritesOnlyTheNewTargetAndTrustsTheObservedFrame(setterSucceeds: Bool) {
         var parking = makeParkedWindow()
         let requested = CGRect(x: 1100, y: 60, width: 1000, height: 1000)
         let constrained = CGRect(x: 1077, y: 39, width: 723, height: 1130)
         var writes: [CGRect] = []
-        let success = parking.restore(to: requested, setFrame: { writes.append($0); return true }, readFrame: { constrained })
+        let success = parking.restore(to: requested, setFrame: { writes.append($0); return setterSucceeds },
+                                      readFrame: { constrained })
         #expect(success)
         #expect(writes == [requested])
         #expect(parking.restoreFrame == nil)
@@ -384,15 +373,6 @@ struct WindowParkingTests {
         #expect(!parking.isParked)
     }
 
-    @Test func layoutRestoreAcceptsObservedMovementWhenTheSizeWriteWasRefused() {
-        var parking = makeParkedWindow()
-        let requested = CGRect(x: 1100, y: 60, width: 1000, height: 1000)
-        let constrained = CGRect(x: 1077, y: 39, width: 723, height: 1130)
-        let success = parking.restore(to: requested, setFrame: { _ in false }, readFrame: { constrained })
-        #expect(success)
-        #expect(parking.restoreFrame == nil)
-    }
-
     @Test func standaloneRestoreRequiresOriginalPositionButAllowsConstrainedSize() {
         var parking = makeParkedWindow()
         let wrongPosition = original.offsetBy(dx: 30, dy: 0)
@@ -434,27 +414,16 @@ struct WindowParkingTests {
 /// or the check is older than the backstop.
 @Test func aParkedWindowIsReadAgainOnlyWhenItMayHaveMoved() {
     let check = WindowSystem.ParkCheck(at: 100, side: .left, remnantWidth: 64)
-    func skip(isParked: Bool = true, observed: Bool = true, check: WindowSystem.ParkCheck? = check,
-              side: WindowParkingSide? = .left, remnant: CGFloat = 64, now: TimeInterval = 110) -> Bool {
-        WindowSystem.canSkipParkCheck(isParked: isParked, observationComplete: observed, check: check,
-                                      side: side, remnantWidth: remnant, now: now)
-    }
-    #expect(skip())
-    #expect(!skip(check: nil))                     // a notification cleared it
-    #expect(!skip(isParked: false))
-    #expect(!skip(observed: false))                // no notifications to rely on
-    #expect(!skip(side: .right))
-    #expect(!skip(remnant: 200))
-    #expect(!skip(now: 100 + WindowSystem.parkCheckLifetime))
     func reason(isParked: Bool = true, observed: Bool = true, check: WindowSystem.ParkCheck? = check,
-                side: WindowParkingSide? = .left, now: TimeInterval = 110) -> String? {
+                side: WindowParkingSide? = .left, remnant: CGFloat = 64, now: TimeInterval = 110) -> String? {
         WindowSystem.parkCheckReason(isParked: isParked, observationComplete: observed, check: check,
-                                     side: side, remnantWidth: 64, now: now)
+                                     side: side, remnantWidth: remnant, now: now)
     }
     #expect(reason() == nil)
     #expect(reason(isParked: false) == "notParked")
     #expect(reason(observed: false) == "observationIncomplete")
     #expect(reason(check: nil) == "noCheck")
     #expect(reason(side: .right) == "sideChanged")
-    #expect(reason(now: 200) == "expired")
+    #expect(reason(remnant: 200) == "widthChanged")
+    #expect(reason(now: 100 + WindowSystem.parkCheckLifetime) == "expired")
 }

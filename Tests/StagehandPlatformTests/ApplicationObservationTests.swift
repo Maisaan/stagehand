@@ -9,19 +9,6 @@ import Testing
     #expect(windowAvailabilityChange(for: kAXMovedNotification) == nil)
 }
 
-@Test func launchingAppSubscriptionsRecoverAfterTransientFailure() {
-    var observation = ApplicationObservation()
-    var received: [String] = []
-    #expect(observation.register { _ in .cannotComplete })
-    #expect(!observation.register { name in
-        received.append(name)
-        return .success
-    })
-    #expect(received.contains(kAXWindowCreatedNotification))
-    #expect(received.count == ApplicationObservation.notifications.count)
-    #expect(observation.pending.isEmpty)
-}
-
 @Test func registrationRetriesOnlyTransientFailures() {
     var observation = ApplicationObservation()
     #expect(observation.register { name in

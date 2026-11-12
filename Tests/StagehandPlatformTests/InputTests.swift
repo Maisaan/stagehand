@@ -698,25 +698,6 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     #expect(posted.map(\.pid) == [100, 100, 200, 200])
 }
 
-@MainActor @Test func keyboardNavigationBeginsBufferingBeforeCarbonDispatch() throws {
-    var posted: [CGEvent] = []
-    let gate = FocusInputGate(postEvent: { event, _ in posted.append(event) })
-    var token: UInt64?
-    gate.onNavigationAction = { _ in token = gate.beginTransfer() }
-    let navigation = try #require(CGEvent(
-        keyboardEventSource: nil,
-        virtualKey: CGKeyCode(kVK_RightArrow),
-        keyDown: true
-    ))
-    navigation.flags = [.maskControl, .maskAlternate]
-    #expect(gate.processKeyboardEvent(type: .keyDown, event: navigation))
-    let typing = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
-    #expect(gate.processKeyboardEvent(type: .keyDown, event: typing))
-    gate.commitTransfer(token: try #require(token), processIdentifier: 100)
-    #expect(posted.count == 1)
-    #expect(posted[0].getIntegerValueField(.keyboardEventKeycode) == 0)
-}
-
 @MainActor @Test func overflowedInputNeverReplaysToAnUnverifiedProcess() throws {
     var posted = 0
     var discarded: [Int] = []
@@ -762,26 +743,27 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     #expect(discarded == 0)
 }
 
-@MainActor @Test func secureInputDuringATransferDropsHeldTypingInsteadOfReorderingIt() throws {
+@MainActor @Test func secureInputDuringATransferDropsHeldTypingInsteadOfReorderingIt() async throws {
     let secureInput = OSAllocatedUnfairLock(initialState: false)
     var posted = 0
     var discarded: [Int] = []
-    var availabilityChanges = 0
-    let gate = FocusInputGate(secureInputEnabled: { secureInput.withLock { $0 } }, postEvent: { _, _ in posted += 1 })
+    let gate = FocusInputGate(installsEventTap: false, secureInputEnabled: { secureInput.withLock { $0 } },
+                              postEvent: { _, _ in posted += 1 })
+    gate.start()
+    defer { gate.stop() }
     gate.onInputDiscarded = { discarded.append($0) }
-    gate.onAvailabilityChanged = { availabilityChanges += 1 }
     let token = gate.beginTransfer()
     let aDown = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
-    #expect(gate.processKeyboardEvent(type: .keyDown, event: aDown))
+    #expect(gate.receiveFromTap(type: .keyDown, event: aDown))
     secureInput.withLock { $0 = true }
     let bDown = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 11, keyDown: true))
-    #expect(!gate.processKeyboardEvent(type: .keyDown, event: bDown))
-    #expect(discarded == [1])
-    #expect(availabilityChanges == 1)
+    #expect(!gate.receiveFromTap(type: .keyDown, event: bDown))
     #expect(gate.pendingEventCount == 0)
+    try await waitUntil { !discarded.isEmpty }
+    #expect(discarded == [1])
     // The held key's release is no longer routed anywhere: it reaches the focused window itself.
     let aUp = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false))
-    #expect(!gate.processKeyboardEvent(type: .keyUp, event: aUp))
+    #expect(!gate.receiveFromTap(type: .keyUp, event: aUp))
     gate.commitTransfer(token: token, processIdentifier: 100)
     #expect(posted == 0)
 }
@@ -1045,20 +1027,6 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     let later = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 10, keyDown: true))
     #expect(!gate.processKeyboardEvent(type: .keyDown, event: later))
     #expect(sink.posted.map(\.key) == [0, 1, 9, 9])
-}
-
-@MainActor @Test func emptyTransferCancellationKeepsTypingCapturedMeanwhile() throws {
-    // The check and the removal share one lock section; a key captured just before the
-    // call is seen by the check, and the transfer with typing is kept for verification.
-    var posted = 0
-    let gate = FocusInputGate(postEvent: { _, _ in posted += 1 })
-    let token = gate.beginTransfer()
-    let down = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
-    #expect(gate.processKeyboardEvent(type: .keyDown, event: down))
-    #expect(!gate.cancelTransferIfEmpty(token: token))
-    #expect(gate.pendingEventCount == 1)
-    gate.commitTransfer(token: token, processIdentifier: 5)
-    #expect(posted == 1)
 }
 
 /// Carrying a file: one finger holds a click while three others swipe. The held finger

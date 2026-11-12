@@ -319,21 +319,47 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     #expect(posted == [42])
 }
 
-@MainActor @Test func navigationMovesBeforeFocusIsConfirmedAndShowsTheBorderFirst() async {
+struct ConcurrentNavigationCase: Sendable, CustomTestStringConvertible {
+    let testDescription: String
+    let revealBorderFirst: Bool
+    let focusSucceeds: Bool
+    let events: [String]
+}
+
+/// Navigation moves before focus is confirmed. Failed focus cancels the translation and
+/// never commits input. A removal reveals its border only after the translation.
+@MainActor @Test(arguments: [
+    ConcurrentNavigationCase(testDescription: "navigation shows the border first", revealBorderFirst: true,
+                             focusSucceeds: true,
+                             events: ["border", "translateStarted", "focus", "commit", "confirmed", "translateFinished"]),
+    ConcurrentNavigationCase(testDescription: "failed navigation focus", revealBorderFirst: true,
+                             focusSucceeds: false,
+                             events: ["border", "translateStarted", "focus", "cancel", "translateCancelled"]),
+    ConcurrentNavigationCase(testDescription: "removal reveals the border afterward", revealBorderFirst: false,
+                             focusSucceeds: true,
+                             events: ["translateStarted", "focus", "commit", "confirmed", "translateFinished", "border"]),
+    ConcurrentNavigationCase(testDescription: "failed removal focus", revealBorderFirst: false,
+                             focusSucceeds: false,
+                             events: ["translateStarted", "focus", "cancel", "translateCancelled"]),
+])
+func focusRunsDuringTranslationAndOnlyConfirmedFocusCommitsInput(_ expected: ConcurrentNavigationCase) async {
     var events: [String] = []
     var finishTranslation: CheckedContinuation<Void, Never>?
     let outcome = await runConcurrentNavigation(
-        revealBorderFirst: true,
+        revealBorderFirst: expected.revealBorderFirst,
         translate: {
             events.append("translateStarted")
             await withCheckedContinuation { finishTranslation = $0 }
-            events.append("translateFinished")
-            return .readyForFocus
+            events.append(expected.focusSucceeds ? "translateFinished" : "translateCancelled")
+            return expected.focusSucceeds ? .readyForFocus : .failed
         },
-        cancelTranslation: {},
+        cancelTranslation: {
+            events.append("cancel")
+            finishTranslation?.resume()
+        },
         focus: {
             events.append("focus")
-            return true
+            return expected.focusSucceeds
         },
         focusConfirmed: {
             events.append("confirmed")
@@ -343,91 +369,8 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
         revealBorder: { events.append("border") }
     )
 
-    #expect(outcome == .completed)
-    #expect(events == ["border", "translateStarted", "focus", "commit", "confirmed", "translateFinished"])
-}
-
-@MainActor @Test func failedFocusCancelsTranslationAndDoesNotCommitInput() async {
-    var events: [String] = []
-    var finishTranslation: CheckedContinuation<Void, Never>?
-    let outcome = await runConcurrentNavigation(
-        revealBorderFirst: true,
-        translate: {
-            events.append("translateStarted")
-            await withCheckedContinuation { finishTranslation = $0 }
-            events.append("translateCancelled")
-            return .failed
-        },
-        cancelTranslation: {
-            events.append("cancel")
-            finishTranslation?.resume()
-        },
-        focus: {
-            events.append("focus")
-            return false
-        },
-        focusConfirmed: { events.append("confirmed") },
-        commitInput: { events.append("commit") },
-        revealBorder: { events.append("border") }
-    )
-    #expect(outcome == .failed)
-    #expect(events == ["border", "translateStarted", "focus", "cancel", "translateCancelled"])
-}
-
-@MainActor @Test func removalFocusRunsDuringTranslationAndRevealsBorderAfterward() async {
-    var events: [String] = []
-    var finishTranslation: CheckedContinuation<Void, Never>?
-    let outcome = await runConcurrentNavigation(
-        revealBorderFirst: false,
-        translate: {
-            events.append("translateStarted")
-            await withCheckedContinuation { finishTranslation = $0 }
-            events.append("translateFinished")
-            return .readyForFocus
-        },
-        cancelTranslation: {},
-        focus: {
-            events.append("focus")
-            return true
-        },
-        focusConfirmed: {
-            events.append("confirmed")
-            finishTranslation?.resume()
-        },
-        commitInput: { events.append("commit") },
-        revealBorder: { events.append("border") }
-    )
-
-    #expect(outcome == .completed)
-    #expect(events == ["translateStarted", "focus", "commit", "confirmed", "translateFinished", "border"])
-}
-
-@MainActor @Test func failedRemovalFocusCancelsTranslationWithoutRevealingBorder() async {
-    var events: [String] = []
-    var finishTranslation: CheckedContinuation<Void, Never>?
-    let outcome = await runConcurrentNavigation(
-        revealBorderFirst: false,
-        translate: {
-            events.append("translateStarted")
-            await withCheckedContinuation { finishTranslation = $0 }
-            events.append("translateCancelled")
-            return .failed
-        },
-        cancelTranslation: {
-            events.append("cancel")
-            finishTranslation?.resume()
-        },
-        focus: {
-            events.append("focus")
-            return false
-        },
-        focusConfirmed: { events.append("confirmed") },
-        commitInput: { events.append("commit") },
-        revealBorder: { events.append("border") }
-    )
-
-    #expect(outcome == .failed)
-    #expect(events == ["translateStarted", "focus", "cancel", "translateCancelled"])
+    #expect(outcome == (expected.focusSucceeds ? .completed : .failed))
+    #expect(events == expected.events)
 }
 
 /// A display link stops ticking while the display sleeps. The awaiting layout

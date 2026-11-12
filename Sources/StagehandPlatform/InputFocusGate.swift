@@ -163,10 +163,9 @@ public final class FocusInputGate {
     public var onInputDiscarded: ((Int) -> Void)?
     public var onAvailabilityChanged: (() -> Void)?
     public var onNavigationAction: ((NavigationAction) -> Void)?
-    /// Runs before a key event is routed from `processKeyboardEvent`, and on the main actor
-    /// after the tap thread buffered a key into a provisional transfer. The caller must resolve
-    /// any pending trackpad release and begin its focus transfer synchronously, leaving
-    /// activation to queued work.
+    /// Runs on the main actor after the tap thread buffered a key into a provisional
+    /// transfer. The caller must resolve any pending trackpad release and begin its focus
+    /// transfer synchronously, leaving activation to queued work.
     public var onBeforeKeyboardEvent: (() -> Void)?
 
     /// Stamped into `eventSourceUserData` on replayed events so the tap passes them through ("STGHAND").
@@ -493,17 +492,10 @@ public final class FocusInputGate {
 
     // MARK: Routing
 
-    /// Returns true when consumed. Separate from tap availability so tests can use synthetic
-    /// events and an injected replay sink without starting global capture or posting input.
+    /// Test seam: routes like the tap thread but delivers on the spot, without tap
+    /// availability or Secure Input; tests of those drive `receiveFromTap`.
     func processKeyboardEvent(type: CGEventType, event: CGEvent) -> Bool {
         guard event.getIntegerValueField(.eventSourceUserData) != Self.eventMarker else { return false }
-        // A trackpad release may already be committed on its callback thread while
-        // its main-queue delivery is pending. Enqueue that handoff before this key.
-        onBeforeKeyboardEvent?()
-        if isSecureInputEnabled {
-            if core.withLockUnchecked({ $0.buffer.transferCount > 0 }) { cancelAllForAvailabilityChange() }
-            return false
-        }
         let (consumed, effects) = core.withLockUnchecked { state in
             Self.route(type: type, event: event, state: &state, allowProvisional: false)
         }

@@ -1,25 +1,8 @@
 import Testing
 @testable import Stagehand
 
-/// A drag session started during a press makes it a drag-and-drop until release.
-@MainActor
-@Test func aPressBecomesADragAndDropWhenADragSessionStarts() {
-    let pointer = FakePointer()
-    pointer.buttonDown = true
-    pointer.tracker.pressBegan(inStagehand: false)
-    #expect(!pointer.tracker.isDragAndDrop)
-    pointer.dragChangeCount += 1
-    #expect(pointer.tracker.isDragAndDrop)
-    #expect(pointer.tracker.isDragAndDrop)
-
-    pointer.tracker.pressEnded()
-    #expect(!pointer.tracker.isDragAndDrop)
-    // The next press, a title-bar drag, starts from the new count.
-    pointer.tracker.pressBegan(inStagehand: false)
-    #expect(!pointer.tracker.isDragAndDrop)
-}
-
-/// Gesture recognition hears once that a press carries a drop, and again when it ends.
+/// A drag session started during a press makes it a drag-and-drop until release, and
+/// gesture recognition hears once that the press carries a drop, and again when it ends.
 @MainActor
 @Test func aDragAndDropIsReportedToGesturesUntilThePressEnds() {
     let pointer = FakePointer()
@@ -33,6 +16,7 @@ import Testing
     #expect(pointer.tracker.isDragAndDrop)
     #expect(reports == [true])
     pointer.tracker.pressEnded()
+    #expect(!pointer.tracker.isDragAndDrop)
     #expect(reports == [true, false])
     // A title-bar drag reports nothing.
     pointer.tracker.pressBegan(inStagehand: false)

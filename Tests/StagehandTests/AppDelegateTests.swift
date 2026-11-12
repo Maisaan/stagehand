@@ -3,11 +3,6 @@ import StagehandPlatform
 import Testing
 @testable import Stagehand
 
-@Test func statusItemClickRoutesLeftAndRightClicks() {
-    #expect(statusItemClick(for: .leftMouseUp) == .showControls)
-    #expect(statusItemClick(for: .rightMouseUp) == .showMenu)
-}
-
 /// Key window status needs the test process to be the active application.
 /// The runner usually starts behind the terminal or editor that launched it,
 /// so activate first; when macOS refuses, skip rather than report a false

@@ -21,18 +21,3 @@ import Testing
     #expect(gate.processKeyboardEvent(type: .keyUp, event: up))
     #expect(destinations == [123, 123])
 }
-
-@MainActor @Test func pendingGestureCommitCapturesTheFirstFollowingKeyBeforeNormalDelivery() throws {
-    var delivered: [Int32] = []
-    let gate = FocusInputGate(postEvent: { _, pid in delivered.append(pid) })
-    defer { gate.cancelAll() }
-    var token: UInt64?
-    gate.onBeforeKeyboardEvent = {
-        if token == nil { token = gate.beginTransfer() }
-    }
-    let key = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
-    #expect(gate.processKeyboardEvent(type: .keyDown, event: key))
-    #expect(delivered.isEmpty)
-    gate.commitTransfer(token: try #require(token), processIdentifier: 321)
-    #expect(delivered == [321])
-}
