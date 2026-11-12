@@ -19,5 +19,5 @@ The short focus and navigation procedure is at the top of [live acceptance](docs
 
 # Performance work
 
-Measure before and after with `scripts/run-benchmark.sh` (busy probes show most real slowness) and check real usage with `scripts/analyze-log.py`. The tools, metrics, how Stagehand spends time, and known traps are in [performance and debugging](docs/PERFORMANCE.md).
+Measure before and after with `scripts/run-benchmark.sh` (busy probes show most real slowness), keeping its default of three runs per mode, and compare the saved results with `scripts/compare-benchmarks.py`; a difference inside the baseline's repeat spread is noise, not a result. Check real usage with `scripts/analyze-log.py`. The tools, metrics, how Stagehand spends time, and known traps are in [performance and debugging](docs/PERFORMANCE.md).
 

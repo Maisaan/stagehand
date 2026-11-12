@@ -35,16 +35,16 @@ Every run is saved, pass or fail, to `$BENCHMARK_RESULTS_DIR` (default `~/Librar
 - `meta.json`: written by the runner: git SHA, branch and dirty flag of the checkout that holds the app (the runner's own checkout when the app lives elsewhere, such as `/Applications`), the app's path, version and executable modification time, macOS version and hardware model, mode, flags, whether logging was on, 1- and 5-minute load average at start, start and end time, and the run's outcome (`pass`, `fail`, `timeout`) with its reasons.
 - `diagnostic.log`: the run's own diagnostic log (`--diagnostic-log`), so probe runs stay out of `stagehand.log`.
 
-`BENCHMARK_REPEAT=N` runs each mode N times in a row (the `-r<N>` suffix). `BENCHMARK_TIMEOUT` caps each run (default 240 s). The runner exits non-zero when any run timed out, has a report line starting with `FAIL`, or does not end with exactly `Result: PASS`; it runs the remaining modes first.
+`BENCHMARK_REPEAT=N` runs each mode N times in a row (the `-r<N>` suffix), 3 by default. Single runs vary by 10 to 30 percent, so judge a change by the median of the repeats and treat anything inside the baseline's spread as noise. Use `BENCHMARK_REPEAT=1` only for a quick smoke check, never for a before/after comparison. `BENCHMARK_TIMEOUT` caps each run (default 240 s). The runner exits non-zero when any run timed out, has a report line starting with `FAIL`, or does not end with exactly `Result: PASS`; it runs the remaining modes first.
 
 #### Comparing
 
 Put each batch in its own folder and compare the two folders, or two single result directories:
 
 ```sh
-BENCHMARK_RESULTS_DIR=~/Library/Logs/Stagehand/benchmarks/base BENCHMARK_REPEAT=3 BENCHMARK_MODES=busy \
+BENCHMARK_RESULTS_DIR=~/Library/Logs/Stagehand/benchmarks/base BENCHMARK_MODES=busy \
     STAGEHAND_APP=/tmp/sh-base/dist/Stagehand.app scripts/run-benchmark.sh
-BENCHMARK_RESULTS_DIR=~/Library/Logs/Stagehand/benchmarks/change BENCHMARK_REPEAT=3 BENCHMARK_MODES=busy \
+BENCHMARK_RESULTS_DIR=~/Library/Logs/Stagehand/benchmarks/change BENCHMARK_MODES=busy \
     scripts/run-benchmark.sh
 python3 -I scripts/compare-benchmarks.py ~/Library/Logs/Stagehand/benchmarks/base ~/Library/Logs/Stagehand/benchmarks/change
 ```

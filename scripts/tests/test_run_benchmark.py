@@ -49,7 +49,8 @@ class RunBenchmarkTests(unittest.TestCase):
 
     def run_runner(self, modes, **environment):
         env = dict(os.environ, STAGEHAND_APP=str(self.app), BENCHMARK_RESULTS_DIR=str(self.results),
-                   BENCHMARK_LAUNCH="direct", BENCHMARK_MODES=modes, **environment)
+                   BENCHMARK_LAUNCH="direct", BENCHMARK_MODES=modes, BENCHMARK_REPEAT="1")
+        env.update(environment)
         return subprocess.run(["/bin/bash", str(RUNNER)], env=env, capture_output=True, text=True, timeout=60)
 
     def run_dirs(self):
@@ -57,6 +58,14 @@ class RunBenchmarkTests(unittest.TestCase):
 
     def meta(self, directory):
         return json.loads((directory / "meta.json").read_text())
+
+    def test_each_mode_runs_three_times_by_default(self):
+        env = dict(os.environ, STAGEHAND_APP=str(self.app), BENCHMARK_RESULTS_DIR=str(self.results),
+                   BENCHMARK_LAUNCH="direct", BENCHMARK_MODES="busy")
+        env.pop("BENCHMARK_REPEAT", None)
+        result = subprocess.run(["/bin/bash", str(RUNNER)], env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([d.name.rsplit("-", 1)[1] for d in self.run_dirs()], ["r1", "r2", "r3"])
 
     def test_passing_repeats_save_one_directory_each(self):
         result = self.run_runner("busy-columns", BENCHMARK_REPEAT="2")

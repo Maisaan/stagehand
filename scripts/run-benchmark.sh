@@ -14,7 +14,7 @@ set -euo pipefail
 # cross a stacked column, and adds member switches inside the stack.
 # Each run is saved to BENCHMARK_RESULTS_DIR (default ~/Library/Logs/Stagehand/benchmarks)
 # as <UTC>-<sha7>[-dirty]-<mode>[-r<N>]/ with report.txt, raw.json, meta.json and
-# diagnostic.log. BENCHMARK_REPEAT=N runs each mode N times. BENCHMARK_TIMEOUT caps
+# diagnostic.log. BENCHMARK_REPEAT=N runs each mode N times (default 3). BENCHMARK_TIMEOUT caps
 # each run in seconds (default 240). Compare result sets with
 # scripts/compare-benchmarks.py. Exits non-zero when any run times out or fails,
 # after running the remaining modes.
@@ -24,7 +24,8 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app="${STAGEHAND_APP:-$root/dist/Stagehand.app}"
 results_root="${BENCHMARK_RESULTS_DIR:-$HOME/Library/Logs/Stagehand/benchmarks}"
-repeats="${BENCHMARK_REPEAT:-1}"
+# Single runs vary by 10 to 30 percent; three give a median and a spread to judge a change by.
+repeats="${BENCHMARK_REPEAT:-3}"
 timeout_seconds="${BENCHMARK_TIMEOUT:-240}"
 launch="${BENCHMARK_LAUNCH:-open}"
 probe="$root/dist/AcceptanceProbe.app"
