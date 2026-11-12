@@ -361,7 +361,7 @@ struct SettingsView: View {
                 SettingsCard {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(spacing: 10) {
-                            Text("Window gap")
+                            Text("Tile gap")
                             Spacer()
                             GapInput(value: $gapInput) { model.gap = $0 }
                                 .frame(width: 76, height: TextInputMetrics.height)
@@ -370,7 +370,7 @@ struct SettingsView: View {
                         Slider(value: Binding(get: { gapInput }, set: { gapInput = $0.rounded() }), in: GapInput.bounds) { editing in
                             if !editing, gapInput != model.gap { model.gap = gapInput }
                         }
-                        .accessibilityLabel("Gap between windows")
+                        .accessibilityLabel("Gap between tiles")
                         HStack {
                             Text("−200 pt overlap")
                             Spacer()
@@ -507,19 +507,19 @@ struct SettingsView: View {
         .padding(.vertical, 2)
         .draggable(window.id)
         .dropDestination(for: String.self) { draggedIDs, _ in
-            // Reordering moves whole columns, so indices are column indices.
+            // Reordering moves whole tiles, so indices are tile indices.
             guard let draggedID = draggedIDs.first,
-                  let destination = model.state.spaces[spaceIndex].columnIndex(of: window.id),
+                  let destination = model.state.spaces[spaceIndex].tileIndex(of: window.id),
                   model.state.spaces[spaceIndex].windowIDs.contains(draggedID) else { return false }
             model.reorderWindow(windowID: draggedID, toIndex: destination, spaceIndex: spaceIndex)
             return true
         }
         .accessibilityAction(named: "Move earlier") {
-            guard let index = model.state.spaces[spaceIndex].columnIndex(of: window.id) else { return }
+            guard let index = model.state.spaces[spaceIndex].tileIndex(of: window.id) else { return }
             model.reorderWindow(windowID: window.id, toIndex: index - 1, spaceIndex: spaceIndex)
         }
         .accessibilityAction(named: "Move later") {
-            guard let index = model.state.spaces[spaceIndex].columnIndex(of: window.id) else { return }
+            guard let index = model.state.spaces[spaceIndex].tileIndex(of: window.id) else { return }
             model.reorderWindow(windowID: window.id, toIndex: index + 1, spaceIndex: spaceIndex)
         }
     }

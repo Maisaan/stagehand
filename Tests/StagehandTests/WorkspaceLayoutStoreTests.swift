@@ -127,21 +127,53 @@ struct WorkspaceLayoutStoreTests {
         defer { fixture.remove() }
         let launchDate = Date(timeIntervalSinceReferenceDate: 1)
         let store = WorkspaceLayoutStore(url: fixture.url, launchDate: { $0 == 3 ? nil : launchDate })
-        let state = WorkspaceState(spaces: [SpaceState(columns: [
-            ColumnState(id: "left", windowIDs: ["a", "b", "c"], widthFraction: 0.6,
-                        activeWindowID: "b", heightWeights: [2, 1, 1]),
-            ColumnState(windowIDs: ["d"])
+        let state = WorkspaceState(spaces: [SpaceState(tiles: [
+            Tile(id: "left", windowIDs: ["a", "b", "c"], widthFraction: 0.6,
+                 activeWindowID: "b", heightWeights: [2, 1, 1]),
+            Tile(windowIDs: ["d"])
         ], focusedWindowID: "d")])
         try store.save(state, windows: [record("a", pid: 1), record("b", pid: 2), record("c", pid: 3),
                                         record("d", pid: 1)])
 
         let result = store.load(windows: [record("a", pid: 1), record("b", pid: 2), record("d", pid: 1)])
 
-        #expect(result == .restored(WorkspaceState(spaces: [SpaceState(columns: [
-            ColumnState(id: "left", windowIDs: ["a", "b"], widthFraction: 0.6,
-                        activeWindowID: "b", heightWeights: [2, 1]),
-            ColumnState(windowIDs: ["d"])
+        #expect(result == .restored(WorkspaceState(spaces: [SpaceState(tiles: [
+            Tile(id: "left", windowIDs: ["a", "b"], widthFraction: 0.6,
+                 activeWindowID: "b", heightWeights: [2, 1]),
+            Tile(windowIDs: ["d"])
         ], focusedWindowID: "d")])))
+    }
+
+    @Test func aVersion2FileFromBeforeTheTileRenameRestoresAndSavesUnchanged() throws {
+        let fixture = StoreFixture()
+        defer { fixture.remove() }
+        let emptySpace = #"{"columns":[]}"#
+        let writtenBy824312a = #"{"version":2,"state":{"isPaused":false,"activeSpaceIndex":0,"spaces":["#
+            + #"{"columns":[{"id":"left","windowIDs":["a","b"],"widthFraction":0.6,"activeWindowID":"b","#
+            + #""heightWeights":[2,1]},{"id":"c","windowIDs":["c"],"widthFraction":0.95,"activeWindowID":"c","#
+            + #""heightWeights":[1]}],"focusedWindowID":"c"},"#
+            + #"{"columns":[{"id":"b","windowIDs":["b"],"widthFraction":0.5,"activeWindowID":"b","#
+            + #""heightWeights":[1]}],"focusedWindowID":"b"},"#
+            + Array(repeating: emptySpace, count: 7).joined(separator: ",")
+            + #"]},"processLaunchDates":{"a":1,"b":1,"c":1},"preferredHeights":{"c":640}}"#
+        try FileManager.default.createDirectory(at: fixture.directory, withIntermediateDirectories: true)
+        try Data(writtenBy824312a.utf8).write(to: fixture.url)
+        let store = WorkspaceLayoutStore(url: fixture.url, launchDate: { _ in Date(timeIntervalSinceReferenceDate: 1) })
+        let windows = [record("a", pid: 1), record("b", pid: 2), record("c", pid: 3)]
+        let expected = WorkspaceState(spaces: [
+            SpaceState(tiles: [
+                Tile(id: "left", windowIDs: ["a", "b"], widthFraction: 0.6, activeWindowID: "b", heightWeights: [2, 1]),
+                Tile(windowIDs: ["c"])
+            ], focusedWindowID: "c"),
+            SpaceState(tiles: [Tile(windowIDs: ["b"], widthFraction: 0.5)], focusedWindowID: "b")
+        ])
+
+        #expect(store.load(windows: windows) == .restored(expected, preferredHeights: ["c": 640]))
+
+        try store.save(expected, windows: windows, preferredHeights: ["c": 640])
+        let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture.url)) as? NSDictionary
+        let original = try JSONSerialization.jsonObject(with: Data(writtenBy824312a.utf8)) as? NSDictionary
+        #expect(saved == original)
     }
 
     @Test func savingDropsThePausedFlagAndWindowsWithoutALaunchDate() throws {

@@ -23,14 +23,14 @@ public enum NavigationAction: Equatable, Sendable {
     case showSettings
     /// Shows or hides the shortcut ribbon at the bottom of the screen.
     case toggleShortcutHints
-    /// Alone in its column, the focused window joins the column before it, at the
-    /// bottom; in a stack, it leaves as its own column before the stack.
+    /// Alone in its tile, the focused window joins the tile before it, at the
+    /// bottom; in a stack, it leaves as its own tile before the stack.
     case stackPrevious
-    /// The same move toward the column after it.
+    /// The same move toward the tile after it.
     case stackNext
-    /// Focuses the window above the focused one in its column.
+    /// Focuses the window above the focused one in its tile.
     case focusMemberAbove
-    /// Focuses the window below the focused one in its column.
+    /// Focuses the window below the focused one in its tile.
     case focusMemberBelow
 
     /// Commands for Stagehand itself. They never move focus, so their chords pass
@@ -43,11 +43,11 @@ public enum NavigationAction: Equatable, Sendable {
     }
 }
 
-/// One ribbon slot: windows stacked top to bottom that share one width.
-public struct ColumnState: Codable, Equatable, Sendable {
+/// One place in the ribbon: windows stacked top to bottom that share one width.
+public struct Tile: Codable, Equatable, Sendable {
     public static let defaultHeightWeight = 1.0
 
-    /// Stable for the column's life in its space. A new column takes the ID of the
+    /// Stable for the tile's life in its space. A new tile takes the ID of the
     /// window that starts it, made unique within the space; it does not follow
     /// that window when it leaves.
     public let id: String
@@ -55,12 +55,14 @@ public struct ColumnState: Codable, Equatable, Sendable {
     public fileprivate(set) var windowIDs: [String]
     public fileprivate(set) var widthFraction: Double
     /// The member that horizontal focus enters; the focused window when this
-    /// column holds focus.
+    /// tile holds focus.
     public fileprivate(set) var activeWindowID: String
     /// Each member's relative share of a stack's height, parallel to `windowIDs`.
     public fileprivate(set) var heightWeights: [Double]
 
-    public var isStack: Bool { windowIDs.count > 1 }
+    public var isMultiPane: Bool { windowIDs.count > 1 }
+    // Kept for StagehandModel+Benchmark.swift until slice B.
+    public var isStack: Bool { isMultiPane }
 
     public init(
         id: String? = nil,
@@ -137,8 +139,8 @@ public struct ColumnState: Codable, Equatable, Sendable {
     }
 }
 
-/// A space's ribbon: ordered columns. A window appears at most once per space,
-/// columns are never empty, and the focused window is its column's active member.
+/// A space's ribbon: ordered tiles. A window appears at most once per space,
+/// tiles are never empty, and the focused window is its tile's active member.
 /// A window can belong to several spaces; stack composition is per space.
 public struct SpaceState: Codable, Equatable, Sendable {
     public static let minimumWidthFraction = 0.25
@@ -155,50 +157,52 @@ public struct SpaceState: Codable, Equatable, Sendable {
         return normalized.isEmpty ? defaultWidthPresets : normalized
     }
 
-    /// Ribbon slots, left to right.
-    public fileprivate(set) var columns: [ColumnState] {
+    /// The ribbon's tiles, left to right.
+    public fileprivate(set) var tiles: [Tile] {
         didSet { indexMembers() }
     }
-    /// Every member, column by column, top to bottom. Derived from `columns` and
+    // Kept for StagehandModel+Benchmark.swift until slice B.
+    public var columns: [Tile] { tiles }
+    /// Every member, tile by tile, top to bottom. Derived from `tiles` and
     /// rebuilt on each change, so per-frame readers do not allocate.
     public private(set) var windowIDs: [String] = []
-    private var columnIndexByWindowID: [String: Int] = [:]
+    private var tileIndexByWindowID: [String: Int] = [:]
     public fileprivate(set) var focusedWindowID: String?
 
-    /// A space whose windows each have a column of their own.
+    /// A space whose windows each have a tile of their own.
     public init(
         windowIDs: [String] = [],
         focusedWindowID: String? = nil,
         widthFractions: [String: Double] = [:]
     ) {
         self.init(
-            columns: windowIDs.map {
-                ColumnState(windowIDs: [$0], widthFraction: widthFractions[$0] ?? Self.defaultWidthFraction)
+            tiles: windowIDs.map {
+                Tile(windowIDs: [$0], widthFraction: widthFractions[$0] ?? Self.defaultWidthFraction)
             },
             focusedWindowID: focusedWindowID
         )
     }
 
-    /// Drops empty columns and any window already placed in an earlier column,
-    /// and makes column IDs unique.
-    public init(columns: [ColumnState], focusedWindowID: String? = nil) {
+    /// Drops empty tiles and any window already placed in an earlier tile,
+    /// and makes tile IDs unique.
+    public init(tiles: [Tile], focusedWindowID: String? = nil) {
         var seen = Set<String>()
         var usedIDs = Set<String>()
-        var kept: [ColumnState] = []
-        for column in columns {
-            let indices = column.windowIDs.indices.filter { seen.insert(column.windowIDs[$0]).inserted }
+        var kept: [Tile] = []
+        for tile in tiles {
+            let indices = tile.windowIDs.indices.filter { seen.insert(tile.windowIDs[$0]).inserted }
             guard let first = indices.first else { continue }
-            let id = Self.uniqueColumnID(column.id.isEmpty ? column.windowIDs[first] : column.id, used: usedIDs)
+            let id = Self.uniqueTileID(tile.id.isEmpty ? tile.windowIDs[first] : tile.id, used: usedIDs)
             usedIDs.insert(id)
-            kept.append(ColumnState(
+            kept.append(Tile(
                 id: id,
-                windowIDs: indices.map { column.windowIDs[$0] },
-                widthFraction: column.widthFraction,
-                activeWindowID: column.activeWindowID,
-                heightWeights: indices.map { column.heightWeights[$0] }
+                windowIDs: indices.map { tile.windowIDs[$0] },
+                widthFraction: tile.widthFraction,
+                activeWindowID: tile.activeWindowID,
+                heightWeights: indices.map { tile.heightWeights[$0] }
             ))
         }
-        self.columns = kept
+        self.tiles = kept
         self.focusedWindowID = nil
         indexMembers()
         if let focus = focusedWindowID.flatMap({ seen.contains($0) ? $0 : nil }) ?? kept.first?.activeWindowID {
@@ -207,20 +211,20 @@ public struct SpaceState: Codable, Equatable, Sendable {
     }
 
     public func contains(windowID: String) -> Bool {
-        columnIndexByWindowID[windowID] != nil
+        tileIndexByWindowID[windowID] != nil
     }
 
-    public func columnIndex(of windowID: String) -> Int? {
-        columnIndexByWindowID[windowID]
+    public func tileIndex(of windowID: String) -> Int? {
+        tileIndexByWindowID[windowID]
     }
 
-    public var focusedColumnIndex: Int? {
-        focusedWindowID.flatMap(columnIndex(of:))
+    public var focusedTileIndex: Int? {
+        focusedWindowID.flatMap(tileIndex(of:))
     }
 
-    /// The width of the window's column.
+    /// The width of the window's tile.
     public func widthFraction(for windowID: String) -> Double {
-        columnIndex(of: windowID).map { columns[$0].widthFraction } ?? Self.defaultWidthFraction
+        tileIndex(of: windowID).map { tiles[$0].widthFraction } ?? Self.defaultWidthFraction
     }
 
     fileprivate static func clampedWidth(_ value: Double) -> Double {
@@ -228,7 +232,7 @@ public struct SpaceState: Codable, Equatable, Sendable {
         return min(max(value, minimumWidthFraction), maximumWidthFraction)
     }
 
-    private static func uniqueColumnID(_ base: String, used: Set<String>) -> String {
+    private static func uniqueTileID(_ base: String, used: Set<String>) -> String {
         guard used.contains(base) else { return base }
         var suffix = 2
         while used.contains("\(base)#\(suffix)") { suffix += 1 }
@@ -238,90 +242,91 @@ public struct SpaceState: Codable, Equatable, Sendable {
     private mutating func indexMembers() {
         var flat: [String] = []
         var index: [String: Int] = [:]
-        for (columnIndex, column) in columns.enumerated() {
-            for windowID in column.windowIDs {
+        for (tileIndex, tile) in tiles.enumerated() {
+            for windowID in tile.windowIDs {
                 flat.append(windowID)
-                index[windowID] = columnIndex
+                index[windowID] = tileIndex
             }
         }
         windowIDs = flat
-        columnIndexByWindowID = index
+        tileIndexByWindowID = index
     }
 
-    /// Focuses a member and makes it its column's active member.
+    /// Focuses a member and makes it its tile's active member.
     fileprivate mutating func setFocus(windowID: String) {
-        guard let index = columnIndex(of: windowID) else { return }
-        if columns[index].activeWindowID != windowID { columns[index].activeWindowID = windowID }
+        guard let index = tileIndex(of: windowID) else { return }
+        if tiles[index].activeWindowID != windowID { tiles[index].activeWindowID = windowID }
         focusedWindowID = windowID
     }
 
-    /// A one-window column for `windowID` with an ID unused in this space.
-    fileprivate func newColumn(windowID: String, width: Double) -> ColumnState {
-        ColumnState(id: Self.uniqueColumnID(windowID, used: Set(columns.map(\.id))),
-                    windowIDs: [windowID], widthFraction: width)
+    /// A one-window tile for `windowID` with an ID unused in this space.
+    fileprivate func newTile(windowID: String, width: Double) -> Tile {
+        Tile(id: Self.uniqueTileID(windowID, used: Set(tiles.map(\.id))),
+             windowIDs: [windowID], widthFraction: width)
     }
 
-    /// Adds a window as its own column after the focused column.
+    /// Adds a window as its own tile after the focused tile.
     fileprivate mutating func insert(windowID: String, width: Double, focus: Bool) {
         guard !windowID.isEmpty, !contains(windowID: windowID) else { return }
-        let insertionIndex = focusedColumnIndex.map { $0 + 1 } ?? columns.endIndex
-        columns.insert(newColumn(windowID: windowID, width: width), at: insertionIndex)
+        let insertionIndex = focusedTileIndex.map { $0 + 1 } ?? tiles.endIndex
+        tiles.insert(newTile(windowID: windowID, width: width), at: insertionIndex)
         if focus || focusedWindowID == nil { setFocus(windowID: windowID) }
     }
 
-    /// A focused window that leaves hands focus to a column-mate (the one below,
-    /// or above when it was the bottom member); a window alone in its column
-    /// hands it to the next column's active member, or the previous column's.
+    /// A focused window that leaves hands focus to a tile-mate (the one below,
+    /// or above when it was the bottom member); a window alone in its tile
+    /// hands it to the next tile's active member, or the previous tile's.
     fileprivate mutating func remove(windowID: String) {
-        guard let index = columnIndex(of: windowID),
-              let member = columns[index].windowIDs.firstIndex(of: windowID) else { return }
-        if columns[index].isStack {
-            columns[index].removeMember(at: member)
-            if focusedWindowID == windowID { setFocus(windowID: columns[index].activeWindowID) }
+        guard let index = tileIndex(of: windowID),
+              let member = tiles[index].windowIDs.firstIndex(of: windowID) else { return }
+        if tiles[index].isMultiPane {
+            tiles[index].removeMember(at: member)
+            if focusedWindowID == windowID { setFocus(windowID: tiles[index].activeWindowID) }
         } else {
-            columns.remove(at: index)
+            tiles.remove(at: index)
             if focusedWindowID == windowID {
                 focusedWindowID = nil
-                if !columns.isEmpty { setFocus(windowID: columns[min(index, columns.count - 1)].activeWindowID) }
+                if !tiles.isEmpty { setFocus(windowID: tiles[min(index, tiles.count - 1)].activeWindowID) }
             }
         }
     }
 
-    /// Puts a window that is not a member back between the column-mates it had.
-    /// `savedMembers` is its saved column top to bottom, itself included. It joins
-    /// the column of its nearest saved mate above (just below that mate), else of
+    /// Puts a window that is not a member back between the tile-mates it had.
+    /// `savedMembers` is its saved tile top to bottom, itself included. It joins
+    /// the tile of its nearest saved mate above (just below that mate), else of
     /// its nearest saved mate below (just above it). False when no mate is here.
     fileprivate mutating func rejoin(windowID: String, savedMembers: [String], heightWeight: Double) -> Bool {
         guard !contains(windowID: windowID), let position = savedMembers.firstIndex(of: windowID) else { return false }
         let above = savedMembers[..<position].reversed().first { contains(windowID: $0) }
         let below = savedMembers[(position + 1)...].first { contains(windowID: $0) }
-        guard let mate = above ?? below, let column = columnIndex(of: mate),
-              let mateIndex = columns[column].windowIDs.firstIndex(of: mate) else { return false }
-        columns[column].insertMember(windowID, at: above != nil ? mateIndex + 1 : mateIndex,
-                                     heightWeight: heightWeight)
+        guard let mate = above ?? below, let tile = tileIndex(of: mate),
+              let mateIndex = tiles[tile].windowIDs.firstIndex(of: mate) else { return false }
+        tiles[tile].insertMember(windowID, at: above != nil ? mateIndex + 1 : mateIndex,
+                                 heightWeight: heightWeight)
         return true
     }
 
-    /// Takes a window out of its column and returns it as a column of its own.
-    /// A window alone in its column takes that column, ID included. Focus is the
+    /// Takes a window out of its tile and returns it as a tile of its own.
+    /// A window alone in its tile takes that tile, ID included. Focus is the
     /// caller's to restore.
-    fileprivate mutating func detach(windowID: String) -> ColumnState? {
-        guard let index = columnIndex(of: windowID),
-              let member = columns[index].windowIDs.firstIndex(of: windowID) else { return nil }
-        guard columns[index].isStack else { return columns.remove(at: index) }
-        let width = columns[index].widthFraction
-        columns[index].removeMember(at: member)
-        return newColumn(windowID: windowID, width: width)
+    fileprivate mutating func detach(windowID: String) -> Tile? {
+        guard let index = tileIndex(of: windowID),
+              let member = tiles[index].windowIDs.firstIndex(of: windowID) else { return nil }
+        guard tiles[index].isMultiPane else { return tiles.remove(at: index) }
+        let width = tiles[index].widthFraction
+        tiles[index].removeMember(at: member)
+        return newTile(windowID: windowID, width: width)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case columns, focusedWindowID
+        // Version 2 layout files store tiles under this key.
+        case tiles = "columns", focusedWindowID
     }
 
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
-            columns: try values.decodeIfPresent([ColumnState].self, forKey: .columns) ?? [],
+            tiles: try values.decodeIfPresent([Tile].self, forKey: .tiles) ?? [],
             focusedWindowID: try values.decodeIfPresent(String.self, forKey: .focusedWindowID)
         )
     }
@@ -357,29 +362,29 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         for index in spaces.indices {
             let savedSpace = savedState.spaces[index]
             for (offset, windowID) in savedSpace.windowIDs.enumerated() where returningIDs.contains(windowID) {
-                // A window that was stacked rejoins the column holding its saved
-                // column-mates, between the same neighbors, with its saved share.
-                if let savedColumn = savedSpace.columnIndex(of: windowID).map({ savedSpace.columns[$0] }),
-                   savedColumn.isStack,
-                   spaces[index].rejoin(windowID: windowID, savedMembers: savedColumn.windowIDs,
-                                        heightWeight: savedColumn.heightWeight(for: windowID)) {
+                // A window that was stacked rejoins the tile holding its saved
+                // tile-mates, between the same neighbors, with its saved share.
+                if let savedTile = savedSpace.tileIndex(of: windowID).map({ savedSpace.tiles[$0] }),
+                   savedTile.isMultiPane,
+                   spaces[index].rejoin(windowID: windowID, savedMembers: savedTile.windowIDs,
+                                        heightWeight: savedTile.heightWeight(for: windowID)) {
                     continue
                 }
-                // Insert before the next surviving neighbor's column, preserving the
+                // Insert before the next surviving neighbor's tile, preserving the
                 // current order of windows the user has already resumed and rearranged.
-                // Otherwise a returning window comes back as a column of its own.
+                // Otherwise a returning window comes back as a tile of its own.
                 let nextID = savedSpace.windowIDs.dropFirst(offset + 1)
                     .first { spaces[index].contains(windowID: $0) }
-                let insertionIndex = nextID.flatMap { spaces[index].columnIndex(of: $0) }
-                    ?? spaces[index].columns.endIndex
-                spaces[index].columns.insert(
-                    spaces[index].newColumn(windowID: windowID, width: savedSpace.widthFraction(for: windowID)),
+                let insertionIndex = nextID.flatMap { spaces[index].tileIndex(of: $0) }
+                    ?? spaces[index].tiles.endIndex
+                spaces[index].tiles.insert(
+                    spaces[index].newTile(windowID: windowID, width: savedSpace.widthFraction(for: windowID)),
                     at: insertionIndex
                 )
             }
             if spaces[index].focusedWindowID == nil,
                let focus = savedSpace.focusedWindowID.flatMap({ spaces[index].contains(windowID: $0) ? $0 : nil })
-                ?? spaces[index].columns.first?.activeWindowID {
+                ?? spaces[index].tiles.first?.activeWindowID {
                 spaces[index].setFocus(windowID: focus)
             }
         }
@@ -407,13 +412,13 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
             )
         }
         if wasOccupied && currentSpace.windowIDs.isEmpty {
-            // Keep numbered shortcuts stable; empty slots disappear from the picker.
+            // Keep numbered shortcuts stable; empty spaces disappear from the picker.
             activeSpaceIndex = spaces.indices.last(where: { $0 < activeSpaceIndex && !spaces[$0].windowIDs.isEmpty })
                 ?? spaces.indices.first(where: { !spaces[$0].windowIDs.isEmpty }) ?? 0
         }
     }
 
-    /// Remove an empty numbered slot so later spaces move down together.
+    /// Remove an empty numbered space so later spaces move down together.
     @discardableResult
     public mutating func closeEmptySpace(at index: Int) -> Bool {
         guard spaces.indices.contains(index), spaces[index].windowIDs.isEmpty,
@@ -422,8 +427,8 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         return true
     }
 
-    /// Opens an empty numbered slot at `index`; it and later spaces move up one.
-    /// Fails when the last slot is occupied or active, since it would be dropped.
+    /// Opens an empty numbered space at `index`; it and later spaces move up one.
+    /// Fails when the last space is occupied or active, since it would be dropped.
     @discardableResult
     public mutating func openSpace(at index: Int) -> Bool {
         let last = Self.spaceCount - 1
@@ -435,23 +440,23 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         return true
     }
 
-    /// Adds a window that is not yet a member of the space as its own column at
-    /// column index `position`, keeping the space's focus, as a relaunched window
-    /// returning to its slot.
+    /// Adds a window that is not yet a member of the space as its own tile at
+    /// tile index `position`, keeping the space's focus, as a relaunched window
+    /// returning to its place in the ribbon.
     @discardableResult
     public mutating func insert(windowID: String, inSpace index: Int, at position: Int, width: Double) -> Bool {
         guard spaces.indices.contains(index), !windowID.isEmpty,
               !spaces[index].contains(windowID: windowID) else { return false }
-        let clamped = min(max(position, 0), spaces[index].columns.count)
-        spaces[index].columns.insert(spaces[index].newColumn(windowID: windowID, width: width), at: clamped)
+        let clamped = min(max(position, 0), spaces[index].tiles.count)
+        spaces[index].tiles.insert(spaces[index].newTile(windowID: windowID, width: width), at: clamped)
         if spaces[index].focusedWindowID == nil { spaces[index].setFocus(windowID: windowID) }
         return true
     }
 
-    /// Adds a window that is not yet a member of the space into the column holding
-    /// its nearest saved column-mate, as a relaunched stack member returning to its
-    /// stack. `savedMembers` is its saved column top to bottom, with this window's
-    /// ID in its own place. Keeps the space's focus and the column's width. False
+    /// Adds a window that is not yet a member of the space into the tile holding
+    /// its nearest saved tile-mate, as a relaunched stack member returning to its
+    /// stack. `savedMembers` is its saved tile top to bottom, with this window's
+    /// ID in its own place. Keeps the space's focus and the tile's width. False
     /// when none of its mates is in the space.
     @discardableResult
     public mutating func rejoin(windowID: String, savedMembers: [String], heightWeight: Double,
@@ -460,7 +465,7 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         return spaces[index].rejoin(windowID: windowID, savedMembers: savedMembers, heightWeight: heightWeight)
     }
 
-    /// Keep a saved membership snapshot aligned after the corresponding live slot closes.
+    /// Keep a saved membership snapshot aligned after the corresponding live space closes.
     public mutating func discardSpace(at index: Int) {
         guard spaces.indices.contains(index) else { return }
         spaces.remove(at: index)
@@ -482,149 +487,149 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         return true
     }
 
-    /// Moves a member, as a column of its own, directly after the space's focused
-    /// column, then focuses it there, as macOS does when the user reopens a window.
+    /// Moves a member, as a tile of its own, directly after the space's focused
+    /// tile, then focuses it there, as macOS does when the user reopens a window.
     /// A stacked window leaves its stack.
     @discardableResult
     public mutating func placeAfterFocused(windowID: String, inSpace index: Int) -> Bool {
         guard spaces.indices.contains(index), spaces[index].contains(windowID: windowID) else { return false }
         if let anchor = spaces[index].focusedWindowID, anchor != windowID,
-           let column = spaces[index].detach(windowID: windowID) {
-            let anchorIndex = spaces[index].columnIndex(of: anchor) ?? spaces[index].columns.endIndex - 1
-            spaces[index].columns.insert(column, at: anchorIndex + 1)
+           let tile = spaces[index].detach(windowID: windowID) {
+            let anchorIndex = spaces[index].tileIndex(of: anchor) ?? spaces[index].tiles.endIndex - 1
+            spaces[index].tiles.insert(tile, at: anchorIndex + 1)
         }
         activeSpaceIndex = index
         spaces[index].setFocus(windowID: windowID)
         return true
     }
 
-    /// Moves the window's whole column to column index `index` in the current
+    /// Moves the window's whole tile to tile index `index` in the current
     /// space, preserving focus and per-space widths.
     @discardableResult
     public mutating func reorderWindow(windowID: String, to index: Int) -> Bool {
         reorderWindow(windowID: windowID, to: index, inSpace: activeSpaceIndex)
     }
 
-    /// Moves the window's whole column to column index `index` without making the
-    /// space active. While every column holds one window, a column index is a
+    /// Moves the window's whole tile to tile index `index` without making the
+    /// space active. While every tile holds one window, a tile index is a
     /// window index.
     @discardableResult
     public mutating func reorderWindow(windowID: String, to index: Int, inSpace spaceIndex: Int) -> Bool {
         guard spaces.indices.contains(spaceIndex),
-              let originalIndex = spaces[spaceIndex].columnIndex(of: windowID) else { return false }
-        let destination = min(max(index, 0), spaces[spaceIndex].columns.count - 1)
+              let originalIndex = spaces[spaceIndex].tileIndex(of: windowID) else { return false }
+        let destination = min(max(index, 0), spaces[spaceIndex].tiles.count - 1)
         guard originalIndex != destination else { return false }
-        var columns = spaces[spaceIndex].columns
-        columns.insert(columns.remove(at: originalIndex), at: destination)
-        spaces[spaceIndex].columns = columns
+        var tiles = spaces[spaceIndex].tiles
+        tiles.insert(tiles.remove(at: originalIndex), at: destination)
+        spaces[spaceIndex].tiles = tiles
         return true
     }
 
-    /// Moves a member to `position` within its own column, top to bottom. Its
+    /// Moves a member to `position` within its own tile, top to bottom. Its
     /// height weight moves with it; focus and width do not change.
     @discardableResult
     public mutating func reorderMember(windowID: String, to position: Int, inSpace spaceIndex: Int) -> Bool {
         guard spaces.indices.contains(spaceIndex),
-              let column = spaces[spaceIndex].columnIndex(of: windowID),
-              let member = spaces[spaceIndex].columns[column].windowIDs.firstIndex(of: windowID) else { return false }
-        let destination = min(max(position, 0), spaces[spaceIndex].columns[column].windowIDs.count - 1)
+              let tile = spaces[spaceIndex].tileIndex(of: windowID),
+              let member = spaces[spaceIndex].tiles[tile].windowIDs.firstIndex(of: windowID) else { return false }
+        let destination = min(max(position, 0), spaces[spaceIndex].tiles[tile].windowIDs.count - 1)
         guard member != destination else { return false }
-        spaces[spaceIndex].columns[column].moveMember(from: member, to: destination)
+        spaces[spaceIndex].tiles[tile].moveMember(from: member, to: destination)
         return true
     }
 
-    /// Adds a window at the bottom of the column at `columnIndex` in the space,
-    /// taking that column's width. A focused window keeps focus.
+    /// Adds a window at the bottom of the tile at `tileIndex` in the space,
+    /// taking that tile's width. A focused window keeps focus.
     @discardableResult
-    public mutating func stack(windowID: String, intoColumnAt columnIndex: Int, inSpace index: Int) -> Bool {
-        guard spaces.indices.contains(index), spaces[index].columns.indices.contains(columnIndex),
-              let source = spaces[index].columnIndex(of: windowID), source != columnIndex else { return false }
+    public mutating func stack(windowID: String, intoTileAt tileIndex: Int, inSpace index: Int) -> Bool {
+        guard spaces.indices.contains(index), spaces[index].tiles.indices.contains(tileIndex),
+              let source = spaces[index].tileIndex(of: windowID), source != tileIndex else { return false }
         let wasFocused = spaces[index].focusedWindowID == windowID
-        let sourceDisappears = !spaces[index].columns[source].isStack
+        let sourceDisappears = !spaces[index].tiles[source].isMultiPane
         _ = spaces[index].detach(windowID: windowID)
-        let target = sourceDisappears && source < columnIndex ? columnIndex - 1 : columnIndex
-        spaces[index].columns[target].append(windowID: windowID)
+        let target = sourceDisappears && source < tileIndex ? tileIndex - 1 : tileIndex
+        spaces[index].tiles[target].append(windowID: windowID)
         if wasFocused { spaces[index].setFocus(windowID: windowID) }
         return true
     }
 
-    /// Takes a stacked window out of its column as a column of its own, directly
+    /// Takes a stacked window out of its tile as a tile of its own, directly
     /// before it (`direction` < 0) or after it, with the stack's width. A focused
     /// window keeps focus.
     @discardableResult
     public mutating func unstack(windowID: String, toward direction: Int, inSpace index: Int) -> Bool {
         guard direction != 0, spaces.indices.contains(index),
-              let source = spaces[index].columnIndex(of: windowID),
-              spaces[index].columns[source].isStack else { return false }
+              let source = spaces[index].tileIndex(of: windowID),
+              spaces[index].tiles[source].isMultiPane else { return false }
         let wasFocused = spaces[index].focusedWindowID == windowID
-        guard let column = spaces[index].detach(windowID: windowID) else { return false }
-        spaces[index].columns.insert(column, at: direction < 0 ? source : source + 1)
+        guard let tile = spaces[index].detach(windowID: windowID) else { return false }
+        spaces[index].tiles.insert(tile, at: direction < 0 ? source : source + 1)
         if wasFocused { spaces[index].setFocus(windowID: windowID) }
         return true
     }
 
-    /// Takes a stacked window out of its column as a column of its own at column
+    /// Takes a stacked window out of its tile as a tile of its own at tile
     /// index `position`, counted with its stack still in place, with the stack's
-    /// width, as a member dropped outside its column. A focused window keeps focus.
+    /// width, as a member dropped outside its tile. A focused window keeps focus.
     @discardableResult
-    public mutating func unstack(windowID: String, toColumnAt position: Int, inSpace index: Int) -> Bool {
+    public mutating func unstack(windowID: String, toTileAt position: Int, inSpace index: Int) -> Bool {
         guard spaces.indices.contains(index),
-              let source = spaces[index].columnIndex(of: windowID),
-              spaces[index].columns[source].isStack else { return false }
+              let source = spaces[index].tileIndex(of: windowID),
+              spaces[index].tiles[source].isMultiPane else { return false }
         let wasFocused = spaces[index].focusedWindowID == windowID
-        guard let column = spaces[index].detach(windowID: windowID) else { return false }
-        spaces[index].columns.insert(column, at: min(max(position, 0), spaces[index].columns.count))
+        guard let tile = spaces[index].detach(windowID: windowID) else { return false }
+        spaces[index].tiles.insert(tile, at: min(max(position, 0), spaces[index].tiles.count))
         if wasFocused { spaces[index].setFocus(windowID: windowID) }
         return true
     }
 
-    /// Sets a stacked member's relative share of its column's height in the
-    /// current space. A window alone in its column has no share to set.
+    /// Sets a stacked member's relative share of its tile's height in the
+    /// current space. A window alone in its tile has no share to set.
     @discardableResult
     public mutating func setHeightWeight(_ weight: Double, for windowID: String) -> Bool {
         guard weight.isFinite, weight > 0,
-              let column = currentSpace.columnIndex(of: windowID), currentSpace.columns[column].isStack,
-              let member = currentSpace.columns[column].windowIDs.firstIndex(of: windowID),
-              currentSpace.columns[column].heightWeights[member] != weight else { return false }
-        spaces[activeSpaceIndex].columns[column].heightWeights[member] = weight
+              let tile = currentSpace.tileIndex(of: windowID), currentSpace.tiles[tile].isMultiPane,
+              let member = currentSpace.tiles[tile].windowIDs.firstIndex(of: windowID),
+              currentSpace.tiles[tile].heightWeights[member] != weight else { return false }
+        spaces[activeSpaceIndex].tiles[tile].heightWeights[member] = weight
         return true
     }
 
-    /// The sideways stacking move for the focused window: alone in its column, it
-    /// joins the neighboring column on that side at the bottom; in a stack, it
-    /// leaves as its own column on that side. Focus stays on it.
+    /// The sideways stacking move for the focused window: alone in its tile, it
+    /// joins the neighboring tile on that side at the bottom; in a stack, it
+    /// leaves as its own tile on that side. Focus stays on it.
     @discardableResult
-    public mutating func moveFocusedWindowAcrossColumns(by direction: Int) -> Bool {
+    public mutating func moveFocusedWindowAcrossTiles(by direction: Int) -> Bool {
         guard direction != 0, let windowID = focusedWindowID,
-              let column = currentSpace.columnIndex(of: windowID) else { return false }
-        if currentSpace.columns[column].isStack {
+              let tile = currentSpace.tileIndex(of: windowID) else { return false }
+        if currentSpace.tiles[tile].isMultiPane {
             return unstack(windowID: windowID, toward: direction, inSpace: activeSpaceIndex)
         }
-        let target = column + direction.signum()
-        guard currentSpace.columns.indices.contains(target) else { return false }
-        return stack(windowID: windowID, intoColumnAt: target, inSpace: activeSpaceIndex)
+        let target = tile + direction.signum()
+        guard currentSpace.tiles.indices.contains(target) else { return false }
+        return stack(windowID: windowID, intoTileAt: target, inSpace: activeSpaceIndex)
     }
 
     /// Focuses the window above (`direction` < 0) or below the focused window in
-    /// its column. Stops at the ends.
+    /// its tile. Stops at the ends.
     @discardableResult
     public mutating func focusMember(by direction: Int) -> Bool {
         guard direction != 0, let windowID = focusedWindowID,
-              let column = currentSpace.columnIndex(of: windowID) else { return false }
-        let members = currentSpace.columns[column].windowIDs
+              let tile = currentSpace.tileIndex(of: windowID) else { return false }
+        let members = currentSpace.tiles[tile].windowIDs
         guard let member = members.firstIndex(of: windowID),
               members.indices.contains(member + direction.signum()) else { return false }
         spaces[activeSpaceIndex].setFocus(windowID: members[member + direction.signum()])
         return true
     }
 
-    /// Sets the width of the window's column in the current space.
+    /// Sets the width of the window's tile in the current space.
     @discardableResult
     public mutating func setWidthFraction(_ width: Double, for windowID: String) -> Bool {
-        guard let column = currentSpace.columnIndex(of: windowID) else { return false }
+        guard let tile = currentSpace.tileIndex(of: windowID) else { return false }
         let value = SpaceState.clampedWidth(width)
-        guard currentSpace.columns[column].widthFraction != value else { return false }
-        spaces[activeSpaceIndex].columns[column].widthFraction = value
+        guard currentSpace.tiles[tile].widthFraction != value else { return false }
+        spaces[activeSpaceIndex].tiles[tile].widthFraction = value
         return true
     }
 
@@ -717,21 +722,21 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         case .showSettings, .toggleShortcutHints:
             return false
         case .stackPrevious, .stackNext:
-            return moveFocusedWindowAcrossColumns(by: action == .stackNext ? 1 : -1)
+            return moveFocusedWindowAcrossTiles(by: action == .stackNext ? 1 : -1)
         case .focusMemberAbove, .focusMemberBelow:
             return focusMember(by: action == .focusMemberBelow ? 1 : -1)
         }
     }
 
-    /// Steps focus into the adjacent column's active member, or swaps the focused
-    /// column with it.
+    /// Steps focus into the adjacent tile's active member, or swaps the focused
+    /// tile with it.
     private mutating func navigateWindow(by direction: Int, reorder: Bool) -> Bool {
-        guard let index = currentSpace.focusedColumnIndex,
-              currentSpace.columns.indices.contains(index + direction) else { return false }
+        guard let index = currentSpace.focusedTileIndex,
+              currentSpace.tiles.indices.contains(index + direction) else { return false }
         if reorder {
-            spaces[activeSpaceIndex].columns.swapAt(index, index + direction)
+            spaces[activeSpaceIndex].tiles.swapAt(index, index + direction)
         } else {
-            spaces[activeSpaceIndex].setFocus(windowID: currentSpace.columns[index + direction].activeWindowID)
+            spaces[activeSpaceIndex].setFocus(windowID: currentSpace.tiles[index + direction].activeWindowID)
         }
         return true
     }

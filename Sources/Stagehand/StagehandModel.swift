@@ -10,7 +10,8 @@ enum PreferenceKey {
     static let gesturesEnabled = "gesturesEnabled"
     static let shortcutSwipesEnabled = "shortcutSwipesEnabled"
     static let reverseShortcutSwipeDirection = "reverseShortcutSwipeDirection"
-    static let windowGap = "windowGap"
+    // The stored key keeps its old name, so saved gaps carry over.
+    static let tileGap = "windowGap"
     static let diagnosticLoggingEnabled = "diagnosticLoggingEnabled"
     static let legacyFocusBorderColor = "focusBorderColor"
     static let focusBorderColors = "focusBorderColors"
@@ -62,7 +63,7 @@ final class StagehandModel: ObservableObject {
     }
     @Published var gap: Double {
         didSet {
-            UserDefaults.standard.set(gap, forKey: PreferenceKey.windowGap)
+            UserDefaults.standard.set(gap, forKey: PreferenceKey.tileGap)
             if isRunning && !isSuspended { enqueue(.preferences) }
         }
     }
@@ -197,8 +198,8 @@ final class StagehandModel: ObservableObject {
     /// them, so a stack is sized to fit at once and a stack that cannot fit is
     /// refused before it is made. Only in memory; forgotten with the window.
     var learnedMinimumHeights: [String: CGFloat] = [:]
-    /// A column change was refused instead of applied; Stagehand keeps running.
-    var onColumnChangeRefused: ((ColumnRefusal) -> Void)?
+    /// A tile change was refused instead of applied; Stagehand keeps running.
+    var onTileChangeRefused: ((TileRefusal) -> Void)?
     var lastTransition = Date.distantPast
     var automaticResumeTask: Task<Void, Never>?
     var automaticResumeAttempted = false
@@ -237,12 +238,12 @@ final class StagehandModel: ObservableObject {
         return desktopCheckAttempts <= Self.quickDesktopChecks ? .milliseconds(500) : .seconds(5)
     }
     var workspaceRestoration = WorkspaceRestoration()
-    /// Ribbon slots of apps that quit, for the windows of their next launch.
-    var relaunchSlots = RelaunchSlots()
+    /// Ribbon places of apps that quit, for the windows of their next launch.
+    var relaunchPlaces = RelaunchPlaces()
     var now: () -> Date = Date.init
     var focusHistory = WindowFocusHistory()
     /// Windows that left the ribbon by minimizing. When one returns, it joins next
-    /// to the focused window instead of its old slot.
+    /// to the focused window instead of its old place in the ribbon.
     var minimizedWindowIDs: Set<String> = []
     var lastLayoutMilliseconds = 0
     var lastFocusTokenExpired = false
@@ -270,9 +271,9 @@ final class StagehandModel: ObservableObject {
         case removeMembership(windowID: String, fromSpaceIndex: Int)
         case reorderWindow(windowID: String, toIndex: Int, spaceIndex: Int)
         case focusInSpace(windowID: String, spaceIndex: Int)
-        /// A change to the active space's columns that is refused, without
+        /// A change to the active space's tiles that is refused, without
         /// pausing, when a stack would not fit.
-        case columns(ColumnChange)
+        case tiles(TileChange)
         case observedFocus(String)
         case windowRemoval
         case refresh
@@ -307,7 +308,7 @@ final class StagehandModel: ObservableObject {
             case .removeMembership: "removeMembershipFromSettings"
             case .reorderWindow: "reorderWindow"
             case .focusInSpace: "focusWindowFromSettings"
-            case .columns(let change): "columns.\(change.diagnosticName)"
+            case .tiles(let change): "tiles.\(change.diagnosticName)"
             case .observedFocus: "observedFocus"
             case .windowRemoval: "windowRemoval"
             case .refresh: "refresh"
@@ -373,7 +374,7 @@ final class StagehandModel: ObservableObject {
         gesturesEnabled = defaults.object(forKey: PreferenceKey.gesturesEnabled) as? Bool ?? false
         shortcutSwipesEnabled = defaults.bool(forKey: PreferenceKey.shortcutSwipesEnabled)
         reverseShortcutSwipeDirection = defaults.object(forKey: PreferenceKey.reverseShortcutSwipeDirection) as? Bool ?? true
-        gap = GapInput.clamped(defaults.object(forKey: PreferenceKey.windowGap) as? Double ?? 8)
+        gap = GapInput.clamped(defaults.object(forKey: PreferenceKey.tileGap) as? Double ?? 8)
         widthPresets = SpaceState.normalizedWidthPresets(
             defaults.array(forKey: PreferenceKey.widthPresets) as? [Double] ?? SpaceState.defaultWidthPresets
         )
@@ -393,7 +394,7 @@ final class StagehandModel: ObservableObject {
             alpha: BorderView.defaultColor.alphaComponent
         ) ?? Array(repeating: defaultBorderColor, count: WorkspaceState.spaceCount)
         input.reverseShortcutSwipeDirection = reverseShortcutSwipeDirection
-        onColumnChangeRefused = { [weak self] refusal in self?.showColumnRefusal(refusal) }
+        onTileChangeRefused = { [weak self] refusal in self?.showTileRefusal(refusal) }
         input.onAction = { [weak self] action in self?.navigate(action) }
         input.onGesture = { [weak self] event in self?.handleGesture(event) }
         overlays.onFocusWindow = { [weak self] id in self?.focusWindow(id) }
@@ -793,7 +794,7 @@ final class StagehandModel: ObservableObject {
         workspaceRestoration.reconcile(state: &state, windowIDs: windows.map(\.id),
                                        trackedWindowIDs: windowSystem.trackedWindowIDs,
                                        initialWidthFractions: initialWidthFractions(for: windows))
-        // Windows restored while paused keep their saved slots on resume.
+        // Windows restored while paused keep their saved places on resume.
         minimizedWindowIDs.subtract(windows.map(\.id))
         if let focused = windowSystem.focusedWindowID() {
             state.focus(windowID: focused)
@@ -981,10 +982,10 @@ final class StagehandModel: ObservableObject {
         case .togglePause: isRunning ? pause() : start()
         case .toggleShortcutHints: overlays.toggleShortcutHints()
         default:
-            // Stacking goes through the column change queue, which refuses a stack
+            // Stacking goes through the tile change queue, which refuses a stack
             // that would not fit instead of pausing.
-            if let columnChange = ColumnChange(action) {
-                changeColumns(columnChange)
+            if let tileChange = TileChange(action) {
+                changeTiles(tileChange)
                 return
             }
             guard isRunning, !isSuspended else { return }

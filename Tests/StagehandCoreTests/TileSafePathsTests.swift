@@ -3,36 +3,36 @@ import Foundation
 import Testing
 @testable import StagehandCore
 
-// Slice 2 of column stacking: the paths that must keep a stack intact while
+// Slice 2 of tile stacking: the paths that must keep a stack intact while
 // nothing in the UI creates one yet.
 
-private func stackedSpace(_ columns: [[String]], focus: String? = nil, widths: [Double]? = nil,
+private func stackedSpace(_ tiles: [[String]], focus: String? = nil, widths: [Double]? = nil,
                           weights: [[Double]]? = nil) -> SpaceState {
-    SpaceState(columns: columns.enumerated().map { index, members in
-        ColumnState(windowIDs: members, widthFraction: widths?[index] ?? SpaceState.defaultWidthFraction,
-                    heightWeights: weights?[index] ?? [])
+    SpaceState(tiles: tiles.enumerated().map { index, members in
+        Tile(windowIDs: members, widthFraction: widths?[index] ?? SpaceState.defaultWidthFraction,
+             heightWeights: weights?[index] ?? [])
     }, focusedWindowID: focus)
 }
 
-private func stacked(_ columns: [[String]], focus: String? = nil, widths: [Double]? = nil,
+private func stacked(_ tiles: [[String]], focus: String? = nil, widths: [Double]? = nil,
                      weights: [[Double]]? = nil) -> WorkspaceState {
-    WorkspaceState(spaces: [stackedSpace(columns, focus: focus, widths: widths, weights: weights)])
+    WorkspaceState(spaces: [stackedSpace(tiles, focus: focus, widths: widths, weights: weights)])
 }
 
 // MARK: - Returning windows keep their stacks
 
-@Test func aReturningStackedWindowRejoinsItsColumnBetweenTheSameNeighbors() {
+@Test func aReturningStackedWindowRejoinsItsTileBetweenTheSameNeighbors() {
     let saved = stacked([["a"], ["b", "c", "d"], ["e"]], focus: "c", widths: [0.5, 0.6, 0.7],
                         weights: [[1], [1, 2.5, 1], [1]])
     var state = saved
     // c leaves (minimized, a busy app) and returns.
     state.reconcile(windowIDs: ["a", "b", "d", "e"])
-    #expect(state.currentSpace.columns.map(\.windowIDs) == [["a"], ["b", "d"], ["e"]])
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["b", "d"], ["e"]])
 
     state.restoreMemberships(windowIDs: ["c"], from: saved)
 
-    #expect(state.currentSpace.columns.map(\.windowIDs) == [["a"], ["b", "c", "d"], ["e"]])
-    #expect(state.currentSpace.columns[1].heightWeight(for: "c") == 2.5)
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["b", "c", "d"], ["e"]])
+    #expect(state.currentSpace.tiles[1].heightWeight(for: "c") == 2.5)
     #expect(state.currentSpace.widthFraction(for: "c") == 0.6)
 }
 
@@ -41,7 +41,7 @@ private func stacked(_ columns: [[String]], focus: String? = nil, widths: [Doubl
     var state = saved
     state.reconcile(windowIDs: ["b", "c"])
     state.restoreMemberships(windowIDs: ["a"], from: saved)
-    #expect(state.currentSpace.columns.map(\.windowIDs) == [["a", "b"], ["c"]])
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a", "b"], ["c"]])
     #expect(state.focusedWindowID == "c")
 }
 
@@ -49,27 +49,27 @@ private func stacked(_ columns: [[String]], focus: String? = nil, widths: [Doubl
     let saved = stacked([["a"], ["b", "c"], ["d"]], focus: "a", widths: [0.5, 0.6, 0.7])
     var state = saved
     state.reconcile(windowIDs: ["a", "d"])
-    #expect(state.currentSpace.columns.map(\.windowIDs) == [["a"], ["d"]])
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["d"]])
 
     state.restoreMemberships(windowIDs: ["b", "c"], from: saved)
 
-    #expect(state.currentSpace.columns.map(\.windowIDs) == [["a"], ["b", "c"], ["d"]])
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["b", "c"], ["d"]])
     #expect(state.currentSpace.widthFraction(for: "c") == 0.6)
 }
 
-@Test func aStackedWindowWhoseMatesAreGoneReturnsAsItsOwnColumn() {
+@Test func aStackedWindowWhoseMatesAreGoneReturnsAsItsOwnTile() {
     let saved = stacked([["a"], ["b", "c"], ["d"]], focus: "a")
     var state = saved
     state.reconcile(windowIDs: ["a", "d"])
     state.restoreMemberships(windowIDs: ["c"], from: saved)
-    #expect(state.currentSpace.columns.map(\.windowIDs) == [["a"], ["c"], ["d"]])
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["c"], ["d"]])
 }
 
 @Test func rejoinPlacesARelaunchedMemberAmongItsMates() {
     var state = stacked([["a"], ["b", "d"]], focus: "a")
     #expect(state.rejoin(windowID: "new", savedMembers: ["b", "new", "d"], heightWeight: 3, inSpace: 0) == true)
-    #expect(state.currentSpace.columns.map(\.windowIDs) == [["a"], ["b", "new", "d"]])
-    #expect(state.currentSpace.columns[1].heightWeight(for: "new") == 3)
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["b", "new", "d"]])
+    #expect(state.currentSpace.tiles[1].heightWeight(for: "new") == 3)
     #expect(state.focusedWindowID == "a")
     #expect(state.rejoin(windowID: "other", savedMembers: ["x", "other"], heightWeight: 1, inSpace: 0) == false)
     #expect(state.rejoin(windowID: "new", savedMembers: ["b", "new"], heightWeight: 1, inSpace: 0) == false)
@@ -77,26 +77,26 @@ private func stacked(_ columns: [[String]], focus: String? = nil, widths: [Doubl
 
 // MARK: - Drops and resizes
 
-@Test func aStackedWindowDroppedOutsideItsColumnBecomesItsOwnColumnThere() {
+@Test func aStackedWindowDroppedOutsideItsTileBecomesItsOwnTileThere() {
     var state = stacked([["a"], ["b", "c"], ["d"]], focus: "c", widths: [0.5, 0.6, 0.7])
-    #expect(state.unstack(windowID: "c", toColumnAt: 3, inSpace: 0) == true)
-    #expect(state.currentSpace.columns.map(\.windowIDs) == [["a"], ["b"], ["d"], ["c"]])
+    #expect(state.unstack(windowID: "c", toTileAt: 3, inSpace: 0) == true)
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["b"], ["d"], ["c"]])
     #expect(state.focusedWindowID == "c")
     #expect(state.currentSpace.widthFraction(for: "c") == 0.6)
 
     var front = stacked([["a"], ["b", "c"]], focus: "b")
-    #expect(front.unstack(windowID: "b", toColumnAt: -4, inSpace: 0) == true)
-    #expect(front.currentSpace.columns.map(\.windowIDs) == [["b"], ["a"], ["c"]])
+    #expect(front.unstack(windowID: "b", toTileAt: -4, inSpace: 0) == true)
+    #expect(front.currentSpace.tiles.map(\.windowIDs) == [["b"], ["a"], ["c"]])
     #expect(front.focusedWindowID == "b")
 
     var lone = stacked([["a"], ["b"]], focus: "a")
-    #expect(lone.unstack(windowID: "a", toColumnAt: 1, inSpace: 0) == false)
+    #expect(lone.unstack(windowID: "a", toTileAt: 1, inSpace: 0) == false)
 }
 
 @Test func heightWeightsAreSetOnlyForStackedMembers() {
     var state = stacked([["a"], ["b", "c"]], focus: "a")
     #expect(state.setHeightWeight(2, for: "b") == true)
-    #expect(state.currentSpace.columns[1].heightWeights == [2, 1])
+    #expect(state.currentSpace.tiles[1].heightWeights == [2, 1])
     #expect(state.setHeightWeight(2, for: "b") == false)
     #expect(state.setHeightWeight(2, for: "a") == false)
     #expect(state.setHeightWeight(0, for: "c") == false)
@@ -113,23 +113,23 @@ private func stacked(_ columns: [[String]], focus: String? = nil, widths: [Doubl
         for _ in 0..<30 {
             let id = pool.randomElement(using: &generator)!
             switch Int.random(in: 0..<6, using: &generator) {
-            case 0: state.unstack(windowID: id, toColumnAt: Int.random(in: -1...5, using: &generator), inSpace: 0)
+            case 0: state.unstack(windowID: id, toTileAt: Int.random(in: -1...5, using: &generator), inSpace: 0)
             case 1: state.setHeightWeight([0.5, 1, 3, -1].randomElement(using: &generator)!, for: id)
             case 2: state.reconcile(windowIDs: pool.filter { _ in Bool.random(using: &generator) })
             case 3: state.restoreMemberships(windowIDs: Set(pool.filter { _ in Bool.random(using: &generator) }),
                                              from: saved)
             case 4: state.rejoin(windowID: "n\(Int.random(in: 0..<3, using: &generator))",
                                  savedMembers: ["w1", "n0", "w4", "n1", "n2"], heightWeight: 2, inSpace: 0)
-            default: state.moveFocusedWindowAcrossColumns(by: Bool.random(using: &generator) ? 1 : -1)
+            default: state.moveFocusedWindowAcrossTiles(by: Bool.random(using: &generator) ? 1 : -1)
             }
             for space in state.spaces {
-                let flat = space.columns.flatMap(\.windowIDs)
+                let flat = space.tiles.flatMap(\.windowIDs)
                 #expect(space.windowIDs == flat)
                 #expect(Set(flat).count == flat.count)
-                #expect(space.columns.allSatisfy { !$0.windowIDs.isEmpty && $0.windowIDs.contains($0.activeWindowID)
+                #expect(space.tiles.allSatisfy { !$0.windowIDs.isEmpty && $0.windowIDs.contains($0.activeWindowID)
                     && $0.heightWeights.count == $0.windowIDs.count })
-                if let focused = space.focusedWindowID, let column = space.columnIndex(of: focused) {
-                    #expect(space.columns[column].activeWindowID == focused)
+                if let focused = space.focusedWindowID, let tile = space.tileIndex(of: focused) {
+                    #expect(space.tiles[tile].activeWindowID == focused)
                 } else {
                     #expect(flat.isEmpty)
                 }

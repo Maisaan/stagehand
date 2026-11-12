@@ -9,9 +9,9 @@ import StagehandPlatform
 ///
 /// A relaunched window has a new ID (a new process), so it is matched to the
 /// departed one by bundle identifier, then by title, then in ribbon order. Its
-/// slot is found from the neighbors it had, not from a space number: spaces close
+/// place is found from the neighbors it had, not from a space number: spaces close
 /// and renumber when the app leaves the last one empty.
-struct RelaunchSlots {
+struct RelaunchPlaces {
     struct DepartedWindow: Equatable {
         let id: String
         let title: String
@@ -39,7 +39,7 @@ struct RelaunchSlots {
     /// as part of the quit. A window closed earlier stays closed on relaunch.
     static let quitInterval: TimeInterval = 10
     /// A relaunch restores its windows in a burst. Once the first one has returned,
-    /// slots its later windows do not claim within this interval are dropped, so a
+    /// places its later windows do not claim within this interval are dropped, so a
     /// window opened much later is placed as usual.
     static let claimInterval: TimeInterval = 15
 
@@ -83,7 +83,7 @@ struct RelaunchSlots {
         }
     }
 
-    /// The process quit: the windows it closed while quitting become its slots,
+    /// The process quit: the windows it closed while quitting become its places,
     /// replacing any remembered from its app's earlier quit. Returns their count.
     @discardableResult
     mutating func applicationTerminated(pid: Int32, at now: Date) -> (bundleIdentifier: String, count: Int)? {
@@ -100,8 +100,8 @@ struct RelaunchSlots {
         return (bundleIdentifier, windows.count)
     }
 
-    /// Puts windows that are not yet members back into the slots their app's
-    /// previous process left. Windows without a slot are left for the usual
+    /// Puts windows that are not yet members back into the places their app's
+    /// previous process left. Windows without a place are left for the usual
     /// placement. Spaces opened here go through `restoration` so remembered
     /// memberships stay aligned.
     mutating func place(_ windows: [WindowRecord], state: inout WorkspaceState,
@@ -117,13 +117,13 @@ struct RelaunchSlots {
                   var departure = departures[window.bundleIdentifier],
                   departure.pid != window.pid,
                   departure.claimant.map({ $0 == window.pid }) ?? true,
-                  let slot = departure.windows.firstIndex(where: { !window.title.isEmpty && $0.title == window.title })
+                  let match = departure.windows.firstIndex(where: { !window.title.isEmpty && $0.title == window.title })
                     ?? departure.windows.indices.first else { continue }
-            let departed = departure.windows[slot]
+            let departed = departure.windows[match]
             let (spaces, opened) = Self.place(window.id, as: departed, returnedIDs: departure.returnedIDs,
                                               state: &state, restoration: &restoration)
             guard !spaces.isEmpty else { continue }
-            departure.windows.remove(at: slot)
+            departure.windows.remove(at: match)
             departure.returnedIDs[departed.id] = window.id
             departure.claimant = window.pid
             departure.claimEnds = departure.claimEnds ?? now.addingTimeInterval(Self.claimInterval)
@@ -177,21 +177,21 @@ struct RelaunchSlots {
             }
             let space = state.spaces[target]
             guard !space.contains(windowID: windowID) else { continue }
-            // A stacked window goes back into the column holding its column-mates.
-            if let savedColumn = stackColumn(of: departed, in: savedSpace),
+            // A stacked window goes back into the tile holding its tile-mates.
+            if let savedTile = stackTile(of: departed, in: savedSpace),
                state.rejoin(windowID: windowID,
-                            savedMembers: savedColumn.windowIDs.map { $0 == departed.id ? windowID : resolve($0) },
-                            heightWeight: savedColumn.heightWeight(for: departed.id), inSpace: target) {
+                            savedMembers: savedTile.windowIDs.map { $0 == departed.id ? windowID : resolve($0) },
+                            heightWeight: savedTile.heightWeight(for: departed.id), inSpace: target) {
                 joined.append(target)
                 continue
             }
-            // Otherwise it is a column of its own next to the column of its nearest
+            // Otherwise it is a tile of its own next to the tile of its nearest
             // remaining neighbor.
             let earlier = neighbors[..<savedPosition].reversed().first { space.contains(windowID: $0) }
             let later = neighbors[(savedPosition + 1)...].first { space.contains(windowID: $0) }
-            let position = earlier.flatMap { space.columnIndex(of: $0) }.map { $0 + 1 }
-                ?? later.flatMap { space.columnIndex(of: $0) }
-                ?? space.columns.endIndex
+            let position = earlier.flatMap { space.tileIndex(of: $0) }.map { $0 + 1 }
+                ?? later.flatMap { space.tileIndex(of: $0) }
+                ?? space.tiles.endIndex
             if state.insert(windowID: windowID, inSpace: target, at: position,
                             width: savedSpace.widthFraction(for: departed.id)) {
                 joined.append(target)
@@ -202,8 +202,8 @@ struct RelaunchSlots {
 
     /// The stack the departed window was in, in the space of its layout that is
     /// `savedSpace`, as it was before its app's first window left. Nil when it
-    /// was alone in its column.
-    private static func stackColumn(of departed: DepartedWindow, in savedSpace: SpaceState) -> ColumnState? {
+    /// was alone in its tile.
+    private static func stackTile(of departed: DepartedWindow, in savedSpace: SpaceState) -> Tile? {
         var candidates = [savedSpace]
         if let quitLayout = departed.quitLayout {
             // The same space before the quit: it holds the window and, of every
@@ -215,8 +215,8 @@ struct RelaunchSlots {
             }
         }
         for space in candidates {
-            if let column = space.columnIndex(of: departed.id), space.columns[column].isStack {
-                return space.columns[column]
+            if let tile = space.tileIndex(of: departed.id), space.tiles[tile].isMultiPane {
+                return space.tiles[tile]
             }
         }
         return nil
@@ -235,8 +235,8 @@ struct RelaunchSlots {
     }
 
     /// The departed window's space closed when it left. Reopens it between the
-    /// spaces that were its neighbors, using an empty slot already there.
-    /// `isNew` is false for an empty slot, which renumbers nothing.
+    /// spaces that were its neighbors, using an empty space already there.
+    /// `isNew` is false for an empty space, which renumbers nothing.
     private static func openSpace(for savedIndex: Int, from layout: WorkspaceState, resolve: (String) -> String,
                                   state: inout WorkspaceState,
                                   restoration: inout WorkspaceRestoration) -> (index: Int, isNew: Bool)? {

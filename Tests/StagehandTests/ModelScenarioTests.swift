@@ -369,7 +369,7 @@ struct ModelScenarioTests {
     }
 
     /// Five windows, the second focused: a window reopened from the Dock or a
-    /// newly opened app joins third and takes focus, instead of its old slot.
+    /// newly opened app joins third and takes focus, instead of its old place.
     @Test(arguments: ["notification", "scanBeforeFocus", "scanAfterFocus"])
     func aWindowRestoredFromTheDockJoinsAfterTheFocusedWindow(path: String) async {
         let harness = ModelHarness(windowIDs: ["a", "b", "c", "d", "e"], focused: "a")
@@ -399,8 +399,8 @@ struct ModelScenarioTests {
     /// An app updating itself quits and relaunches. Its windows reported their
     /// destruction before the process ended, so the termination arrived with no
     /// windows left; the relaunched window then joined after the focused window
-    /// instead of returning to its slot.
-    @Test func aRelaunchedAppReturnsToItsSlotInTheRibbon() async {
+    /// instead of returning to its place.
+    @Test func aRelaunchedAppReturnsToItsPlaceInTheRibbon() async {
         let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
         defer { harness.cleanUp() }
         harness.model.start()
@@ -414,7 +414,7 @@ struct ModelScenarioTests {
         harness.windows.onFocusedWindowChange?(order[2])
         await harness.settle()
         #expect(harness.model.state.focusedWindowID == order[2])
-        #expect(harness.events("relaunch_slots_remembered").count == 1)
+        #expect(harness.events("relaunch_places_remembered").count == 1)
 
         harness.windows.addWindow("relaunched", pid: 900, frame: CGRect(x: 80, y: 60, width: 700, height: 500),
                                   bundleIdentifier: "test.app\(pid)")

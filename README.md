@@ -29,7 +29,7 @@ Press Control + Option + Escape to pause. Pausing, quitting, and relaunching aft
 
 ## Usage
 
-Each space keeps its own window order, focus, and widths for the session. A window can be shared with several spaces. An app that quits and relaunches, as for an update, gets its old slots back. Drag a window by its title bar to reorder it; resize it to set its width (25% to 100% of the screen).
+Each space keeps its own window order, focus, and widths for the session. A window can be shared with several spaces. An app that quits and relaunches, as for an update, gets its old places in the ribbon back. Drag a window by its title bar to reorder it; resize it to set its width (25% to 100% of the screen).
 
 | Action | Shortcut |
 | --- | --- |
@@ -53,14 +53,14 @@ Every shortcut can be changed or turned off in Settings > Controls.
 
 ### Stacks
 
-A ribbon slot can hold several windows, one above the other: a stack. The ribbon scrolls by slot, so a stack comes into view as one.
+A tile, one place in the ribbon, can hold several windows, one above the other: a stack. The ribbon scrolls by tile, so a stack comes into view as one.
 
-- ⌃⌥⇧ ← / → moves the current window sideways. Alone in its slot, it joins the stack (or window) on that side, at the bottom. In a stack, it leaves and becomes its own slot on that side. It keeps focus.
+- ⌃⌥⇧ ← / → moves the current window sideways. Alone in its tile, it joins the stack (or window) on that side, at the bottom. In a stack, it leaves and becomes its own tile on that side. It keeps focus.
 - ⌃⌥⇧ ↑ / ↓ focuses the window above or below in the same stack. It stops at the ends; hold the keys to keep going.
-- ⌃⌥ ← / → enters the next slot at the window you last used there. ⌃⌥⌘ ← / → moves the whole stack.
-- The windows share the screen's height and the slot's width. Drag a window's top or bottom edge to trade height with its neighbor, or a side edge to set the stack's width. Drag a window by its title bar up or down within its stack to reorder it, or out of the stack to make it its own slot.
+- ⌃⌥ ← / → enters the next tile at the window you last used there. ⌃⌥⌘ ← / → moves the whole stack.
+- The windows share the screen's height and the tile's width. Drag a window's top or bottom edge to trade height with its neighbor, or a side edge to set the stack's width. Drag a window by its title bar up or down within its stack to reorder it, or out of the stack to make it its own tile.
 - If the windows can't get short enough to fit (some apps have a minimum height), Stagehand leaves them as they were and says so in the app bar. It keeps running.
-- New and restored windows always get their own slot. With Arrow shortcut swipes on, the same keys work with a three-finger swipe.
+- New and restored windows always get their own tile. With Arrow shortcut swipes on, the same keys work with a three-finger swipe.
 
 **Gestures** are off by default; turn them on in Settings > General > Gestures. Three-finger swipes move between windows (left/right) and spaces (up/down). You can keep swiping with two fingers while a third holds a drag-and-drop. Set macOS's own navigation gestures to four fingers to avoid overlap.
 

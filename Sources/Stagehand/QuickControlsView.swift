@@ -58,7 +58,7 @@ struct QuickControlsView: View {
 
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Text("Window gap")
+                        Text("Tile gap")
                         Spacer()
                         GapInput(value: $gapInput) { model.gap = $0 }
                             .frame(width: 66, height: TextInputMetrics.height)
@@ -71,7 +71,7 @@ struct QuickControlsView: View {
                     ) { editing in
                         if !editing, gapInput != model.gap { model.gap = gapInput }
                     }
-                    .accessibilityLabel("Gap between windows")
+                    .accessibilityLabel("Gap between tiles")
                 }
                 .padding(12)
 

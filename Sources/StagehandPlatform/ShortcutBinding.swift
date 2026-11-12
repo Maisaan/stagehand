@@ -135,7 +135,7 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
                 action: .moveToSpace(index: index, follow: true)
             ))
         }
-        // Added with column stacking. They stay after every older binding: on load a
+        // Added with tile stacking. They stay after every older binding: on load a
         // later duplicate is the one turned off, so a chord a user already recorded
         // keeps working and a new default that collides with it is turned off.
         bindings += [

@@ -135,8 +135,8 @@ extension StagehandModel {
         await waitUntilIdle()
 
         // Stacks, after the checks above so they run as before: all three windows into
-        // one column with the stacking shortcuts, typing during and after member
-        // switches and a stack move, then back to one window per column.
+        // one tile with the stacking shortcuts, typing during and after member
+        // switches and a stack move, then back to one window per tile.
         let stack = await acceptanceStacks(system: system, typed: &typed)
         lines0 += stack.failures
         await waitUntilIdle()
@@ -197,7 +197,7 @@ extension StagehandModel {
         guard state.activeSpaceIndex == home, state.currentSpace.windowIDs.count == 3 else {
             return (0, ["FAIL: could not gather the three windows into one space for the stack check"])
         }
-        /// Makes one shortcut step and checks that the columns and focus became what
+        /// Makes one shortcut step and checks that the tiles and focus became what
         /// the workspace predicts. A refused or ignored step counts as a failure.
         func step(_ action: NavigationAction, typeDuring index: Int? = nil) async -> Bool {
             var predicted = state
@@ -212,7 +212,7 @@ extension StagehandModel {
                 typed.append(TypedProbe(text: text, expectedWindowID: destination, duringTransition: true))
             }
             await waitUntilIdle()
-            guard state.currentSpace.columns.map(\.windowIDs) == predicted.currentSpace.columns.map(\.windowIDs),
+            guard state.currentSpace.tiles.map(\.windowIDs) == predicted.currentSpace.tiles.map(\.windowIDs),
                   state.focusedWindowID == predicted.focusedWindowID else {
                 failures.append("FAIL: stack step \(action) was refused or ended elsewhere")
                 return false
@@ -226,8 +226,8 @@ extension StagehandModel {
             await type(text)
             typed.append(TypedProbe(text: text, expectedWindowID: destination, duringTransition: false))
         }
-        // Build: the last column joins the middle one, then the first joins them.
-        for _ in 0..<2 where state.currentSpace.focusedColumnIndex.map({ $0 < 2 }) == true {
+        // Build: the last tile joins the middle one, then the first joins them.
+        for _ in 0..<2 where state.currentSpace.focusedTileIndex.map({ $0 < 2 }) == true {
             navigate(.focusNext)
             await waitUntilIdle()
         }
@@ -235,12 +235,12 @@ extension StagehandModel {
               await step(.focusPrevious),
               await step(.stackNext, typeDuring: 4_001) else { return (steps, failures) }
         await typeAfter(4_002)
-        let members = state.currentSpace.columns.first?.windowIDs ?? []
+        let members = state.currentSpace.tiles.first?.windowIDs ?? []
         let frames = members.compactMap { system.observedFrame(windowID: $0) }
         let stacked = members.count == 3 && frames.count == 3
             && frames.allSatisfy { abs($0.minX - frames[0].minX) <= 2 }
             && zip(frames, frames.dropFirst()).allSatisfy { $0.maxY <= $1.minY + 1 }
-        if !stacked { failures.append("FAIL: the three stacked windows are not laid out top to bottom in one column") }
+        if !stacked { failures.append("FAIL: the three stacked windows are not laid out top to bottom in one tile") }
         // Member switches: typing right after each, during the switch and once it settled.
         for (index, action) in [NavigationAction.focusMemberAbove, .focusMemberAbove, .focusMemberBelow,
                                 .focusMemberAbove, .focusMemberBelow, .focusMemberBelow].enumerated() {
@@ -251,7 +251,7 @@ extension StagehandModel {
         // keeps focused leaves to the left.
         _ = await step(.stackNext, typeDuring: 4_030)
         if await step(.focusPrevious) { _ = await step(.stackPrevious) }
-        if state.currentSpace.columns.count != 3 { failures.append("FAIL: the stack did not come apart into three columns") }
+        if state.currentSpace.tiles.count != 3 { failures.append("FAIL: the stack did not come apart into three tiles") }
         return (steps, failures)
     }
 

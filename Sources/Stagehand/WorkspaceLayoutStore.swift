@@ -9,7 +9,7 @@ import StagehandPlatform
 struct WorkspaceLayoutStore {
     /// Bump when the file's meaning changes. A file from another version is set
     /// aside rather than guessed at.
-    /// 2: spaces hold columns (stacks of windows sharing a width) instead of a
+    /// 2: spaces hold tiles (stacks of windows sharing a width) instead of a
     /// flat window list with per-window widths.
     static let currentVersion = 2
 

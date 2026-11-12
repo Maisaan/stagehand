@@ -142,7 +142,7 @@ private func observablyEqual(_ current: WorkspaceState, _ legacy: LegacyWorkspac
           current.spaces.count == legacy.spaces.count else { return false }
     return zip(current.spaces, legacy.spaces).allSatisfy { space, old in
         space.windowIDs == old.windowIDs && space.focusedWindowID == old.focusedWindowID
-            && space.columns.allSatisfy { !$0.isStack }
+            && space.tiles.allSatisfy { !$0.isMultiPane }
             && old.windowIDs.allSatisfy { space.widthFraction(for: $0) == old.widthFraction(for: $0) }
     }
 }
@@ -151,25 +151,25 @@ private func observablyEqual(_ current: WorkspaceState, _ legacy: LegacyWorkspac
 private func invariantViolations(_ state: WorkspaceState) -> [String] {
     var problems: [String] = []
     for (index, space) in state.spaces.enumerated() {
-        let flat = space.columns.flatMap(\.windowIDs)
+        let flat = space.tiles.flatMap(\.windowIDs)
         if space.windowIDs != flat { problems.append("space \(index): windowIDs \(space.windowIDs) != \(flat)") }
         if Set(flat).count != flat.count { problems.append("space \(index): duplicate window") }
-        if Set(space.columns.map(\.id)).count != space.columns.count { problems.append("space \(index): duplicate column ID") }
-        for (columnIndex, column) in space.columns.enumerated() {
-            if column.windowIDs.isEmpty { problems.append("space \(index): empty column") }
-            if !column.windowIDs.contains(column.activeWindowID) { problems.append("space \(index): active not a member") }
-            if column.heightWeights.count != column.windowIDs.count { problems.append("space \(index): weights misaligned") }
-            if !column.heightWeights.allSatisfy({ $0.isFinite && $0 > 0 }) { problems.append("space \(index): bad weight") }
-            if !(SpaceState.minimumWidthFraction...SpaceState.maximumWidthFraction).contains(column.widthFraction) {
-                problems.append("space \(index): width \(column.widthFraction)")
+        if Set(space.tiles.map(\.id)).count != space.tiles.count { problems.append("space \(index): duplicate tile ID") }
+        for (tileIndex, tile) in space.tiles.enumerated() {
+            if tile.windowIDs.isEmpty { problems.append("space \(index): empty tile") }
+            if !tile.windowIDs.contains(tile.activeWindowID) { problems.append("space \(index): active not a member") }
+            if tile.heightWeights.count != tile.windowIDs.count { problems.append("space \(index): weights misaligned") }
+            if !tile.heightWeights.allSatisfy({ $0.isFinite && $0 > 0 }) { problems.append("space \(index): bad weight") }
+            if !(SpaceState.minimumWidthFraction...SpaceState.maximumWidthFraction).contains(tile.widthFraction) {
+                problems.append("space \(index): width \(tile.widthFraction)")
             }
-            for windowID in column.windowIDs where space.columnIndex(of: windowID) != columnIndex {
-                problems.append("space \(index): stale column index for \(windowID)")
+            for windowID in tile.windowIDs where space.tileIndex(of: windowID) != tileIndex {
+                problems.append("space \(index): stale tile index for \(windowID)")
             }
         }
         if let focused = space.focusedWindowID {
-            if let column = space.columnIndex(of: focused) {
-                if space.columns[column].activeWindowID != focused { problems.append("space \(index): focus not active") }
+            if let tile = space.tileIndex(of: focused) {
+                if space.tiles[tile].activeWindowID != focused { problems.append("space \(index): focus not active") }
             } else {
                 problems.append("space \(index): focus \(focused) not a member")
             }
@@ -182,7 +182,7 @@ private func invariantViolations(_ state: WorkspaceState) -> [String] {
 
 // MARK: - Singleton behavior matches the flat model
 
-@Test func singletonColumnsBehaveExactlyLikeTheFlatModel() {
+@Test func singletonTilesBehaveExactlyLikeTheFlatModel() {
     for seed in UInt64(0)..<400 {
         var rng = SplitMix64(state: seed)
         var (current, legacy) = makeStates(&rng)
@@ -236,7 +236,7 @@ private func invariantViolations(_ state: WorkspaceState) -> [String] {
 
 // MARK: - Invariants
 
-@Test func columnOperationsKeepTheInvariants() throws {
+@Test func tileOperationsKeepTheInvariants() throws {
     for seed in UInt64(0)..<300 {
         var rng = SplitMix64(state: seed)
         var (state, legacy) = makeStates(&rng)
@@ -248,13 +248,13 @@ private func invariantViolations(_ state: WorkspaceState) -> [String] {
             let position = Int.random(in: -1...6, using: &rng)
             switch Int.random(in: 0..<10, using: &rng) {
             case 0:
-                state.stack(windowID: id, intoColumnAt: position, inSpace: space)
+                state.stack(windowID: id, intoTileAt: position, inSpace: space)
                 operation = "stack \(id) into \(position) space \(space)"
             case 1:
                 state.unstack(windowID: id, toward: direction, inSpace: space)
                 operation = "unstack \(id) \(direction) space \(space)"
             case 2, 3:
-                state.moveFocusedWindowAcrossColumns(by: direction)
+                state.moveFocusedWindowAcrossTiles(by: direction)
                 operation = "across \(direction)"
             case 4:
                 state.focusMember(by: direction)
@@ -277,57 +277,57 @@ private func invariantViolations(_ state: WorkspaceState) -> [String] {
     }
 }
 
-// MARK: - Column operations
+// MARK: - Tile operations
 
-private func stacked(_ columns: [[String]], focus: String? = nil, widths: [Double]? = nil) -> WorkspaceState {
-    WorkspaceState(spaces: [SpaceState(columns: columns.enumerated().map { index, members in
-        ColumnState(windowIDs: members, widthFraction: widths?[index] ?? SpaceState.defaultWidthFraction)
+private func stacked(_ tiles: [[String]], focus: String? = nil, widths: [Double]? = nil) -> WorkspaceState {
+    WorkspaceState(spaces: [SpaceState(tiles: tiles.enumerated().map { index, members in
+        Tile(windowIDs: members, widthFraction: widths?[index] ?? SpaceState.defaultWidthFraction)
     }, focusedWindowID: focus)])
 }
 
-@Test func aLoneWindowJoinsTheNeighboringColumnAtTheBottomAndKeepsFocus() {
+@Test func aLoneWindowJoinsTheNeighboringTileAtTheBottomAndKeepsFocus() {
     var state = stacked([["a"], ["b", "c"], ["d"]], focus: "d", widths: [0.5, 0.6, 0.8])
-    #expect(state.moveFocusedWindowAcrossColumns(by: -1) == true)
-    #expect(state.currentSpace.columns.map(\.windowIDs) == [["a"], ["b", "c", "d"]])
+    #expect(state.moveFocusedWindowAcrossTiles(by: -1) == true)
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["b", "c", "d"]])
     #expect(state.focusedWindowID == "d")
-    #expect(state.currentSpace.columns[1].activeWindowID == "d")
+    #expect(state.currentSpace.tiles[1].activeWindowID == "d")
     #expect(state.currentSpace.widthFraction(for: "d") == 0.6)
 
     var edge = stacked([["a"], ["b"]], focus: "a")
-    #expect(edge.moveFocusedWindowAcrossColumns(by: -1) == false)
-    #expect(edge.moveFocusedWindowAcrossColumns(by: 1) == true)
-    #expect(edge.currentSpace.columns.map(\.windowIDs) == [["b", "a"]])
-    #expect(edge.currentSpace.columns[0].id == "b")
+    #expect(edge.moveFocusedWindowAcrossTiles(by: -1) == false)
+    #expect(edge.moveFocusedWindowAcrossTiles(by: 1) == true)
+    #expect(edge.currentSpace.tiles.map(\.windowIDs) == [["b", "a"]])
+    #expect(edge.currentSpace.tiles[0].id == "b")
 }
 
-@Test func aStackedWindowLeavesAsItsOwnColumnOnThatSideWithTheStacksWidth() {
+@Test func aStackedWindowLeavesAsItsOwnTileOnThatSideWithTheStacksWidth() {
     var state = stacked([["a"], ["b", "c", "d"], ["e"]], focus: "c", widths: [0.5, 0.6, 0.8])
-    #expect(state.moveFocusedWindowAcrossColumns(by: 1) == true)
-    #expect(state.currentSpace.columns.map(\.windowIDs) == [["a"], ["b", "d"], ["c"], ["e"]])
+    #expect(state.moveFocusedWindowAcrossTiles(by: 1) == true)
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["b", "d"], ["c"], ["e"]])
     #expect(state.focusedWindowID == "c")
     #expect(state.currentSpace.widthFraction(for: "c") == 0.6)
     // The stack remembers the member that took the leaver's place.
-    #expect(state.currentSpace.columns[1].activeWindowID == "d")
+    #expect(state.currentSpace.tiles[1].activeWindowID == "d")
 
-    #expect(state.moveFocusedWindowAcrossColumns(by: -1) == true)
-    #expect(state.currentSpace.columns.map(\.windowIDs) == [["a"], ["b", "d", "c"], ["e"]])
-    #expect(state.moveFocusedWindowAcrossColumns(by: -1) == true)
-    #expect(state.currentSpace.columns.map(\.windowIDs) == [["a"], ["c"], ["b", "d"], ["e"]])
+    #expect(state.moveFocusedWindowAcrossTiles(by: -1) == true)
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["b", "d", "c"], ["e"]])
+    #expect(state.moveFocusedWindowAcrossTiles(by: -1) == true)
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["c"], ["b", "d"], ["e"]])
     #expect(state.focusedWindowID == "c")
 }
 
-@Test func columnIDsStayWithTheColumnAndStayUnique() {
+@Test func tileIDsStayWithTheTileAndStayUnique() {
     var state = stacked([["a"], ["b"]], focus: "b")
-    #expect(state.moveFocusedWindowAcrossColumns(by: -1) == true)
-    #expect(state.currentSpace.columns.map(\.id) == ["a"])
+    #expect(state.moveFocusedWindowAcrossTiles(by: -1) == true)
+    #expect(state.currentSpace.tiles.map(\.id) == ["a"])
     state.focus(windowID: "a")
-    // The founder leaves; the column keeps its ID and the leaver gets a new one.
-    #expect(state.moveFocusedWindowAcrossColumns(by: 1) == true)
-    #expect(state.currentSpace.columns.map(\.id) == ["a", "a#2"])
-    #expect(state.currentSpace.columns.map(\.windowIDs) == [["b"], ["a"]])
+    // The founder leaves; the tile keeps its ID and the leaver gets a new one.
+    #expect(state.moveFocusedWindowAcrossTiles(by: 1) == true)
+    #expect(state.currentSpace.tiles.map(\.id) == ["a", "a#2"])
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["b"], ["a"]])
 }
 
-@Test func memberFocusMovesWithinTheColumnWithoutWrapping() {
+@Test func memberFocusMovesWithinTheTileWithoutWrapping() {
     var state = stacked([["a"], ["b", "c", "d"]], focus: "c")
     #expect(state.focusMember(by: -1) == true)
     #expect(state.focusedWindowID == "b")
@@ -340,7 +340,7 @@ private func stacked(_ columns: [[String]], focus: String? = nil, widths: [Doubl
     #expect(single.focusMember(by: 1) == false)
 }
 
-@Test func horizontalFocusEntersTheRememberedMemberAndReorderMovesWholeColumns() {
+@Test func horizontalFocusEntersTheRememberedMemberAndReorderMovesWholeTiles() {
     var state = stacked([["a"], ["b", "c", "d"], ["e"]], focus: "c")
     state.apply(.focusPrevious)
     #expect(state.focusedWindowID == "a")
@@ -351,24 +351,24 @@ private func stacked(_ columns: [[String]], focus: String? = nil, widths: [Doubl
     #expect(state.focusedWindowID == "c")
 
     #expect(state.apply(.reorderNext) == true)
-    #expect(state.currentSpace.columns.map(\.windowIDs) == [["a"], ["e"], ["b", "c", "d"]])
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["e"], ["b", "c", "d"]])
     #expect(state.reorderWindow(windowID: "d", to: 0) == true)
-    #expect(state.currentSpace.columns.map(\.windowIDs) == [["b", "c", "d"], ["a"], ["e"]])
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["b", "c", "d"], ["a"], ["e"]])
     #expect(state.focusedWindowID == "c")
 }
 
 @Test func reorderingAMemberMovesItsHeightWeightAndKeepsFocus() {
-    var state = WorkspaceState(spaces: [SpaceState(columns: [
-        ColumnState(windowIDs: ["a", "b", "c"], heightWeights: [3, 1, 2])
+    var state = WorkspaceState(spaces: [SpaceState(tiles: [
+        Tile(windowIDs: ["a", "b", "c"], heightWeights: [3, 1, 2])
     ], focusedWindowID: "b")])
     #expect(state.reorderMember(windowID: "a", to: 9, inSpace: 0) == true)
-    #expect(state.currentSpace.columns[0].windowIDs == ["b", "c", "a"])
-    #expect(state.currentSpace.columns[0].heightWeights == [1, 2, 3])
+    #expect(state.currentSpace.tiles[0].windowIDs == ["b", "c", "a"])
+    #expect(state.currentSpace.tiles[0].heightWeights == [1, 2, 3])
     #expect(state.focusedWindowID == "b")
     #expect(state.reorderMember(windowID: "a", to: 2, inSpace: 0) == false)
 }
 
-@Test func widthBelongsToTheColumn() {
+@Test func widthBelongsToTheTile() {
     var state = stacked([["a", "b"], ["c"]], focus: "b", widths: [0.5, 0.7])
     #expect(state.setWidthFraction(0.8, for: "a") == true)
     #expect(state.currentSpace.widthFraction(for: "b") == 0.8)
@@ -377,57 +377,57 @@ private func stacked(_ columns: [[String]], focus: String? = nil, widths: [Doubl
     #expect(state.currentSpace.widthFraction(for: "c") == 0.7)
 }
 
-@Test func aClosedFocusedMemberHandsFocusToAColumnMate() {
+@Test func aClosedFocusedMemberHandsFocusToATileMate() {
     var state = stacked([["a"], ["b", "c", "d"], ["e"]], focus: "c")
     state.reconcile(windowIDs: ["a", "b", "d", "e"])
     #expect(state.focusedWindowID == "d")
     state.reconcile(windowIDs: ["a", "b", "e"])
     #expect(state.focusedWindowID == "b")
     state.reconcile(windowIDs: ["a", "e"])
-    // A window alone in its column hands focus to the next column's active member.
+    // A window alone in its tile hands focus to the next tile's active member.
     #expect(state.focusedWindowID == "e")
-    #expect(state.currentSpace.columns.map(\.windowIDs) == [["a"], ["e"]])
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["e"]])
 
-    // Removing a column's remembered member moves the memory, not the focus.
+    // Removing a tile's remembered member moves the memory, not the focus.
     var remembered = stacked([["a"], ["b", "c"]], focus: "a")
     remembered.focus(windowID: "c")
     remembered.focus(windowID: "a")
     remembered.reconcile(windowIDs: ["a", "b"])
     #expect(remembered.focusedWindowID == "a")
-    #expect(remembered.currentSpace.columns[1].activeWindowID == "b")
+    #expect(remembered.currentSpace.tiles[1].activeWindowID == "b")
 }
 
-@Test func newAndRestoredWindowsBecomeTheirOwnColumnAfterTheFocusedColumn() {
+@Test func newAndRestoredWindowsBecomeTheirOwnTileAfterTheFocusedTile() {
     var state = stacked([["a", "b"], ["c"]], focus: "a")
     state.reconcile(windowIDs: ["a", "b", "c", "new"])
-    #expect(state.currentSpace.columns.map(\.windowIDs) == [["a", "b"], ["new"], ["c"]])
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a", "b"], ["new"], ["c"]])
     #expect(state.focusedWindowID == "new")
 
     var restored = stacked([["a", "b"], ["c"]], focus: "c")
     #expect(restored.placeAfterFocused(windowID: "a", inSpace: 0) == true)
-    #expect(restored.currentSpace.columns.map(\.windowIDs) == [["b"], ["c"], ["a"]])
+    #expect(restored.currentSpace.tiles.map(\.windowIDs) == [["b"], ["c"], ["a"]])
     #expect(restored.focusedWindowID == "a")
 
     var sameStack = stacked([["a", "b", "c"]], focus: "a")
     #expect(sameStack.placeAfterFocused(windowID: "c", inSpace: 0) == true)
-    #expect(sameStack.currentSpace.columns.map(\.windowIDs) == [["a", "b"], ["c"]])
-    #expect(sameStack.currentSpace.columns[0].activeWindowID == "a")
+    #expect(sameStack.currentSpace.tiles.map(\.windowIDs) == [["a", "b"], ["c"]])
+    #expect(sameStack.currentSpace.tiles[0].activeWindowID == "a")
 }
 
 @Test func stackCompositionIsPerSpace() {
     var state = stacked([["a", "b"]], focus: "a")
     #expect(state.apply(.shareToSpace(index: 1)) == true)
-    #expect(state.spaces[1].columns.map(\.windowIDs) == [["a"]])
+    #expect(state.spaces[1].tiles.map(\.windowIDs) == [["a"]])
     #expect(state.apply(.moveToSpace(index: 2, follow: false)) == true)
-    #expect(state.spaces[0].columns.map(\.windowIDs) == [["b"]])
-    #expect(state.spaces[2].columns.map(\.windowIDs) == [["a"]])
+    #expect(state.spaces[0].tiles.map(\.windowIDs) == [["b"]])
+    #expect(state.spaces[2].tiles.map(\.windowIDs) == [["a"]])
     #expect(state.focusedWindowID == "b")
 }
 
-@Test func columnsRoundTripAndMalformedColumnsAreRepaired() throws {
-    let state = WorkspaceState(spaces: [SpaceState(columns: [
-        ColumnState(id: "left", windowIDs: ["a", "b"], widthFraction: 0.6, activeWindowID: "b", heightWeights: [2, 1]),
-        ColumnState(windowIDs: ["c"])
+@Test func tilesRoundTripAndMalformedTilesAreRepaired() throws {
+    let state = WorkspaceState(spaces: [SpaceState(tiles: [
+        Tile(id: "left", windowIDs: ["a", "b"], widthFraction: 0.6, activeWindowID: "b", heightWeights: [2, 1]),
+        Tile(windowIDs: ["c"])
     ], focusedWindowID: "c")])
     let data = try JSONEncoder().encode(state)
     #expect(try JSONDecoder().decode(WorkspaceState.self, from: data) == state)
@@ -437,10 +437,10 @@ private func stacked(_ columns: [[String]], focus: String? = nil, widths: [Doubl
 
     let repairable = Data(#"{"spaces":[{"columns":[{"id":"x","windowIDs":["a","b"],"activeWindowID":"z","heightWeights":[-1]},{"id":"x","windowIDs":["b","c"],"heightWeights":[1,4]}],"focusedWindowID":"c"}]}"#.utf8)
     let repaired = try JSONDecoder().decode(WorkspaceState.self, from: repairable).currentSpace
-    #expect(repaired.columns.map(\.id) == ["x", "x#2"])
-    #expect(repaired.columns.map(\.windowIDs) == [["a", "b"], ["c"]])
-    #expect(repaired.columns.map(\.heightWeights) == [[1, 1], [4]])
-    #expect(repaired.columns[0].activeWindowID == "a")
+    #expect(repaired.tiles.map(\.id) == ["x", "x#2"])
+    #expect(repaired.tiles.map(\.windowIDs) == [["a", "b"], ["c"]])
+    #expect(repaired.tiles.map(\.heightWeights) == [[1, 1], [4]])
+    #expect(repaired.tiles[0].activeWindowID == "a")
     #expect(repaired.focusedWindowID == "c")
 }
 
@@ -458,8 +458,8 @@ private func frame(_ placements: [WindowPlacement], _ id: String) throws -> CGRe
     #expect(try frame(placements, "a") == CGRect(x: 0, y: 40, width: 500, height: 345))
     #expect(try frame(placements, "b") == CGRect(x: 0, y: 395, width: 500, height: 345))
 
-    let weighted = WorkspaceState(spaces: [SpaceState(columns: [
-        ColumnState(windowIDs: ["a", "b", "c"], widthFraction: 0.5, heightWeights: [2, 1, 1])
+    let weighted = WorkspaceState(spaces: [SpaceState(tiles: [
+        Tile(windowIDs: ["a", "b", "c"], widthFraction: 0.5, heightWeights: [2, 1, 1])
     ])])
     let thirds = WindowLayout.placements(for: weighted, availableFrame: viewport, gap: 20)
     #expect(try frame(thirds, "a").height == 330)
@@ -467,7 +467,7 @@ private func frame(_ placements: [WindowPlacement], _ id: String) throws -> CGRe
     #expect(try frame(thirds, "c").maxY == viewport.maxY)
 }
 
-@Test func aNegativeGapOverlapsColumnsButNotStackMembers() throws {
+@Test func aNegativeGapOverlapsTilesButNotStackMembers() throws {
     let state = stacked([["a"], ["b", "c"]], focus: "b", widths: [0.5, 0.5])
     let placements = WindowLayout.placements(for: state, availableFrame: viewport, gap: -100)
     #expect(try frame(placements, "b").minX == frame(placements, "a").maxX - 100)
@@ -498,7 +498,7 @@ private func frame(_ placements: [WindowPlacement], _ id: String) throws -> CGRe
     #expect(try frame(placements, "c").minX == frame(placements, "b").maxX + 10)
 }
 
-@Test func focusInsideAColumnDoesNotScrollTheRibbon() throws {
+@Test func focusInsideATileDoesNotScrollTheRibbon() throws {
     var state = stacked([["a"], ["b", "c"], ["d"]], focus: "c", widths: [0.8, 0.8, 0.8])
     let lower = WindowLayout.placements(for: state, availableFrame: viewport)
     state.focusMember(by: -1)

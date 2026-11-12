@@ -6,8 +6,8 @@ import Testing
 @testable import StagehandPlatform
 
 /// A relaunched app (an update, a crash restart, a quit and reopen) used to join
-/// the active space after the focused window, losing the slot it had.
-struct RelaunchSlotsTests {
+/// the active space after the focused window, losing the place it had.
+struct RelaunchPlacesTests {
     private func record(_ id: String, app: String, pid: Int32, title: String = "") -> WindowRecord {
         WindowRecord(id: id, appName: app, title: title, bundleIdentifier: "test.\(app)", pid: pid,
                      frame: CGRect(x: 0, y: 0, width: 100, height: 100), isResizable: true)
@@ -18,15 +18,15 @@ struct RelaunchSlotsTests {
     /// Removes the windows as the ribbon does, recording them first.
     private func quit(_ records: [WindowRecord], pid: Int32, windows: inout [WindowRecord],
                       state: inout WorkspaceState, restoration: inout WorkspaceRestoration,
-                      slots: inout RelaunchSlots, heights: [String: CGFloat] = [:], at time: Date) {
+                      places: inout RelaunchPlaces, heights: [String: CGFloat] = [:], at time: Date) {
         for window in records {
             let before = state
             _ = removeDestroyedWindow(windowID: window.id, windows: &windows, state: &state,
                                       restoration: &restoration,
                                       trackedWindowIDs: Set(windows.map(\.id)).subtracting([window.id]))
-            slots.windowsLeft([window], layout: before, preferredHeights: heights, at: time)
+            places.windowsLeft([window], layout: before, preferredHeights: heights, at: time)
         }
-        slots.applicationTerminated(pid: pid, at: time)
+        places.applicationTerminated(pid: pid, at: time)
     }
 
     @Test func relaunchedWindowReturnsBetweenItsNeighbors() {
@@ -39,20 +39,20 @@ struct RelaunchSlotsTests {
                        widthFractions: ["old": 0.5])
         ])
         var restoration = WorkspaceRestoration()
-        var slots = RelaunchSlots()
+        var places = RelaunchPlaces()
         quit([gone], pid: 2, windows: &windows, state: &state, restoration: &restoration,
-             slots: &slots, heights: ["old": 600], at: start)
+             places: &places, heights: ["old": 600], at: start)
         state.focus(windowID: "right")
 
         let relaunched = record("new", app: "updated", pid: 20)
-        let placements = slots.place(windows + [relaunched], state: &state, restoration: &restoration,
-                                     at: start.addingTimeInterval(5))
+        let placements = places.place(windows + [relaunched], state: &state, restoration: &restoration,
+                                      at: start.addingTimeInterval(5))
 
         #expect(placements.map(\.windowID) == ["new"])
         #expect(placements.first?.preferredHeight == 600)
         #expect(state.currentSpace.windowIDs == ["left", "new", "right"])
         #expect(state.currentSpace.widthFraction(for: "new") == 0.5)
-        #expect(slots.rememberedBundleIdentifiers.isEmpty)
+        #expect(places.rememberedBundleIdentifiers.isEmpty)
     }
 
     /// The app was alone in space 2, which closed when it quit; the space reopens
@@ -68,38 +68,38 @@ struct RelaunchSlotsTests {
             SpaceState(windowIDs: ["third"])
         ], activeSpaceIndex: 2)
         var restoration = WorkspaceRestoration()
-        var slots = RelaunchSlots()
+        var places = RelaunchPlaces()
         quit([gone], pid: 2, windows: &windows, state: &state, restoration: &restoration,
-             slots: &slots, at: start)
+             places: &places, at: start)
         #expect(state.spaces[1].windowIDs == ["third"])
         #expect(state.activeSpaceIndex == 1)
 
-        let placements = slots.place(windows + [record("new", app: "updated", pid: 20)], state: &state,
-                                     restoration: &restoration, at: start.addingTimeInterval(5))
+        let placements = places.place(windows + [record("new", app: "updated", pid: 20)], state: &state,
+                                      restoration: &restoration, at: start.addingTimeInterval(5))
 
         #expect(placements.first?.openedSpaceIndices == [1])
         #expect(state.spaces.prefix(3).map(\.windowIDs) == [["first"], ["new"], ["third"]])
         #expect(state.activeSpaceIndex == 2)
     }
 
-    /// Windows of one app return to their own slots, matched by title, even when
+    /// Windows of one app return to their own places, matched by title, even when
     /// they were neighbors and come back in another order.
-    @Test func severalWindowsReturnToTheirOwnSlotsByTitle() {
+    @Test func severalWindowsReturnToTheirOwnPlacesByTitle() {
         let other = record("other", app: "other", pid: 1)
         let mail = record("mail", app: "browser", pid: 2, title: "Mail")
         let docs = record("docs", app: "browser", pid: 2, title: "Docs")
         var windows = [mail, other, docs]
         var state = WorkspaceState(spaces: [SpaceState(windowIDs: ["mail", "docs", "other"])])
         var restoration = WorkspaceRestoration()
-        var slots = RelaunchSlots()
+        var places = RelaunchPlaces()
         quit([mail, docs], pid: 2, windows: &windows, state: &state, restoration: &restoration,
-             slots: &slots, at: start)
+             places: &places, at: start)
         #expect(state.currentSpace.windowIDs == ["other"])
 
         let restored = [record("docs2", app: "browser", pid: 20, title: "Docs"),
                         record("mail2", app: "browser", pid: 20, title: "Mail")]
-        _ = slots.place(windows + restored, state: &state, restoration: &restoration,
-                        at: start.addingTimeInterval(5))
+        _ = places.place(windows + restored, state: &state, restoration: &restoration,
+                         at: start.addingTimeInterval(5))
 
         #expect(state.currentSpace.windowIDs == ["mail2", "docs2", "other"])
     }
@@ -114,42 +114,42 @@ struct RelaunchSlotsTests {
         var windows = [early, other, late]
         var state = WorkspaceState(spaces: [SpaceState(windowIDs: ["early", "other", "late"])])
         var restoration = WorkspaceRestoration()
-        var slots = RelaunchSlots()
+        var places = RelaunchPlaces()
         let before = state
         _ = removeDestroyedWindow(windowID: "early", windows: &windows, state: &state,
                                   restoration: &restoration, trackedWindowIDs: ["other", "late"])
-        slots.windowsLeft([early], layout: before, preferredHeights: [:], at: start)
-        let quitTime = start.addingTimeInterval(RelaunchSlots.quitInterval + 1)
+        places.windowsLeft([early], layout: before, preferredHeights: [:], at: start)
+        let quitTime = start.addingTimeInterval(RelaunchPlaces.quitInterval + 1)
         quit([late], pid: 2, windows: &windows, state: &state, restoration: &restoration,
-             slots: &slots, at: quitTime)
+             places: &places, at: quitTime)
 
         let first = record("first", app: "browser", pid: 20)
-        _ = slots.place(windows + [first], state: &state, restoration: &restoration,
-                        at: quitTime.addingTimeInterval(1))
+        _ = places.place(windows + [first], state: &state, restoration: &restoration,
+                         at: quitTime.addingTimeInterval(1))
         #expect(state.currentSpace.windowIDs == ["other", "first"])
-        #expect(slots.rememberedBundleIdentifiers.isEmpty)
+        #expect(places.rememberedBundleIdentifiers.isEmpty)
     }
 
-    @Test func leftoverSlotsExpireAfterTheRelaunchBurst() {
+    @Test func leftoverPlacesExpireAfterTheRelaunchBurst() {
         let other = record("other", app: "other", pid: 1)
         let one = record("one", app: "browser", pid: 2)
         let two = record("two", app: "browser", pid: 2)
         var windows = [one, two, other]
         var state = WorkspaceState(spaces: [SpaceState(windowIDs: ["one", "two", "other"])])
         var restoration = WorkspaceRestoration()
-        var slots = RelaunchSlots()
+        var places = RelaunchPlaces()
         quit([one, two], pid: 2, windows: &windows, state: &state, restoration: &restoration,
-             slots: &slots, at: start)
+             places: &places, at: start)
 
         let back = record("back", app: "browser", pid: 20)
-        _ = slots.place(windows + [back], state: &state, restoration: &restoration,
-                        at: start.addingTimeInterval(1))
-        #expect(slots.rememberedBundleIdentifiers == ["test.browser"])
+        _ = places.place(windows + [back], state: &state, restoration: &restoration,
+                         at: start.addingTimeInterval(1))
+        #expect(places.rememberedBundleIdentifiers == ["test.browser"])
         let later = record("later", app: "browser", pid: 20)
-        let placements = slots.place(windows + [back, later], state: &state, restoration: &restoration,
-                                     at: start.addingTimeInterval(2 + RelaunchSlots.claimInterval))
+        let placements = places.place(windows + [back, later], state: &state, restoration: &restoration,
+                                      at: start.addingTimeInterval(2 + RelaunchPlaces.claimInterval))
         #expect(placements.isEmpty)
-        #expect(slots.rememberedBundleIdentifiers.isEmpty)
+        #expect(places.rememberedBundleIdentifiers.isEmpty)
     }
 
     @Test func openingASpaceKeepsRememberedMembershipsAligned() {

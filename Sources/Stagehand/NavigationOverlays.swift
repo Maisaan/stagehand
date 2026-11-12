@@ -222,12 +222,12 @@ final class NavigationOverlays {
     private func publishNavigation(state: WorkspaceState, windows: [WindowRecord]) {
         let recordsByID = Dictionary(windows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let records = state.currentSpace.windowIDs.compactMap { recordsByID[$0] }
-        let columns = NavigationHUDModel.columns(of: state.currentSpace, records: recordsByID)
+        let tiles = NavigationHUDModel.tiles(of: state.currentSpace, records: recordsByID)
         let space = state.activeSpaceIndex + 1
         let availableSpaceIndices = state.displayedSpaceIndices
         if hudModel.space != space { hudModel.space = space }
         if hudModel.windows != records { hudModel.windows = records }
-        if hudModel.columns != columns { hudModel.columns = columns }
+        if hudModel.tiles != tiles { hudModel.tiles = tiles }
         hudModel.setFocusedID(state.focusedWindowID, animate: hud?.isVisible == true)
         if hudModel.spaces != state.spaces { hudModel.spaces = state.spaces }
         if hudModel.availableSpaceIndices != availableSpaceIndices {
@@ -758,8 +758,8 @@ struct AppIcon: View {
     }
 }
 
-/// One ribbon column in the app bar: a lone window, or a stack's windows top to bottom.
-struct AppBarColumn: Equatable, Identifiable {
+/// One ribbon tile in the app bar: a lone window, or a stack's windows top to bottom.
+struct AppBarTile: Equatable, Identifiable {
     let id: String
     let windows: [WindowRecord]
 }
@@ -769,8 +769,8 @@ final class NavigationHUDModel: ObservableObject {
 
     @Published var space = 1
     @Published var windows: [WindowRecord] = []
-    /// `windows` grouped by ribbon column, so a stack shows as one group.
-    @Published var columns: [AppBarColumn] = []
+    /// `windows` grouped by ribbon tile, so a stack shows as one group.
+    @Published var tiles: [AppBarTile] = []
     @Published var focusedID: String?
     @Published var warning: String?
     /// The message is a note, such as a refused stack, rather than a warning.
@@ -811,12 +811,12 @@ final class NavigationHUDModel: ObservableObject {
         return workspace
     }
 
-    /// The app bar's groups: each column's windows top to bottom, leaving out
-    /// windows without a record and columns left empty by that.
-    static func columns(of space: SpaceState, records: [String: WindowRecord]) -> [AppBarColumn] {
-        space.columns.compactMap { column in
-            let windows = column.windowIDs.compactMap { records[$0] }
-            return windows.isEmpty ? nil : AppBarColumn(id: column.id, windows: windows)
+    /// The app bar's groups: each tile's windows top to bottom, leaving out
+    /// windows without a record and tiles left empty by that.
+    static func tiles(of space: SpaceState, records: [String: WindowRecord]) -> [AppBarTile] {
+        space.tiles.compactMap { tile in
+            let windows = tile.windowIDs.compactMap { records[$0] }
+            return windows.isEmpty ? nil : AppBarTile(id: tile.id, windows: windows)
         }
     }
 
@@ -936,20 +936,20 @@ private struct NavigationHUD: View {
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 4) {
-                            ForEach(model.columns) { column in
-                                if column.windows.count == 1, let window = column.windows.first {
+                            ForEach(model.tiles) { tile in
+                                if tile.windows.count == 1, let window = tile.windows.first {
                                     windowButton(window, appBarColor: appBarColor)
                                 } else {
                                     // A stack: its windows side by side on one shared
                                     // backing, each still its own button.
                                     HStack(spacing: 0) {
-                                        ForEach(column.windows) { window in
+                                        ForEach(tile.windows) { window in
                                             windowButton(window, appBarColor: appBarColor)
                                         }
                                     }
                                     .background(.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 11))
                                     .accessibilityElement(children: .contain)
-                                    .accessibilityLabel("Stack of \(column.windows.count) windows")
+                                    .accessibilityLabel("Stack of \(tile.windows.count) windows")
                                 }
                             }
                         }

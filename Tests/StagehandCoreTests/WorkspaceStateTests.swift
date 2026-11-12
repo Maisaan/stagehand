@@ -87,7 +87,7 @@ import Testing
     state.apply(.shareToSpace(index: 1))
     state.reconcile(windowIDs: ["b", "c", "d"])
     #expect(state.spaces.allSatisfy { !$0.windowIDs.contains("a") })
-    #expect(state.spaces.allSatisfy { $0.columns.allSatisfy { !$0.windowIDs.contains("a") } })
+    #expect(state.spaces.allSatisfy { $0.tiles.allSatisfy { !$0.windowIDs.contains("a") } })
     #expect(state.focusedWindowID == "c")
 }
 
@@ -255,7 +255,7 @@ import Testing
     #expect(restored.spaces.count == 9)
     #expect(restored.activeSpaceIndex == 8)
     #expect(restored.spaces[0].windowIDs == ["a", "b"])
-    #expect(restored.spaces[0].columns.count == 2)
+    #expect(restored.spaces[0].tiles.count == 2)
     #expect(restored.spaces[0].focusedWindowID == "a")
     #expect(restored.spaces[0].widthFraction(for: "a") == 1)
     #expect(restored.spaces[0].widthFraction(for: "b") == 0.25)

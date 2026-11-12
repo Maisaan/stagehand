@@ -635,7 +635,7 @@ public final class WindowSystem {
             interruptedWindowIDs.remove(record.windowID)
         }
         // Also without tracked windows: an app that closed them while quitting
-        // still ended, and its ribbon slots are kept for its relaunch.
+        // still ended, and its places in the ribbon are kept for its relaunch.
         onApplicationTerminated?(pid)
     }
 

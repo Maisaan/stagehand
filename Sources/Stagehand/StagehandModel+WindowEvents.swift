@@ -113,8 +113,8 @@ extension StagehandModel {
                 )
             }, details: { ["pid": String(pid), "windowCount": String($0.count)] })
         }
-        if let remembered = relaunchSlots.applicationTerminated(pid: pid, at: now()) {
-            diagnostics.record("relaunch_slots_remembered", details: [
+        if let remembered = relaunchPlaces.applicationTerminated(pid: pid, at: now()) {
+            diagnostics.record("relaunch_places_remembered", details: [
                 "pid": String(pid),
                 "bundleIdentifier": remembered.bundleIdentifier,
                 "windowCount": String(remembered.count)
@@ -161,8 +161,8 @@ extension StagehandModel {
         let focusedWindowID = state.focusedWindowID
         let removedIDs = remove()
         guard !removedIDs.isEmpty else { return false }
-        relaunchSlots.windowsLeft(previousWindows.filter { removedIDs.contains($0.id) }, layout: previousState,
-                                  preferredHeights: preferredHeights, at: now())
+        relaunchPlaces.windowsLeft(previousWindows.filter { removedIDs.contains($0.id) }, layout: previousState,
+                                   preferredHeights: preferredHeights, at: now())
         if forgetFocus { focusHistory.remove(windowIDs: removedIDs) }
         focusMostRecentWindowAfterLoss(
             previousFocusedWindowID: focusedWindowID,
@@ -205,7 +205,7 @@ extension StagehandModel {
             initialWidthFractions: initialWidthFractions(for: [window])
         ) else { return }
         if !placeRestoredWindows() {
-            // Minimized while paused: it returns to its saved slot.
+            // Minimized while paused: it returns to its saved place.
             if state.currentSpace.windowIDs.contains(windowID) {
                 state.focus(windowID: windowID)
             } else if let spaceIndex = state.spaces.firstIndex(where: { $0.windowIDs.contains(windowID) }) {
@@ -316,15 +316,15 @@ extension StagehandModel {
         let motionStart = navigationFrames()
         let oldState = state
         let currentIDs = Set(current.map(\.id))
-        relaunchSlots.windowsLeft(windows.filter { !currentIDs.contains($0.id) }, layout: oldState,
-                                  preferredHeights: preferredHeights, at: now())
+        relaunchPlaces.windowsLeft(windows.filter { !currentIDs.contains($0.id) }, layout: oldState,
+                                   preferredHeights: preferredHeights, at: now())
         windows = current
         // The scan read every frame off the main thread; the next slide starts from them.
         for window in current { knownFrames[window.id] = window.frame }
         // The active space before this scan, renumbered for spaces a relaunch reopened.
         var unchangedActiveSpaceIndex = oldState.activeSpaceIndex
-        for placement in relaunchSlots.place(current, state: &state, restoration: &workspaceRestoration,
-                                             at: now()) {
+        for placement in relaunchPlaces.place(current, state: &state, restoration: &workspaceRestoration,
+                                              at: now()) {
             for opened in placement.openedSpaceIndices where opened <= unchangedActiveSpaceIndex {
                 unchangedActiveSpaceIndex += 1
             }
@@ -399,8 +399,8 @@ extension StagehandModel {
             let moved = abs(focused.frame.minX - previous.minX) > 3 ||
                 abs(focused.frame.minY - previous.minY) > 3
             if (resized || moved) && (interaction != nil || Date().timeIntervalSince(lastTransition) > 0.4) {
-                let stacked = state.currentSpace.columnIndex(of: focused.id)
-                    .map { state.currentSpace.columns[$0].isStack } ?? false
+                let stacked = state.currentSpace.tileIndex(of: focused.id)
+                    .map { state.currentSpace.tiles[$0].isMultiPane } ?? false
                 if resized, stacked {
                     applyStackedResize(windowID: focused.id, previous: previous, observed: focused.frame,
                                        available: frame)

@@ -200,9 +200,9 @@ struct AppInputLeakStats: Equatable, Sendable {
     var rejectedFrames = 0
 
     /// Event kinds, for splitting what passed after a lift and what the tail withheld.
-    /// Scroll slots are `CGScrollPhase` values; gesture slots are raw CG event types.
+    /// Scroll entries are `CGScrollPhase` values; gesture entries are raw CG event types.
     static let kindLabels = ["s0", "s1", "s2", "s4", "s8", "s128", "s?", "g19", "g20", "g29", "g30", "g31", "g?"]
-    static func kindSlot(_ kind: SuppressibleInputEvent, rawType: UInt32) -> Int {
+    static func kindIndex(_ kind: SuppressibleInputEvent, rawType: UInt32) -> Int {
         if case .scroll(let phase, _) = kind {
             return [0, 1, 2, 4, 8, 128].firstIndex(of: phase) ?? 6
         }
@@ -258,7 +258,7 @@ struct AppInputLeakStats: Equatable, Sendable {
         }
     }
 
-    mutating func recordTailEnd(_ slot: Int) { tailEnds[slot] &+= 1 }
+    mutating func recordTailEnd(_ index: Int) { tailEnds[index] &+= 1 }
 
     private mutating func recordTiming(eventTime: TimeInterval?, lift: TimeInterval, now: TimeInterval) {
         guard let eventTime else { return }
@@ -281,7 +281,7 @@ struct AppInputLeakStats: Equatable, Sendable {
                 return
             }
             add(&afterLift)
-            afterLiftKinds[Self.kindSlot(kind, rawType: rawType)] &+= 1
+            afterLiftKinds[Self.kindIndex(kind, rawType: rawType)] &+= 1
             longestAfterLiftMilliseconds = max(longestAfterLiftMilliseconds, Int(((now - lift) * 1000).rounded()))
             if ownership.liftTailPending, !ownership.inLiftTail(now: now), !capCounted {
                 capCounted = true
@@ -299,7 +299,7 @@ struct AppInputLeakStats: Equatable, Sendable {
         case .scroll: withheldInTail.scroll &+= 1
         default: withheldInTail.gesture &+= 1
         }
-        tailKinds[Self.kindSlot(kind, rawType: rawType)] &+= 1
+        tailKinds[Self.kindIndex(kind, rawType: rawType)] &+= 1
         longestWithheldInTailMilliseconds = max(longestWithheldInTailMilliseconds, Int(((now - lift) * 1000).rounded()))
     }
 
@@ -316,7 +316,7 @@ struct AppInputLeakStats: Equatable, Sendable {
             + "madeBeforeLift=\(passedMadeBeforeLift) lagMs=\(longestDeliveryLagMilliseconds)"
     }
 
-    /// Nonzero slots as `label:count`, comma-separated; `-` when all are zero.
+    /// Nonzero counts as `label:count`, comma-separated; `-` when all are zero.
     private static func labeled(_ counts: [Int], _ labels: [String]) -> String {
         let parts = zip(labels, counts).filter { $0.1 != 0 }.map { "\($0.0):\($0.1)" }
         return parts.isEmpty ? "-" : parts.joined(separator: ",")

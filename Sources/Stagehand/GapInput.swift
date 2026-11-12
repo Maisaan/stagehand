@@ -141,7 +141,7 @@ final class GapTextField: InsetTextField, NSTextFieldDelegate {
         delegate = self
         font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         alignment = .right
-        setAccessibilityLabel("Gap between windows in points")
+        setAccessibilityLabel("Gap between tiles in points")
         displayValue(committedValue)
     }
 

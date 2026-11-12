@@ -311,7 +311,7 @@ struct WorkspaceRestorationTests {
         #expect(state.spaces[2].windowIDs.isEmpty)
     }
 
-    @Test func pendingHigherSpaceFollowsCompactionAndRestoresInItsNewSlot() {
+    @Test func pendingHigherSpaceFollowsCompactionAndRestoresInItsNewSpace() {
         var state = WorkspaceState(spaces: [
             SpaceState(windowIDs: ["first"]),
             SpaceState(windowIDs: ["closing"]),

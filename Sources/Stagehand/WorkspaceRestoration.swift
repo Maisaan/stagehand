@@ -111,7 +111,7 @@ struct WorkspaceRestoration {
     }
 
     /// Opens an empty space in the layout and in the remembered memberships, so a
-    /// window that is away keeps its numbered slot. Not during a transition: a
+    /// window that is away keeps its numbered space. Not during a transition: a
     /// rollback would return to the layout from before the space opened.
     @discardableResult
     mutating func openSpace(state: inout WorkspaceState, at index: Int) -> Bool {

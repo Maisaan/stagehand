@@ -2,27 +2,27 @@ import AppKit
 import StagehandCore
 import StagehandPlatform
 
-/// A change to the active space's columns, as the stacking shortcuts make them.
-enum ColumnChange: Equatable {
-    /// The focused window, alone in its column, joins the neighboring column on
-    /// that side at the bottom; in a stack, it leaves as its own column on that
+/// A change to the active space's tiles, as the stacking shortcuts make them.
+enum TileChange: Equatable {
+    /// The focused window, alone in its tile, joins the neighboring tile on
+    /// that side at the bottom; in a stack, it leaves as its own tile on that
     /// side. Focus stays on it.
-    case moveFocusedWindowAcrossColumns(direction: Int)
-    /// Focus moves to the window above (negative) or below in the same column.
+    case moveFocusedWindowAcrossTiles(direction: Int)
+    /// Focus moves to the window above (negative) or below in the same tile.
     case focusMember(direction: Int)
 
     var diagnosticName: String {
         switch self {
-        case .moveFocusedWindowAcrossColumns(let direction): direction < 0 ? "stackLeft" : "stackRight"
+        case .moveFocusedWindowAcrossTiles(let direction): direction < 0 ? "stackLeft" : "stackRight"
         case .focusMember(let direction): direction < 0 ? "focusMemberAbove" : "focusMemberBelow"
         }
     }
 
-    /// The column change a stacking shortcut or arrow shortcut swipe asks for.
+    /// The tile change a stacking shortcut or arrow shortcut swipe asks for.
     init?(_ action: NavigationAction) {
         switch action {
-        case .stackPrevious: self = .moveFocusedWindowAcrossColumns(direction: -1)
-        case .stackNext: self = .moveFocusedWindowAcrossColumns(direction: 1)
+        case .stackPrevious: self = .moveFocusedWindowAcrossTiles(direction: -1)
+        case .stackNext: self = .moveFocusedWindowAcrossTiles(direction: 1)
         case .focusMemberAbove: self = .focusMember(direction: -1)
         case .focusMemberBelow: self = .focusMember(direction: 1)
         default: return nil
@@ -30,44 +30,44 @@ enum ColumnChange: Equatable {
     }
 }
 
-/// Why a column change was not made. A refusal leaves the layout as it was and
+/// Why a tile change was not made. A refusal leaves the layout as it was and
 /// Stagehand running; it is never a pause.
-enum ColumnRefusal: Equatable {
+enum TileRefusal: Equatable {
     /// The stack's members cannot all fit in the available height at the least
     /// heights their apps accept.
     case stackDoesNotFit(windowIDs: [String], requiredHeight: CGFloat, availableHeight: CGFloat)
 }
 
-enum ColumnChangeOutcome: Equatable {
+enum TileChangeOutcome: Equatable {
     case applied
     case unchanged
-    case refused(ColumnRefusal)
+    case refused(TileRefusal)
 }
 
 extension StagehandModel {
-    /// Queues a column change behind earlier changes. Whether it fits is decided
-    /// when it starts; a refusal goes to `onColumnChangeRefused`.
-    func changeColumns(_ change: ColumnChange) {
+    /// Queues a tile change behind earlier changes. Whether it fits is decided
+    /// when it starts; a refusal goes to `onTileChangeRefused`.
+    func changeTiles(_ change: TileChange) {
         guard isRunning, !isSuspended else { return }
         if gestureAxis != nil {
             input.cancelGestureSequence()
             resetGestureTracking()
         }
-        enqueue(.columns(change))
+        enqueue(.tiles(change))
     }
 
-    /// Makes a column change if every stack it builds fits at its members' known
+    /// Makes a tile change if every stack it builds fits at its members' known
     /// minimum heights, and otherwise returns the refusal with the workspace
     /// unchanged. The change queue calls this as the change starts.
-    func applyColumnChange(_ change: ColumnChange) -> ColumnChangeOutcome {
+    func applyTileChange(_ change: TileChange) -> TileChangeOutcome {
         var candidate = state
         let changed = switch change {
-        case .moveFocusedWindowAcrossColumns(let direction): candidate.moveFocusedWindowAcrossColumns(by: direction)
+        case .moveFocusedWindowAcrossTiles(let direction): candidate.moveFocusedWindowAcrossTiles(by: direction)
         case .focusMember(let direction): candidate.focusMember(by: direction)
         }
         guard changed else { return .unchanged }
         if let refusal = stackRefusal(from: state, to: candidate) {
-            reportColumnRefusal(refusal, change: change, decided: "before_change")
+            reportTileRefusal(refusal, change: change, decided: "before_change")
             return .refused(refusal)
         }
         state = candidate
@@ -84,44 +84,44 @@ extension StagehandModel {
 
     /// The first stack in the active space that gained a member between the two
     /// states and cannot fit at its members' known minimum heights.
-    func stackRefusal(from previous: WorkspaceState, to next: WorkspaceState) -> ColumnRefusal? {
+    func stackRefusal(from previous: WorkspaceState, to next: WorkspaceState) -> TileRefusal? {
         guard let availableFrame, previous.spaces.indices.contains(next.activeSpaceIndex) else { return nil }
         let before = previous.spaces[next.activeSpaceIndex]
-        for column in next.currentSpace.columns where column.isStack {
-            // A column whose members all came from one column gained no one.
-            let sources = Set(column.windowIDs.map { before.columnIndex(of: $0) })
+        for tile in next.currentSpace.tiles where tile.isMultiPane {
+            // A tile whose members all came from one tile gained no one.
+            let sources = Set(tile.windowIDs.map { before.tileIndex(of: $0) })
             guard sources.count > 1 || sources.contains(nil) else { continue }
-            let required = WindowLayout.minimumStackHeight(windowIDs: column.windowIDs, gap: gap,
+            let required = WindowLayout.minimumStackHeight(windowIDs: tile.windowIDs, gap: gap,
                                                            minimumHeights: learnedMinimumHeights)
             if required > availableFrame.height + 1 {
-                return .stackDoesNotFit(windowIDs: column.windowIDs, requiredHeight: required,
+                return .stackDoesNotFit(windowIDs: tile.windowIDs, requiredHeight: required,
                                         availableHeight: availableFrame.height)
             }
         }
         return nil
     }
 
-    /// After a column change's layout completed: if that layout learned minimum
-    /// heights that leave the new stack too tall, return to the columns from before
+    /// After a tile change's layout completed: if that layout learned minimum
+    /// heights that leave the new stack too tall, return to the tiles from before
     /// the change and lay them out again. Windows that left meanwhile stay gone.
     /// Returns whether the change was undone.
-    func undoColumnChangeThatDidNotFit(_ change: ColumnChange, stateBefore: WorkspaceState) -> Bool {
+    func undoTileChangeThatDidNotFit(_ change: TileChange, stateBefore: WorkspaceState) -> Bool {
         guard let refusal = stackRefusal(from: stateBefore, to: state) else { return false }
         var restored = stateBefore
         restored.isPaused = state.isPaused
         workspaceRestoration.reconcile(state: &restored, windowIDs: windows.map(\.id),
                                        trackedWindowIDs: windowSystem.trackedWindowIDs)
         state = restored
-        reportColumnRefusal(refusal, change: change, decided: "after_layout")
+        reportTileRefusal(refusal, change: change, decided: "after_layout")
         enqueue(.refresh)
         return true
     }
 
-    func reportColumnRefusal(_ refusal: ColumnRefusal, change: ColumnChange, decided: String) {
+    func reportTileRefusal(_ refusal: TileRefusal, change: TileChange, decided: String) {
         switch refusal {
         case .stackDoesNotFit(let windowIDs, let required, let available):
-            diagnostics.record("column_change_refused", details: [
-                "operation": "columns.\(change.diagnosticName)",
+            diagnostics.record("tile_change_refused", details: [
+                "operation": "tiles.\(change.diagnosticName)",
                 "reason": "stack_does_not_fit",
                 "decided": decided,
                 "windowIDs": windowIDs.joined(separator: ","),
@@ -129,21 +129,21 @@ extension StagehandModel {
                 "availableHeight": String(Double(available))
             ])
         }
-        onColumnChangeRefused?(refusal)
+        onTileChangeRefused?(refusal)
     }
 
     /// The short message for a refusal. It names no app or window: it shows on
     /// screen while the user is looking at those windows.
-    static func message(for refusal: ColumnRefusal) -> String {
+    static func message(for refusal: TileRefusal) -> String {
         switch refusal {
         case .stackDoesNotFit:
             "Not stacked: these windows can't get short enough to fit one above the other."
         }
     }
 
-    /// The default `onColumnChangeRefused`: a brief note in the app bar, which never
+    /// The default `onTileChangeRefused`: a brief note in the app bar, which never
     /// takes focus. Stagehand keeps running and the layout stays as it was.
-    func showColumnRefusal(_ refusal: ColumnRefusal) {
+    func showTileRefusal(_ refusal: TileRefusal) {
         overlays.showNotice(Self.message(for: refusal))
     }
 
@@ -170,19 +170,19 @@ extension StagehandModel {
     // MARK: - Pointer drops and resizes
 
     /// Applies a title-bar drop of `windowID` at `frame` against the ribbon as it
-    /// was laid out before the drag. A window alone in its column moves its column
-    /// to where it was dropped. A stacked window dropped within its column's span
-    /// moves up or down among its column-mates; dropped outside it, it becomes its
-    /// own column there. Never joins a stack.
+    /// was laid out before the drag. A window alone in its tile moves its tile
+    /// to where it was dropped. A stacked window dropped within its tile's span
+    /// moves up or down among its tile-mates; dropped outside it, it becomes its
+    /// own tile there. Never joins a stack.
     func applyWindowDrop(windowID: String, frame: CGRect, placements: [WindowPlacement]) {
         let space = state.currentSpace
-        guard let column = space.columnIndex(of: windowID), space.columns[column].isStack else {
+        guard let tile = space.tileIndex(of: windowID), space.tiles[tile].isMultiPane else {
             state.reorderWindow(windowID: windowID,
-                                to: dropColumnIndex(windowID: windowID, droppedMidX: frame.midX,
-                                                    placements: placements, space: space))
+                                to: dropTileIndex(windowID: windowID, droppedMidX: frame.midX,
+                                                  placements: placements, space: space))
             return
         }
-        let members = Set(space.columns[column].windowIDs)
+        let members = Set(space.tiles[tile].windowIDs)
         let own = placements.filter { members.contains($0.windowID) }
         guard let minX = own.map(\.frame.minX).min(), let maxX = own.map(\.frame.maxX).max() else { return }
         if (minX...maxX).contains(frame.midX) {
@@ -190,13 +190,13 @@ extension StagehandModel {
             state.reorderMember(windowID: windowID, to: position, inSpace: state.activeSpaceIndex)
         } else {
             state.unstack(windowID: windowID,
-                          toColumnAt: dropColumnIndex(windowID: windowID, droppedMidX: frame.midX,
-                                                      placements: placements, space: space),
+                          toTileAt: dropTileIndex(windowID: windowID, droppedMidX: frame.midX,
+                                                  placements: placements, space: space),
                           inSpace: state.activeSpaceIndex)
         }
     }
 
-    /// Applies a user resize of a stacked window. A width change sets the column's
+    /// Applies a user resize of a stacked window. A width change sets the tile's
     /// width. A height change moves the edge the user dragged: the neighbor on that
     /// edge gives or takes the difference, and the other members keep their heights.
     /// The window's own preferred height, which applies when it is alone, is untouched.
@@ -206,8 +206,8 @@ extension StagehandModel {
         }
         forgetMinimumHeight(windowID: windowID, ifAbove: observed.height)
         guard abs(observed.height - previous.height) > 3,
-              let column = state.currentSpace.columnIndex(of: windowID),
-              let resize = stackResize(column: state.currentSpace.columns[column], windowID: windowID,
+              let tile = state.currentSpace.tileIndex(of: windowID),
+              let resize = stackResize(tile: state.currentSpace.tiles[tile], windowID: windowID,
                                        previous: previous, observed: observed,
                                        height: { self.knownFrames[$0]?.height },
                                        minimumHeight: { self.learnedMinimumHeights[$0] }) else { return }
@@ -216,29 +216,29 @@ extension StagehandModel {
     }
 }
 
-/// The column index a dropped window lands at: the number of other columns whose
-/// slot center is left of the window's center. `placements` are the ribbon before
-/// the drag; they are grouped into slots by the columns of `space`. A placement
-/// of a window `space` no longer holds counts on its own. While every column holds
+/// The tile index a dropped window lands at: the number of other tiles whose
+/// center is left of the window's center. `placements` are the ribbon before
+/// the drag; they are grouped by the tiles of `space`. A placement
+/// of a window `space` no longer holds counts on its own. While every tile holds
 /// one window, this counts windows exactly as the drop always did.
-func dropColumnIndex(windowID: String, droppedMidX: CGFloat, placements: [WindowPlacement],
-                     space: SpaceState) -> Int {
-    var slots: [Int: (minX: CGFloat, maxX: CGFloat, midX: CGFloat, count: Int)] = [:]
+func dropTileIndex(windowID: String, droppedMidX: CGFloat, placements: [WindowPlacement],
+                   space: SpaceState) -> Int {
+    var spans: [Int: (minX: CGFloat, maxX: CGFloat, midX: CGFloat, count: Int)] = [:]
     var loose = 0
     for placement in placements where placement.windowID != windowID {
-        guard let column = space.columnIndex(of: placement.windowID) else {
+        guard let tile = space.tileIndex(of: placement.windowID) else {
             if placement.frame.midX < droppedMidX { loose += 1 }
             continue
         }
-        if let slot = slots[column] {
-            slots[column] = (min(slot.minX, placement.frame.minX), max(slot.maxX, placement.frame.maxX),
-                             slot.midX, slot.count + 1)
+        if let span = spans[tile] {
+            spans[tile] = (min(span.minX, placement.frame.minX), max(span.maxX, placement.frame.maxX),
+                           span.midX, span.count + 1)
         } else {
-            slots[column] = (placement.frame.minX, placement.frame.maxX, placement.frame.midX, 1)
+            spans[tile] = (placement.frame.minX, placement.frame.maxX, placement.frame.midX, 1)
         }
     }
-    // A lone window's slot center is its own midX, taken as is so no rounding differs.
-    return loose + slots.values.count { ($0.count == 1 ? $0.midX : ($0.minX + $0.maxX) / 2) < droppedMidX }
+    // A lone window's tile center is its own midX, taken as is so no rounding differs.
+    return loose + spans.values.count { ($0.count == 1 ? $0.midX : ($0.minX + $0.maxX) / 2) < droppedMidX }
 }
 
 struct StackResize: Equatable {
@@ -253,23 +253,23 @@ struct StackResize: Equatable {
 /// neighbor on the other side does. The pair keeps its combined share, so the
 /// other members keep their heights, and the neighbor keeps at least its known
 /// minimum height.
-func stackResize(column: ColumnState, windowID: String, previous: CGRect, observed: CGRect,
+func stackResize(tile: Tile, windowID: String, previous: CGRect, observed: CGRect,
                  height: (String) -> CGFloat?, minimumHeight: (String) -> CGFloat?) -> StackResize? {
-    guard column.isStack, let index = column.windowIDs.firstIndex(of: windowID),
+    guard tile.isMultiPane, let index = tile.windowIDs.firstIndex(of: windowID),
           previous.height.isFinite, previous.height > 0,
           observed.height.isFinite, observed.height > 0 else { return nil }
     let topMoved = abs(observed.minY - previous.minY) > 3
     let bottomMoved = abs(observed.maxY - previous.maxY) > 3
     let above = index > 0 ? index - 1 : nil
-    let below = index + 1 < column.windowIDs.count ? index + 1 : nil
+    let below = index + 1 < tile.windowIDs.count ? index + 1 : nil
     guard let neighbor = topMoved && !bottomMoved ? above ?? below : below ?? above else { return nil }
-    let neighborID = column.windowIDs[neighbor]
+    let neighborID = tile.windowIDs[neighbor]
     guard let neighborHeight = height(neighborID), neighborHeight.isFinite, neighborHeight > 0 else { return nil }
     let total = previous.height + neighborHeight
     let neighborFloor = max(1, minimumHeight(neighborID).flatMap { $0.isFinite ? $0 : nil } ?? 0)
     let memberHeight = min(observed.height, total - neighborFloor)
     guard memberHeight > 0 else { return nil }
-    let pair = column.heightWeights[index] + column.heightWeights[neighbor]
+    let pair = tile.heightWeights[index] + tile.heightWeights[neighbor]
     let share = Double(memberHeight / total)
     return StackResize(neighborID: neighborID, weight: pair * share, neighborWeight: pair * (1 - share))
 }
