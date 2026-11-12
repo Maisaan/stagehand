@@ -87,7 +87,7 @@ import Testing
     state.apply(.shareToSpace(index: 1))
     state.reconcile(windowIDs: ["b", "c", "d"])
     #expect(state.spaces.allSatisfy { !$0.windowIDs.contains("a") })
-    #expect(state.spaces.allSatisfy { $0.widthFractions["a"] == nil })
+    #expect(state.spaces.allSatisfy { $0.columns.allSatisfy { !$0.windowIDs.contains("a") } })
     #expect(state.focusedWindowID == "c")
 }
 
@@ -230,7 +230,7 @@ import Testing
 }
 
 @Test func persistedObsoleteLayoutFieldsAreIgnored() throws {
-    let legacy = Data(#"{"maximizeWindows":true,"layoutMode":"monocle","maximumWidthFraction":1,"spaces":[{"windowIDs":["a","b"],"widthFractions":{"a":0.95,"b":0.5}}]}"#.utf8)
+    let legacy = Data(#"{"maximizeWindows":true,"layoutMode":"monocle","maximumWidthFraction":1,"spaces":[{"columns":[{"windowIDs":["a"],"widthFraction":0.95},{"windowIDs":["b"],"widthFraction":0.5}]}]}"#.utf8)
     let state = try JSONDecoder().decode(WorkspaceState.self, from: legacy)
     #expect(state.currentSpace.widthFraction(for: "a") == 0.95)
     #expect(state.currentSpace.widthFraction(for: "b") == 0.5)
@@ -250,13 +250,15 @@ import Testing
     let data = try JSONEncoder().encode(original)
     #expect(try JSONDecoder().decode(WorkspaceState.self, from: data) == original)
 
-    let invalid = Data(#"{"activeSpaceIndex":100,"spaces":[{"windowIDs":["a","a","","b"],"focusedWindowID":"missing","widthFractions":{"a":4,"b":-1,"missing":0.5}}]}"#.utf8)
+    let invalid = Data(#"{"activeSpaceIndex":100,"spaces":[{"columns":[{"windowIDs":["a"],"widthFraction":4},{"windowIDs":["a",""]},{"windowIDs":[]},{"windowIDs":["b"],"widthFraction":-1}],"focusedWindowID":"missing"}]}"#.utf8)
     let restored = try JSONDecoder().decode(WorkspaceState.self, from: invalid)
     #expect(restored.spaces.count == 9)
     #expect(restored.activeSpaceIndex == 8)
     #expect(restored.spaces[0].windowIDs == ["a", "b"])
+    #expect(restored.spaces[0].columns.count == 2)
     #expect(restored.spaces[0].focusedWindowID == "a")
-    #expect(restored.spaces[0].widthFractions == ["a": 1, "b": 0.25])
+    #expect(restored.spaces[0].widthFraction(for: "a") == 1)
+    #expect(restored.spaces[0].widthFraction(for: "b") == 0.25)
 }
 
 @Test func displayedSpacesContainOnlyOccupiedSpacesAndTheActiveSpace() {
@@ -282,7 +284,7 @@ import Testing
         SpaceState(windowIDs: ["c", "a", "b"], focusedWindowID: "c",
                    widthFractions: ["a": 0.8, "b": 0.4, "c": 0.6])
     ])
-    let widths = state.currentSpace.widthFractions
+    let widths = Dictionary(uniqueKeysWithValues: ["a", "b", "c", "d"].map { ($0, state.currentSpace.widthFraction(for: $0)) })
     let otherSpaces = Array(state.spaces.dropFirst())
 
     #expect(state.reorderWindow(windowID: "b", to: 3) == true)
@@ -291,7 +293,7 @@ import Testing
     #expect(state.reorderWindow(windowID: "d", to: 0) == true)
     #expect(state.currentSpace.windowIDs == ["d", "a", "c", "b"])
     #expect(state.focusedWindowID == "b")
-    #expect(state.currentSpace.widthFractions == widths)
+    #expect(widths.allSatisfy { state.currentSpace.widthFraction(for: $0.key) == $0.value })
     #expect(Array(state.spaces.dropFirst()) == otherSpaces)
 }
 

@@ -102,6 +102,48 @@ struct WorkspaceLayoutStoreTests {
         #expect(fixture.files().contains { $0.hasPrefix("workspace-layout.unreadable-") })
     }
 
+    @Test func aFlatVersionOneFileIsMovedAsideRatherThanMigrated() throws {
+        let fixture = StoreFixture()
+        defer { fixture.remove() }
+        try FileManager.default.createDirectory(at: fixture.directory, withIntermediateDirectories: true)
+        let launchDate = Date(timeIntervalSinceReferenceDate: 1)
+        let flat: [String: Any] = [
+            "version": 1,
+            "state": ["spaces": [["windowIDs": ["a"], "focusedWindowID": "a", "widthFractions": ["a": 0.5]]]],
+            "processLaunchDates": ["a": launchDate.timeIntervalSinceReferenceDate],
+            "preferredHeights": [:] as [String: Double]
+        ]
+        try JSONSerialization.data(withJSONObject: flat).write(to: fixture.url)
+        let store = WorkspaceLayoutStore(url: fixture.url, launchDate: { _ in launchDate })
+
+        let result = store.load(windows: [record("a", pid: 1)])
+
+        #expect(result == .unavailable(reason: "version_1_unsupported moved_aside=\(store.unreadableURL().lastPathComponent)"))
+        #expect(fixture.files().contains { $0.hasPrefix("workspace-layout.unreadable-") })
+    }
+
+    @Test func stacksRoundTripAndLoseOnlyWindowsWhoseProcessEnded() throws {
+        let fixture = StoreFixture()
+        defer { fixture.remove() }
+        let launchDate = Date(timeIntervalSinceReferenceDate: 1)
+        let store = WorkspaceLayoutStore(url: fixture.url, launchDate: { $0 == 3 ? nil : launchDate })
+        let state = WorkspaceState(spaces: [SpaceState(columns: [
+            ColumnState(id: "left", windowIDs: ["a", "b", "c"], widthFraction: 0.6,
+                        activeWindowID: "b", heightWeights: [2, 1, 1]),
+            ColumnState(windowIDs: ["d"])
+        ], focusedWindowID: "d")])
+        try store.save(state, windows: [record("a", pid: 1), record("b", pid: 2), record("c", pid: 3),
+                                        record("d", pid: 1)])
+
+        let result = store.load(windows: [record("a", pid: 1), record("b", pid: 2), record("d", pid: 1)])
+
+        #expect(result == .restored(WorkspaceState(spaces: [SpaceState(columns: [
+            ColumnState(id: "left", windowIDs: ["a", "b"], widthFraction: 0.6,
+                        activeWindowID: "b", heightWeights: [2, 1]),
+            ColumnState(windowIDs: ["d"])
+        ], focusedWindowID: "d")])))
+    }
+
     @Test func savingDropsThePausedFlagAndWindowsWithoutALaunchDate() throws {
         let fixture = StoreFixture()
         defer { fixture.remove() }
