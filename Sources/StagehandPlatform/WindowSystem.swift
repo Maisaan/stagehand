@@ -159,6 +159,7 @@ public final class WindowSystem {
         var at: TimeInterval
         var side: WindowParkingSide?
         var remnantWidth: CGFloat
+        var displayGeneration: Int
     }
 
     /// How long a parked window verified at the side is trusted without reading it again,
@@ -172,10 +173,11 @@ public final class WindowSystem {
     /// a parked window can come back onscreen; its move notification now says so.
     nonisolated static func parkCheckReason(isParked: Bool, observationComplete: Bool, check: ParkCheck?,
                                             side: WindowParkingSide?, remnantWidth: CGFloat,
-                                            now: TimeInterval) -> String? {
+                                            displayGeneration: Int, now: TimeInterval) -> String? {
         guard isParked else { return "notParked" }
         guard observationComplete else { return "observationIncomplete" }
         guard let check else { return "noCheck" }
+        guard check.displayGeneration == displayGeneration else { return "displaysChanged" }
         guard check.side == side else { return "sideChanged" }
         guard check.remnantWidth == remnantWidth else { return "widthChanged" }
         guard now - check.at < parkCheckLifetime else { return "expired" }
@@ -187,6 +189,7 @@ public final class WindowSystem {
     private var parkRequests = 0
     private var parkSkipped = 0
     private var parkReadReasons: [String: Int] = [:]
+    private var displayGeneration = 0
 
     /// For change_completed: parking requests, skips, and read reasons since the last call.
     public func takeParkingStatistics() -> [String: String] {
@@ -611,7 +614,9 @@ public final class WindowSystem {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.started else { return }
+                guard let self else { return }
+                self.displayGeneration &+= 1
+                guard self.started else { return }
                 self.onScreenParametersChange?()
             }
         })
@@ -1246,7 +1251,8 @@ public final class WindowSystem {
         parkRequests += 1
         guard let reason = Self.parkCheckReason(
             isParked: tracked.parking.isParked, observationComplete: tracked.observationComplete,
-            check: tracked.parkCheck, side: preferredSide, remnantWidth: remnantWidth, now: now) else {
+            check: tracked.parkCheck, side: preferredSide, remnantWidth: remnantWidth,
+            displayGeneration: displayGeneration, now: now) else {
             parkSkipped += 1
             return true
         }
@@ -1282,7 +1288,8 @@ public final class WindowSystem {
                                    readFrame: { self.readFrame(tracked.element) })
         windows[windowID]?.parking = parking
         windows[windowID]?.parkCheck = success
-            ? ParkCheck(at: now, side: preferredSide, remnantWidth: remnantWidth) : nil
+            ? ParkCheck(at: now, side: preferredSide, remnantWidth: remnantWidth,
+                        displayGeneration: displayGeneration) : nil
         if focusDiagnosticsEnabled {
             // A parked window was verified by the write's readback; read back only a refusal.
             let actual = success ? "verified" : String(describing: self.readFrame(tracked.element))
