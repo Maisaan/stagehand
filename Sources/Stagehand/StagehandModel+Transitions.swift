@@ -23,7 +23,9 @@ extension StagehandModel {
         let token = change.policy.beginInputTransfer {
             focusGate.isAvailable ? focusGate.beginTransfer() : nil
         }
+        lastChangeID += 1
         changes.append(PendingChange(
+            id: lastChangeID,
             change: change,
             token: token,
             initialHorizontalVelocity: initialHorizontalVelocity,
@@ -31,6 +33,7 @@ extension StagehandModel {
             motionStart: motionStart
         ))
         diagnostics.record("change_queued", details: [
+            "changeID": String(lastChangeID),
             "operation": change.diagnosticName,
             "pendingChanges": String(changes.count),
             "transferToken": token.map(String.init) ?? "none"
@@ -66,6 +69,7 @@ extension StagehandModel {
         _ = MainThreadActivity.takeAppCallCount()
         _ = windowSystem.takeParkingStatistics()
         diagnostics.record("change_started", details: [
+            "changeID": String(pendingChange.id),
             "operation": change.diagnosticName,
             "pendingChanges": String(changes.count),
             "transferToken": token.map(String.init) ?? "none"
@@ -124,7 +128,7 @@ extension StagehandModel {
             workspaceRestoration.endTransition()
             return true
         }
-        return finish(change, outcome: outcome)
+        return finish(pendingChange, outcome: outcome)
     }
 
     /// Updates the logical workspace for a change. Returns false when it does nothing.
@@ -213,7 +217,8 @@ extension StagehandModel {
 
     /// Records a finished change, or pauses and restores after a failure.
     /// Returns false when processing must end.
-    private func finish(_ change: Change, outcome: LayoutOutcome) -> Bool {
+    private func finish(_ pendingChange: PendingChange, outcome: LayoutOutcome) -> Bool {
+        let change = pendingChange.change
         let failureReason: String
         switch outcome {
         case .completed:
@@ -221,6 +226,7 @@ extension StagehandModel {
             // What the change cost the main thread in calls to other apps, and how many
             // parking requests could trust a window already at the side.
             diagnostics.record("change_completed", details: [
+                "changeID": String(pendingChange.id),
                 "operation": change.diagnosticName,
                 "appCallsOnMain": String(MainThreadActivity.takeAppCallCount())
             ].merging(windowSystem.takeParkingStatistics()) { current, _ in current })

@@ -248,6 +248,7 @@ final class StagehandModel: ObservableObject {
     var minimizedWindowIDs: Set<String> = []
     var lastLayoutMilliseconds = 0
     var lastFocusTokenExpired = false
+    var lastChangeID = 0
     var pointerInteraction: PointerInteraction?
     lazy var focusBorder = FocusBorderController(overlays: overlays) { [weak self] in
         self?.windowSystem.windowNumber(for: $0)
@@ -321,6 +322,7 @@ final class StagehandModel: ObservableObject {
     }
 
     struct PendingChange {
+        let id: Int
         let change: Change
         let token: UInt64?
         let initialHorizontalVelocity: CGFloat?

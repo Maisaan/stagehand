@@ -14,7 +14,12 @@ end with a manual pause a few seconds after a burst of switches. Run with
 `python3 -I`.
 
 Sections:
-  navigation   per-switch phases: action -> first motion -> settled, focus time
+  navigation   per-switch phases: action -> first motion -> settled, focus time.
+               Actions pair with their motion, focus and completion by changeID;
+               logs before 2026-11-12 have none and pair by queue order, which a
+               cancelled queue can misalign. Actions without change_completed
+               (merged into the next step, no effect, refused, failed, cancelled)
+               are counted as incomplete, never timed.
   focus by app focus confirmation per target pid (names resolved while running)
   motion       per-animation write statistics; *MotionGap is the longest a
                window went without moving, i.e. a visible freeze
@@ -60,13 +65,84 @@ def process_name(pid):
         return "?"
 
 
+def navigation_stats(events):
+    """Per-action latencies (ms) and counts of incomplete actions and rejected focus."""
+    nav = collections.defaultdict(list)
+    counts = collections.Counter()
+    queued, operations, motion, focus, completed = {}, {}, {}, {}, {}
+    started = set()
+    legacy_queue = collections.deque()
+    legacy_count = 0
+    current = None
+    gesture = None
+    for event in events:
+        name, t, d = event["event"], ms(event["timestamp"]), event.get("details", {})
+        operation = d.get("operation", "")
+        # Separate from the chain below: a swipe's action is also an action change.
+        if name == "gesture_motion_started":
+            gesture = t
+        elif name == "change_queued" and operation.startswith("action.") and gesture is not None:
+            nav["swipe start -> action"].append(t - gesture)
+            gesture = None
+        elif name == "gesture_motion_resolved":
+            gesture = None
+        if name == "change_queued":
+            change_id = d.get("changeID")
+            if change_id is None:
+                legacy_count += 1
+                change_id = f"legacy-{legacy_count}"
+                legacy_queue.append((change_id, operation))
+            queued[change_id] = t
+            operations[change_id] = operation
+        elif name == "change_started":
+            change_id = d.get("changeID")
+            if change_id is None:
+                while legacy_queue and legacy_queue[0][1] != operation:
+                    legacy_queue.popleft()
+                change_id = legacy_queue.popleft()[0] if legacy_queue else None
+            current = change_id
+            if change_id is not None:
+                started.add(change_id)
+        elif name == "change_completed":
+            change_id = d.get("changeID", current)
+            if change_id is not None:
+                completed.setdefault(change_id, t)
+            current = None
+        elif name == "ribbon_animation_started" and current is not None:
+            motion.setdefault(current, t)
+        elif name == "navigation_focus_confirmed":
+            if d.get("focusConfirmed") == "false":
+                counts["focus rejected"] += 1
+            elif current is not None:
+                focus.setdefault(current, t)
+            if d.get("focusReport"):
+                report_ = json.loads(d["focusReport"])
+                nav["focus attempt (driver)"].append(report_["elapsedMilliseconds"])
+                nav["focus attempt pid " + str(report_.get("targetPID"))].append(report_["elapsedMilliseconds"])
+    for change_id, operation in operations.items():
+        if not operation.startswith("action."):
+            continue
+        counts["actions"] += 1
+        begin = queued[change_id]
+        if change_id in motion:
+            nav["action -> first motion"].append(motion[change_id] - begin)
+        if change_id in focus:
+            nav["action -> focus confirmed"].append(focus[change_id] - begin)
+        if change_id in completed:
+            nav["action -> settled"].append(completed[change_id] - begin)
+        elif change_id in started:
+            counts["incomplete: started, never completed"] += 1
+        else:
+            counts["incomplete: never started"] += 1
+    return nav, counts
+
+
 def report(events, title):
     print(f"== {title}: {len(events)} events"
           + (f", {events[0]['timestamp']} .. {events[-1]['timestamp']}" if events else ""))
     if not events:
         return
-    nav = collections.defaultdict(list)
-    focus_by_pid = collections.defaultdict(list)
+    nav, nav_counts = navigation_stats(events)
     motion = collections.defaultdict(list)
     stalls = collections.defaultdict(list)
     stalls_by_activity = collections.defaultdict(list)
@@ -78,32 +154,9 @@ def report(events, title):
     layouts = collections.defaultdict(lambda: collections.defaultdict(list))
     park_reasons = collections.Counter()
     lifecycle = []
-    pending = {}
     for event in events:
         name, t, d = event["event"], ms(event["timestamp"]), event.get("details", {})
         operation = d.get("operation", "")
-        # Separate from the chain below: a swipe's action is also an action change.
-        if name == "gesture_motion_started":
-            pending["gesture"] = t
-        elif name == "change_queued" and operation.startswith("action.") and "gesture" in pending:
-            nav["swipe start -> action"].append(t - pending.pop("gesture"))
-        elif name == "gesture_motion_resolved":
-            pending.pop("gesture", None)
-        if name == "change_queued" and operation.startswith("action."):
-            pending["queued"] = t
-            pending.pop("motion", None)
-        elif name == "ribbon_animation_started" and "queued" in pending and "motion" not in pending:
-            pending["motion"] = t
-            nav["action -> first motion"].append(t - pending["queued"])
-        elif name == "navigation_focus_confirmed":
-            if "queued" in pending:
-                nav["action -> focus confirmed"].append(t - pending["queued"])
-            if d.get("focusReport"):
-                report_ = json.loads(d["focusReport"])
-                nav["focus attempt (driver)"].append(report_["elapsedMilliseconds"])
-                focus_by_pid[report_.get("targetPID")].append(report_["elapsedMilliseconds"])
-        elif name == "change_completed" and operation.startswith("action.") and "queued" in pending:
-            nav["action -> settled"].append(t - pending.pop("queued"))
         if name == "ribbon_animation_completed":
             for key in ("elapsedMilliseconds", "slowestMotionWriteMilliseconds",
                         "largestMotionGapMilliseconds", "focusedMotionGapMilliseconds"):
@@ -154,9 +207,12 @@ def report(events, title):
     for key in ("swipe start -> action", "action -> first motion", "action -> focus confirmed",
                 "action -> settled", "focus attempt (driver)"):
         print(f"  {key:28s} {pct(nav[key])}")
+    print("  " + ", ".join(f"{key} {value}" for key, value in sorted(nav_counts.items())))
     print("-- focus attempt by target app (ms)")
-    for pid, values in sorted(focus_by_pid.items(), key=lambda item: -len(item[1]))[:10]:
-        print(f"  {str(pid):>7} {process_name(pid)[:24]:24s} {pct(values)}")
+    by_pid = [(key.removeprefix("focus attempt pid "), values) for key, values in nav.items()
+              if key.startswith("focus attempt pid ")]
+    for pid, values in sorted(by_pid, key=lambda item: -len(item[1]))[:10]:
+        print(f"  {pid:>7} {process_name(pid)[:24]:24s} {pct(values)}")
     print("-- motion per animation (ms unless noted)")
     for key, values in motion.items():
         print(f"  {key:32s} {pct(values)}")

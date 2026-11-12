@@ -12,3 +12,4 @@ dist/
 *.mobileprovision
 *.provisionprofile
 *.xcarchive
+__pycache__/
