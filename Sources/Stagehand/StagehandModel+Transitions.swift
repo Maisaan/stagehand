@@ -527,7 +527,9 @@ extension StagehandModel {
         let knownIDs = Set(windows.map(\.id))
         preferredHeights = preferredHeights.filter { knownIDs.contains($0.key) }
         for window in windows where preferredHeights[window.id] == nil {
-            preferredHeights[window.id] = windowSystem.frame(windowID: window.id)?.height ?? window.frame.height
+            preferredHeights[window.id] = MainThreadActivity.during("layout preferred height read") {
+                windowSystem.frame(windowID: window.id)?.height
+            } ?? window.frame.height
         }
         if !learnedMinimumWidths.isEmpty {
             learnedMinimumWidths = learnedMinimumWidths.filter { knownIDs.contains($0.key) }
@@ -584,15 +586,20 @@ extension StagehandModel {
                 // verified or the last scan read. Only a window without one is read now.
                 // A parked window is always written; its logical frame is not its position.
                 let current = windowSystem.isParked(windowID: placement.windowID)
-                    ? nil : slideFrom?[placement.windowID] ?? windowSystem.frame(windowID: placement.windowID)
+                    ? nil : slideFrom?[placement.windowID] ?? MainThreadActivity.during("layout current frame read") {
+                        windowSystem.frame(windowID: placement.windowID)
+                    }
                 if let current, framesMatch(observed: current, target: preparedFrame) {
                     acceptedFrames[placement.windowID] = current
                     noteAppliedFrame(current, windowID: placement.windowID)
                     continue
                 }
-                let frameWritten = windowSystem.setFrame(windowID: placement.windowID, frame: preparedFrame)
+                let frameWritten = MainThreadActivity.during("layout frame write") {
+                    windowSystem.setFrame(windowID: placement.windowID, frame: preparedFrame)
+                }
                 // setFrame verified an accepted write to within a point; read back a refusal.
-                let actualFrame = frameWritten ? preparedFrame : windowSystem.frame(windowID: placement.windowID)
+                let actualFrame: CGRect? = frameWritten ? preparedFrame
+                    : MainThreadActivity.during("layout refused write readback") { windowSystem.frame(windowID: placement.windowID) }
                 if let actualFrame { acceptedFrames[placement.windowID] = actualFrame }
                 if !frameWritten, placement.isFocused {
                     recordWindowGeometry(
@@ -635,7 +642,9 @@ extension StagehandModel {
                     // switch reads back after activation, when an app may have resized.
                     guard let actual = slideFrom != nil
                         ? acceptedFrames[placement.windowID]
-                        : windowSystem.frame(windowID: placement.windowID) else { continue }
+                        : MainThreadActivity.during("layout readback after focus", {
+                            windowSystem.frame(windowID: placement.windowID)
+                        }) else { continue }
                     acceptedFrames[placement.windowID] = actual
                     var constrainedAxes: [String] = []
                     if actual.width.isFinite, actual.width > 0,
@@ -740,7 +749,9 @@ extension StagehandModel {
             let starts = Dictionary(sliding.compactMap { placement in
                 (heldElsewhere.contains(placement.windowID)
                     ? placeholderStarts[placement.windowID]
-                    : acceptedFrames[placement.windowID] ?? windowSystem.frame(windowID: placement.windowID))
+                    : acceptedFrames[placement.windowID] ?? MainThreadActivity.during("layout slide start read") {
+                        windowSystem.frame(windowID: placement.windowID)
+                    })
                     .map { (placement.windowID, $0) }
             }, uniquingKeysWith: { first, _ in first })
             let targets = Dictionary(sliding.map { ($0.windowID, $0.frame) }, uniquingKeysWith: { first, _ in first })
@@ -837,11 +848,17 @@ extension StagehandModel {
                 // An app can resize its window while activating. Correct it now that
                 // the motion has ended. Each frame read is a blocking AX round trip,
                 // so read once and again only after a write.
-                var frame = windowSystem.frame(windowID: focusedID)
+                var frame = MainThreadActivity.during("layout readback after motion") {
+                    windowSystem.frame(windowID: focusedID)
+                }
                 if let target = placements.first(where: { $0.windowID == focusedID })?.frame,
                    let actual = frame, !framesMatch(observed: actual, target: target) {
-                    let written = windowSystem.setFrame(windowID: focusedID, frame: target)
-                    frame = written ? target : windowSystem.frame(windowID: focusedID)
+                    let written = MainThreadActivity.during("layout frame write") {
+                        windowSystem.setFrame(windowID: focusedID, frame: target)
+                    }
+                    frame = written ? target : MainThreadActivity.during("layout refused write readback") {
+                        windowSystem.frame(windowID: focusedID)
+                    }
                 }
                 if let frame {
                     noteAppliedFrame(frame, windowID: focusedID)
@@ -861,7 +878,8 @@ extension StagehandModel {
                 try? await Task.sleep(for: .milliseconds(12))
                 guard isRunning, !isSuspended, !Task.isCancelled else { return .interrupted }
             }
-            if let focused = state.focusedWindowID, let frame = windowSystem.frame(windowID: focused) {
+            if let focused = state.focusedWindowID,
+               let frame = MainThreadActivity.during("layout border frame read", { windowSystem.frame(windowID: focused) }) {
                 updateFocusBorder(windowID: focused, frame: frame, raiseBorder: true)
             } else {
                 focusBorder.hide()

@@ -865,7 +865,7 @@ final class StagehandModel: ObservableObject {
         }
         warning = nil
         overlays.hide()
-        windows = windowSystem.start()
+        windows = MainThreadActivity.during("start scan") { windowSystem.start() }
         if !savedLayoutConsidered {
             savedLayoutConsidered = true
             if state.spaces.allSatisfy(\.windowIDs.isEmpty), let layoutStore {
@@ -1322,7 +1322,7 @@ final class StagehandModel: ObservableObject {
             // One layout after returning: the Desktop may have changed while away. A
             // second, separate reveal of the border before it would flash it.
             let refreshBegan = ProcessInfo.processInfo.systemUptime
-            refreshWindows(forceLayout: true)
+            MainThreadActivity.during("resume refresh") { refreshWindows(forceLayout: true) }
             diagnostics.record("desktop_resume_refreshed", details: [
                 "milliseconds": String(Int((ProcessInfo.processInfo.systemUptime - refreshBegan) * 1_000))
             ])

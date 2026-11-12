@@ -208,10 +208,12 @@ final class NavigationOverlays {
 
     func showNavigation(state: WorkspaceState, windows: [WindowRecord]) {
         presentedDisplay = focusedNavigationDisplay
-        updateNavigation(state: state, windows: windows)
-        hudModel.showingSpaces = false
-        hudModel.warning = nil
-        presentHUD(dismissAfter: .milliseconds(1_500))
+        MainThreadActivity.during("navigation overlay show") {
+            updateNavigation(state: state, windows: windows)
+            hudModel.showingSpaces = false
+            hudModel.warning = nil
+            presentHUD(dismissAfter: .milliseconds(1_500))
+        }
     }
 
     func setShortcutHints(_ bindings: [ShortcutBinding], swipeTip: String?) {

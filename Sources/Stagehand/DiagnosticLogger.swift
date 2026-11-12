@@ -1,4 +1,5 @@
 import Foundation
+import StagehandPlatform
 
 /// One JSON object per line in ~/Library/Logs/Stagehand/stagehand.log.
 ///
@@ -111,10 +112,12 @@ final class DiagnosticLogger {
         )
         writeAttempts += 1
         do {
-            var data = try encoder.encode(entry)
-            data.append(0x0A)
-            try appendHandle().write(contentsOf: data)
-            fileSize += data.count
+            try MainThreadActivity.during("log write") {
+                var data = try encoder.encode(entry)
+                data.append(0x0A)
+                try appendHandle().write(contentsOf: data)
+                fileSize += data.count
+            }
             writeFailures = 0
             writeSuspendedUntil = nil
             if fileSize >= rotationSize { rotate() }
@@ -218,20 +221,22 @@ final class DiagnosticLogger {
         // next pass sees the new files.
         guard mutationsAtStart == mutations else { return }
         let scan = result.scan
-        // Deleting the archive here, on the main actor, cannot race a rotation.
-        if let archiveModified = result.archiveModified, archiveModified < cutoff {
-            try? FileManager.default.removeItem(at: rotated)
-        }
-        if let scan, scan.removedEntry {
-            closeHandle()
-            do {
-                var retained = scan.retained
-                // Lines appended during the scan are newer than anything scanned.
-                if let tail = try Self.readTail(of: url, from: scan.scannedBytes) { retained.append(tail) }
-                try Self.replaceLog(at: url, with: retained)
-                fileSize = retained.count
-            } catch {
-                NSLog("Stagehand diagnostic log retention failed: %@", error.localizedDescription)
+        MainThreadActivity.during("log prune swap") {
+            // Deleting the archive here, on the main actor, cannot race a rotation.
+            if let archiveModified = result.archiveModified, archiveModified < cutoff {
+                try? FileManager.default.removeItem(at: rotated)
+            }
+            if let scan, scan.removedEntry {
+                closeHandle()
+                do {
+                    var retained = scan.retained
+                    // Lines appended during the scan are newer than anything scanned.
+                    if let tail = try Self.readTail(of: url, from: scan.scannedBytes) { retained.append(tail) }
+                    try Self.replaceLog(at: url, with: retained)
+                    fileSize = retained.count
+                } catch {
+                    NSLog("Stagehand diagnostic log retention failed: %@", error.localizedDescription)
+                }
             }
         }
         nextPruneDate = max(
@@ -265,16 +270,18 @@ final class DiagnosticLogger {
     }
 
     private func rotate() {
-        closeHandle()
-        do {
-            if FileManager.default.fileExists(atPath: rotatedLogURL.path) {
-                try FileManager.default.removeItem(at: rotatedLogURL)
+        MainThreadActivity.during("log rotate") {
+            closeHandle()
+            do {
+                if FileManager.default.fileExists(atPath: rotatedLogURL.path) {
+                    try FileManager.default.removeItem(at: rotatedLogURL)
+                }
+                try FileManager.default.moveItem(at: logURL, to: rotatedLogURL)
+                mutations += 1
+                fileSize = 0
+            } catch {
+                NSLog("Stagehand diagnostic log rotation failed: %@", error.localizedDescription)
             }
-            try FileManager.default.moveItem(at: logURL, to: rotatedLogURL)
-            mutations += 1
-            fileSize = 0
-        } catch {
-            NSLog("Stagehand diagnostic log rotation failed: %@", error.localizedDescription)
         }
     }
 

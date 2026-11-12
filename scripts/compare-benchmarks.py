@@ -205,9 +205,10 @@ def metric_definitions(phase):
 def phase_metric_definitions(phase):
     if phase == "start":
         return [Metric("callMs", "start call"), Metric("settledMs", "to settled"),
-                Metric("mainThreadWaitsMs", "main-thread waits")]
+                Metric("mainThreadWaitsMs", "main-thread waits"), Metric("stalls.waitedMs", "stalls", optional=True)]
     if phase == "rapid":
-        return [Metric("settledMs", "to settled"), Metric("mainThreadWaitsMs", "main-thread waits")]
+        return [Metric("settledMs", "to settled"), Metric("mainThreadWaitsMs", "main-thread waits"),
+                Metric("stalls.waitedMs", "stalls", optional=True)]
     if phase == "interface":
         return [Metric("appBarShowMs", "app bar show"), Metric("settingsOpenMs", "settings open"),
                 Metric("quickControlsOpenMs", "quick controls open")]
@@ -233,11 +234,15 @@ def phase_metric_definitions(phase):
     return metrics
 
 
+STALL_KIND_COUNTS = [Count(f"stalls.kind={kind}", f"{kind} stalls", optional=True)
+                     for kind in ("computing", "waiting", "starved")]
+
+
 def count_definitions(phase):
     if phase == "start":
-        return [Count("timedOut", "timed out")]
+        return [Count("timedOut", "timed out")] + STALL_KIND_COUNTS
     if phase == "rapid":
-        return [Count("timedOut", "timed out"), Count("finalFocusMatches=false", "final focus wrong")]
+        return [Count("timedOut", "timed out"), Count("finalFocusMatches=false", "final focus wrong")] + STALL_KIND_COUNTS
     if phase in ("interface", "idle", "pause"):
         return []
     counts = [Count("switches.timedOut", "switches timed out"),
@@ -249,7 +254,7 @@ def count_definitions(phase):
         counts.append(Count("finalFocusMatches=false", "final focus wrong"))
     else:
         counts.append(Count("stalls", "stalls"))
-    return counts
+    return counts + STALL_KIND_COUNTS
 
 
 def extract_metric(phase_data, key):
@@ -277,6 +282,14 @@ def extract_count(phase_data, key):
     if key.endswith("=false"):
         name = key.removesuffix("=false")
         return None if name not in phase_data else int(phase_data[name] is False)
+    if "=" in key:
+        # "stalls.kind=starved": items whose field has that value; missing when no item has the field.
+        path, _, wanted = key.partition("=")
+        container, _, field_name = path.rpartition(".")
+        items = phase_data.get(container)
+        if not isinstance(items, list) or (items and all(field_name not in item for item in items)):
+            return None
+        return sum(1 for item in items if item.get(field_name) == wanted)
     container, _, field_name = key.rpartition(".")
     if not container:
         value = phase_data.get(field_name)

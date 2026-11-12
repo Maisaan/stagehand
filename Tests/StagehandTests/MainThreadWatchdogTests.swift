@@ -17,6 +17,24 @@ import Testing
     #expect(MainThreadActivity.current == nil)
 }
 
+/// A frame write's readback inside a layout names the layout step, the readback and the AX call.
+@MainActor
+@Test func mainThreadActivityKeepsTheCallerOfTheInnermostCall() {
+    MainThreadActivity.setEnabled(true)
+    defer { MainThreadActivity.setEnabled(false) }
+    MainThreadActivity.during("layout frame write") {
+        MainThreadActivity.during("frame write readback") {
+            MainThreadActivity.during("read AXPosition,AXSize pid=644") {
+                #expect(MainThreadActivity.current
+                    == "layout frame write > frame write readback > read AXPosition,AXSize pid=644")
+                MainThreadActivity.during("deeper") {
+                    #expect(MainThreadActivity.current == "layout frame write > read AXPosition,AXSize pid=644 > deeper")
+                }
+            }
+        }
+    }
+}
+
 @MainActor
 @Test func mainThreadActivityBuildsNoLabelWhileDisabled() {
     MainThreadActivity.setEnabled(false)

@@ -2027,7 +2027,7 @@ public final class WindowSystem {
                         owner.sheetCreated(changedWindow)
                         return
                     }
-                    if let id = owner.windowID(owningSheet: changedWindow) {
+                    if let id = MainThreadActivity.during("identify window", { owner.windowID(owningSheet: changedWindow) }) {
                         if name == kAXUIElementDestroyedNotification {
                             owner.detachSheet(from: id, reason: "destroyed")
                         } else {
@@ -2040,7 +2040,7 @@ public final class WindowSystem {
                         owner.invalidateParkCheck(for: changedWindow)
                     }
                     if let availabilityChange = windowAvailabilityChange(for: name),
-                       let id = owner.directTrackedWindowID(matching: changedWindow) {
+                       let id = owner.identifiedWindowID(changedWindow) {
                         owner.trackedStateGeneration &+= 1
                         switch availabilityChange {
                         case .destroyed:
@@ -2058,14 +2058,14 @@ public final class WindowSystem {
                         }
                     }
                     if name == kAXTitleChangedNotification,
-                       let id = owner.directTrackedWindowID(matching: changedWindow),
+                       let id = owner.identifiedWindowID(changedWindow),
                        let tracked = owner.windows[id], tracked.isAdmitted {
                         // Terminals and browsers retitle often. Update the one record
                         // instead of rescanning every window of every app.
                         if let title = owner.attribute(changedWindow, kAXTitleAttribute) as? String,
                            title != tracked.record.title {
                             owner.windows[id]?.record = tracked.record.withTitle(title)
-                            owner.onTitleChange?(id, title)
+                            MainThreadActivity.during("title change consumer") { owner.onTitleChange?(id, title) }
                         }
                         return
                     }
@@ -2073,9 +2073,9 @@ public final class WindowSystem {
                     if owner.onFrameChange != nil,
                        name == kAXMovedNotification || name == kAXResizedNotification,
                        owner.wantsFrameChange?() ?? true,
-                       let id = owner.directTrackedWindowID(matching: changedWindow),
+                       let id = owner.identifiedWindowID(changedWindow),
                        let frame = owner.readFrame(changedWindow) {
-                        owner.onFrameChange?(id, frame)
+                        MainThreadActivity.during("frame change consumer") { owner.onFrameChange?(id, frame) }
                     }
                     if name == kAXWindowCreatedNotification, let created = owner.onWindowCreated {
                         created()
@@ -2395,6 +2395,11 @@ public final class WindowSystem {
 
     private func directTrackedWindowID(matching element: AXUIElement) -> String? {
         directTrackedWindowID(matching: element, in: identitySnapshot())
+    }
+
+    /// An AX callback's window, labeled apart from the reads that follow it.
+    private func identifiedWindowID(_ element: AXUIElement) -> String? {
+        MainThreadActivity.during("identify window") { directTrackedWindowID(matching: element) }
     }
 
     /// Main-actor window identity state, captured so focus matching can run off the main thread.
@@ -2930,21 +2935,23 @@ public final class WindowSystem {
 
     static func frameWriteResult(frame: CGRect, resizeFirst: Bool = true, readFrame: () -> CGRect?,
                                  setSize: (CGSize) -> Bool, setPosition: (CGPoint) -> Bool) -> FrameWriteResult {
+        func readBack() -> CGRect? { MainThreadActivity.during("frame write readback") { readFrame() } }
         // Navigation usually changes only position. Avoid native resize animations
         // from the parking side, using layout's one-point size tolerance.
-        if let current = readFrame(), sameSize(current.size, frame.size) {
+        if let current = MainThreadActivity.during("frame read before write", { readFrame() }),
+           sameSize(current.size, frame.size) {
             if samePosition(current.origin, frame.origin) { return .matched }
             _ = setPosition(frame.origin)
-            guard let actual = readFrame() else { return .failed }
+            guard let actual = readBack() else { return .failed }
             return samePosition(actual.origin, frame.origin) && sameSize(actual.size, frame.size) ? .matched : .failed
         }
         // Parked windows must leave the side before resizing. Other frame writes
         // retain size, position, size for display-dependent minimum sizes.
         if resizeFirst { _ = setSize(frame.size) }
         _ = setPosition(frame.origin)
-        guard let moved = readFrame(), samePosition(moved.origin, frame.origin) else { return .failed }
+        guard let moved = readBack(), samePosition(moved.origin, frame.origin) else { return .failed }
         let sizeAccepted = setSize(frame.size)
-        guard let actual = readFrame(), samePosition(actual.origin, frame.origin) else { return .failed }
+        guard let actual = readBack(), samePosition(actual.origin, frame.origin) else { return .failed }
         if sameSize(actual.size, frame.size) { return .matched }
         return sizeAccepted ? .sizeChosenByApp : .failed
     }

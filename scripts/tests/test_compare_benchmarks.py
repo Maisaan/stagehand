@@ -236,6 +236,33 @@ class CompareBenchmarksTests(unittest.TestCase):
         self.assertEqual(status, 0, output)
         self.assertIn("candidate  no samples  (1 unavailable)", self.section(output, "sequential", "resourceCost.cpuMs"))
 
+    def test_stall_kinds_are_counted_when_both_sides_classify_stalls(self):
+        def classified(raw, kind):
+            for stall in raw["phases"]["sequential"]["stalls"]:
+                stall.update(mainThreadCPUMs=2.0, loadAverage=40.0, kind=kind)
+            raw["phases"]["rapid"]["stalls"] = [{"waitedMs": 90.0, "label": "unlabeled", "phase": "before",
+                                                 "changeStep": None, "mainThreadCPUMs": None,
+                                                 "loadAverage": None, "kind": None}]
+            return raw
+        baseline = fixtures.write_run(self.root / "base", run_raw=classified(fixtures.raw(), "waiting"))
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(sha="b" * 40),
+                                       classified(fixtures.raw(), "starved"))
+        status, output = self.run_compare(baseline, candidate)
+        self.assertEqual(status, 0, output)
+        self.assertIn("starved stalls per run: baseline 0; candidate 1", output)
+        self.assertIn("waiting stalls per run: baseline 1; candidate 0", output)
+        self.assertIn("baseline   n=1 p50 90", self.section(output, "rapid", "stalls.waitedMs"))
+
+    def test_stall_kinds_are_left_out_when_one_side_predates_them(self):
+        baseline = fixtures.write_run(self.root / "base")
+        classified = fixtures.modified(fixtures.raw(), lambda raw: raw["phases"]["sequential"]["stalls"][0].update(
+            kind="computing"))
+        candidate = fixtures.write_run(self.root / "cand", fixtures.meta(sha="b" * 40), classified)
+        status, output = self.run_compare(baseline, candidate)
+        self.assertEqual(status, 0, output)
+        self.assertNotIn("computing stalls", output)
+        self.assertNotIn("GAP", output)
+
     def test_null_focus_is_counted_as_unconfirmed_not_zero(self):
         baseline = fixtures.write_run(self.root / "base")
         unconfirmed = fixtures.raw(focus_times=(None, 220.0, 240.0))

@@ -23,11 +23,12 @@ public enum MainThreadActivity {
         }
     }
 
-    /// The outermost and innermost labels, e.g. "axCallback AXMoved pid=644 > readFrame pid=644".
+    /// The outermost label and the innermost two, e.g. "axCallback AXMoved pid=644 > read AXPosition,AXSize pid=644"
+    /// or "layout frame write > frame write readback > read AXPosition,AXSize pid=644".
     public static var current: String? {
         lock.withLock {
             guard let first = labels.first else { return nil }
-            return labels.count == 1 ? first : first + " > " + labels[labels.count - 1]
+            return ([first] + labels.dropFirst().suffix(2)).joined(separator: " > ")
         }
     }
 

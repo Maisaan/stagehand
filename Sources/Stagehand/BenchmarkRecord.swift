@@ -11,6 +11,7 @@ struct BenchmarkRecord: Encodable {
     var build: BuildIdentity?
     var environment: Environment?
     var settings: Settings?
+    var stallKindThresholds: StallKind.Thresholds?
     var phases = Phases()
 
     var passed: Bool { failures.isEmpty }
@@ -118,6 +119,7 @@ struct BenchmarkRecord: Encodable {
         var settledMs: Double
         var timedOut: Bool
         var mainThreadWaitsMs: [Double]
+        var stalls: [Stall] = []
         var resourceCost: ResourceCost?
     }
 
@@ -205,8 +207,15 @@ struct BenchmarkRecord: Encodable {
         var phase: String
         /// The last step of the change running then, from its trace, logged or not; nil outside any change.
         var changeStep: String?
+        /// The main thread's own CPU during the wait; nil when the kernel did not answer.
+        var mainThreadCPUMs: Double?
+        var loadAverage: Double?
+        /// Nil without the main thread's CPU.
+        var kind: StallKind?
 
-        private enum CodingKeys: String, CodingKey { case waitedMs, label, phase, changeStep }
+        private enum CodingKeys: String, CodingKey {
+            case waitedMs, label, phase, changeStep, mainThreadCPUMs, loadAverage, kind
+        }
 
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
@@ -214,6 +223,34 @@ struct BenchmarkRecord: Encodable {
             try container.encode(label, forKey: .label)
             try container.encode(phase, forKey: .phase)
             try container.encode(changeStep, forKey: .changeStep)
+            try container.encode(mainThreadCPUMs, forKey: .mainThreadCPUMs)
+            try container.encode(loadAverage, forKey: .loadAverage)
+            try container.encode(kind, forKey: .kind)
+        }
+    }
+
+    /// What the main thread did during a stall, by its own CPU time, as analyze-log.py splits logged stalls.
+    enum StallKind: String, Encodable {
+        /// CPU for at least half the wait: Stagehand's own work.
+        case computing
+        /// Less: most likely an Accessibility reply from another app.
+        case waiting
+        /// CPU under a tenth of the wait at a 1-minute load of at least the CPU count: waiting for a CPU.
+        case starved
+
+        struct Thresholds: Encodable {
+            var computingCPUFraction = 0.5
+            var starvedCPUFraction = 0.1
+            var starvedAtLoad = Double(ProcessInfo.processInfo.activeProcessorCount)
+        }
+
+        static func classify(waitedMs: Double, mainThreadCPUMs: Double?, loadAverage: Double?,
+                             thresholds: Thresholds = Thresholds()) -> StallKind? {
+            guard let cpu = mainThreadCPUMs else { return nil }
+            if cpu >= waitedMs * thresholds.computingCPUFraction { return .computing }
+            if cpu < waitedMs * thresholds.starvedCPUFraction, let loadAverage,
+               loadAverage >= thresholds.starvedAtLoad { return .starved }
+            return .waiting
         }
     }
 
@@ -221,6 +258,7 @@ struct BenchmarkRecord: Encodable {
         var settledMs: Double
         var timedOut: Bool
         var mainThreadWaitsMs: [Double]
+        var stalls: [Stall] = []
         var finalFocusMatches: Bool
         var resourceCost: ResourceCost?
     }
@@ -238,7 +276,7 @@ struct BenchmarkRecord: Encodable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schema, result, failures, ownerInput, build, environment, settings, phases
+        case schema, result, failures, ownerInput, build, environment, settings, stallKindThresholds, phases
     }
 
     func encode(to encoder: Encoder) throws {
@@ -250,6 +288,7 @@ struct BenchmarkRecord: Encodable {
         try container.encodeIfPresent(build, forKey: .build)
         try container.encodeIfPresent(environment, forKey: .environment)
         try container.encodeIfPresent(settings, forKey: .settings)
+        try container.encodeIfPresent(stallKindThresholds, forKey: .stallKindThresholds)
         try container.encode(phases, forKey: .phases)
     }
 

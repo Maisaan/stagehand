@@ -1,4 +1,5 @@
 import Foundation
+import QuartzCore
 import Testing
 @testable import Stagehand
 @testable import StagehandPlatform
@@ -203,6 +204,76 @@ struct BenchmarkMeasurementTests {
             #expect(cost[key] is NSNull, "\(key)")
         }
         #expect(StagehandModel.costSummary(record.phases.idle!.resourceCost).hasPrefix("unavailable"))
+    }
+
+    /// The same split analyze-log.py makes of logged stalls (its StallKindTests use these numbers).
+    @Test func stallsSplitByTheMainThreadsOwnCPUAndTheLoad() {
+        let thresholds = BenchmarkRecord.StallKind.Thresholds(starvedAtLoad: 10)
+        func kind(_ cpu: Double?, _ load: Double?) -> BenchmarkRecord.StallKind? {
+            BenchmarkRecord.StallKind.classify(waitedMs: 200, mainThreadCPUMs: cpu, loadAverage: load, thresholds: thresholds)
+        }
+        #expect(kind(150, 3) == .computing)
+        #expect(kind(5, 167) == .starved)
+        #expect(kind(5, 2) == .waiting)
+        #expect(kind(60, 167) == .waiting)
+        #expect(kind(5, nil) == .waiting)
+        #expect(kind(nil, 167) == nil)
+    }
+
+    @Test func aStallIsSavedWithItsCPULoadAndKindAndTheThresholds() throws {
+        let recorder = BenchmarkSwitchRecorder()
+        recorder.observe("ribbon_animation_started")
+        let posted = CACurrentMediaTime()
+        var unknown = MainThreadLatencyMonitor.Wait(postedUptime: posted, milliseconds: 90, label: "unlabeled")
+        unknown.loadAverage = 4
+        let waits = [
+            MainThreadLatencyMonitor.Wait(postedUptime: posted, milliseconds: 120,
+                                          label: "layout readback after focus > read AXPosition,AXSize pid=42",
+                                          mainThreadCPUMilliseconds: 1, loadAverage: 2),
+            MainThreadLatencyMonitor.Wait(postedUptime: posted, milliseconds: 10, label: "unlabeled"),
+            unknown
+        ]
+        var record = BenchmarkRecord()
+        record.stallKindThresholds = .init(starvedAtLoad: 8)
+        record.phases.rapid = .init(settledMs: 1, timedOut: false, mainThreadWaitsMs: waits.map(\.milliseconds),
+                                    stalls: StagehandModel.stalls(in: waits, recorder: recorder,
+                                                                  thresholds: .init(starvedAtLoad: 8)),
+                                    finalFocusMatches: true)
+
+        let json = try JSONSerialization.jsonObject(with: record.jsonData()) as? [String: Any]
+        let rapid = (json?["phases"] as? [String: Any])?["rapid"] as? [String: Any]
+        let stalls = try #require(rapid?["stalls"] as? [[String: Any]])
+        #expect(stalls.count == 2)
+        #expect(stalls[0]["label"] as? String == "layout readback after focus > read AXPosition,AXSize")
+        #expect(stalls[0]["phase"] as? String == "ribbon_animation_started")
+        #expect(stalls[0]["mainThreadCPUMs"] as? Double == 1)
+        #expect(stalls[0]["kind"] as? String == "waiting")
+        #expect(stalls[1]["mainThreadCPUMs"] is NSNull)
+        #expect(stalls[1]["kind"] is NSNull)
+        let thresholds = json?["stallKindThresholds"] as? [String: Double]
+        #expect(thresholds == ["computingCPUFraction": 0.5, "starvedCPUFraction": 0.1, "starvedAtLoad": 8])
+        #expect(StagehandModel.stallAttributionLines(record.phases.rapid!.stalls).first
+            == "  stalls by kind: waiting 120 ms (1), unknown 90 ms (1); load 2.0-4.0")
+    }
+
+    /// The benchmark's monitor reads the main thread's CPU for a stall, as the watchdog does.
+    @Test func theLatencyMonitorRecordsTheMainThreadsCPUDuringAStall() async throws {
+        let monitor = MainThreadLatencyMonitor()
+        monitor.start()
+        try await Task.sleep(for: .milliseconds(20))
+        let spinUntil = CACurrentMediaTime() + 0.12
+        var spins = 0.0
+        while CACurrentMediaTime() < spinUntil { spins += 1 }
+        try await Task.sleep(for: .milliseconds(30))
+        let waits = monitor.stop()
+
+        #expect(spins > 0)
+        let stall = try #require(waits.max { $0.milliseconds < $1.milliseconds })
+        #expect(stall.milliseconds > MainThreadLatencyMonitor.stallMilliseconds)
+        #expect(stall.mainThreadCPUMilliseconds != nil)
+        #expect(stall.loadAverage != nil)
+        #expect(waits.filter { $0.milliseconds <= MainThreadLatencyMonitor.stallMilliseconds }
+            .allSatisfy { $0.mainThreadCPUMilliseconds == nil })
     }
 
     /// The runner's checkout can differ from the binary that ran, so raw samples name the binary.

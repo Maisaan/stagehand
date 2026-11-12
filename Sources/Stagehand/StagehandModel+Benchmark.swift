@@ -63,6 +63,8 @@ extension StagehandModel {
         )
         record.settings = .init(gap: gap, widthPresets: widthPresets, loggingEnabled: logging, busyProbes: busy,
                                 measuresStacking: measuresStacking, tiles: arrangesTile, switches: switches)
+        let stallKinds = BenchmarkRecord.StallKind.Thresholds()
+        record.stallKindThresholds = stallKinds
         diagnostics.isEnabled = logging
         windowSystem.focusDiagnosticsEnabled = logging
         // Marks the probe-driven run so scripts/analyze-log.py can leave it out of real usage.
@@ -118,6 +120,9 @@ extension StagehandModel {
         let monitor = MainThreadLatencyMonitor()
 
         // Startup: Start through the first settled layout.
+        let startRecorder = BenchmarkSwitchRecorder()
+        diagnostics.eventObserver = { startRecorder.observe($0) }
+        changeTraceSink = { startRecorder.observe($0) }
         monitor.start()
         let startCostBegan = BenchmarkRecord.ResourceMark.now()
         let startBegan = CACurrentMediaTime()
@@ -125,14 +130,20 @@ extension StagehandModel {
         let startReturned = CACurrentMediaTime()
         let startIdle = await benchmarkWaitUntilIdle()
         let startSettled = CACurrentMediaTime()
-        let startWaits = monitor.stop().map(\.milliseconds)
+        let startWaitSamples = monitor.stop()
         let startCost = BenchmarkRecord.ResourceCost(from: startCostBegan, to: .now())
+        diagnostics.eventObserver = nil
+        changeTraceSink = nil
+        let startWaits = startWaitSamples.map(\.milliseconds)
+        let startStalls = Self.stalls(in: startWaitSamples, recorder: startRecorder, thresholds: stallKinds)
         record.phases.start = .init(callMs: (startReturned - startBegan) * 1_000,
                                     settledMs: (startSettled - startBegan) * 1_000,
-                                    timedOut: !startIdle, mainThreadWaitsMs: startWaits, resourceCost: startCost)
+                                    timedOut: !startIdle, mainThreadWaitsMs: startWaits, stalls: startStalls,
+                                    resourceCost: startCost)
         lines.append(String(format: "Start: call %.0f ms, settled %.0f ms", (startReturned - startBegan) * 1_000,
                             (startSettled - startBegan) * 1_000) + (startIdle ? "" : " (timed out)"))
         lines.append("  main thread: " + Self.stallSummary(startWaits))
+        lines += Self.stallAttributionLines(startStalls)
         lines.append("  cost: " + Self.costSummary(startCost))
         if !startIdle { record.failures.append("start: idle wait timed out") }
         guard isRunning else { return fail("Stagehand did not start. Warning: \(warning ?? "none")") }
@@ -162,7 +173,7 @@ extension StagehandModel {
         var forward = true
         let sequential = await measureSwitchPhase(count: switches, busy: busy, probes: probes,
                                                   measuresStacking: measuresStacking, monitor: monitor,
-                                                  frameInterval: frameInterval) {
+                                                  frameInterval: frameInterval, stallKinds: stallKinds) {
             var predicted = state
             if !predicted.apply(forward ? .focusNext : .focusPrevious) { forward.toggle() }
             return forward ? .focusNext : .focusPrevious
@@ -174,9 +185,12 @@ extension StagehandModel {
 
         // Rapid switches with reversals, as in acceptance.
         var rapidRejections = 0
+        let rapidRecorder = BenchmarkSwitchRecorder()
         diagnostics.eventObserver = { event in
+            rapidRecorder.observe(event)
             if event == "navigation_focus_rejected" { rapidRejections += 1 }
         }
+        changeTraceSink = { rapidRecorder.observe($0) }
         monitor.start()
         let rapidCostBegan = BenchmarkRecord.ResourceMark.now()
         let rapidBegan = CACurrentMediaTime()
@@ -194,22 +208,26 @@ extension StagehandModel {
         }
         let rapidIdle = await benchmarkWaitUntilIdle()
         let rapidSettled = (CACurrentMediaTime() - rapidBegan) * 1_000
-        let rapidWaits = monitor.stop().map(\.milliseconds)
+        let rapidWaitSamples = monitor.stop()
         let rapidCost = BenchmarkRecord.ResourceCost(from: rapidCostBegan, to: .now())
         diagnostics.eventObserver = nil
+        changeTraceSink = nil
+        let rapidWaits = rapidWaitSamples.map(\.milliseconds)
+        let rapidStalls = Self.stalls(in: rapidWaitSamples, recorder: rapidRecorder, thresholds: stallKinds)
         // A busy probe spins 150 ms on activation, longer than the 100 ms Accessibility
         // timeout, so focus is read after the same pause the other phases leave.
         try? await Task.sleep(for: .milliseconds(busy ? 300 : 150))
         let rapidFocusMismatch = finalFocusMismatch()
         let rapidFocusMatches = rapidFocusMismatch == nil
         record.phases.rapid = .init(settledMs: rapidSettled, timedOut: !rapidIdle, mainThreadWaitsMs: rapidWaits,
-                                    finalFocusMatches: rapidFocusMatches, resourceCost: rapidCost)
+                                    stalls: rapidStalls, finalFocusMatches: rapidFocusMatches, resourceCost: rapidCost)
         if !rapidIdle { record.failures.append("rapid: idle wait timed out") }
         if rapidRejections > 0 { record.failures.append("rapid: focus rejected \(rapidRejections) times") }
         if let rapidFocusMismatch { record.failures.append("rapid: final focus does not match the ribbon: \(rapidFocusMismatch)") }
         lines.append(String(format: "Rapid switches: settled %.0f ms after the first", rapidSettled)
             + (rapidIdle ? "" : " (timed out)"))
         lines.append("  main thread: " + Self.stallSummary(rapidWaits))
+        lines += Self.stallAttributionLines(rapidStalls)
         lines.append("  cost: " + Self.costSummary(rapidCost))
         lines.append("Final focus matches the ribbon: \(rapidFocusMatches)" + (rapidFocusMismatch.map { " (\($0))" } ?? ""))
 
@@ -220,7 +238,7 @@ extension StagehandModel {
                 var paneIndex = 0
                 let panes = await measureSwitchPhase(count: 16, busy: busy, probes: probes,
                                                      measuresStacking: false, monitor: monitor,
-                                                     frameInterval: frameInterval) {
+                                                     frameInterval: frameInterval, stallKinds: stallKinds) {
                     defer { paneIndex += 1 }
                     return paneIndex.isMultiple(of: 2) ? .focusNext : .focusPrevious
                 }
@@ -240,7 +258,7 @@ extension StagehandModel {
             var spaceIndex = 0
             let spaces = await measureSwitchPhase(count: 16, busy: busy, probes: probes,
                                                   measuresStacking: measuresStacking, monitor: monitor,
-                                                  frameInterval: frameInterval) {
+                                                  frameInterval: frameInterval, stallKinds: stallKinds) {
                 defer { spaceIndex += 1 }
                 return spaceIndex.isMultiple(of: 2) ? .nextSpace : .previousSpace
             }
@@ -321,6 +339,7 @@ extension StagehandModel {
     /// Runs `count` navigations, each settled before the next, and times motion, focus and frames.
     private func measureSwitchPhase(count: Int, busy: Bool, probes: [NSRunningApplication], measuresStacking: Bool,
                                     monitor: MainThreadLatencyMonitor, frameInterval: Double,
+                                    stallKinds: BenchmarkRecord.StallKind.Thresholds,
                                     nextAction: () -> NavigationAction) async -> BenchmarkRecord.SwitchPhase {
         let recorder = BenchmarkSwitchRecorder()
         diagnostics.eventObserver = { recorder.observe($0) }
@@ -363,17 +382,43 @@ extension StagehandModel {
         let waits = monitor.stop()
         phase.resourceCost = BenchmarkRecord.ResourceCost(from: costBegan, to: .now())
         phase.mainThreadWaitsMs = waits.map(\.milliseconds)
-        phase.stalls = waits.filter { $0.milliseconds > MainThreadLatencyMonitor.stallMilliseconds }.map {
+        phase.stalls = Self.stalls(in: waits, recorder: recorder, thresholds: stallKinds)
+        phase.finalFocusMismatch = finalFocusMismatch()
+        phase.finalFocusMatches = phase.finalFocusMismatch == nil
+        return phase
+    }
+
+    /// The waits over `MainThreadLatencyMonitor.stallMilliseconds`, attributed to the phase, change step and call.
+    static func stalls(in waits: [MainThreadLatencyMonitor.Wait], recorder: BenchmarkSwitchRecorder,
+                       thresholds: BenchmarkRecord.StallKind.Thresholds) -> [BenchmarkRecord.Stall] {
+        waits.filter { $0.milliseconds > MainThreadLatencyMonitor.stallMilliseconds }.map {
             BenchmarkRecord.Stall(
                 waitedMs: $0.milliseconds,
                 label: $0.label.replacingOccurrences(of: #" pid=-?\d+"#, with: "", options: .regularExpression),
                 phase: recorder.lastEvent(atOrBefore: $0.postedUptime) ?? "before",
-                changeStep: recorder.changeStep(at: $0.postedUptime)
+                changeStep: recorder.changeStep(at: $0.postedUptime),
+                mainThreadCPUMs: $0.mainThreadCPUMilliseconds,
+                loadAverage: $0.loadAverage,
+                kind: BenchmarkRecord.StallKind.classify(waitedMs: $0.milliseconds,
+                                                         mainThreadCPUMs: $0.mainThreadCPUMilliseconds,
+                                                         loadAverage: $0.loadAverage, thresholds: thresholds)
             )
         }
-        phase.finalFocusMismatch = finalFocusMismatch()
-        phase.finalFocusMatches = phase.finalFocusMismatch == nil
-        return phase
+    }
+
+    /// Stall time by kind and by the call most often running.
+    static func stallAttributionLines(_ stalls: [BenchmarkRecord.Stall]) -> [String] {
+        guard !stalls.isEmpty else { return ["  stalls by kind: none", "  stalls by call: none"] }
+        func total(_ group: [BenchmarkRecord.Stall]) -> Int { Int(group.reduce(0) { $0 + $1.waitedMs }) }
+        let kinds = Dictionary(grouping: stalls) { $0.kind?.rawValue ?? "unknown" }
+            .sorted { total($0.value) > total($1.value) }
+            .map { "\($0.key) \(total($0.value)) ms (\($0.value.count))" }
+        let loads = stalls.compactMap(\.loadAverage).sorted()
+        let load = loads.isEmpty ? "" : String(format: "; load %.1f-%.1f", loads.first!, loads.last!)
+        let calls = Dictionary(grouping: stalls, by: \.label).sorted { total($0.value) > total($1.value) }
+            .prefix(4).map { "\($0.key) \(total($0.value))" }
+        return ["  stalls by kind: " + kinds.joined(separator: ", ") + load,
+                "  stalls by call: " + calls.joined(separator: ", ")]
     }
 
     /// Nil when macOS reports the ribbon's focused window; otherwise what each side says.
@@ -429,8 +474,7 @@ extension StagehandModel {
             lines.append("  stalls by phase: " + totals(\.phase).map { "\($0.0) \(Int($0.1))" }.joined(separator: ", "))
             lines.append("  stalls by change step: " + totals { $0.changeStep ?? "between changes" }
                 .map { "\($0.0) \(Int($0.1))" }.joined(separator: ", "))
-            lines.append("  stalls by call: " + totals(\.label).prefix(4).map { "\($0.0) \(Int($0.1))" }
-                .joined(separator: ", "))
+            lines += stallAttributionLines(phase.stalls)
         }
         if let finalFocusMatches = phase.finalFocusMatches {
             lines.append("Final focus matches the ribbon: \(finalFocusMatches)"
