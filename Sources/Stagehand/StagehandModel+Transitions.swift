@@ -84,6 +84,7 @@ extension StagehandModel {
         presentationFrames = nil
         if gestureAxis != nil { input.cancelGestureSequence() }
         resetGestureTracking()
+        let stateBeforeChange = state
         guard applyToState(change) else {
             if let token { focusGate.cancelTransfer(token: token) }
             workspaceRestoration.endTransition()
@@ -117,6 +118,12 @@ extension StagehandModel {
                                         initialHorizontalVelocity: canSlide ? initialHorizontalVelocity : nil,
                                         focusAlongsideSlide: change.focusesAlongsideRibbon)
         guard changes.isCurrent(generation) else { return false }
+        if outcome == .completed, case .columns(let columnChange) = change,
+           undoColumnChangeThatDidNotFit(columnChange, stateBefore: stateBeforeChange) {
+            // Refused without pausing; the restored columns are laid out next.
+            workspaceRestoration.endTransition()
+            return true
+        }
         return finish(change, outcome: outcome)
     }
 
@@ -144,6 +151,8 @@ extension StagehandModel {
             state.reorderWindow(windowID: id, to: index, inSpace: spaceIndex)
         case .focusInSpace(let id, let spaceIndex):
             state.focus(windowID: id, inSpace: spaceIndex)
+        case .columns(let columnChange):
+            return applyColumnChange(columnChange) == .applied
         case .windowRemoval, .refresh, .preferences, .observedFocus: break
         }
         return true
@@ -243,6 +252,11 @@ extension StagehandModel {
     func adjustFocusedWindowHeight(growing: Bool) -> Bool {
         guard let windowID = state.focusedWindowID,
               let availableFrame else { return false }
+        // The height shortcuts set a lone window's preferred height. A stacked
+        // window's height is its share of the stack; changing the preference there
+        // would only change the height it takes when it is alone again.
+        if let column = state.currentSpace.columnIndex(of: windowID),
+           state.currentSpace.columns[column].isStack { return false }
         let currentHeight = windowSystem.frame(windowID: windowID)?.height
             ?? preferredHeights[windowID]
             ?? availableFrame.height
@@ -402,6 +416,9 @@ extension StagehandModel {
         for window in windows where preferredHeights[window.id] == nil {
             preferredHeights[window.id] = windowSystem.frame(windowID: window.id)?.height ?? window.frame.height
         }
+        if !learnedMinimumHeights.isEmpty {
+            learnedMinimumHeights = learnedMinimumHeights.filter { knownIDs.contains($0.key) }
+        }
         var observedWidths: [String: CGFloat] = [:]
         var observedHeights: [String: CGFloat] = [:]
         var acceptedFrames: [String: CGRect] = [:]
@@ -416,7 +433,8 @@ extension StagehandModel {
             guard preferenceFocusStillMatches(request) else { return .completed }
             placements = WindowLayout.placements(for: state, availableFrame: availableFrame, gap: gap,
                                                  observedWidths: observedWidths, preferredHeights: preferredHeights,
-                                                 observedHeights: observedHeights)
+                                                 observedHeights: observedHeights,
+                                                 minimumHeights: learnedMinimumHeights)
             let visible = placements.filter { $0.isVisible || slideFrom?[$0.windowID]?.intersects(availableFrame) == true }
             // Position neighbors first. Raising the focused real window last keeps clamped neighbors behind it.
             for placement in visible.sorted(by: { !$0.isFocused && $1.isFocused }) {
@@ -473,6 +491,10 @@ extension StagehandModel {
                     destinationPID = record.pid
                 }
                 var constrained = false
+                // Stack members share their column's requested width. The widest
+                // width a member insisted on, per column, becomes the column's width
+                // once all are read, so members never overwrite each other's.
+                var widestStackWidths: [Int: CGFloat] = [:]
                 for placement in visible {
                     // A slide's windows were matched or written just above. A space
                     // switch reads back after activation, when an app may have resized.
@@ -484,7 +506,14 @@ extension StagehandModel {
                     if actual.width.isFinite, actual.width > 0,
                        abs(actual.width - placement.frame.width) > 1 {
                         observedWidths[placement.windowID] = actual.width
-                        state.setWidthFraction(actual.width / availableFrame.width, for: placement.windowID)
+                        if let column = state.currentSpace.columnIndex(of: placement.windowID),
+                           state.currentSpace.columns[column].isStack {
+                            if actual.width > placement.frame.width {
+                                widestStackWidths[column] = max(widestStackWidths[column] ?? 0, actual.width)
+                            }
+                        } else {
+                            state.setWidthFraction(actual.width / availableFrame.width, for: placement.windowID)
+                        }
                         constrained = true
                         constrainedAxes.append("width")
                     }
@@ -494,6 +523,8 @@ extension StagehandModel {
                         constrained = true
                         constrainedAxes.append("height")
                     }
+                    noteLayoutHeight(windowID: placement.windowID, requested: placement.frame.height,
+                                     actual: actual.height)
                     if !constrainedAxes.isEmpty {
                         constraintObservations.append((
                             pass: pass + 1,
@@ -503,6 +534,11 @@ extension StagehandModel {
                             axes: constrainedAxes.joined(separator: ",")
                         ))
                     }
+                }
+                for (column, width) in widestStackWidths
+                where width / availableFrame.width > state.currentSpace.columns[column].widthFraction {
+                    state.setWidthFraction(width / availableFrame.width,
+                                           for: state.currentSpace.columns[column].windowIDs[0])
                 }
                 if constrained {
                     guard pass < maximumPass else {

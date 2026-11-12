@@ -19,7 +19,20 @@ func shouldSlideRibbon(from previousState: WorkspaceState, to state: WorkspaceSt
     if source == .windowRemoval {
         return previousState.currentSpace.windowIDs != state.currentSpace.windowIDs
     }
-    return previousState.focusedWindowID != state.focusedWindowID || hadPreview
+    if hadPreview { return true }
+    guard let previous = previousState.focusedWindowID, let next = state.focusedWindowID,
+          previous != next else { return previousState.focusedWindowID != state.focusedWindowID }
+    // Focus moving within one column keeps the column's slot, so the ribbon stays.
+    return !focusStaysInColumn(from: previous, to: next, previousState: previousState, state: state)
+}
+
+/// Both windows share a column in the active space before and after the change.
+private func focusStaysInColumn(from previous: String, to next: String,
+                                previousState: WorkspaceState, state: WorkspaceState) -> Bool {
+    guard let column = state.currentSpace.columnIndex(of: next),
+          let previousColumn = previousState.currentSpace.columnIndex(of: previous) else { return false }
+    return state.currentSpace.columns[column].windowIDs.contains(previous)
+        && previousState.currentSpace.columns[previousColumn].windowIDs.contains(next)
 }
 
 func framesMatch(observed: CGRect, target: CGRect, tolerance: CGFloat = 1) -> Bool {

@@ -507,18 +507,19 @@ struct SettingsView: View {
         .padding(.vertical, 2)
         .draggable(window.id)
         .dropDestination(for: String.self) { draggedIDs, _ in
+            // Reordering moves whole columns, so indices are column indices.
             guard let draggedID = draggedIDs.first,
-                  let destination = model.state.spaces[spaceIndex].windowIDs.firstIndex(of: window.id),
+                  let destination = model.state.spaces[spaceIndex].columnIndex(of: window.id),
                   model.state.spaces[spaceIndex].windowIDs.contains(draggedID) else { return false }
             model.reorderWindow(windowID: draggedID, toIndex: destination, spaceIndex: spaceIndex)
             return true
         }
         .accessibilityAction(named: "Move earlier") {
-            guard let index = model.state.spaces[spaceIndex].windowIDs.firstIndex(of: window.id) else { return }
+            guard let index = model.state.spaces[spaceIndex].columnIndex(of: window.id) else { return }
             model.reorderWindow(windowID: window.id, toIndex: index - 1, spaceIndex: spaceIndex)
         }
         .accessibilityAction(named: "Move later") {
-            guard let index = model.state.spaces[spaceIndex].windowIDs.firstIndex(of: window.id) else { return }
+            guard let index = model.state.spaces[spaceIndex].columnIndex(of: window.id) else { return }
             model.reorderWindow(windowID: window.id, toIndex: index + 1, spaceIndex: spaceIndex)
         }
     }

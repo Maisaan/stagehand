@@ -21,13 +21,16 @@ public enum WindowLayout {
     /// a stack shorter or taller than the available height stays centered. Each
     /// member is left-aligned in the column, whose slot is as wide as its widest
     /// member. `preferredHeights` apply only to a window alone in its column.
+    /// `minimumHeights` are heights apps refused to go below; a stack member's
+    /// share never falls under its own, and the other members share the rest.
     public static func placements(
         for state: WorkspaceState,
         availableFrame: CGRect,
         gap: CGFloat = 8,
         observedWidths: [String: CGFloat] = [:],
         preferredHeights: [String: CGFloat] = [:],
-        observedHeights: [String: CGFloat] = [:]
+        observedHeights: [String: CGFloat] = [:],
+        minimumHeights: [String: CGFloat] = [:]
     ) -> [WindowPlacement] {
         guard !availableFrame.isEmpty, !availableFrame.isInfinite,
               availableFrame.origin.x.isFinite, availableFrame.origin.y.isFinite,
@@ -68,6 +71,8 @@ public enum WindowLayout {
                 let gaps = stackGap * CGFloat(column.windowIDs.count - 1)
                 var fixedHeight: CGFloat = 0
                 var flexibleWeight = 0.0
+                // Members held at their minimum height, found below; nil until one is.
+                var heldAtMinimum: [Bool]?
                 for (offset, windowID) in column.windowIDs.enumerated() {
                     if let height = observed(observedHeights[windowID]) {
                         fixedHeight += height
@@ -75,11 +80,40 @@ public enum WindowLayout {
                         flexibleWeight += column.heightWeights[offset]
                     }
                 }
-                let flexibleHeight = flexibleWeight > 0 ? max(0, availableFrame.height - gaps - fixedHeight) : 0
+                var flexibleHeight = flexibleWeight > 0 ? max(0, availableFrame.height - gaps - fixedHeight) : 0
+                if !minimumHeights.isEmpty, flexibleWeight > 0 {
+                    // A member whose share is below its minimum takes the minimum, and
+                    // the rest is shared again, until every share is at least its minimum.
+                    var held = [Bool](repeating: false, count: column.windowIDs.count)
+                    var changed = true
+                    while changed {
+                        changed = false
+                        for (offset, windowID) in column.windowIDs.enumerated()
+                        where !held[offset] && observed(observedHeights[windowID]) == nil {
+                            guard let minimum = observed(minimumHeights[windowID]) else { continue }
+                            let share = flexibleWeight > 0
+                                ? flexibleHeight * CGFloat(column.heightWeights[offset] / flexibleWeight) : 0
+                            guard share < minimum else { continue }
+                            held[offset] = true
+                            heldAtMinimum = held
+                            fixedHeight += minimum
+                            changed = true
+                        }
+                        // Summed again rather than subtracted, so no rounding residue
+                        // is left to share once every member is held.
+                        flexibleWeight = 0
+                        for (offset, windowID) in column.windowIDs.enumerated()
+                        where !held[offset] && observed(observedHeights[windowID]) == nil {
+                            flexibleWeight += column.heightWeights[offset]
+                        }
+                        flexibleHeight = flexibleWeight > 0 ? max(0, availableFrame.height - gaps - fixedHeight) : 0
+                    }
+                }
                 var y = availableFrame.midY - (fixedHeight + flexibleHeight + gaps) / 2
                 for (offset, windowID) in column.windowIDs.enumerated() {
                     let width = observed(observedWidths[windowID]) ?? requestedWidth
-                    let height = observed(observedHeights[windowID])
+                    let minimum = heldAtMinimum?[offset] == true ? observed(minimumHeights[windowID]) : nil
+                    let height = observed(observedHeights[windowID]) ?? minimum
                         ?? flexibleHeight * CGFloat(column.heightWeights[offset] / flexibleWeight)
                     let frame = CGRect(x: cursor, y: y, width: width, height: height)
                     y += height + stackGap
@@ -112,5 +146,20 @@ public enum WindowLayout {
             ))
         }
         return placements
+    }
+
+    /// The least height a stack of `windowIDs` can take: each member's known
+    /// minimum height (none counts as zero) and the vertical gaps between them.
+    public static func minimumStackHeight(
+        windowIDs: [String],
+        gap: CGFloat,
+        minimumHeights: [String: CGFloat]
+    ) -> CGFloat {
+        let stackGap = gap.isFinite ? max(0, gap) : 8
+        var height = stackGap * CGFloat(max(0, windowIDs.count - 1))
+        for windowID in windowIDs {
+            if let minimum = minimumHeights[windowID], minimum.isFinite, minimum > 0 { height += minimum }
+        }
+        return height
     }
 }

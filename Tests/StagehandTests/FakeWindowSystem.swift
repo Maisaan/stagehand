@@ -125,8 +125,18 @@ final class FakeWindowSystem: WindowManaging {
         }
     }
 
+    /// Scans report each window's current frame instead of the frame it was added
+    /// with, so a frame the user changed reaches the model as a real scan's would.
+    var scansReportLiveFrames = false
+
     func scanWindows() -> [WindowRecord] {
-        windows.values.filter { !$0.minimized }.map(\.record).sorted { $0.id < $1.id }
+        windows.values.filter { !$0.minimized }.map { window in
+            guard scansReportLiveFrames else { return window.record }
+            let record = window.record
+            return WindowRecord(id: record.id, appName: record.appName, title: record.title,
+                                bundleIdentifier: record.bundleIdentifier, pid: record.pid,
+                                frame: window.frame, isResizable: record.isResizable)
+        }.sorted { $0.id < $1.id }
     }
 
     /// Off-main scans that report windows changed during their read.
@@ -211,12 +221,31 @@ final class FakeWindowSystem: WindowManaging {
     var unreadableFrames: Set<String> = []
     private(set) var setFrameCalls: [String] = []
 
+    /// Sizes apps refuse to go below; a smaller write takes the minimum instead and
+    /// reports the refusal, as WindowSystem's verified write does.
+    var minimumSizes: [String: CGSize] = [:]
+    private(set) var clampedFrameWrites: [String] = []
+
     func setFrame(windowID: String, frame: CGRect) -> Bool {
         setFrameCalls.append(windowID)
         guard let window = windows[windowID], !window.minimized, !refusesFrames.contains(windowID) else { return false }
+        var accepted = frame
+        if let minimum = minimumSizes[windowID] {
+            accepted.size.width = max(accepted.width, minimum.width)
+            accepted.size.height = max(accepted.height, minimum.height)
+        }
         windows[windowID]?.restoreFrame = nil
-        windows[windowID]?.frame = frame
+        windows[windowID]?.frame = accepted
+        guard accepted == frame else {
+            clampedFrameWrites.append(windowID)
+            return false
+        }
         return true
+    }
+
+    /// The user resized or moved a window directly, as a title-bar drag does.
+    func userSetFrame(_ id: String, _ frame: CGRect) {
+        windows[id]?.frame = frame
     }
 
     var parkRemnantWidths: [String: CGFloat] = [:]

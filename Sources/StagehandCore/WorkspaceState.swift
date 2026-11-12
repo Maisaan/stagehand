@@ -88,6 +88,12 @@ public struct ColumnState: Codable, Equatable, Sendable {
         heightWeights.append(Self.defaultHeightWeight)
     }
 
+    fileprivate mutating func insertMember(_ windowID: String, at position: Int, heightWeight: Double) {
+        let index = min(max(position, 0), windowIDs.count)
+        windowIDs.insert(windowID, at: index)
+        heightWeights.insert(Self.clampedHeightWeight(heightWeight), at: index)
+    }
+
     /// Removes a member. A removed active member hands that role to the window
     /// that takes its place, or to the one above when it was the bottom member.
     fileprivate mutating func removeMember(at index: Int) {
@@ -272,6 +278,21 @@ public struct SpaceState: Codable, Equatable, Sendable {
         }
     }
 
+    /// Puts a window that is not a member back between the column-mates it had.
+    /// `savedMembers` is its saved column top to bottom, itself included. It joins
+    /// the column of its nearest saved mate above (just below that mate), else of
+    /// its nearest saved mate below (just above it). False when no mate is here.
+    fileprivate mutating func rejoin(windowID: String, savedMembers: [String], heightWeight: Double) -> Bool {
+        guard !contains(windowID: windowID), let position = savedMembers.firstIndex(of: windowID) else { return false }
+        let above = savedMembers[..<position].reversed().first { contains(windowID: $0) }
+        let below = savedMembers[(position + 1)...].first { contains(windowID: $0) }
+        guard let mate = above ?? below, let column = columnIndex(of: mate),
+              let mateIndex = columns[column].windowIDs.firstIndex(of: mate) else { return false }
+        columns[column].insertMember(windowID, at: above != nil ? mateIndex + 1 : mateIndex,
+                                     heightWeight: heightWeight)
+        return true
+    }
+
     /// Takes a window out of its column and returns it as a column of its own.
     /// A window alone in its column takes that column, ID included. Focus is the
     /// caller's to restore.
@@ -327,9 +348,17 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         for index in spaces.indices {
             let savedSpace = savedState.spaces[index]
             for (offset, windowID) in savedSpace.windowIDs.enumerated() where returningIDs.contains(windowID) {
+                // A window that was stacked rejoins the column holding its saved
+                // column-mates, between the same neighbors, with its saved share.
+                if let savedColumn = savedSpace.columnIndex(of: windowID).map({ savedSpace.columns[$0] }),
+                   savedColumn.isStack,
+                   spaces[index].rejoin(windowID: windowID, savedMembers: savedColumn.windowIDs,
+                                        heightWeight: savedColumn.heightWeight(for: windowID)) {
+                    continue
+                }
                 // Insert before the next surviving neighbor's column, preserving the
                 // current order of windows the user has already resumed and rearranged.
-                // A returning window comes back as a column of its own.
+                // Otherwise a returning window comes back as a column of its own.
                 let nextID = savedSpace.windowIDs.dropFirst(offset + 1)
                     .first { spaces[index].contains(windowID: $0) }
                 let insertionIndex = nextID.flatMap { spaces[index].columnIndex(of: $0) }
@@ -408,6 +437,18 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         spaces[index].columns.insert(spaces[index].newColumn(windowID: windowID, width: width), at: clamped)
         if spaces[index].focusedWindowID == nil { spaces[index].setFocus(windowID: windowID) }
         return true
+    }
+
+    /// Adds a window that is not yet a member of the space into the column holding
+    /// its nearest saved column-mate, as a relaunched stack member returning to its
+    /// stack. `savedMembers` is its saved column top to bottom, with this window's
+    /// ID in its own place. Keeps the space's focus and the column's width. False
+    /// when none of its mates is in the space.
+    @discardableResult
+    public mutating func rejoin(windowID: String, savedMembers: [String], heightWeight: Double,
+                                inSpace index: Int) -> Bool {
+        guard spaces.indices.contains(index), !windowID.isEmpty else { return false }
+        return spaces[index].rejoin(windowID: windowID, savedMembers: savedMembers, heightWeight: heightWeight)
     }
 
     /// Keep a saved membership snapshot aligned after the corresponding live slot closes.
@@ -510,6 +551,33 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         guard let column = spaces[index].detach(windowID: windowID) else { return false }
         spaces[index].columns.insert(column, at: direction < 0 ? source : source + 1)
         if wasFocused { spaces[index].setFocus(windowID: windowID) }
+        return true
+    }
+
+    /// Takes a stacked window out of its column as a column of its own at column
+    /// index `position`, counted with its stack still in place, with the stack's
+    /// width, as a member dropped outside its column. A focused window keeps focus.
+    @discardableResult
+    public mutating func unstack(windowID: String, toColumnAt position: Int, inSpace index: Int) -> Bool {
+        guard spaces.indices.contains(index),
+              let source = spaces[index].columnIndex(of: windowID),
+              spaces[index].columns[source].isStack else { return false }
+        let wasFocused = spaces[index].focusedWindowID == windowID
+        guard let column = spaces[index].detach(windowID: windowID) else { return false }
+        spaces[index].columns.insert(column, at: min(max(position, 0), spaces[index].columns.count))
+        if wasFocused { spaces[index].setFocus(windowID: windowID) }
+        return true
+    }
+
+    /// Sets a stacked member's relative share of its column's height in the
+    /// current space. A window alone in its column has no share to set.
+    @discardableResult
+    public mutating func setHeightWeight(_ weight: Double, for windowID: String) -> Bool {
+        guard weight.isFinite, weight > 0,
+              let column = currentSpace.columnIndex(of: windowID), currentSpace.columns[column].isStack,
+              let member = currentSpace.columns[column].windowIDs.firstIndex(of: windowID),
+              currentSpace.columns[column].heightWeights[member] != weight else { return false }
+        spaces[activeSpaceIndex].columns[column].heightWeights[member] = weight
         return true
     }
 

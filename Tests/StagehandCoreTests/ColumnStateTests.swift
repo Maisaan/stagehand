@@ -219,9 +219,12 @@ private func invariantViolations(_ state: WorkspaceState) -> [String] {
         let observedWidths = randomSizes()
         let preferredHeights = randomSizes()
         let observedHeights = randomSizes()
+        // Learned minimum heights apply only to stacks, so they change nothing here.
+        let minimumHeights = randomSizes()
         let placements = WindowLayout.placements(
             for: state, availableFrame: frame, gap: gap, observedWidths: observedWidths,
-            preferredHeights: preferredHeights, observedHeights: observedHeights
+            preferredHeights: preferredHeights, observedHeights: observedHeights,
+            minimumHeights: minimumHeights
         )
         let expected = LegacyWindowLayout.placements(
             for: state, availableFrame: frame, gap: gap, observedWidths: observedWidths,

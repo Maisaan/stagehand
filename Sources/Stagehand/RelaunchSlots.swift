@@ -18,6 +18,10 @@ struct RelaunchSlots {
         /// The layout just before the window left the ribbon.
         let layout: WorkspaceState
         let preferredHeight: CGFloat?
+        /// The layout just before the first window of its app's quit left. Windows
+        /// close one at a time, so only this one still shows the stacks the app's
+        /// windows shared; `layout` alone has lost the mates that closed first.
+        var quitLayout: WorkspaceState?
     }
 
     struct Placement: Equatable {
@@ -86,8 +90,12 @@ struct RelaunchSlots {
         let quitting = leaving.filter { $0.pid == pid && now.timeIntervalSince($0.leftAt) <= Self.quitInterval }
         leaving.removeAll { $0.pid == pid }
         guard let bundleIdentifier = quitting.first?.bundleIdentifier else { return nil }
-        let windows = quitting.filter { $0.bundleIdentifier == bundleIdentifier }.map(\.window)
-            .sorted { Self.ribbonOrder($0) < Self.ribbonOrder($1) }
+        let quitLayout = quitting.first?.window.layout
+        let windows = quitting.filter { $0.bundleIdentifier == bundleIdentifier }.map { leaving in
+            var window = leaving.window
+            window.quitLayout = quitLayout
+            return window
+        }.sorted { Self.ribbonOrder($0) < Self.ribbonOrder($1) }
         departures[bundleIdentifier] = Departure(pid: pid, windows: windows)
         return (bundleIdentifier, windows.count)
     }
@@ -167,19 +175,51 @@ struct RelaunchSlots {
             } else {
                 continue
             }
-            let members = state.spaces[target].windowIDs
-            guard !members.contains(windowID) else { continue }
-            let earlier = neighbors[..<savedPosition].reversed().first(where: members.contains)
-            let later = neighbors[(savedPosition + 1)...].first(where: members.contains)
-            let position = earlier.flatMap { members.firstIndex(of: $0) }.map { $0 + 1 }
-                ?? later.flatMap { members.firstIndex(of: $0) }
-                ?? members.endIndex
+            let space = state.spaces[target]
+            guard !space.contains(windowID: windowID) else { continue }
+            // A stacked window goes back into the column holding its column-mates.
+            if let savedColumn = stackColumn(of: departed, in: savedSpace),
+               state.rejoin(windowID: windowID,
+                            savedMembers: savedColumn.windowIDs.map { $0 == departed.id ? windowID : resolve($0) },
+                            heightWeight: savedColumn.heightWeight(for: departed.id), inSpace: target) {
+                joined.append(target)
+                continue
+            }
+            // Otherwise it is a column of its own next to the column of its nearest
+            // remaining neighbor.
+            let earlier = neighbors[..<savedPosition].reversed().first { space.contains(windowID: $0) }
+            let later = neighbors[(savedPosition + 1)...].first { space.contains(windowID: $0) }
+            let position = earlier.flatMap { space.columnIndex(of: $0) }.map { $0 + 1 }
+                ?? later.flatMap { space.columnIndex(of: $0) }
+                ?? space.columns.endIndex
             if state.insert(windowID: windowID, inSpace: target, at: position,
                             width: savedSpace.widthFraction(for: departed.id)) {
                 joined.append(target)
             }
         }
         return (joined, opened)
+    }
+
+    /// The stack the departed window was in, in the space of its layout that is
+    /// `savedSpace`, as it was before its app's first window left. Nil when it
+    /// was alone in its column.
+    private static func stackColumn(of departed: DepartedWindow, in savedSpace: SpaceState) -> ColumnState? {
+        var candidates = [savedSpace]
+        if let quitLayout = departed.quitLayout {
+            // The same space before the quit: it holds the window and, of every
+            // space that does, the most of the members it still had on leaving.
+            let members = Set(savedSpace.windowIDs)
+            if let before = quitLayout.spaces.filter({ $0.contains(windowID: departed.id) })
+                .max(by: { $0.windowIDs.count(where: members.contains) < $1.windowIDs.count(where: members.contains) }) {
+                candidates.insert(before, at: 0)
+            }
+        }
+        for space in candidates {
+            if let column = space.columnIndex(of: departed.id), space.columns[column].isStack {
+                return space.columns[column]
+            }
+        }
+        return nil
     }
 
     /// The current space holding most of `ids`, the nearest to `savedIndex` on a tie.

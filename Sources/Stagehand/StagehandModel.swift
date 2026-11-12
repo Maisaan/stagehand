@@ -193,6 +193,12 @@ final class StagehandModel: ObservableObject {
     var preferredHeights: [String: CGFloat] = [:] {
         didSet { if isRunning, preferredHeights != oldValue { scheduleLayoutSave() } }
     }
+    /// Heights apps refused to go below, learned from layouts and kept across
+    /// them, so a stack is sized to fit at once and a stack that cannot fit is
+    /// refused before it is made. Only in memory; forgotten with the window.
+    var learnedMinimumHeights: [String: CGFloat] = [:]
+    /// A column change was refused instead of applied; Stagehand keeps running.
+    var onColumnChangeRefused: ((ColumnRefusal) -> Void)?
     var lastTransition = Date.distantPast
     var automaticResumeTask: Task<Void, Never>?
     var automaticResumeAttempted = false
@@ -264,6 +270,9 @@ final class StagehandModel: ObservableObject {
         case removeMembership(windowID: String, fromSpaceIndex: Int)
         case reorderWindow(windowID: String, toIndex: Int, spaceIndex: Int)
         case focusInSpace(windowID: String, spaceIndex: Int)
+        /// A change to the active space's columns that is refused, without
+        /// pausing, when a stack would not fit.
+        case columns(ColumnChange)
         case observedFocus(String)
         case windowRemoval
         case refresh
@@ -298,6 +307,7 @@ final class StagehandModel: ObservableObject {
             case .removeMembership: "removeMembershipFromSettings"
             case .reorderWindow: "reorderWindow"
             case .focusInSpace: "focusWindowFromSettings"
+            case .columns(let change): "columns.\(change.diagnosticName)"
             case .observedFocus: "observedFocus"
             case .windowRemoval: "windowRemoval"
             case .refresh: "refresh"
