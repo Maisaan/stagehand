@@ -119,7 +119,7 @@ struct RibbonAnimationConfiguration: Equatable {
 
 @MainActor
 protocol RibbonFrameDriving: AnyObject {
-    func start(onFrame: @escaping (TimeInterval) -> Void) -> Bool
+    func start(display: CGDirectDisplayID, onFrame: @escaping (TimeInterval) -> Void) -> Bool
     func stop()
 }
 
@@ -132,16 +132,9 @@ private final class SystemRibbonFrameDriver: NSObject, RibbonFrameDriving {
     private var displayLink: CADisplayLink?
     private var onFrame: ((TimeInterval) -> Void)?
 
-    func start(onFrame: @escaping (TimeInterval) -> Void) -> Bool {
+    func start(display: CGDirectDisplayID, onFrame: @escaping (TimeInterval) -> Void) -> Bool {
         stop()
-        guard let screen = NSScreen.screens.first(where: { screen in
-            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
-                return false
-            }
-            return CGDisplayIsBuiltin(number.uint32Value) != 0
-        }) ?? NSScreen.main else {
-            return false
-        }
+        guard let screen = NSScreen.screen(displayNumber: display) else { return false }
         let displayLink = MainThreadActivity.during("displayLink create") {
             screen.displayLink(target: self, selector: #selector(displayFrame(_:)))
         }
@@ -268,9 +261,9 @@ final class RibbonMotion {
             observedHeights[id] = frame.height
         }
         let placements = WindowLayout.placements(
-            for: destination,
+            for: destination.currentSpace,
             availableFrame: availableFrame,
-            gap: gap,
+            tileGap: gap,
             paneGap: paneGap,
             observedWidths: observedWidths,
             observedHeights: observedHeights
@@ -311,14 +304,14 @@ final class RibbonMotion {
 
     /// Trackpad callbacks can arrive between display refreshes. Keep only the newest
     /// geometry and write it once on the next refresh instead of queueing stale positions.
-    func follow(frames: @escaping () -> [String: CGRect],
+    func follow(on display: CGDirectDisplayID?, frames: @escaping () -> [String: CGRect],
                 update: @escaping ([String: CGRect]) -> Void) {
         if animation != nil { cancel() }
         let wasFollowing = followingUpdate != nil
         followingFrames = frames
         followingUpdate = update
         guard !wasFollowing else { return }
-        guard startFrameDriver() else {
+        guard startFrameDriver(display: display) else {
             let frames = frames()
             self.frames = frames
             followingFrames = nil
@@ -328,7 +321,7 @@ final class RibbonMotion {
         }
     }
 
-    func animate(from: [String: CGRect], to: [String: CGRect],
+    func animate(on display: CGDirectDisplayID?, from: [String: CGRect], to: [String: CGRect],
                  configuration: RibbonAnimationConfiguration = .default,
                  initialHorizontalVelocity: CGFloat? = nil,
                  update: @escaping ([String: CGRect]) -> Void,
@@ -357,7 +350,7 @@ final class RibbonMotion {
             cancellation: cancellation,
             completion: completion
         )
-        guard startFrameDriver() else {
+        guard startFrameDriver(display: display) else {
             animation = nil
             finishImmediately(to: to, generation: currentGeneration, update: update,
                               cancellation: cancellation, completion: completion)
@@ -395,7 +388,7 @@ final class RibbonMotion {
 
     /// Resumes false when the motion is cancelled, when the awaiting task is
     /// cancelled, or when the display link stalls past the watchdog.
-    func animate(from: [String: CGRect], to: [String: CGRect],
+    func animate(on display: CGDirectDisplayID?, from: [String: CGRect], to: [String: CGRect],
                  configuration: RibbonAnimationConfiguration = .default,
                  initialHorizontalVelocity: CGFloat? = nil,
                  update: @escaping ([String: CGRect]) -> Void) async -> Bool {
@@ -407,6 +400,7 @@ final class RibbonMotion {
                     return
                 }
                 animate(
+                    on: display,
                     from: from,
                     to: to,
                     configuration: configuration,
@@ -432,8 +426,10 @@ final class RibbonMotion {
         var generation: UInt64?
     }
 
-    private func startFrameDriver() -> Bool {
-        frameDriver.start { [weak self] timestamp in
+    /// Without a display there is no display link, so motion finishes at once.
+    private func startFrameDriver(display: CGDirectDisplayID?) -> Bool {
+        guard let display else { return false }
+        return frameDriver.start(display: display) { [weak self] timestamp in
             guard let self else { return }
             guard let onFrameTiming = self.onFrameTiming else { return self.advance(to: timestamp) }
             let began = CACurrentMediaTime()

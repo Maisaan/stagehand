@@ -44,11 +44,12 @@ extension StagehandModel {
                !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
                 let frames = navigationFrames()
                 ribbonMotion.cancel()
+                let display = focusedDisplay
                 gestureBase = frames
-                presentationFrames = frames.filter { $0.value.intersects(availableFrame ?? .zero) }
+                presentationFrames = frames.filter { $0.value.intersects(display?.visibleFrame ?? .zero) }
                 gesturePrepared = Set(presentationFrames?.keys.map { $0 } ?? [])
                 gestureUnwritable.removeAll()
-                motionBackingScaleFactor = builtInScreen?.backingScaleFactor ?? 1
+                motionBackingScaleFactor = display?.backingScaleFactor ?? 1
                 motionWrittenPositions = presentationFrames?.mapValues {
                     RibbonMotion.pixelAligned($0.origin, backingScaleFactor: motionBackingScaleFactor)
                 } ?? [:]
@@ -158,9 +159,10 @@ extension StagehandModel {
     }
 
     func previewGesture(displacement: Double) {
-        guard let base = gestureBase, let availableFrame, gestureAxis == .horizontal,
+        guard let base = gestureBase, let display = focusedDisplay, gestureAxis == .horizontal,
               !changes.isProcessing, displacement.isFinite else { return }
-        ribbonMotion.follow(frames: { [weak self] in
+        let availableFrame = display.visibleFrame
+        ribbonMotion.follow(on: display.number, frames: { [weak self] in
             guard let self, self.gestureBase != nil, self.desktopScope.relation == .home else { return [:] }
             return self.gesturePreviewFrames(
                 from: base,

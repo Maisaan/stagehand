@@ -946,15 +946,15 @@ struct ModelScenarioTests {
         #expect(harness.windows.windows.mapValues(\.frame) != originals)
 
         // A transient change that comes back within the delay does not pause.
-        harness.model.builtInScreenProvider = { nil }
+        harness.model.displayArrangementProvider = { .externalOnly }
         harness.model.screenParametersChanged()
-        harness.model.builtInScreenProvider = { NSScreen.screens.first }
+        harness.model.displayArrangementProvider = { .testBuiltIn }
         harness.model.screenParametersChanged()
         try? await Task.sleep(for: .milliseconds(150))
         await harness.settle()
         #expect(harness.model.isRunning)
 
-        harness.model.builtInScreenProvider = { nil }
+        harness.model.displayArrangementProvider = { .externalOnly }
         harness.model.screenParametersChanged()
         #expect(harness.model.isRunning)
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
@@ -972,7 +972,7 @@ struct ModelScenarioTests {
         #expect(!harness.model.isRunning)
         #expect((harness.events("start_failed").last?["details"] as? [String: String])?["reason"] == "built_in_display_unavailable")
 
-        harness.model.builtInScreenProvider = { NSScreen.screens.first }
+        harness.model.displayArrangementProvider = { .testBuiltIn }
         harness.model.start()
         await harness.settle()
         #expect(harness.model.isRunning)

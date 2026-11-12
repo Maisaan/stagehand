@@ -361,8 +361,8 @@ extension StagehandModel {
             if pointerInteraction == nil, let focused = focusedWindow, let frame = availableFrame {
                 pointerInteraction = PointerInteraction(
                     windowID: focused.id,
-                    placements: WindowLayout.placements(for: oldState, availableFrame: frame, gap: gap,
-                                                        paneGap: paneGap,
+                    placements: WindowLayout.placements(for: oldState.currentSpace, availableFrame: frame,
+                                                        tileGap: gap, paneGap: paneGap,
                                                         minimumWidths: learnedMinimumWidths,
                                                         minimumHeights: learnedMinimumHeights),
                     needsLayout: oldState != state
@@ -412,8 +412,8 @@ extension StagehandModel {
                     if let interaction, interaction.windowID == focused.id {
                         placements = interaction.placements
                     } else {
-                        placements = WindowLayout.placements(for: oldState, availableFrame: frame, gap: gap,
-                                                             paneGap: paneGap,
+                        placements = WindowLayout.placements(for: oldState.currentSpace, availableFrame: frame,
+                                                             tileGap: gap, paneGap: paneGap,
                                                              minimumWidths: learnedMinimumWidths,
                                                              minimumHeights: learnedMinimumHeights)
                     }

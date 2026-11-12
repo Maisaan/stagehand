@@ -388,8 +388,39 @@ final class FakeOverlays: NavigationPresenting {
 
 /// Finishes every ribbon animation immediately, as with Reduce Motion.
 final class ImmediateFrameDriver: RibbonFrameDriving {
-    func start(onFrame: @escaping (TimeInterval) -> Void) -> Bool { false }
+    private(set) var displays: [CGDirectDisplayID] = []
+    func start(display: CGDirectDisplayID, onFrame: @escaping (TimeInterval) -> Void) -> Bool {
+        displays.append(display)
+        return false
+    }
     func stop() {}
+}
+
+extension ScreenDescription {
+    /// The first screen's geometry as a built-in display, so tests run the same on a Mac without one.
+    @MainActor static var testBuiltIn: ScreenDescription {
+        let screen = NSScreen.screens.first
+        return ScreenDescription(
+            id: DisplayID(rawValue: "B0000000-0000-0000-0000-000000000001"), number: 1,
+            frame: screen?.frame ?? CGRect(x: 0, y: 0, width: 1440, height: 900),
+            visibleFrame: screen?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 875),
+            isBuiltIn: true, backingScaleFactor: screen?.backingScaleFactor ?? 2, maximumFramesPerSecond: 120)
+    }
+
+    static func external(number: CGDirectDisplayID, frame: CGRect, visibleFrame: CGRect? = nil,
+                         backingScaleFactor: CGFloat = 1) -> ScreenDescription {
+        ScreenDescription(id: DisplayID(rawValue: String(format: "E%07X-0000-0000-0000-000000000000", number)),
+                          number: number, frame: frame, visibleFrame: visibleFrame ?? frame, isBuiltIn: false,
+                          backingScaleFactor: backingScaleFactor, maximumFramesPerSecond: 60)
+    }
+}
+
+extension DisplayArrangement {
+    @MainActor static var testBuiltIn: DisplayArrangement { DisplayArrangement(screens: [.testBuiltIn]) }
+    /// Clamshell: an external display and no built-in one.
+    static let externalOnly = DisplayArrangement(screens: [
+        .external(number: 2, frame: CGRect(x: 0, y: 0, width: 2560, height: 1440))
+    ])
 }
 
 @MainActor
@@ -410,6 +441,7 @@ struct ModelHarness {
     let logURL: URL
     let preferencesSuite = "stagehand-tests-\(UUID().uuidString)"
     let postedEvents: () -> Int
+    let frameDriver = ImmediateFrameDriver()
 
     /// The Desktop reported to the model; nil means WindowServer gave no identity.
     let desktop: DesktopFixture
@@ -443,13 +475,12 @@ struct ModelHarness {
                 connectedDisplays: { desktop.displays }, screensHaveSeparateSpaces: { true },
                 currentSpace: { desktop.displaySpaces[$0] }, readerSymbol: "SLSManagedDisplayGetCurrentSpace")),
             focusGate: gate,
-            ribbonMotion: RibbonMotion(frameDriver: ImmediateFrameDriver()),
+            ribbonMotion: RibbonMotion(frameDriver: frameDriver),
             pointer: pointer.tracker,
             layoutStore: layoutStore,
             preferences: UserDefaults(suiteName: preferencesSuite)!
         )
-        // Tests lay out on the first screen; a desktop Mac has no built-in display.
-        model.builtInScreenProvider = { NSScreen.screens.first }
+        model.displayArrangementProvider = { .testBuiltIn }
         self.windows = windows
         self.overlays = overlays
         postedEvents = { posted }

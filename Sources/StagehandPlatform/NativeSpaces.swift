@@ -168,11 +168,7 @@ enum ManagedDisplaySpacesReader {
         guard CGGetOnlineDisplayList(count, &numbers, &count) == .success else { return [] }
         return numbers.prefix(Int(count))
             .filter { CGDisplayMirrorsDisplay($0) == kCGNullDirectDisplay }
-            .compactMap { number in
-                guard let uuid = CGDisplayCreateUUIDFromDisplayID(number)?.takeRetainedValue(),
-                      let string = CFUUIDCreateString(nil, uuid) else { return nil }
-                return DisplayID(rawValue: string as String)
-            }
+            .compactMap(DisplayID.init(displayNumber:))
     }
 }
 

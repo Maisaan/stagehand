@@ -9,9 +9,11 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     private var handler: ((TimeInterval) -> Void)?
     private(set) var startCount = 0
     private(set) var stopCount = 0
+    private(set) var displays: [CGDirectDisplayID] = []
 
-    func start(onFrame: @escaping (TimeInterval) -> Void) -> Bool {
+    func start(display: CGDirectDisplayID, onFrame: @escaping (TimeInterval) -> Void) -> Bool {
         startCount += 1
+        displays.append(display)
         handler = onFrame
         return true
     }
@@ -25,6 +27,8 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
         handler?(timestamp)
     }
 }
+
+private let testDisplay: CGDirectDisplayID = 1
 
 @Test func externalFocusChangesDoNotAnimateTheRibbon() {
     let previous = WorkspaceState(spaces: [
@@ -138,6 +142,7 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     let motion = RibbonMotion(frameDriver: driver, currentTime: { 0 })
     var events: [String] = []
     motion.animate(
+        on: testDisplay,
         from: ["a": CGRect(x: 0, y: 0, width: 10, height: 10)],
         to: ["a": CGRect(x: 100, y: 0, width: 10, height: 10)],
         configuration: .init(duration: 1, curve: .linear),
@@ -146,6 +151,7 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
         completion: { events.append("old completed") }
     )
     motion.animate(
+        on: testDisplay,
         from: motion.frames,
         to: ["a": CGRect(x: -100, y: 0, width: 10, height: 10)],
         configuration: .init(duration: 1, curve: .linear),
@@ -166,6 +172,7 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     for (to, duration) in [(frame.offsetBy(dx: 100, dy: 0), 0.0), (frame, 1.0)] {
         var events: [String] = []
         motion.animate(
+            on: testDisplay,
             from: ["a": frame],
             to: ["a": to],
             configuration: .init(duration: duration, curve: .linear),
@@ -182,7 +189,7 @@ private final class TestRibbonFrameDriver: RibbonFrameDriving {
     let motion = RibbonMotion(frameDriver: driver, currentTime: { 0 })
     var latest = ["a": CGRect(x: 0, y: 0, width: 10, height: 10)]
     var updates: [[String: CGRect]] = []
-    motion.follow(frames: { latest }, update: { updates.append($0) })
+    motion.follow(on: testDisplay, frames: { latest }, update: { updates.append($0) })
     latest["a"]?.origin.x = 10
     latest["a"]?.origin.x = 20
     #expect(updates.isEmpty)
@@ -384,6 +391,7 @@ func focusRunsDuringTranslationAndOnlyConfirmedFocusCommitsInput(_ expected: Con
     motion.onStall = { stalls += 1 }
 
     let completed = await motion.animate(
+        on: testDisplay,
         from: ["a": CGRect(x: 0, y: 0, width: 10, height: 10)],
         to: ["a": CGRect(x: 100, y: 0, width: 10, height: 10)],
         configuration: .init(duration: 0.01, curve: .linear),
@@ -402,6 +410,7 @@ func focusRunsDuringTranslationAndOnlyConfirmedFocusCommitsInput(_ expected: Con
     let motion = RibbonMotion(frameDriver: driver, currentTime: { 0 })
     let task = Task { @MainActor in
         await motion.animate(
+            on: testDisplay,
             from: ["a": CGRect(x: 0, y: 0, width: 10, height: 10)],
             to: ["a": CGRect(x: 100, y: 0, width: 10, height: 10)],
             configuration: .init(duration: 1, curve: .linear),
@@ -427,6 +436,7 @@ func focusRunsDuringTranslationAndOnlyConfirmedFocusCommitsInput(_ expected: Con
     let motion = RibbonMotion(frameDriver: driver, currentTime: { 0 })
     let first = Task { @MainActor in
         await motion.animate(
+            on: testDisplay,
             from: ["a": CGRect(x: 0, y: 0, width: 10, height: 10)],
             to: ["a": CGRect(x: 100, y: 0, width: 10, height: 10)],
             configuration: .init(duration: 1, curve: .linear),
@@ -442,6 +452,7 @@ func focusRunsDuringTranslationAndOnlyConfirmedFocusCommitsInput(_ expected: Con
 
     var secondEvents: [String] = []
     motion.animate(
+        on: testDisplay,
         from: ["a": CGRect(x: 100, y: 0, width: 10, height: 10)],
         to: ["a": CGRect(x: 0, y: 0, width: 10, height: 10)],
         configuration: .init(duration: 1, curve: .linear),

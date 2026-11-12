@@ -275,24 +275,27 @@ extension StagehandModel {
         return true
     }
 
-    /// The built-in display, or nil when the lid is closed or the Mac has none.
-    /// Stagehand manages only that display (README), so there is no fallback to
-    /// an external one.
-    static func builtInDisplay() -> NSScreen? {
-        NSScreen.screens.first { screen in
-            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return false }
-            return CGDisplayIsBuiltin(number.uint32Value) != 0
-        }
+    var displayArrangement: DisplayArrangement { displayArrangementProvider() }
+
+    /// The display showing the focused space. Until the model sets its displays, that is
+    /// the built-in display alone (README), so an external one is never laid out (070bfa8).
+    var focusedDisplay: Display? {
+        let arrangement = displayArrangement
+        guard let id = state.focusedDisplay else { return arrangement.builtIn }
+        return arrangement.display(id)
     }
 
-    var builtInScreen: NSScreen? { builtInScreenProvider() }
+    // Kept for StagehandModel+Benchmark.swift until slice B.
+    var builtInScreen: NSScreen? {
+        displayArrangement.builtIn.flatMap { NSScreen.screen(displayNumber: $0.number) }
+    }
 
     static let missingDisplayWarning = "Stagehand paused because the built-in display is unavailable. It manages only the built-in display, so it restored your windows. Press Start once the display is back."
 
     /// Pauses if the built-in display is still missing after display changes settled.
     func pauseIfBuiltInDisplayMissing() {
         guard isRunning, !isSuspended else { return }
-        guard builtInScreen == nil else {
+        guard displayArrangement.builtIn == nil else {
             enqueue(.preferences)
             return
         }
@@ -301,11 +304,7 @@ extension StagehandModel {
         warning = Self.missingDisplayWarning
     }
 
-    var availableFrame: CGRect? {
-        guard let screen = builtInScreen, let primary = NSScreen.screens.first else { return nil }
-        let frame = screen.visibleFrame
-        return CGRect(x: frame.minX, y: primary.frame.maxY - frame.maxY, width: frame.width, height: frame.height)
-    }
+    var availableFrame: CGRect? { focusedDisplay?.visibleFrame }
 
     func failLayout(_ reason: String, details: [String: String] = [:]) -> LayoutOutcome {
         var context = workspaceDetails()
@@ -443,8 +442,8 @@ extension StagehandModel {
         let maximumPass = state.currentSpace.windowIDs.count
         for pass in 0...maximumPass {
             guard preferenceFocusStillMatches(request) else { return .completed }
-            placements = WindowLayout.placements(for: state, availableFrame: availableFrame, gap: gap,
-                                                 paneGap: paneGap,
+            placements = WindowLayout.placements(for: state.currentSpace, availableFrame: availableFrame,
+                                                 tileGap: gap, paneGap: paneGap,
                                                  observedWidths: observedWidths, preferredHeights: preferredHeights,
                                                  observedHeights: observedHeights,
                                                  minimumWidths: learnedMinimumWidths,
@@ -756,8 +755,8 @@ extension StagehandModel {
         let actual = Dictionary(windows.filter { members.contains($0.id) }.compactMap { window in
             knownFrame(windowID: window.id).map { (window.id, $0) }
         }, uniquingKeysWith: { first, _ in first })
-        let placements = WindowLayout.placements(for: state, availableFrame: availableFrame, gap: gap,
-                                                 paneGap: paneGap,
+        let placements = WindowLayout.placements(for: state.currentSpace, availableFrame: availableFrame,
+                                                 tileGap: gap, paneGap: paneGap,
                                                  observedWidths: actual.mapValues(\.width),
                                                  observedHeights: actual.mapValues(\.height))
         var frames = Dictionary(placements.map {
@@ -853,7 +852,8 @@ extension StagehandModel {
 
     func settleRibbon(from: [String: CGRect], to: [String: CGRect], visibleIDs: Set<String>,
                               operation: String, initialHorizontalVelocity: CGFloat? = nil) async -> Bool {
-        motionBackingScaleFactor = builtInScreen?.backingScaleFactor ?? 1
+        let display = focusedDisplay
+        motionBackingScaleFactor = display?.backingScaleFactor ?? 1
         motionWrittenPositions = from.mapValues {
             RibbonMotion.pixelAligned($0.origin, backingScaleFactor: motionBackingScaleFactor)
         }
@@ -870,6 +870,7 @@ extension StagehandModel {
         ])
         let animationStart = ProcessInfo.processInfo.systemUptime
         let completed = await ribbonMotion.animate(
+            on: display?.number,
             from: from,
             to: to,
             configuration: animationConfiguration,

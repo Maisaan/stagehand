@@ -229,8 +229,8 @@ final class StagehandModel: ObservableObject {
     var accessibilityPollInterval: Duration = .seconds(2)
     static let accessibilityRevokedWarning = "macOS revoked Stagehand's Accessibility permission, so Stagehand paused and restored your windows. Allow Stagehand in Privacy & Security > Accessibility, then press Start."
     static let accessibilityRevokedPendingWarning = "macOS revoked Stagehand's Accessibility permission, so Stagehand paused. Some windows couldn't be moved back without it; they return once you allow Stagehand in Privacy & Security > Accessibility again."
-    /// Where the ribbon lives. Tests substitute a screen; the app uses the built-in display only.
-    var builtInScreenProvider: @MainActor () -> NSScreen? = StagehandModel.builtInDisplay
+    /// Read live, as NSScreen is: visible frames change with the Dock and menu bar. Tests substitute displays.
+    var displayArrangementProvider: @MainActor () -> DisplayArrangement = { DisplayArrangement.current() }
     var displayCheckTask: Task<Void, Never>?
     /// Display sets change in steps (clamshell, wake, a cable). Wait this long
     /// after the built-in display disappears before pausing on it.
@@ -772,7 +772,7 @@ final class StagehandModel: ObservableObject {
             warning = "Stagehand couldn't restore every window from its interrupted session. Try Start again when their apps respond."
             return
         }
-        guard builtInScreen != nil else {
+        guard displayArrangement.builtIn != nil else {
             diagnostics.record("start_failed", details: [
                 "reason": "built_in_display_unavailable", "screenCount": String(NSScreen.screens.count)
             ])
@@ -1290,7 +1290,7 @@ final class StagehandModel: ObservableObject {
             nativeDesktopChanged()
         }
         guard isRunning, !isSuspended else { return }
-        let hasBuiltInDisplay = builtInScreen != nil
+        let hasBuiltInDisplay = displayArrangement.builtIn != nil
         diagnostics.record("screen_parameters_changed", details: [
             "builtInDisplay": String(hasBuiltInDisplay),
             "screenCount": String(NSScreen.screens.count)
