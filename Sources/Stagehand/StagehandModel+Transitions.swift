@@ -341,6 +341,9 @@ extension StagehandModel {
             mayHoldFocus: { windowSystem.mayHoldFocus(windowID: record.id) }
         )
         let focused = confirmation == .focused
+        if request == .navigation {
+            diagnostics.observe(focused ? "navigation_focus_succeeded" : "navigation_focus_rejected")
+        }
         if request == .navigation, diagnostics.isEnabled {
             // A confirmed focus already observed the target. Avoid another
             // synchronous AX read while the newly active app may still be busy.
@@ -849,16 +852,14 @@ extension StagehandModel {
         var animationConfiguration = ribbonAnimationConfiguration
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { animationConfiguration.duration = 0 }
         _ = windowSystem.motionWriteStatistics(reset: true, focusedWindowID: nil)
-        if diagnostics.isEnabled {
-            diagnostics.record("ribbon_animation_started", details: [
-                "curve": animationConfiguration.curve.diagnosticDescription,
-                "durationMilliseconds": String(Int((animationConfiguration.duration * 1_000).rounded())),
-                "focusedWindowID": state.focusedWindowID ?? "none",
-                "initialHorizontalVelocity": initialHorizontalVelocity.map { String(Double($0)) } ?? "none",
-                "operation": operation,
-                "windowCount": String(to.count)
-            ])
-        }
+        diagnostics.record("ribbon_animation_started", details: [
+            "curve": animationConfiguration.curve.diagnosticDescription,
+            "durationMilliseconds": String(Int((animationConfiguration.duration * 1_000).rounded())),
+            "focusedWindowID": state.focusedWindowID ?? "none",
+            "initialHorizontalVelocity": initialHorizontalVelocity.map { String(Double($0)) } ?? "none",
+            "operation": operation,
+            "windowCount": String(to.count)
+        ])
         let animationStart = ProcessInfo.processInfo.systemUptime
         let completed = await ribbonMotion.animate(
             from: from,

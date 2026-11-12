@@ -78,6 +78,11 @@ final class DiagnosticLogger {
     /// Benchmark hook: sees each event name with its uptime, logged or not.
     var eventObserver: ((String) -> Void)?
 
+    /// Benchmark hook for an event that is never written to the log.
+    func observe(_ event: String) {
+        eventObserver?(event)
+    }
+
     /// The latest event and when it was recorded (system uptime), logged or not.
     /// A main_thread_stall names it as the phase that blocked.
     private(set) var lastEvent: (name: String, uptime: TimeInterval)?

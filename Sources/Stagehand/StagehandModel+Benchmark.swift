@@ -9,94 +9,37 @@ import StagehandPlatform
 /// Time to construct the model in applicationDidFinishLaunching.
 @MainActor var modelInitMilliseconds: Int?
 
-/// Posts a block to the main thread every 4 ms from a background thread and
-/// records how long each waited. The keyboard tap, gestures, and ribbon frames
-/// all run on the main thread, so this delay is the input latency users feel.
-/// While a post waits, the `MainThreadActivity` label is sampled every 2 ms, so a
-/// stall names the call that was running.
-final class MainThreadLatencyMonitor: @unchecked Sendable {
-    private let lock = NSLock()
-    private var samples: [Double] = []
-    private var postedTimes: [Double] = []
-    private var labels: [String] = []
-    private var running = false
-
-    func start() {
-        lock.withLock {
-            samples.removeAll()
-            postedTimes.removeAll()
-            labels.removeAll()
-            running = true
-        }
-        Thread.detachNewThread { [self] in
-            while lock.withLock({ running }) {
-                let posted = CACurrentMediaTime()
-                let answered = DispatchSemaphore(value: 0)
-                DispatchQueue.main.async {
-                    let waited = (CACurrentMediaTime() - posted) * 1_000
-                    self.lock.withLock {
-                        self.samples.append(waited)
-                        self.postedTimes.append(posted)
-                    }
-                    answered.signal()
-                }
-                var seen: [String: Int] = [:]
-                while answered.wait(timeout: .now() + 0.002) == .timedOut {
-                    seen[MainThreadActivity.current ?? "unlabeled", default: 0] += 1
-                }
-                let label = seen.max { $0.value != $1.value ? $0.value < $1.value : $0.key > $1.key }?.key
-                lock.withLock { labels.append(label ?? "unlabeled") }
-                usleep(4_000)
-            }
-        }
-    }
-
-    /// Stalls over 33 ms as (posted uptime, waited ms).
-    var stalls: [(Double, Double)] {
-        lock.withLock { zip(postedTimes, samples).filter { $0.1 > 33 } }
-    }
-
-    /// Stall time over 33 ms by the label most often running during each stall,
-    /// with the pid dropped so one call groups across apps.
-    var blockedByCall: [String: Double] {
-        lock.withLock {
-            var result: [String: Double] = [:]
-            for (waited, label) in zip(samples, labels) where waited > 33 {
-                let call = label.replacingOccurrences(of: #" pid=-?\d+"#, with: "", options: .regularExpression)
-                result[call, default: 0] += waited
-            }
-            return result
-        }
-    }
-
-    func stop() -> [Double] {
-        lock.withLock {
-            running = false
-            return samples
-        }
-    }
-}
-
 /// `--benchmark`: measures startup, navigation latency, ribbon frame cost, main-thread
 /// stalls, and interface load times against the disposable acceptance probe windows.
 extension StagehandModel {
-    private struct SwitchTiming {
-        var motion: Double?
-        var focus: Double?
-        var settled: Double = 0
-        var frameWork: [Double] = []
-        var droppedFrames = 0
-        var focusedGap: Double?
-        var largestGap: Double?
+    func runBenchmark(probeURL: URL, busy: Bool, switches: Int = 24, rawOutput: URL? = nil) async -> String {
+        var record = BenchmarkRecord()
+        var lines: [String] = []
+        await performBenchmark(probeURL: probeURL, busy: busy, switches: switches, record: &record, lines: &lines)
+        if let rawOutput {
+            do {
+                try record.jsonData().write(to: rawOutput)
+            } catch {
+                record.failures.append("raw samples not written to \(rawOutput.path): \(error.localizedDescription)")
+            }
+        }
+        lines.append(record.resultLine)
+        return lines.joined(separator: "\n")
     }
 
-    func runBenchmark(probeURL: URL, busy: Bool, switches: Int = 24) async -> String {
+    private func performBenchmark(probeURL: URL, busy: Bool, switches: Int,
+                                  record: inout BenchmarkRecord, lines: inout [String]) async {
+        func fail(_ reason: String) {
+            record.failures.append("setup: " + reason)
+            lines.append("FAIL: " + reason)
+        }
         guard Bundle(url: probeURL)?.bundleIdentifier == "dev.stagehand.AcceptanceProbe" else {
-            return "FAIL: expected dist/AcceptanceProbe.app."
+            return fail("expected dist/AcceptanceProbe.app.")
         }
         guard accessibilityGranted, let system = windowSystem as? WindowSystem else {
-            return "FAIL: Accessibility permission is missing for this build."
+            return fail("Accessibility permission is missing for this build.")
         }
+        guard let screen = builtInScreen else { return fail("no built-in display.") }
         let loggingWasEnabled = diagnostics.isEnabled
         let activityWasEnabled = MainThreadActivity.isEnabled
         MainThreadActivity.setEnabled(true)
@@ -106,6 +49,17 @@ extension StagehandModel {
         // Column stacks, not window stacking order: `--stacking` above measures when a
         // destination reaches the front of WindowServer's window order.
         let stacksColumns = ProcessInfo.processInfo.arguments.contains("--column-stacks")
+        let ribbonFramesPerSecond = Double(preferredRibbonFrameRate(maximum: screen.maximumFramesPerSecond))
+        record.environment = .init(
+            displayWidthPoints: screen.frame.width,
+            displayHeightPoints: screen.frame.height,
+            backingScale: screen.backingScaleFactor,
+            maximumFramesPerSecond: screen.maximumFramesPerSecond,
+            ribbonFramesPerSecond: ribbonFramesPerSecond,
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        )
+        record.settings = .init(gap: gap, widthPresets: widthPresets, loggingEnabled: logging, busyProbes: busy,
+                                measuresStacking: measuresStacking, columnStacks: stacksColumns, switches: switches)
         diagnostics.isEnabled = logging
         windowSystem.focusDiagnosticsEnabled = logging
         // Marks the probe-driven run so scripts/analyze-log.py can leave it out of real usage.
@@ -133,7 +87,7 @@ extension StagehandModel {
             configuration.arguments = ["--windows", String(count), "--report", reports.path, "--label", label]
                 + (busy ? ["--busy"] : [])
             guard let probe = try? await NSWorkspace.shared.openApplication(at: probeURL, configuration: configuration) else {
-                return "FAIL: could not launch the probe."
+                return fail("could not launch the probe.")
             }
             probes.append(probe)
         }
@@ -142,7 +96,7 @@ extension StagehandModel {
         while system.scanWindows().count < 4, ContinuousClock.now < discoveryDeadline {
             try? await Task.sleep(for: .milliseconds(50))
         }
-        guard system.scanWindows().count == 4 else { return "FAIL: the probe windows did not appear." }
+        guard system.scanWindows().count == 4 else { return fail("the probe windows did not appear.") }
         try? await Task.sleep(for: .milliseconds(400))
         var scans: [Double] = []
         for _ in 0..<9 {
@@ -151,10 +105,10 @@ extension StagehandModel {
             scans.append((CACurrentMediaTime() - began) * 1_000)
         }
 
-        var lines = ["Benchmark (\(busy ? "busy" : "responsive") probes, 4 windows, \(switches) switches"
+        lines.append("Benchmark (\(busy ? "busy" : "responsive") probes, 4 windows, \(switches) switches"
             + (stacksColumns ? ", two windows stacked in one column, columns "
                 + String(format: "%.2f", Self.columnBenchmarkWidthFraction) + " of the screen wide" : "")
-            + (logging ? ")" : ", diagnostic logging off)")]
+            + (logging ? ")" : ", diagnostic logging off)"))
         if let launchFinishedMilliseconds { lines.append("Launch to didFinishLaunching: \(launchFinishedMilliseconds) ms") }
         if let modelInitMilliseconds { lines.append("Model init: \(modelInitMilliseconds) ms") }
         lines.append("Window scan (3 apps): " + Self.percentiles(scans, digits: 1))
@@ -165,21 +119,26 @@ extension StagehandModel {
         let startBegan = CACurrentMediaTime()
         start()
         let startReturned = CACurrentMediaTime()
-        await benchmarkWaitUntilIdle()
+        let startIdle = await benchmarkWaitUntilIdle()
         let startSettled = CACurrentMediaTime()
+        let startWaits = monitor.stop().map(\.milliseconds)
+        record.phases.start = .init(callMs: (startReturned - startBegan) * 1_000,
+                                    settledMs: (startSettled - startBegan) * 1_000,
+                                    timedOut: !startIdle, mainThreadWaitsMs: startWaits)
         lines.append(String(format: "Start: call %.0f ms, settled %.0f ms", (startReturned - startBegan) * 1_000,
-                            (startSettled - startBegan) * 1_000))
-        lines.append("  main thread: " + Self.stallSummary(monitor.stop()))
-        guard isRunning else { return "FAIL: Stagehand did not start. Warning: \(warning ?? "none")" }
+                            (startSettled - startBegan) * 1_000) + (startIdle ? "" : " (timed out)"))
+        lines.append("  main thread: " + Self.stallSummary(startWaits))
+        if !startIdle { record.failures.append("start: idle wait timed out") }
+        guard isRunning else { return fail("Stagehand did not start. Warning: \(warning ?? "none")") }
         if stacksColumns {
             // The focused window joins a neighbor, so every switch below crosses or
             // reveals a stacked column: several windows written for one slot.
             var predicted = state
             let action: NavigationAction = predicted.apply(.stackNext) ? .stackNext : .stackPrevious
             navigate(action)
-            await benchmarkWaitUntilIdle()
+            guard await benchmarkWaitUntilIdle() else { return fail("stacking two probe windows did not settle.") }
             guard state.currentSpace.columns.contains(where: \.isStack) else {
-                return "FAIL: could not stack two probe windows."
+                return fail("could not stack two probe windows.")
             }
             // Stacking leaves three columns at the probes' own 640-point width. With a
             // negative gap they fit a wide screen (1640 of 1800 points at -140), so no
@@ -187,97 +146,33 @@ extension StagehandModel {
             // overflow the screen for every allowed gap, so each switch scrolls.
             state = Self.widenedForColumnBenchmark(state)
             enqueue(.refresh)
-            await benchmarkWaitUntilIdle()
+            guard await benchmarkWaitUntilIdle() else { return fail("widening the probe columns did not settle.") }
             guard let availableFrame,
                   Self.everyColumnSwitchScrolls(state, availableFrame: availableFrame, gap: gap) else {
-                return "FAIL: the stacked probe columns fit on screen, so switches would not slide."
+                return fail("the stacked probe columns fit on screen, so switches would not slide.")
             }
         }
+        let frameInterval = 1 / ribbonFramesPerSecond
 
         // Sequential switches: one at a time, settled between them.
-        var timings: [SwitchTiming] = []
-        var current: SwitchTiming?
-        var switchBegan = 0.0
-        var lastTick: TimeInterval?
-        var events: [(Double, String)] = []
-        diagnostics.eventObserver = { event in
-            let now = CACurrentMediaTime()
-            events.append((now, event))
-            switch event {
-            case "ribbon_animation_started" where current?.motion == nil:
-                current?.motion = (now - switchBegan) * 1_000
-            case "navigation_focus_confirmed" where current?.focus == nil:
-                current?.focus = (now - switchBegan) * 1_000
-            default: break
-            }
-        }
-        ribbonMotion.onFrameTiming = { timestamp, work in
-            current?.frameWork.append(work * 1_000)
-            if let lastTick {
-                let frames = Int(((timestamp - lastTick) / (1.0 / 60)).rounded())
-                current?.droppedFrames += max(0, frames - 1)
-            }
-            lastTick = timestamp
-        }
-        monitor.start()
         var forward = true
-        var frontTimes: [Double?] = []
-        var reorderCounts: [Int] = []
-        for _ in 0..<switches {
+        let sequential = await measureSwitchPhase(count: switches, busy: busy, probes: probes,
+                                                  measuresStacking: measuresStacking, monitor: monitor,
+                                                  frameInterval: frameInterval) {
             var predicted = state
             if !predicted.apply(forward ? .focusNext : .focusPrevious) { forward.toggle() }
-            current = SwitchTiming()
-            lastTick = nil
-            switchBegan = CACurrentMediaTime()
-            navigate(forward ? .focusNext : .focusPrevious)
-            let stackingTask = frontmostPoll(measuresStacking ? state.focusedWindowID : nil,
-                                             since: switchBegan, probes: probes)
-            await benchmarkWaitUntilIdle()
-            current?.settled = (CACurrentMediaTime() - switchBegan) * 1_000
-            let stacking = await stackingTask.value
-            frontTimes.append(stacking.front)
-            reorderCounts.append(stacking.reorders)
-            if current?.motion != nil {
-                let motion = windowSystem.motionWriteStatistics(reset: false, focusedWindowID: state.focusedWindowID)
-                current?.focusedGap = motion["focusedMotionGapMilliseconds"].flatMap(Double.init)
-                current?.largestGap = motion["largestMotionGapMilliseconds"].flatMap(Double.init)
-            }
-            if let current { timings.append(current) }
-            current = nil
-            try? await Task.sleep(for: .milliseconds(busy ? 300 : 150))
+            return forward ? .focusNext : .focusPrevious
         }
-        let sequentialStalls = monitor.stop()
-        var blockedByPhase: [String: Double] = [:]
-        for (posted, waited) in monitor.stalls {
-            let phase = events.last(where: { $0.0 <= posted })?.1 ?? "before"
-            blockedByPhase[phase, default: 0] += waited
-        }
+        record.phases.sequential = sequential
+        record.failures += BenchmarkRecord.switchFailures(sequential, name: "sequential")
         lines.append("Sequential switches:")
-        lines.append("  to first motion: " + Self.percentiles(timings.compactMap(\.motion)))
-        lines.append("  to focus confirmed: " + Self.percentiles(timings.compactMap(\.focus)))
-        lines.append("  to settled: " + Self.percentiles(timings.map(\.settled)))
-        if measuresStacking {
-            lines.append("  destination frontmost on screen: " + Self.percentiles(frontTimes.compactMap { $0 })
-                + ", never within 1 s: \(frontTimes.count { $0 == nil })")
-            lines.append("  stacking reorders after the destination was in front: \(reorderCounts.reduce(0, +)) in "
-                + "\(reorderCounts.count { $0 > 0 }) of \(reorderCounts.count) switches")
-        }
-        let work = timings.flatMap(\.frameWork)
-        let dropped = timings.map(\.droppedFrames).reduce(0, +)
-        lines.append("  frame work per tick: " + Self.percentiles(work, digits: 2)
-            + ", dropped frames \(dropped) of \(work.count + dropped)")
-        lines.append("  longest freeze of the destination window mid-motion: "
-            + Self.percentiles(timings.compactMap(\.focusedGap)))
-        lines.append("  longest freeze of any moving window: " + Self.percentiles(timings.compactMap(\.largestGap)))
-        lines.append("  main thread: " + Self.stallSummary(sequentialStalls))
-        lines.append("  stalls by phase: " + blockedByPhase.sorted { $0.value > $1.value }
-            .map { "\($0.key) \(Int($0.value))" }.joined(separator: ", "))
-        lines.append("  stalls by call: " + monitor.blockedByCall.sorted { $0.value > $1.value }.prefix(4)
-            .map { "\($0.key) \(Int($0.value))" }.joined(separator: ", "))
-        diagnostics.eventObserver = nil
-        ribbonMotion.onFrameTiming = nil
+        lines += Self.switchPhaseLines(sequential, measuresStacking: measuresStacking, attributesStalls: true)
 
         // Rapid switches with reversals, as in acceptance.
+        var rapidRejections = 0
+        diagnostics.eventObserver = { event in
+            if event == "navigation_focus_rejected" { rapidRejections += 1 }
+        }
         monitor.start()
         let rapidBegan = CACurrentMediaTime()
         var predicted = state
@@ -292,85 +187,58 @@ extension StagehandModel {
             }
             try? await Task.sleep(for: .milliseconds(index % 3 == 0 ? 0 : 40))
         }
-        await benchmarkWaitUntilIdle()
-        lines.append(String(format: "Rapid switches: settled %.0f ms after the first", (CACurrentMediaTime() - rapidBegan) * 1_000))
-        lines.append("  main thread: " + Self.stallSummary(monitor.stop()))
-        lines.append("Final focus matches the ribbon: \(isRunning && state.focusedWindowID == windowSystem.focusedWindowID())")
+        let rapidIdle = await benchmarkWaitUntilIdle()
+        let rapidSettled = (CACurrentMediaTime() - rapidBegan) * 1_000
+        let rapidWaits = monitor.stop().map(\.milliseconds)
+        diagnostics.eventObserver = nil
+        let rapidFocusMatches = isRunning && state.focusedWindowID == windowSystem.focusedWindowID()
+        record.phases.rapid = .init(settledMs: rapidSettled, timedOut: !rapidIdle, mainThreadWaitsMs: rapidWaits,
+                                    finalFocusMatches: rapidFocusMatches)
+        if !rapidIdle { record.failures.append("rapid: idle wait timed out") }
+        if rapidRejections > 0 { record.failures.append("rapid: focus rejected \(rapidRejections) times") }
+        if !rapidFocusMatches { record.failures.append("rapid: final focus does not match the ribbon") }
+        lines.append(String(format: "Rapid switches: settled %.0f ms after the first", rapidSettled)
+            + (rapidIdle ? "" : " (timed out)"))
+        lines.append("  main thread: " + Self.stallSummary(rapidWaits))
+        lines.append("Final focus matches the ribbon: \(rapidFocusMatches)")
 
         if stacksColumns, let stack = state.currentSpace.columns.first(where: \.isStack) {
             // Focus moving up and down inside the stack: no slide, one focus each.
             focusWindow(stack.windowIDs[0])
-            await benchmarkWaitUntilIdle()
-            var memberFocus: [Double] = []
-            var memberSettled: [Double] = []
-            var memberBegan = 0.0
-            var memberFocused: Double?
-            diagnostics.eventObserver = { event in
-                if event == "navigation_focus_confirmed", memberFocused == nil {
-                    memberFocused = (CACurrentMediaTime() - memberBegan) * 1_000
+            if await benchmarkWaitUntilIdle() {
+                var memberIndex = 0
+                let members = await measureSwitchPhase(count: 16, busy: busy, probes: probes,
+                                                       measuresStacking: false, monitor: monitor,
+                                                       frameInterval: frameInterval) {
+                    defer { memberIndex += 1 }
+                    return memberIndex.isMultiple(of: 2) ? .focusMemberBelow : .focusMemberAbove
                 }
+                record.phases.members = members
+                record.failures += BenchmarkRecord.switchFailures(members, name: "members")
+                lines.append("Member switches in the stack:")
+                lines += Self.switchPhaseLines(members, measuresStacking: false, attributesStalls: false)
+            } else {
+                record.failures.append("members: focusing the stack's first window did not settle")
             }
-            monitor.start()
-            for index in 0..<16 {
-                memberFocused = nil
-                memberBegan = CACurrentMediaTime()
-                navigate(index.isMultiple(of: 2) ? .focusMemberBelow : .focusMemberAbove)
-                await benchmarkWaitUntilIdle()
-                memberSettled.append((CACurrentMediaTime() - memberBegan) * 1_000)
-                if let memberFocused { memberFocus.append(memberFocused) }
-                try? await Task.sleep(for: .milliseconds(busy ? 300 : 150))
-            }
-            diagnostics.eventObserver = nil
-            lines.append("Member switches in the stack:")
-            lines.append("  to focus confirmed: " + Self.percentiles(memberFocus))
-            lines.append("  to settled: " + Self.percentiles(memberSettled))
-            lines.append("  main thread: " + Self.stallSummary(monitor.stop()))
-            lines.append("Final focus matches the ribbon: \(isRunning && state.focusedWindowID == windowSystem.focusedWindowID())")
         }
 
         // Space switches: no slide; the outgoing space is parked as a whole.
         navigate(.moveToSpace(index: 1, follow: false))
-        await benchmarkWaitUntilIdle()
-        if state.spaces[1].windowIDs.count == 1 {
-            var spaceFocus: [Double] = []
-            var spaceSettled: [Double] = []
-            var spaceFront: [Double?] = []
-            var spaceReorders: [Int] = []
-            var spaceBegan = 0.0
-            var spaceFocused: Double?
-            diagnostics.eventObserver = { event in
-                if event == "navigation_focus_confirmed", spaceFocused == nil {
-                    spaceFocused = (CACurrentMediaTime() - spaceBegan) * 1_000
-                }
+        let spaceSetupIdle = await benchmarkWaitUntilIdle()
+        if spaceSetupIdle, state.spaces[1].windowIDs.count == 1 {
+            var spaceIndex = 0
+            let spaces = await measureSwitchPhase(count: 16, busy: busy, probes: probes,
+                                                  measuresStacking: measuresStacking, monitor: monitor,
+                                                  frameInterval: frameInterval) {
+                defer { spaceIndex += 1 }
+                return spaceIndex.isMultiple(of: 2) ? .nextSpace : .previousSpace
             }
-            monitor.start()
-            for index in 0..<16 {
-                spaceFocused = nil
-                spaceBegan = CACurrentMediaTime()
-                navigate(index % 2 == 0 ? .nextSpace : .previousSpace)
-                let stackingTask = frontmostPoll(measuresStacking ? state.focusedWindowID : nil,
-                                                 since: spaceBegan, probes: probes)
-                await benchmarkWaitUntilIdle()
-                spaceSettled.append((CACurrentMediaTime() - spaceBegan) * 1_000)
-                let stacking = await stackingTask.value
-                spaceFront.append(stacking.front)
-                spaceReorders.append(stacking.reorders)
-                if let spaceFocused { spaceFocus.append(spaceFocused) }
-                try? await Task.sleep(for: .milliseconds(busy ? 300 : 150))
-            }
-            diagnostics.eventObserver = nil
+            record.phases.spaces = spaces
+            record.failures += BenchmarkRecord.switchFailures(spaces, name: "spaces")
             lines.append("Space switches:")
-            lines.append("  to focus confirmed: " + Self.percentiles(spaceFocus))
-            lines.append("  to settled: " + Self.percentiles(spaceSettled))
-            if measuresStacking {
-                lines.append("  destination frontmost on screen: " + Self.percentiles(spaceFront.compactMap { $0 })
-                    + ", never within 1 s: \(spaceFront.count { $0 == nil })")
-                lines.append("  stacking reorders after the destination was in front: \(spaceReorders.reduce(0, +)) in "
-                    + "\(spaceReorders.count { $0 > 0 }) of \(spaceReorders.count) switches")
-            }
-            lines.append("  main thread: " + Self.stallSummary(monitor.stop()))
-            lines.append("Final focus matches the ribbon: \(isRunning && state.focusedWindowID == windowSystem.focusedWindowID())")
+            lines += Self.switchPhaseLines(spaces, measuresStacking: measuresStacking, attributesStalls: false)
         } else {
+            record.failures.append("spaces: setup failed")
             lines.append("Space switches: setup failed")
         }
 
@@ -408,13 +276,109 @@ extension StagehandModel {
             try? await Task.sleep(for: .milliseconds(100))
         }
         lines.append("Quick controls open: " + quickTimes.map { String(format: "%.0f", $0) }.joined(separator: ", ") + " ms")
+        record.phases.interface = .init(appBarShowMs: appBar, settingsOpenMs: settingsTimes, quickControlsOpenMs: quickTimes)
 
-        monitor.start()
+        // The restore runs inside the call, so the call's duration is the main-thread stall.
         let pauseBegan = CACurrentMediaTime()
         pause()
-        lines.append(String(format: "Pause and restore frames: %.0f ms", (CACurrentMediaTime() - pauseBegan) * 1_000))
-        lines.append("  main thread: " + Self.stallSummary(monitor.stop()))
-        return lines.joined(separator: "\n")
+        let pauseMilliseconds = (CACurrentMediaTime() - pauseBegan) * 1_000
+        record.phases.pause = .init(callMs: pauseMilliseconds)
+        lines.append(String(format: "Pause and restore frames: %.0f ms", pauseMilliseconds))
+    }
+
+    /// Runs `count` navigations, each settled before the next, and times motion, focus and frames.
+    private func measureSwitchPhase(count: Int, busy: Bool, probes: [NSRunningApplication], measuresStacking: Bool,
+                                    monitor: MainThreadLatencyMonitor, frameInterval: Double,
+                                    nextAction: () -> NavigationAction) async -> BenchmarkRecord.SwitchPhase {
+        let recorder = BenchmarkSwitchRecorder()
+        diagnostics.eventObserver = { recorder.observe($0) }
+        ribbonMotion.onFrameTiming = { recorder.frame(at: $0, work: $1, interval: frameInterval) }
+        defer {
+            diagnostics.eventObserver = nil
+            ribbonMotion.onFrameTiming = nil
+        }
+        var phase = BenchmarkRecord.SwitchPhase()
+        monitor.start()
+        for _ in 0..<count {
+            let action = nextAction()
+            let began = CACurrentMediaTime()
+            recorder.begin(at: began)
+            navigate(action)
+            let stackingTask = frontmostPoll(measuresStacking ? state.focusedWindowID : nil,
+                                             since: began, probes: probes)
+            let idle = await benchmarkWaitUntilIdle()
+            var timing = recorder.finish()
+            timing.settledMs = (CACurrentMediaTime() - began) * 1_000
+            timing.timedOut = !idle
+            let stacking = await stackingTask.value
+            if measuresStacking {
+                timing.frontmostMs = stacking.front
+                timing.reordersAfterFrontmost = stacking.reorders
+            }
+            if timing.slid {
+                let motion = windowSystem.motionWriteStatistics(reset: false, focusedWindowID: state.focusedWindowID)
+                timing.focusedGapMs = motion["focusedMotionGapMilliseconds"].flatMap(Double.init)
+                timing.largestGapMs = motion["largestMotionGapMilliseconds"].flatMap(Double.init)
+            }
+            phase.switches.append(timing)
+            try? await Task.sleep(for: .milliseconds(busy ? 300 : 150))
+        }
+        let waits = monitor.stop()
+        phase.mainThreadWaitsMs = waits.map(\.milliseconds)
+        phase.stalls = waits.filter { $0.milliseconds > MainThreadLatencyMonitor.stallMilliseconds }.map {
+            BenchmarkRecord.Stall(
+                waitedMs: $0.milliseconds,
+                label: $0.label.replacingOccurrences(of: #" pid=-?\d+"#, with: "", options: .regularExpression),
+                phase: recorder.lastEvent(atOrBefore: $0.postedUptime) ?? "before"
+            )
+        }
+        phase.finalFocusMatches = isRunning && state.focusedWindowID == windowSystem.focusedWindowID()
+        return phase
+    }
+
+    private static func switchPhaseLines(_ phase: BenchmarkRecord.SwitchPhase, measuresStacking: Bool,
+                                         attributesStalls: Bool) -> [String] {
+        let switches = phase.switches
+        var lines = [
+            "  slid on \(switches.count(where: \.slid)) of \(switches.count) switches",
+            "  to motion scheduled: " + percentiles(switches.compactMap(\.motionScheduledMs)),
+            "  to focus confirmed: " + percentiles(switches.compactMap(\.focusMs))
+                + ", rejected \(switches.count(where: \.focusRejected))"
+                + ", no attempt \(switches.count { !$0.focusAttempted })",
+            "  to settled: " + percentiles(switches.map(\.settledMs))
+                + ", timed out \(switches.count(where: \.timedOut))"
+        ]
+        if measuresStacking {
+            let front = switches.map(\.frontmostMs)
+            let reorders = switches.compactMap(\.reordersAfterFrontmost)
+            lines.append("  destination frontmost on screen: " + percentiles(front.compactMap { $0 })
+                + ", never within 1 s: \(front.count { $0 == nil })")
+            lines.append("  stacking reorders after the destination was in front: \(reorders.reduce(0, +)) in "
+                + "\(reorders.count { $0 > 0 }) of \(reorders.count) switches")
+        }
+        let work = switches.flatMap(\.frameWorkMs)
+        if !work.isEmpty {
+            let dropped = switches.map(\.droppedFrames).reduce(0, +)
+            lines.append("  frame work per tick: " + percentiles(work, digits: 2)
+                + ", dropped frames \(dropped) of \(work.count + dropped)")
+            lines.append("  longest freeze of the destination window mid-motion: "
+                + percentiles(switches.compactMap(\.focusedGapMs)))
+            lines.append("  longest freeze of any moving window: " + percentiles(switches.compactMap(\.largestGapMs)))
+        }
+        lines.append("  main thread: " + stallSummary(phase.mainThreadWaitsMs))
+        if attributesStalls {
+            func totals(_ key: (BenchmarkRecord.Stall) -> String) -> [(String, Double)] {
+                Dictionary(grouping: phase.stalls, by: key).mapValues { $0.reduce(0) { $0 + $1.waitedMs } }
+                    .sorted { $0.value > $1.value }.map { ($0.key, $0.value) }
+            }
+            lines.append("  stalls by phase: " + totals(\.phase).map { "\($0.0) \(Int($0.1))" }.joined(separator: ", "))
+            lines.append("  stalls by call: " + totals(\.label).prefix(4).map { "\($0.0) \(Int($0.1))" }
+                .joined(separator: ", "))
+        }
+        if let finalFocusMatches = phase.finalFocusMatches {
+            lines.append("Final focus matches the ribbon: \(finalFocusMatches)")
+        }
+        return lines
     }
 
     /// Milliseconds from `since` until WindowServer lists the window frontmost among the
@@ -495,11 +459,14 @@ extension StagehandModel {
         return zip(offsets, offsets.dropFirst()).allSatisfy { abs($0 - $1) >= 1 }
     }
 
-    private func benchmarkWaitUntilIdle(timeout: Duration = .seconds(8)) async {
+    /// False when the change queue or ribbon motion was still busy at the timeout.
+    private func benchmarkWaitUntilIdle(timeout: Duration = .seconds(8)) async -> Bool {
         let deadline = ContinuousClock.now.advanced(by: timeout)
-        while changes.isProcessing || ribbonMotion.isRunning, ContinuousClock.now < deadline {
+        while changes.isProcessing || ribbonMotion.isRunning {
+            guard ContinuousClock.now < deadline else { return false }
             try? await Task.sleep(for: .milliseconds(2))
         }
+        return true
     }
 
     private static func percentiles(_ values: [Double], digits: Int = 0) -> String {
@@ -519,5 +486,52 @@ extension StagehandModel {
         return String(format: "p99 %.1f ms, max %.0f ms, %d waits over 33 ms, %.0f ms blocked beyond one frame",
                       sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.99))], sorted.last!,
                       samples.count { $0 > 33 }, beyondFrame)
+    }
+}
+
+@MainActor
+private final class BenchmarkSwitchRecorder {
+    private var current: BenchmarkRecord.Switch?
+    private var began = 0.0
+    private var lastTick: Double?
+    private var events: [(uptime: Double, name: String)] = []
+
+    func begin(at uptime: Double) {
+        current = BenchmarkRecord.Switch()
+        began = uptime
+        lastTick = nil
+    }
+
+    func finish() -> BenchmarkRecord.Switch {
+        defer { current = nil }
+        return current ?? BenchmarkRecord.Switch()
+    }
+
+    func observe(_ event: String) {
+        let now = CACurrentMediaTime()
+        events.append((now, event))
+        let elapsed = (now - began) * 1_000
+        switch event {
+        case "ribbon_animation_started" where current?.motionScheduledMs == nil:
+            current?.motionScheduledMs = elapsed
+        case "navigation_focus_succeeded" where current?.focusMs == nil:
+            current?.focusMs = elapsed
+        case "navigation_focus_rejected":
+            current?.focusRejected = true
+        default: break
+        }
+    }
+
+    func frame(at timestamp: Double, work: Double, interval: Double) {
+        guard current != nil else { return }
+        current?.frameWorkMs.append(work * 1_000)
+        if let lastTick {
+            current?.droppedFrames += max(0, Int(((timestamp - lastTick) / interval).rounded()) - 1)
+        }
+        lastTick = timestamp
+    }
+
+    func lastEvent(atOrBefore uptime: Double) -> String? {
+        events.last { $0.uptime <= uptime }?.name
     }
 }

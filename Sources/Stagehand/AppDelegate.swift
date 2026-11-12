@@ -112,8 +112,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if let index = arguments.firstIndex(of: "--benchmark"), arguments.indices.contains(index + 1) {
             Task { @MainActor in
+                let rawOutput = arguments.firstIndex(of: "--raw-output").flatMap {
+                    arguments.indices.contains($0 + 1) ? URL(fileURLWithPath: arguments[$0 + 1]) : nil
+                }
                 let report = await model.runBenchmark(probeURL: URL(fileURLWithPath: arguments[index + 1]),
-                                                      busy: arguments.contains("--busy"))
+                                                      busy: arguments.contains("--busy"), rawOutput: rawOutput)
                 print(report)
                 if let output = self.acceptanceOutputPath(in: arguments) {
                     try? Data((report + "\n").utf8).write(to: URL(fileURLWithPath: output))

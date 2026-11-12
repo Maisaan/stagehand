@@ -20,19 +20,24 @@ How to measure Stagehand, find where time goes, and check a change. Live checks 
 
 - `responsive`: probes answer Accessibility immediately.
 - `busy`: probes load their main thread like Chrome or an Electron app (6 ms per frame, 150 ms on each activation). Most real slowness only shows here.
-- `busy-quiet`: busy with diagnostic logging off, to measure what logging costs.
+- `busy-quiet`: busy with diagnostic logging off, to measure what logging costs. Motion and focus are measured the same way as with logging on; only `stalls by phase` needs the log's events.
 - `busy-columns` (or `responsive-columns`): stacks two probe windows in one tile before the switches, then sets every tile to 0.75 of the screen width so each switch scrolls whatever the gap and screen (three 640-point probe tiles fit an 1800-point screen at a -140 gap, and nothing slid), so they cross a stacked tile (one synchronous frame write per member as it comes into view), and adds a **Member switches in the stack** section. Not related to `-stacking`, which measures window order.
 
 Set `STAGEHAND_APP` to benchmark another build. To compare against an older commit, check it out in a separate worktree (`git worktree add /tmp/sh-base <commit>`), copy in the current `StagehandModel+Benchmark.swift`, `StagehandModel+Acceptance.swift`, `AppDelegate.swift`, and `scripts/run-benchmark.sh` if they changed, build it, and run both builds back to back. Run each at least twice: single runs vary by 10 to 30 percent, and one-off stalls happen.
 
 What it reports, and what each line means:
 
-- **to first motion**: action to the first ribbon frame. What makes a switch feel immediate.
-- **to focus confirmed / settled**: when typing can go to the destination, and when everything stopped.
+- **slid on N of M switches**: switches that started ribbon motion. A switch between windows that are all on screen doesn't slide, so the motion lines cover only N switches.
+- **to motion scheduled**: action to the moment the slide is scheduled (`ribbon_animation_started`), before its first frame is written. It doesn't prove a window moved on screen.
+- **to focus confirmed / settled**: when typing can go to the destination, and when everything stopped. `rejected` counts focus that Stagehand could not confirm, and `no attempt` counts switches that never tried. `timed out` counts idle waits that hit 8 s; their settled time is the timeout, not a measurement.
 - **longest freeze of the destination window mid-motion**: the longest the window being watched went without moving. Over about 33 ms is visible stutter. Frame work alone does not show this.
 - **frame work per tick, dropped frames**: Stagehand's own main-thread cost per display tick.
 - **main thread**: a background thread posts to the main queue every 4 ms. The keyboard tap, gestures, and ribbon frames run there, so a blocked main thread delays typing in every app. `stalls by phase` names the last diagnostic event before each stall.
 - **Space switches**, **Rapid switches**, **Start**, **Window scan**, **Settings / quick controls / app bar** open times.
+- **Pause and restore frames**: the restore runs inside the call, so its duration is the main-thread stall.
+- **Result**: the last line is `Result: PASS`, or `Result: FAIL:` followed by every failure: a timed-out wait, rejected or missing focus, final focus not matching the ribbon, or a failed setup. A failed run's numbers aren't comparable. `--raw-output <path>` also writes every sample as JSON.
+
+Benchmark numbers from before 2026-11-12 (stage 1 of the measurement fixes) aren't comparable with later ones. Earlier runs could count one phase's main-thread samples twice after a quick stop and start, reported a timed-out wait as settled, counted rejected focus as confirmed, and in `busy-quiet` measured no motion or focus at all.
 
 ### Analyzing real usage
 
