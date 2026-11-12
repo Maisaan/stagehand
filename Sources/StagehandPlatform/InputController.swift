@@ -61,6 +61,7 @@ public final class InputController {
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let status = InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
             guard let event, let context else { return OSStatus(eventNotHandledErr) }
+            let received = ProcessInfo.processInfo.systemUptime
             var identifier = EventHotKeyID()
             let result = GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &identifier)
             guard result == noErr, identifier.signature == 0x53544748 else { return OSStatus(eventNotHandledErr) }
@@ -69,7 +70,9 @@ public final class InputController {
             MainActor.assumeIsolated {
                 guard let action = controller.actions[identifier.id] else { return }
                 let tapHandles = controller.navigationChordsHandledByTap?() ?? false
-                if InputController.shouldDispatchHotKey(action, tapHandlesNavigation: tapHandles) { controller.onAction?(action) }
+                guard InputController.shouldDispatchHotKey(action, tapHandlesNavigation: tapHandles) else { return }
+                let arrival = InputArrival(source: .hotKeyCallback, eventUptime: nil, receivedUptime: received)
+                InputArrival.delivering(arrival) { controller.onAction?(action) }
             }
             return noErr
         }, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), &eventHandler)

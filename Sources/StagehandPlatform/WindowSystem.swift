@@ -1143,17 +1143,26 @@ public final class WindowSystem {
         await motionWriter.flush()
     }
 
-    /// Since the last reset: positions requested, AX writes sent, the slowest write,
-    /// and the longest any window, and `focusedWindowID`, went without moving.
+    /// Since the last reset: positions requested, AX writes sent and how apps answered them,
+    /// the slowest write, and the longest any window, and `focusedWindowID`, went without moving.
     public func motionWriteStatistics(reset: Bool, focusedWindowID: String?) -> [String: String] {
         let statistics = motionWriter.statistics
         if reset { motionWriter.resetStatistics() }
-        return ["motionPositionsRequested": String(statistics.requested),
-                "motionWritesSent": String(statistics.sent),
+        return ["motionPositionsRequested": String(statistics.summary.requested),
+                "motionWritesSent": String(statistics.summary.sent),
+                "motionWritesAcknowledged": String(statistics.summary.acknowledged),
+                "motionWritesUnacknowledged": String(statistics.summary.unacknowledged),
+                "motionWritesFailed": String(statistics.summary.failed),
                 "slowestMotionWriteMilliseconds": String(statistics.slowestMilliseconds),
                 "largestMotionGapMilliseconds": String(statistics.largestGapMilliseconds.values.max() ?? 0),
                 "focusedMotionGapMilliseconds": String(focusedWindowID.flatMap {
                     statistics.largestGapMilliseconds[$0] } ?? 0)]
+    }
+
+    public func motionWriteSummary(reset: Bool) -> MotionWriteSummary {
+        let summary = motionWriter.statistics.summary
+        if reset { motionWriter.resetStatistics() }
+        return summary
     }
 
     public func frame(windowID: String) -> CGRect? {

@@ -465,6 +465,8 @@ struct GestureCallbackState {
     /// Set once corrupt frames exhaust the validator; delivered to the monitor on main.
     var failure: String?
     var pendingEvents = GestureEventBuffer()
+    /// When the fingers now on the pad first touched; nil once they all lift.
+    var touchesLandedUptime: TimeInterval?
     var deliveryScheduled = false
     var scheduleDelivery: (@Sendable () -> Void)?
 }
@@ -621,6 +623,7 @@ extension GestureCallbackState {
         }
         // After validation: a corrupt frame's contact IDs must not drop the held click.
         let snapshot = excludingHeldClick(from: touching, buttonDown: buttonDown)
+        touchesLandedUptime = snapshot.isEmpty ? nil : touchesLandedUptime ?? now
         if snapshot.isEmpty {
             dropCheckRequested = false
         } else if buttonDown, !heldClickContactIDs.isEmpty, !heldClickCarriesDrop, !dropCheckRequested {
@@ -698,7 +701,11 @@ extension GestureCallbackState {
                       snapshot.count, String(describing: event), recognizer.cancellationReason ?? "none")
             }
         }
-        if let event { pendingEvents.append(event) }
+        if let event {
+            pendingEvents.append(event, arrival: InputArrival(
+                source: .trackpad, eventUptime: touchFrameUptime(timestamp, now: now), receivedUptime: now,
+                touchesLandedUptime: touchesLandedUptime))
+        }
         guard event != nil || modifierCancelled else { return nil }
         guard !deliveryScheduled else { return nil }
         deliveryScheduled = true
@@ -927,11 +934,11 @@ final class GestureMonitor {
                     guard let self, self.isRunning, self.generation == activeGeneration else { return }
                     let (events, failure) = gestureCallbackState.withLock { state in
                         state.deliveryScheduled = false
-                        return (state.pendingEvents.drain(), state.failure)
+                        return (state.pendingEvents.drainWithArrivals(), state.failure)
                     }
-                    for event in events {
+                    for (event, arrival) in events {
                         guard self.isRunning, self.generation == activeGeneration else { return }
-                        self.onGesture?(event)
+                        InputArrival.delivering(arrival) { self.onGesture?(event) }
                         // The handoff ran synchronously and began its transfer if it navigated.
                         // Only now may the keyboard tap stop treating this release as pending.
                         if case .ended = event {

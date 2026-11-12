@@ -30,20 +30,21 @@ public struct GestureNavigationCompletion: Equatable, Sendable {
     public let velocity: Double
     public let recognizerAction: NavigationAction?
     public let mode: GestureMode
+    public let arrival: InputArrival?
 }
 
 /// Preserve lifecycle boundaries while dropping obsolete visual frames if the main thread is busy.
 struct GestureEventBuffer {
-    private var events: [(event: GestureNavigationEvent, axis: GestureAxis?)] = []
+    private var events: [(event: GestureNavigationEvent, axis: GestureAxis?, arrival: InputArrival?)] = []
     private var activeAxis: GestureAxis?
     /// Releases that `drain()` handed to main-actor delivery and that have not finished
     /// their handoff yet. The keyboard tap must keep treating them as pending: a batch may
     /// hold a `.began` whose preview does AX work before the `.ended` begins its transfer.
     private(set) var completionsInFlight = 0
 
-    mutating func append(_ event: GestureNavigationEvent) {
+    mutating func append(_ event: GestureNavigationEvent, arrival: InputArrival? = nil) {
         if case .began(let axis, _, _) = event { activeAxis = axis }
-        let buffered = (event, activeAxis)
+        let buffered = (event, activeAxis, arrival)
         if case .changed = event, case .changed = events.last?.event {
             events[events.count - 1] = buffered
         } else {
@@ -58,15 +59,22 @@ struct GestureEventBuffer {
         completionsInFlight > 0 || events.contains { Self.isCompletion($0) }
     }
 
-    private static func isCompletion(_ buffered: (event: GestureNavigationEvent, axis: GestureAxis?)) -> Bool {
+    private static func isCompletion(
+        _ buffered: (event: GestureNavigationEvent, axis: GestureAxis?, arrival: InputArrival?)
+    ) -> Bool {
         if case .ended = buffered.event { buffered.axis != nil } else { false }
     }
 
     /// Hands every queued event to delivery. Each completion stays counted until
     /// `completionDelivered()` is called for it.
     mutating func drain() -> [GestureNavigationEvent] {
+        drainWithArrivals().map(\.event)
+    }
+
+    /// `drain()`, with the frame each event came from.
+    mutating func drainWithArrivals() -> [(event: GestureNavigationEvent, arrival: InputArrival?)] {
         completionsInFlight += events.count { if case .ended = $0.event { true } else { false } }
-        let result = events.map(\.event)
+        let result = events.map { ($0.event, $0.arrival) }
         events.removeAll(keepingCapacity: true)
         return result
     }
@@ -94,7 +102,8 @@ struct GestureEventBuffer {
                 displacement: displacement,
                 velocity: velocity,
                 recognizerAction: action,
-                mode: mode
+                mode: mode,
+                arrival: buffered.arrival
             )
         }
         return nil

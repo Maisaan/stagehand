@@ -207,12 +207,25 @@ final class FakeWindowSystem: WindowManaging {
     /// Position writes made by ribbon motion; none means nothing slid.
     private(set) var motionPositionWrites = 0
     var motionFrames: [String: [CGRect]] = [:]
+    /// Motion writes since the last summary reset, each answered at once: acknowledged when
+    /// the window moved, failed otherwise.
+    private var motionSummary = MotionWriteSummary()
     func setMotionPosition(windowID: String, position: CGPoint) -> Bool {
         motionPositionWrites += 1
         if let size = windows[windowID]?.frame.size {
             motionFrames[windowID, default: []].append(CGRect(origin: position, size: size))
         }
-        return setPosition(windowID: windowID, position: position)
+        let moved = setPosition(windowID: windowID, position: position)
+        motionSummary.requested += 1
+        motionSummary.sent += 1
+        motionSummary.record(moved ? .success : .failure, windowID: windowID,
+                             finished: ProcessInfo.processInfo.systemUptime)
+        return moved
+    }
+
+    func motionWriteSummary(reset: Bool) -> MotionWriteSummary {
+        defer { if reset { motionSummary = MotionWriteSummary() } }
+        return motionSummary
     }
 
     func finishMotionWrites() async {}

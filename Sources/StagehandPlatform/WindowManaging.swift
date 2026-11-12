@@ -67,6 +67,7 @@ public protocol WindowManaging: AnyObject {
     /// Brings a window to the front without activating its app.
     func raiseWithoutActivating(windowID: String)
     func motionWriteStatistics(reset: Bool, focusedWindowID: String?) -> [String: String]
+    func motionWriteSummary(reset: Bool) -> MotionWriteSummary
     @discardableResult func setFrame(windowID: String, frame: CGRect) -> Bool
     /// Parks at a side of `bounds`, a display's visible frame; nil means the display the
     /// window overlaps most. `remnantWidth` is the widest strip that may stay visible at

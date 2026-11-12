@@ -264,6 +264,8 @@ final class StagehandModel: ObservableObject {
     var lastFocusTokenExpired = false
     var lastChangeID = 0
     var activeChange: ActiveChange?
+    /// Receives every change's trace as it ends, logged or not.
+    var changeTraceSink: ((EndedChangeTrace) -> Void)?
     var lastGestureID = 0
     var pointerInteraction: PointerInteraction?
     lazy var focusBorder = FocusBorderController(overlays: overlays) { [weak self] in
@@ -353,6 +355,7 @@ final class StagehandModel: ObservableObject {
         let initialHorizontalVelocity: CGFloat?
         let previousState: WorkspaceState?
         let motionStart: [String: CGRect]?
+        let trace: ChangeTrace
     }
 
     /// How a queued change ended, other than `change_completed`.
@@ -365,6 +368,7 @@ final class StagehandModel: ObservableObject {
         let id: Int
         let operation: String
         var supersededBy: Int?
+        var trace: ChangeTrace
     }
 
     /// Whether this model may read and write the user's saved layout.
@@ -564,13 +568,15 @@ final class StagehandModel: ObservableObject {
         focusGate.onBeforeKeyboardEvent = { [weak self] in
             guard let self, self.isRunning, !self.isSuspended else { return }
             while let completion = self.input.takePendingGestureCompletion() {
-                self.finishGesture(
-                    axis: completion.axis,
-                    displacement: completion.displacement,
-                    velocity: completion.velocity,
-                    recognizerAction: completion.recognizerAction,
-                    mode: completion.mode
-                )
+                InputArrival.delivering(completion.arrival) {
+                    self.finishGesture(
+                        axis: completion.axis,
+                        displacement: completion.displacement,
+                        velocity: completion.velocity,
+                        recognizerAction: completion.recognizerAction,
+                        mode: completion.mode
+                    )
+                }
             }
         }
         focusGate.onAvailabilityChanged = { [weak self] in self?.updateInputStatus() }

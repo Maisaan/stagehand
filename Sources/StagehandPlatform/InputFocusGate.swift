@@ -6,17 +6,18 @@ import StagehandCore
 /// Queued keyboard events per input transfer, kept apart from the event tap's state.
 struct InputTransferBuffer<Event> {
     private var nextToken: UInt64 = 0
-    private var transfers: [(token: UInt64, events: [Event])] = []
+    private var transfers: [(token: UInt64, began: TimeInterval, events: [Event])] = []
     var latestToken: UInt64? { transfers.last?.token }
     var eventCount: Int { transfers.reduce(0) { $0 + $1.events.count } }
     var transferCount: Int { transfers.count }
     var tokens: [UInt64] { transfers.map(\.token) }
     func contains(token: UInt64) -> Bool { transfers.contains { $0.token == token } }
     func isEmpty(token: UInt64) -> Bool { transfers.first { $0.token == token }?.events.isEmpty == true }
+    func beganUptime(token: UInt64) -> TimeInterval? { transfers.first { $0.token == token }?.began }
 
-    mutating func begin() -> UInt64 {
+    mutating func begin(at uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) -> UInt64 {
         nextToken &+= 1
-        transfers.append((nextToken, []))
+        transfers.append((nextToken, uptime, []))
         return nextToken
     }
 
@@ -130,6 +131,7 @@ private struct GateState {
 /// any of it runs, and the tap thread must not run any of it.
 private struct RoutingEffects: @unchecked Sendable {
     var navigationAction: NavigationAction?
+    var navigationArrival: InputArrival?
     var discardedCount = 0
     var expiredToken: UInt64?
     /// A transfer begun under the lock for this event; main schedules its deadline, lets the
@@ -308,19 +310,29 @@ public final class FocusInputGate {
         )
     }
 
-    public func commitTransfer(token: UInt64, processIdentifier: Int32) {
-        guard processIdentifier > 0 else { cancelTransfer(token: token); return }
+    /// Returns what was held and when its replay was posted; nil when the transfer had
+    /// already ended or is cancelled here.
+    @discardableResult
+    public func commitTransfer(token: UInt64, processIdentifier: Int32) -> HeldInputRelease? {
+        guard processIdentifier > 0 else { cancelTransfer(token: token); return nil }
         deadlines.removeValue(forKey: token)?.cancel()
-        let events = core.withLockUnchecked { state -> [CGEvent] in
+        let committed = ProcessInfo.processInfo.systemUptime
+        let (events, began) = core.withLockUnchecked { state -> ([CGEvent], TimeInterval?) in
             state.unreserve(token)
+            let began = state.buffer.beganUptime(token: token)
             let events = state.buffer.take(token: token)
             state.resolveDestinations(for: token, to: .delivered(processIdentifier))
             if !events.isEmpty { state.replayDestination = processIdentifier }
-            return events
+            return (events, began)
         }
+        let oldestHeldEventUptime = events.first.flatMap { eventUptime($0.timestamp, now: committed) }
         for event in events { post(event, processIdentifier: processIdentifier) }
         if !events.isEmpty { core.withLockUnchecked { $0.replayDestination = nil } }
         stopAvailabilityWatchIfIdle()
+        guard let began else { return nil }
+        return HeldInputRelease(heldEvents: events.count, transferAge: committed - began,
+                                oldestHeldEventAge: oldestHeldEventUptime.map { committed - $0 },
+                                postedUptime: ProcessInfo.processInfo.systemUptime)
     }
 
     public func cancelTransfer(token: UInt64) {
@@ -412,6 +424,7 @@ public final class FocusInputGate {
             return false
         }
         guard event.getIntegerValueField(.eventSourceUserData) != Self.eventMarker else { return false }
+        let received = ProcessInfo.processInfo.systemUptime
         let secureInput = secureInputEnabled()
         let (consumed, effects) = core.withLockUnchecked { state -> (Bool, RoutingEffects) in
             guard state.tapIsAvailable, !secureInput else {
@@ -420,7 +433,7 @@ public final class FocusInputGate {
                 effects.discardedCount = state.reset()
                 return (false, effects)
             }
-            return Self.route(type: type, event: event, state: &state, allowProvisional: true)
+            return Self.route(type: type, event: event, received: received, state: &state, allowProvisional: true)
         }
         if !effects.isEmpty {
             DispatchQueue.main.async { [weak self] in
@@ -463,10 +476,14 @@ public final class FocusInputGate {
             scheduleDeadline(token)
             startAvailabilityWatch()
             // The handoff runs synchronously and adopts the reservation through beginTransfer.
-            if let action = effects.navigationAction { onNavigationAction?(action) } else { onBeforeKeyboardEvent?() }
+            if let action = effects.navigationAction {
+                InputArrival.delivering(effects.navigationArrival) { onNavigationAction?(action) }
+            } else {
+                onBeforeKeyboardEvent?()
+            }
             releaseReservedTransferIfUnadopted(token)
         } else if let action = effects.navigationAction {
-            onNavigationAction?(action)
+            InputArrival.delivering(effects.navigationArrival) { onNavigationAction?(action) }
         }
         for posting in effects.postings { post(posting.event, processIdentifier: posting.pid) }
         if effects.discardedCount > 0 { onInputDiscarded?(effects.discardedCount) }
@@ -496,8 +513,9 @@ public final class FocusInputGate {
     /// availability or Secure Input; tests of those drive `receiveFromTap`.
     func processKeyboardEvent(type: CGEventType, event: CGEvent) -> Bool {
         guard event.getIntegerValueField(.eventSourceUserData) != Self.eventMarker else { return false }
+        let received = ProcessInfo.processInfo.systemUptime
         let (consumed, effects) = core.withLockUnchecked { state in
-            Self.route(type: type, event: event, state: &state, allowProvisional: false)
+            Self.route(type: type, event: event, received: received, state: &state, allowProvisional: false)
         }
         deliver(effects)
         return consumed
@@ -505,7 +523,8 @@ public final class FocusInputGate {
 
     /// Runs under the lock on either thread. Must not call back into anything that could
     /// wait on the main actor.
-    nonisolated private static func route(type: CGEventType, event: CGEvent, state: inout GateState,
+    nonisolated private static func route(type: CGEventType, event: CGEvent, received: TimeInterval,
+                                          state: inout GateState,
                                           allowProvisional: Bool) -> (consumed: Bool, effects: RoutingEffects) {
         var effects = RoutingEffects()
         let key = event.getIntegerValueField(.keyboardEventKeycode)
@@ -521,6 +540,9 @@ public final class FocusInputGate {
                 // space and move steps run once.
                 if !isAutorepeat || action.repeatsWhileHeld {
                     effects.navigationAction = action
+                    effects.navigationArrival = InputArrival(
+                        source: .keyboardTap, eventUptime: eventUptime(event.timestamp, now: received),
+                        receivedUptime: received)
                     effects.reservedToken = state.reserveTransfer()
                 }
                 return (true, effects)

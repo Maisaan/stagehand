@@ -1,6 +1,34 @@
 import ApplicationServices
 import Foundation
 
+/// Ribbon motion writes since the last reset, and how the apps answered them.
+public struct MotionWriteSummary: Equatable, Sendable {
+    public var requested = 0
+    public var sent = 0
+    /// Writes the app answered with success.
+    public var acknowledged = 0
+    /// Writes that timed out. The app may still apply one, so it is not a failure.
+    public var unacknowledged = 0
+    /// Writes the app answered with an error.
+    public var failed = 0
+    /// Each window's first acknowledged write, on the system-uptime clock.
+    public var firstAcknowledgedUptime: [String: TimeInterval] = [:]
+
+    public init() {}
+
+    mutating func record(_ result: AXError, windowID: String, finished: TimeInterval) {
+        switch result {
+        case .success:
+            acknowledged += 1
+            if firstAcknowledgedUptime[windowID] == nil { firstAcknowledgedUptime[windowID] = finished }
+        case .cannotComplete:
+            unacknowledged += 1
+        default:
+            failed += 1
+        }
+    }
+}
+
 /// Ribbon motion moves windows at display rate. Each move is a synchronous
 /// cross-process AX message that waits until the target app's run loop is free,
 /// so on the main thread one busy app would stall every frame, the other apps'
@@ -21,9 +49,8 @@ final class MotionPositionWriter: @unchecked Sendable {
     /// Apps with a drain queued or running.
     private var draining: Set<pid_t> = []
     private var queues: [pid_t: DispatchQueue] = [:]
-    /// Per-animation counts for diagnostics: positions requested, AX writes sent, slowest write.
-    private var requested = 0
-    private var sent = 0
+    /// Per-animation counts for diagnostics: writes requested, sent and answered, slowest write.
+    private var summary = MotionWriteSummary()
     /// Advanced by each reset. A write requested before a reset and sent after it
     /// belongs to the previous animation and is not counted in the new one.
     private var generation: UInt64 = 0
@@ -36,8 +63,7 @@ final class MotionPositionWriter: @unchecked Sendable {
     func resetStatistics() {
         lock.withLock {
             generation &+= 1
-            requested = 0
-            sent = 0
+            summary = MotionWriteSummary()
             slowestWrite = 0
             lastSent = [:]
             largestGap = [:]
@@ -45,22 +71,21 @@ final class MotionPositionWriter: @unchecked Sendable {
     }
 
     struct Statistics {
-        let requested: Int
-        let sent: Int
+        let summary: MotionWriteSummary
         let slowestMilliseconds: Int
         let largestGapMilliseconds: [String: Int]
     }
 
     var statistics: Statistics {
         lock.withLock {
-            Statistics(requested: requested, sent: sent, slowestMilliseconds: Int(slowestWrite * 1_000),
+            Statistics(summary: summary, slowestMilliseconds: Int(slowestWrite * 1_000),
                        largestGapMilliseconds: largestGap.mapValues { Int($0 * 1_000) })
         }
     }
 
     func write(windowID: String, pid: pid_t, element: AXUIElement, position: CGPoint) {
         let queue: DispatchQueue? = lock.withLock {
-            requested += 1
+            summary.requested += 1
             pending[pid, default: [:]][windowID] = Pending(windowID: windowID, element: element, position: position,
                                                            generation: generation)
             guard draining.insert(pid).inserted else { return nil }
@@ -126,11 +151,12 @@ final class MotionPositionWriter: @unchecked Sendable {
                 var position = item.position
                 guard let value = AXValueCreate(.cgPoint, &position) else { continue }
                 let began = ProcessInfo.processInfo.systemUptime
-                AXUIElementSetAttributeValue(item.element, kAXPositionAttribute as CFString, value)
+                let result = AXUIElementSetAttributeValue(item.element, kAXPositionAttribute as CFString, value)
                 let finished = ProcessInfo.processInfo.systemUptime
                 lock.withLock {
                     guard item.generation == generation else { return }
-                    sent += 1
+                    summary.sent += 1
+                    summary.record(result, windowID: item.windowID, finished: finished)
                     slowestWrite = max(slowestWrite, finished - began)
                     if let previous = lastSent[item.windowID] {
                         largestGap[item.windowID] = max(largestGap[item.windowID] ?? 0, finished - previous)

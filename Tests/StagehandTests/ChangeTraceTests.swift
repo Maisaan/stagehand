@@ -2,6 +2,7 @@ import AppKit
 import Carbon
 import Testing
 @testable import Stagehand
+@testable import StagehandPlatform
 
 /// Every queued change ends in exactly one terminal event, change_completed or
 /// change_ended, so scripts/analyze-log.py can tell a merged, cancelled or
@@ -159,6 +160,10 @@ struct ChangeTraceTests {
         let cancelled = try #require(ended(harness, outcome: "cancelled").first)
         #expect(cancelled["changeID"] == ids.last)
         #expect(cancelled["reason"] == "system_will_sleep")
+        // A change cancelled while queued was never started, and its trace says so.
+        #expect(cancelled["queuedUptimeMs"] != nil)
+        #expect(cancelled["startedUptimeMs"] == nil)
+        #expect(interrupted["startedUptimeMs"] != nil)
 
         harness.windows.focusDelayMilliseconds = 0
         harness.windows.onChange?()
@@ -260,6 +265,120 @@ struct ChangeTraceTests {
         #expect(restore["gestureID"] == "2")
         #expect(restore["changeID"] == nil)
         expectOneTerminalPerQueuedChange(harness)
+    }
+
+    private func uptime(_ details: [String: String], _ key: String,
+                        sourceLocation: SourceLocation = #_sourceLocation) throws -> Double {
+        try #require(details[key].flatMap(Double.init), "\(key) missing", sourceLocation: sourceLocation)
+    }
+
+    @Test(.enabled(if: !IsSecureEventInputEnabled(), "Secure Input is on, so the focus gate holds no transfers"))
+    func aSwitchEndsWithItsFeltDelayStampsInOrder() async throws {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        var sunk: [EndedChangeTrace] = []
+        harness.model.changeTraceSink = { sunk.append($0) }
+        let pressed = ProcessInfo.processInfo.systemUptime
+
+        InputArrival.delivering(InputArrival(source: .keyboardTap, eventUptime: pressed - 0.004,
+                                             receivedUptime: pressed - 0.002)) {
+            harness.model.navigate(.focusNext)
+        }
+        let typed = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true))
+        #expect(harness.model.focusGate.processKeyboardEvent(type: .keyDown, event: typed))
+        await harness.settle()
+
+        let completed = try #require(harness.events("change_completed").map(details).last {
+            $0["operation"] == "action.focusNext"
+        })
+        #expect(completed["inputSource"] == "keyboardTap")
+        let order = ["inputEventUptimeMs", "inputReceivedUptimeMs", "inputDeliveredUptimeMs", "queuedUptimeMs",
+                     "startedUptimeMs", "motionScheduledUptimeMs", "firstAcknowledgedWriteUptimeMs",
+                     "motionEndedUptimeMs", "focusRequestedUptimeMs", "focusConfirmedUptimeMs",
+                     "heldInputPostedUptimeMs"]
+        let stamps = try order.map { try uptime(completed, $0) }
+        #expect(stamps == stamps.sorted(), "\(zip(order, stamps).map { "\($0) \($1)" })")
+        #expect(completed["motionWritesAcknowledged"].flatMap(Int.init) ?? 0 > 0)
+        #expect(completed["motionWritesFailed"] == "0")
+        #expect(completed["heldInputEvents"] == "1")
+        #expect(completed["heldInputTransferAgeMs"] != nil)
+
+        let trace = try #require(sunk.last { $0.operation == "action.focusNext" })
+        #expect(trace.outcome == "completed")
+        #expect(String(trace.changeID) == completed["changeID"])
+        #expect(trace.trace.details == completed.filter { trace.trace.details[$0.key] != nil })
+    }
+
+    @Test func theTraceIsFilledWithLoggingOff() async throws {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        harness.model.diagnostics.isEnabled = false
+        var sunk: [EndedChangeTrace] = []
+        harness.model.changeTraceSink = { sunk.append($0) }
+
+        harness.model.navigate(.focusNext)
+        await harness.settle()
+
+        let trace = try #require(sunk.first { $0.operation == "action.focusNext" }).trace
+        #expect(trace.input == nil)
+        #expect(trace.started != nil)
+        #expect(trace.motionScheduled != nil)
+        #expect(trace.firstAcknowledgedWrite != nil)
+        #expect(trace.focusConfirmed != nil)
+        #expect(trace.ended != nil)
+        #expect(harness.events("change_completed").allSatisfy { details($0)["operation"] != "action.focusNext" })
+    }
+
+    @Test func aSwipeChangeCarriesTheArrivalOfItsReleaseFrame() async throws {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        let now = ProcessInfo.processInfo.systemUptime
+
+        harness.model.handleGesture(.began(axis: .horizontal, displacement: -0.02, mode: .plain))
+        InputArrival.delivering(InputArrival(source: .trackpad, eventUptime: now - 0.003, receivedUptime: now - 0.002,
+                                             touchesLandedUptime: now - 0.2)) {
+            harness.model.handleGesture(.ended(displacement: -0.2, velocity: -1.5, action: .focusNext, mode: .plain))
+        }
+        await harness.settle()
+
+        let completed = try #require(harness.events("change_completed").map(details).last {
+            $0["operation"] == "action.focusNext"
+        })
+        #expect(completed["inputSource"] == "trackpad")
+        #expect(try uptime(completed, "touchesLandedUptimeMs") < uptime(completed, "inputEventUptimeMs"))
+        #expect(try uptime(completed, "inputDeliveredUptimeMs") <= uptime(completed, "queuedUptimeMs"))
+    }
+
+    @Test func aChordThroughTheKeyboardGateStampsTheChangeItQueues() async throws {
+        let harness = ModelHarness(windowIDs: ["a", "b", "c"], focused: "a")
+        defer { harness.cleanUp() }
+        harness.model.start()
+        await harness.settle()
+        let chord = try #require(CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_RightArrow),
+                                         keyDown: true))
+        chord.flags = [.maskControl, .maskAlternate]
+
+        #expect(harness.model.focusGate.processKeyboardEvent(type: .keyDown, event: chord))
+        await harness.settle()
+
+        let completed = try #require(harness.events("change_completed").map(details).last {
+            $0["operation"] == "action.focusNext"
+        })
+        #expect(completed["inputSource"] == "keyboardTap")
+        #expect(try uptime(completed, "inputReceivedUptimeMs") <= uptime(completed, "queuedUptimeMs"))
+        // A change Stagehand queues itself carries no input.
+        let systemIDs = Set(harness.events("change_queued").map(details).filter { $0["origin"] == "system" }
+            .compactMap { $0["changeID"] })
+        let systemTerminals = (harness.events("change_completed") + harness.events("change_ended")).map(details)
+            .filter { systemIDs.contains($0["changeID"] ?? "") }
+        #expect(!systemTerminals.isEmpty)
+        #expect(systemTerminals.allSatisfy { $0["inputSource"] == nil && $0["queuedUptimeMs"] != nil })
     }
 }
 

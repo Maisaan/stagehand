@@ -31,7 +31,8 @@ extension StagehandModel {
             token: token,
             initialHorizontalVelocity: initialHorizontalVelocity,
             previousState: previousState,
-            motionStart: motionStart
+            motionStart: motionStart,
+            trace: ChangeTrace(input: InputArrival.beingDelivered)
         ))
         var queuedDetails = [
             "changeID": String(lastChangeID),
@@ -69,7 +70,9 @@ extension StagehandModel {
                          generation: Int) async -> Bool {
         let change = pendingChange.change
         let token = pendingChange.token
-        activeChange = ActiveChange(id: pendingChange.id, operation: change.diagnosticName)
+        activeChange = ActiveChange(id: pendingChange.id, operation: change.diagnosticName,
+                                    trace: pendingChange.trace)
+        stampTrace(pendingChange.id) { $0.started = ChangeTrace.now }
         // change_completed reports only this change's calls and parking requests.
         _ = MainThreadActivity.takeAppCallCount()
         _ = windowSystem.takeParkingStatistics()
@@ -260,11 +263,13 @@ extension StagehandModel {
             if let successorID = activeChange?.supersededBy {
                 endActiveChange(.superseded, reason: "slide_cut_short", successorID: successorID, details: cost)
             } else {
+                let trace = closeTrace(activeChange?.trace ?? pendingChange.trace, changeID: pendingChange.id,
+                                       operation: change.diagnosticName, outcome: "completed")
                 activeChange = nil
                 diagnostics.record("change_completed", details: [
                     "changeID": String(pendingChange.id),
                     "operation": change.diagnosticName
-                ].merging(cost) { current, _ in current })
+                ].merging(cost) { current, _ in current }.merging(trace) { current, _ in current })
             }
             if recoveryInProgress && change == .refresh {
                 recoveryInProgress = false
@@ -301,7 +306,7 @@ extension StagehandModel {
         guard let ended = activeChange else { return }
         activeChange = nil
         recordChangeEnded(id: ended.id, operation: ended.operation, outcome: outcome, reason: reason,
-                          successorID: successorID, details: details)
+                          trace: ended.trace, successorID: successorID, details: details)
     }
 
     /// Drops pending changes and invalidates the worker, ending each change's trace.
@@ -310,19 +315,38 @@ extension StagehandModel {
         endActiveChange(.interrupted, reason: reason)
         for pending in dropped {
             recordChangeEnded(id: pending.id, operation: pending.change.diagnosticName, outcome: .cancelled,
-                              reason: reason)
+                              reason: reason, trace: pending.trace)
         }
     }
 
     private func recordChangeEnded(id: Int, operation: String, outcome: ChangeEnd, reason: String,
-                                   successorID: Int? = nil, details: [String: String] = [:]) {
+                                   trace: ChangeTrace, successorID: Int? = nil, details: [String: String] = [:]) {
         var context = details
         context["changeID"] = String(id)
         context["operation"] = operation
         context["outcome"] = outcome.rawValue
         context["reason"] = reason
         if let successorID { context["successorChangeID"] = String(successorID) }
+        context.merge(closeTrace(trace, changeID: id, operation: operation, outcome: outcome.rawValue)) { current, _ in
+            current
+        }
         diagnostics.record("change_ended", details: context)
+    }
+
+    /// Stamps the change still being processed; a worker that outlived its change stamps nothing.
+    func stampTrace(_ changeID: Int?, _ stamp: (inout ChangeTrace) -> Void) {
+        guard let changeID, var active = activeChange, active.id == changeID else { return }
+        stamp(&active.trace)
+        activeChange = active
+    }
+
+    /// Hands the ended trace to the sink and returns its fields for the terminal event.
+    private func closeTrace(_ trace: ChangeTrace, changeID: Int, operation: String,
+                            outcome: String) -> [String: String] {
+        var trace = trace
+        trace.ended = ChangeTrace.now
+        changeTraceSink?(EndedChangeTrace(changeID: changeID, operation: operation, outcome: outcome, trace: trace))
+        return trace.details
     }
 
     func adjustFocusedWindowHeight(growing: Bool) -> Bool {
@@ -409,6 +433,7 @@ extension StagehandModel {
         // Diagnostics use the focus already observed; a new read would wait on the
         // outgoing app, on the main thread, before the attempt even starts.
         let observedFocusBefore = diagnostics.isEnabled ? windowSystem.lastObservedFocusedWindowID : nil
+        stampTrace(changeID) { $0.focusRequested = $0.focusRequested ?? ChangeTrace.now }
         let confirmation = await request.confirmFocus(
             windowID: record.id,
             currentFocus: { windowSystem.focusedWindowID() },
@@ -418,6 +443,7 @@ extension StagehandModel {
             mayHoldFocus: { windowSystem.mayHoldFocus(windowID: record.id) }
         )
         let focused = confirmation == .focused
+        if focused { stampTrace(changeID) { $0.focusConfirmed = $0.focusConfirmed ?? ChangeTrace.now } }
         if request == .navigation {
             diagnostics.observe(focused ? "navigation_focus_succeeded" : "navigation_focus_rejected")
         }
@@ -664,7 +690,9 @@ extension StagehandModel {
                     nativeDesktopChanged()
                     return .interrupted
                 }
+                stampTrace(changeID) { $0.focusRequested = $0.focusRequested ?? ChangeTrace.now }
                 let focused = await emptySpace.show(space: state.activeSpaceIndex + 1, frame: availableFrame)
+                if focused { stampTrace(changeID) { $0.focusConfirmed = $0.focusConfirmed ?? ChangeTrace.now } }
                 guard desktopScope.refresh() == .home else {
                     nativeDesktopChanged()
                     return .interrupted
@@ -750,7 +778,8 @@ extension StagehandModel {
             }
             let commitInput = {
                 if let token, let destinationPID {
-                    self.focusGate.commitTransfer(token: token, processIdentifier: destinationPID)
+                    let release = self.focusGate.commitTransfer(token: token, processIdentifier: destinationPID)
+                    self.stampTrace(changeID) { $0.heldInput = release }
                 }
             }
             let revealBorder = {
@@ -816,7 +845,8 @@ extension StagehandModel {
         } else {
             lastTransition = Date()
             if let token, let destinationPID {
-                focusGate.commitTransfer(token: token, processIdentifier: destinationPID)
+                let release = focusGate.commitTransfer(token: token, processIdentifier: destinationPID)
+                stampTrace(changeID) { $0.heldInput = release }
                 // Posting to a process is asynchronous, not an OS delivery acknowledgement.
                 try? await Task.sleep(for: .milliseconds(12))
                 guard isRunning, !isSuspended, !Task.isCancelled else { return .interrupted }
@@ -1082,6 +1112,8 @@ extension StagehandModel {
             "windowCount": String(to.count)
         ].merging(trace) { current, _ in current })
         let animationStart = ProcessInfo.processInfo.systemUptime
+        stampTrace(changeID) { $0.motionScheduled = $0.motionScheduled ?? animationStart }
+        let destinationID = state.focusedWindowID
         let completed = await ribbonMotion.animate(
             on: display?.number,
             from: slide.from,
@@ -1090,9 +1122,16 @@ extension StagehandModel {
             initialHorizontalVelocity: initialHorizontalVelocity,
             update: { [weak self] in self?.applyMotionFrames($0) }
         )
-        guard completed else { return false }
+        let motionEnded = ChangeTrace.now
         // Let the last motion writes land so the commit reads settled positions.
-        await windowSystem.finishMotionWrites()
+        if completed { await windowSystem.finishMotionWrites() }
+        let writes = windowSystem.motionWriteSummary(reset: false)
+        stampTrace(changeID) { trace in
+            trace.motionEnded = motionEnded
+            trace.motionWrites = writes
+            trace.firstAcknowledgedWrite = destinationID.flatMap { writes.firstAcknowledgedUptime[$0] }
+        }
+        guard completed else { return false }
         guard isRunning, !isSuspended, !Task.isCancelled, desktopScope.refresh() == .home else { return false }
         var visibleFrames = to.filter { visibleIDs.contains($0.key) }
         var commitFailures = commitRibbonPositions(
