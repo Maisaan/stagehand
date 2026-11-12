@@ -80,9 +80,10 @@ class InsetTextField: NSTextField {
 }
 
 struct GapInput: NSViewRepresentable {
-    static let bounds: ClosedRange<Double> = -200...40
+    static let tileGapBounds: ClosedRange<Double> = -200...40
+    static let paneGapBounds: ClosedRange<Double> = 0...40
 
-    static func clamped(_ value: Double) -> Double {
+    static func clamped(_ value: Double, to bounds: ClosedRange<Double> = tileGapBounds) -> Double {
         guard value.isFinite else { return 8 }
         return min(max(value, bounds.lowerBound), bounds.upperBound)
     }
@@ -112,10 +113,12 @@ struct GapInput: NSViewRepresentable {
     }
 
     @Binding var value: Double
+    var bounds = GapInput.tileGapBounds
+    var accessibilityLabel = "Gap between tiles in points"
     var onCommit: (Double) -> Void
 
     func makeNSView(context: Context) -> GapTextField {
-        GapTextField(value: value, onCommit: commit)
+        GapTextField(value: value, bounds: bounds, accessibilityLabel: accessibilityLabel, onCommit: commit)
     }
 
     func updateNSView(_ field: GapTextField, context: Context) {
@@ -131,17 +134,20 @@ struct GapInput: NSViewRepresentable {
 
 final class GapTextField: InsetTextField, NSTextFieldDelegate {
     var onCommit: (Double) -> Void
+    private let valueBounds: ClosedRange<Double>
     private var committedValue: Double
     private var outsideClickMonitor: Any?
 
-    init(value: Double, onCommit: @escaping (Double) -> Void) {
-        committedValue = GapInput.clamped(value)
+    init(value: Double, bounds: ClosedRange<Double>, accessibilityLabel: String,
+         onCommit: @escaping (Double) -> Void) {
+        valueBounds = bounds
+        committedValue = GapInput.clamped(value, to: valueBounds)
         self.onCommit = onCommit
         super.init(frame: .zero)
         delegate = self
         font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         alignment = .right
-        setAccessibilityLabel("Gap between tiles in points")
+        setAccessibilityLabel(accessibilityLabel)
         displayValue(committedValue)
     }
 
@@ -169,7 +175,7 @@ final class GapTextField: InsetTextField, NSTextFieldDelegate {
     }
 
     func update(value: Double) {
-        let value = GapInput.clamped(value)
+        let value = GapInput.clamped(value, to: valueBounds)
         guard value != committedValue else { return }
         committedValue = value
         displayValue(value, editor: currentEditor() as? NSTextView)
@@ -237,7 +243,7 @@ final class GapTextField: InsetTextField, NSTextFieldDelegate {
     }
 
     private func commit(value: Double, editor: NSTextView?) {
-        let value = GapInput.clamped(value)
+        let value = GapInput.clamped(value, to: valueBounds)
         let changed = value != committedValue
         committedValue = value
         displayValue(value, editor: editor)

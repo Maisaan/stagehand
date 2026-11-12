@@ -24,15 +24,18 @@ public enum NavigationAction: Equatable, Sendable {
     case showSettings
     /// Shows or hides the shortcut ribbon at the bottom of the screen.
     case toggleShortcutHints
-    /// Alone in its tile, the focused window joins the tile before it, at the
-    /// bottom; in a stack, it leaves as its own tile before the stack.
-    case stackPrevious
-    /// The same move toward the tile after it.
-    case stackNext
-    /// Focuses the window above the focused one in its tile.
-    case focusMemberAbove
-    /// Focuses the window below the focused one in its tile.
-    case focusMemberBelow
+    /// Focuses the pane above the focused one in its tile; never leaves the tile.
+    case focusPaneAbove
+    case focusPaneBelow
+    /// Swaps the focused window with the pane on that side; at the tile's edge it
+    /// leaves as its own tile; alone, it joins the neighboring tile's facing edge.
+    case moveWindowLeftInTile
+    case moveWindowRightInTile
+    /// Swaps the focused window with the pane above or below; nothing at the edge.
+    case moveWindowUpInTile
+    case moveWindowDownInTile
+    /// Gives the focused window's tile a ready-made layout.
+    case arrangeTile(PaneLayout)
     /// Anchors the focused space to the display on that side (negative: left); focus follows it.
     case moveSpaceToDisplay(direction: Int)
 
@@ -44,6 +47,12 @@ public enum NavigationAction: Equatable, Sendable {
         default: false
         }
     }
+
+    // Kept for StagehandModel+Benchmark.swift until slice B; its stack scenario needs a vertical tile.
+    public static var stackPrevious: Self { .arrangeTile(.stacked) }
+    public static var stackNext: Self { .arrangeTile(.stacked) }
+    public static var focusMemberAbove: Self { .focusPaneAbove }
+    public static var focusMemberBelow: Self { .focusPaneBelow }
 }
 
 /// One place in the ribbon: a width and a layout of panes, each holding one window.
@@ -285,8 +294,9 @@ public struct SpaceState: Codable, Equatable, Sendable {
     /// saved tile-mate (in the saved reading order, earlier ones first). When
     /// that tile is the saved one minus this window, the saved layout returns
     /// whole; otherwise the window goes beside that mate, on the side it had.
-    /// The tile widens by the width the window adds to its saved mates' span,
-    /// so its panes keep the widths they had. False when no mate is here.
+    /// The tile keeps its current width, which may be a resize made while the
+    /// window was away, plus the width the window took beside its saved mates;
+    /// above or below them it adds none. False when no mate is here.
     fileprivate mutating func rejoin(windowID: String, savedTile: Tile) -> Bool {
         let savedOrder = savedTile.windowIDs
         guard !contains(windowID: windowID), let position = savedOrder.firstIndex(of: windowID) else { return false }
@@ -305,10 +315,11 @@ public struct SpaceState: Codable, Equatable, Sendable {
                                                    after: earlier != nil))
         }
         let mates = Set(saved.windowIDs).subtracting([windowID])
-        let matesSpan = savedTile.panes.horizontalSpan(of: mates)
-        if matesSpan > 0 {
-            let widened = savedTile.panes.horizontalSpan(of: mates.union([windowID])) / matesSpan
-            tiles[tile].widthFraction = Self.clampedWidth(tiles[tile].widthFraction * Double(widened))
+        let addedSpan = savedTile.panes.horizontalSpan(of: mates.union([windowID]))
+            - savedTile.panes.horizontalSpan(of: mates)
+        if addedSpan > 0 {
+            tiles[tile].widthFraction = Self.clampedWidth(tiles[tile].widthFraction
+                + savedTile.widthFraction * Double(addedSpan))
         }
         return true
     }
@@ -675,21 +686,6 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         return swapPane(windowID: windowID, direction: direction > 0 ? .down : .up, inSpace: activeSpaceIndex)
     }
 
-    /// The stacking move for the focused window: alone in its tile, it joins the
-    /// neighboring tile on that side at the bottom; in a multi-pane tile, it
-    /// leaves as its own tile on that side. Focus stays on it.
-    @discardableResult
-    public mutating func moveFocusedWindowAcrossTiles(by direction: Int) -> Bool {
-        guard direction != 0, let windowID = focusedWindowID,
-              let tile = currentSpace.tileIndex(of: windowID) else { return false }
-        if currentSpace.tiles[tile].isMultiPane {
-            return expel(windowID: windowID, toward: direction, inSpace: activeSpaceIndex)
-        }
-        let target = tile + direction.signum()
-        guard currentSpace.tiles.indices.contains(target) else { return false }
-        return join(windowID: windowID, intoTileAt: target, edge: .bottom, inSpace: activeSpaceIndex)
-    }
-
     /// Gives `windowID`'s side of the split that separates it from `neighborID`
     /// `fraction` of the two sides' combined share, in the current space. The
     /// rest of the tile keeps its sizes.
@@ -820,10 +816,10 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     public mutating func apply(_ action: NavigationAction,
                                widthPresets: [Double] = SpaceState.defaultWidthPresets) -> Bool {
         switch action {
-        case .focusPrevious: return navigateWindow(by: -1, reorder: false)
-        case .focusNext: return navigateWindow(by: 1, reorder: false)
-        case .reorderPrevious: return navigateWindow(by: -1, reorder: true)
-        case .reorderNext: return navigateWindow(by: 1, reorder: true)
+        case .focusPrevious: return focusPane(direction: .left)
+        case .focusNext: return focusPane(direction: .right)
+        case .reorderPrevious: return reorderFocusedTile(by: -1)
+        case .reorderNext: return reorderFocusedTile(by: 1)
         case .moveWindowUpSpace:
             return moveFocusedWindow(toSpace: activeSpaceIndex - 1, follow: true)
         case .moveWindowDownSpace:
@@ -862,26 +858,25 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
             return true
         case .showSettings, .toggleShortcutHints:
             return false
-        case .stackPrevious, .stackNext:
-            return moveFocusedWindowAcrossTiles(by: action == .stackNext ? 1 : -1)
-        case .focusMemberAbove, .focusMemberBelow:
-            return focusPane(direction: action == .focusMemberBelow ? .down : .up)
+        case .focusPaneAbove: return focusPane(direction: .up)
+        case .focusPaneBelow: return focusPane(direction: .down)
+        case .moveWindowLeftInTile: return moveFocusedWindowSideways(by: -1)
+        case .moveWindowRightInTile: return moveFocusedWindowSideways(by: 1)
+        case .moveWindowUpInTile: return moveFocusedWindowVertically(by: -1)
+        case .moveWindowDownInTile: return moveFocusedWindowVertically(by: 1)
+        case .arrangeTile(let layout):
+            guard let focusedWindowID else { return false }
+            return arrange(tileOf: focusedWindowID, layout: layout) == .arranged
         case .moveSpaceToDisplay(let direction):
             guard let display = displayBesideFocused(by: direction) else { return false }
             return moveSpace(activeSpaceIndex, toDisplay: display)
         }
     }
 
-    /// Steps focus into the adjacent tile's active pane, or swaps the focused
-    /// tile with it.
-    private mutating func navigateWindow(by direction: Int, reorder: Bool) -> Bool {
+    private mutating func reorderFocusedTile(by direction: Int) -> Bool {
         guard let index = currentSpace.focusedTileIndex,
               currentSpace.tiles.indices.contains(index + direction) else { return false }
-        if reorder {
-            spaces[activeSpaceIndex].tiles.swapAt(index, index + direction)
-        } else {
-            spaces[activeSpaceIndex].setFocus(windowID: currentSpace.tiles[index + direction].activeWindowID)
-        }
+        spaces[activeSpaceIndex].tiles.swapAt(index, index + direction)
         return true
     }
 

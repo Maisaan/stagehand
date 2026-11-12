@@ -109,6 +109,7 @@ extension StagehandModel {
                 from: gestureBase,
                 availableFrame: availableFrame,
                 gap: gap,
+                paneGap: paneGap,
                 displacement: displacement,
                 velocity: velocity,
                 configuration: ribbonAnimationConfiguration
@@ -177,7 +178,7 @@ extension StagehandModel {
         }
         var complete = true
         let preview = RibbonMotion.dragFrames(state: state, from: base, availableFrame: availableFrame,
-                                              gap: gap, displacement: displacement,
+                                              gap: gap, paneGap: paneGap, displacement: displacement,
                                               configuration: ribbonAnimationConfiguration)
         var frames: [String: CGRect] = [:]
         for (id, shifted) in preview {

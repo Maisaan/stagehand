@@ -216,11 +216,11 @@ final class RibbonMotion {
     }
 
     static func dragFrames(state: WorkspaceState, from: [String: CGRect], availableFrame: CGRect,
-                           gap: CGFloat, displacement: Double,
+                           gap: CGFloat, paneGap: CGFloat = 8, displacement: Double,
                            configuration: RibbonAnimationConfiguration = .default) -> [String: CGRect] {
         guard displacement.isFinite, displacement != 0 else { return from }
         guard let transition = horizontalTransition(state: state, from: from, availableFrame: availableFrame,
-                                                    gap: gap, displacement: displacement) else {
+                                                    gap: gap, paneGap: paneGap, displacement: displacement) else {
             let travel = CGFloat(displacement) * availableFrame.width * configuration.tracking
             let resistance = travel / (1 + abs(travel) / configuration.edgeResistance)
             return from.mapValues { $0.offsetBy(dx: resistance, dy: 0) }
@@ -237,12 +237,13 @@ final class RibbonMotion {
     }
 
     static func horizontalCompletionAction(state: WorkspaceState, from: [String: CGRect], availableFrame: CGRect,
-                                           gap: CGFloat, displacement: Double,
+                                           gap: CGFloat, paneGap: CGFloat = 8, displacement: Double,
                                            velocity: Double,
                                            configuration: RibbonAnimationConfiguration = .default) -> NavigationAction? {
         guard displacement.isFinite, velocity.isFinite,
               let transition = horizontalTransition(state: state, from: from, availableFrame: availableFrame,
-                                                    gap: gap, displacement: displacement) else { return nil }
+                                                    gap: gap, paneGap: paneGap,
+                                                    displacement: displacement) else { return nil }
         let progress = transitionProgress(displacement: displacement, distance: transition.distance,
                                           availableWidth: availableFrame.width,
                                           tracking: configuration.tracking)
@@ -253,7 +254,7 @@ final class RibbonMotion {
     }
 
     private static func horizontalTransition(state: WorkspaceState, from: [String: CGRect],
-                                             availableFrame: CGRect, gap: CGFloat,
+                                             availableFrame: CGRect, gap: CGFloat, paneGap: CGFloat,
                                              displacement: Double) -> (action: NavigationAction, frames: [String: CGRect], distance: CGFloat)? {
         let action: NavigationAction = displacement < 0 ? .focusNext : .focusPrevious
         var destination = state
@@ -270,6 +271,7 @@ final class RibbonMotion {
             for: destination,
             availableFrame: availableFrame,
             gap: gap,
+            paneGap: paneGap,
             observedWidths: observedWidths,
             observedHeights: observedHeights
         )

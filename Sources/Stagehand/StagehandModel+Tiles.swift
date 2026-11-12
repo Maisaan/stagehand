@@ -2,32 +2,36 @@ import AppKit
 import StagehandCore
 import StagehandPlatform
 
-/// A change to the active space's tiles, as the stacking shortcuts make them.
+/// A change to the active space's tiles, made by the tile shortcuts.
 enum TileChange: Equatable {
-    /// The focused window, alone in its tile, joins the neighboring tile on
-    /// that side at the bottom; in a stack, it leaves as its own tile on that
-    /// side. Focus stays on it.
-    case moveFocusedWindowAcrossTiles(direction: Int)
-    /// Focus moves to the window above (negative) or below in the same tile.
-    case focusMember(direction: Int)
-    /// The focused window's tile takes a ready-made layout.
+    /// The focused window swaps with the pane on that side (negative: left); at
+    /// its tile's edge it leaves as its own tile; alone, it joins the neighbor.
+    case moveWindowSideways(direction: Int)
+    /// The focused window swaps with the pane above (negative) or below.
+    case moveWindowVertically(direction: Int)
+    /// Focus moves to the pane on that side within the tile.
+    case focusPane(PaneDirection)
     case arrange(PaneLayout)
 
     var diagnosticName: String {
         switch self {
-        case .moveFocusedWindowAcrossTiles(let direction): direction < 0 ? "stackLeft" : "stackRight"
-        case .focusMember(let direction): direction < 0 ? "focusMemberAbove" : "focusMemberBelow"
+        case .moveWindowSideways(let direction): direction < 0 ? "moveWindowLeft" : "moveWindowRight"
+        case .moveWindowVertically(let direction): direction < 0 ? "moveWindowUp" : "moveWindowDown"
+        case .focusPane(let direction): "focusPane.\(direction)"
         case .arrange(let layout): "arrange.\(layout.rawValue)"
         }
     }
 
-    /// The tile change a stacking shortcut or arrow shortcut swipe asks for.
+    /// The tile change a tile shortcut or arrow shortcut swipe asks for.
     init?(_ action: NavigationAction) {
         switch action {
-        case .stackPrevious: self = .moveFocusedWindowAcrossTiles(direction: -1)
-        case .stackNext: self = .moveFocusedWindowAcrossTiles(direction: 1)
-        case .focusMemberAbove: self = .focusMember(direction: -1)
-        case .focusMemberBelow: self = .focusMember(direction: 1)
+        case .moveWindowLeftInTile: self = .moveWindowSideways(direction: -1)
+        case .moveWindowRightInTile: self = .moveWindowSideways(direction: 1)
+        case .moveWindowUpInTile: self = .moveWindowVertically(direction: -1)
+        case .moveWindowDownInTile: self = .moveWindowVertically(direction: 1)
+        case .focusPaneAbove: self = .focusPane(.up)
+        case .focusPaneBelow: self = .focusPane(.down)
+        case .arrangeTile(let layout): self = .arrange(layout)
         default: return nil
         }
     }
@@ -67,10 +71,12 @@ extension StagehandModel {
     func applyTileChange(_ change: TileChange) -> TileChangeOutcome {
         var candidate = state
         switch change {
-        case .moveFocusedWindowAcrossTiles(let direction):
-            guard candidate.moveFocusedWindowAcrossTiles(by: direction) else { return .unchanged }
-        case .focusMember(let direction):
-            guard candidate.focusPane(direction: direction < 0 ? .up : .down) else { return .unchanged }
+        case .moveWindowSideways(let direction):
+            guard candidate.moveFocusedWindowSideways(by: direction) else { return .unchanged }
+        case .moveWindowVertically(let direction):
+            guard candidate.moveFocusedWindowVertically(by: direction) else { return .unchanged }
+        case .focusPane(let direction):
+            guard candidate.focusPane(direction: direction) else { return .unchanged }
         case .arrange(let layout):
             guard let windowID = candidate.focusedWindowID else { return .unchanged }
             switch candidate.arrange(tileOf: windowID, layout: layout) {
@@ -105,7 +111,7 @@ extension StagehandModel {
         guard let availableFrame, previous.spaces.indices.contains(next.activeSpaceIndex) else { return nil }
         let before = previous.spaces[next.activeSpaceIndex]
         for tile in next.currentSpace.tiles where tile.isMultiPane && layoutChanged(tile, since: before) {
-            let required = WindowLayout.minimumTileSize(tile, paneGap: gap, minimumWidths: learnedMinimumWidths,
+            let required = WindowLayout.minimumTileSize(tile, paneGap: paneGap, minimumWidths: learnedMinimumWidths,
                                                         minimumHeights: learnedMinimumHeights)
             if required.width > availableFrame.width + 1 || required.height > availableFrame.height + 1 {
                 return .tileDoesNotFit(windowIDs: tile.windowIDs, required: required,
@@ -211,7 +217,7 @@ extension StagehandModel {
             guard let index = state.currentSpace.tileIndex(of: windowID) else { continue }
             let tile = state.currentSpace.tiles[index]
             guard tile.isMultiPane, widened.insert(tile.id).inserted else { continue }
-            let minimum = WindowLayout.minimumTileSize(tile, paneGap: gap, minimumWidths: learnedMinimumWidths,
+            let minimum = WindowLayout.minimumTileSize(tile, paneGap: paneGap, minimumWidths: learnedMinimumWidths,
                                                        minimumHeights: learnedMinimumHeights).width / availableWidth
             if minimum > tile.widthFraction {
                 state.setWidthFraction(Double(minimum), for: windowID)
@@ -266,7 +272,7 @@ extension StagehandModel {
         let resizes = paneResize(
             tile: space.tiles[tileIndex], windowID: windowID, previous: previous, observed: observed,
             frame: { $0 == windowID ? previous : self.knownFrames[$0] },
-            minimumSize: { WindowLayout.minimumTileSize($0, paneGap: self.gap,
+            minimumSize: { WindowLayout.minimumTileSize($0, paneGap: self.paneGap,
                                                         minimumWidths: self.learnedMinimumWidths,
                                                         minimumHeights: self.learnedMinimumHeights) }
         )

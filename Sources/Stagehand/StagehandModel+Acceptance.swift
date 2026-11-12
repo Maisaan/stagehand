@@ -134,11 +134,11 @@ extension StagehandModel {
         }
         await waitUntilIdle()
 
-        // Stacks, after the checks above so they run as before: all three windows into
-        // one tile with the stacking shortcuts, typing during and after member
-        // switches and a stack move, then back to one window per tile.
-        let stack = await acceptanceStacks(system: system, typed: &typed)
-        lines0 += stack.failures
+        // Tiles, after the checks above so they run as before: all three windows into
+        // one tile with a layout shortcut, typing during and after pane switches and
+        // a swap, then back to one window per tile.
+        let tile = await acceptanceTiles(system: system, typed: &typed)
+        lines0 += tile.failures
         await waitUntilIdle()
         try? await Task.sleep(for: .milliseconds(400))
 
@@ -149,7 +149,7 @@ extension StagehandModel {
         failures += lines0.count
         lines.append("Space switches: \(spacesReady ? spaceSwitches : 0) of \(spaceSwitches)")
         if !spacesReady { failures += 1 }
-        lines.append("Stack steps: \(stack.steps) of \(Self.acceptanceStackSteps)")
+        lines.append("Tile steps: \(tile.steps) of \(Self.acceptanceTileSteps)")
         lines.append("Final focus matches the ribbon: \(finalFocusMatches)")
         for probe in typed {
             let landed = titles.compactMap { id, title -> String? in
@@ -172,19 +172,20 @@ extension StagehandModel {
         }
         lines.append(contentsOf: acceptanceLogSummary(since: startedAt, failures: &failures))
         lines.insert("\(failures == 0 ? "PASS" : "FAIL"): \(switches) switches, \(spaceSwitches) space switches, "
-            + "\(stack.steps) stack steps, \(typed.count) typed checks, \(failures) failures", at: 0)
+            + "\(tile.steps) tile steps, \(typed.count) typed checks, \(failures) failures", at: 0)
         return lines.joined(separator: "\n")
     }
 
-    /// Shortcut steps the stack check makes when every one of them applies.
-    private static let acceptanceStackSteps = 12
+    /// Shortcut steps the tile check makes when every one of them applies.
+    private static let acceptanceTileSteps = 7
 
-    /// Gathers the three probe windows into the active space, stacks them with the
-    /// stacking shortcuts, checks the stack's live frames, switches between members
-    /// with typing during and after, then unstacks them. Returns the steps that
-    /// applied and a FAIL line for each check that did not hold.
-    private func acceptanceStacks(system: WindowSystem,
-                                  typed: inout [TypedProbe]) async -> (steps: Int, failures: [String]) {
+    /// Gathers the three probe windows into the active space, arranges them as one
+    /// wide pane over two, checks the tile's live frames, moves focus between panes
+    /// with typing during and after, swaps the bottom panes, then breaks the tile
+    /// apart. Returns the steps that applied and a FAIL line for each check that
+    /// did not hold.
+    private func acceptanceTiles(system: WindowSystem,
+                                 typed: inout [TypedProbe]) async -> (steps: Int, failures: [String]) {
         var failures: [String] = []
         var steps = 0
         let home = state.activeSpaceIndex
@@ -195,14 +196,14 @@ extension StagehandModel {
             await waitUntilIdle()
         }
         guard state.activeSpaceIndex == home, state.currentSpace.windowIDs.count == 3 else {
-            return (0, ["FAIL: could not gather the three windows into one space for the stack check"])
+            return (0, ["FAIL: could not gather the three windows into one space for the tile check"])
         }
         /// Makes one shortcut step and checks that the tiles and focus became what
         /// the workspace predicts. A refused or ignored step counts as a failure.
         func step(_ action: NavigationAction, typeDuring index: Int? = nil) async -> Bool {
             var predicted = state
             guard predicted.apply(action) else {
-                failures.append("FAIL: stack step \(action) did not apply")
+                failures.append("FAIL: tile step \(action) did not apply")
                 return false
             }
             navigate(action)
@@ -212,9 +213,9 @@ extension StagehandModel {
                 typed.append(TypedProbe(text: text, expectedWindowID: destination, duringTransition: true))
             }
             await waitUntilIdle()
-            guard state.currentSpace.tiles.map(\.windowIDs) == predicted.currentSpace.tiles.map(\.windowIDs),
+            guard state.currentSpace.tiles.map(\.panes) == predicted.currentSpace.tiles.map(\.panes),
                   state.focusedWindowID == predicted.focusedWindowID else {
-                failures.append("FAIL: stack step \(action) was refused or ended elsewhere")
+                failures.append("FAIL: tile step \(action) was refused or ended elsewhere")
                 return false
             }
             steps += 1
@@ -226,32 +227,33 @@ extension StagehandModel {
             await type(text)
             typed.append(TypedProbe(text: text, expectedWindowID: destination, duringTransition: false))
         }
-        // Build: the last tile joins the middle one, then the first joins them.
-        for _ in 0..<2 where state.currentSpace.focusedTileIndex.map({ $0 < 2 }) == true {
-            navigate(.focusNext)
+        // The first window takes the wide top pane.
+        for _ in 0..<2 where state.currentSpace.focusedTileIndex.map({ $0 > 0 }) == true {
+            navigate(.focusPrevious)
             await waitUntilIdle()
         }
-        guard await step(.stackPrevious, typeDuring: 4_000),
-              await step(.focusPrevious),
-              await step(.stackNext, typeDuring: 4_001) else { return (steps, failures) }
-        await typeAfter(4_002)
-        let members = state.currentSpace.tiles.first?.windowIDs ?? []
-        let frames = members.compactMap { system.observedFrame(windowID: $0) }
-        let stacked = members.count == 3 && frames.count == 3
-            && frames.allSatisfy { abs($0.minX - frames[0].minX) <= 2 }
-            && zip(frames, frames.dropFirst()).allSatisfy { $0.maxY <= $1.minY + 1 }
-        if !stacked { failures.append("FAIL: the three stacked windows are not laid out top to bottom in one tile") }
-        // Member switches: typing right after each, during the switch and once it settled.
-        for (index, action) in [NavigationAction.focusMemberAbove, .focusMemberAbove, .focusMemberBelow,
-                                .focusMemberAbove, .focusMemberBelow, .focusMemberBelow].enumerated() {
-            guard await step(action, typeDuring: index.isMultiple(of: 2) ? 4_010 + index : nil) else { break }
-            if !index.isMultiple(of: 2) { await typeAfter(4_020 + index) }
+        guard await step(.arrangeTile(.wideOverTwo), typeDuring: 4_000) else { return (steps, failures) }
+        await typeAfter(4_001)
+        let panes = state.currentSpace.tiles.first?.windowIDs ?? []
+        let frames = panes.compactMap { system.observedFrame(windowID: $0) }
+        let arranged = panes.count == 3 && frames.count == 3
+            && frames[0].maxY <= min(frames[1].minY, frames[2].minY) + 1
+            && abs(frames[1].minY - frames[2].minY) <= 2
+            && frames[1].maxX <= frames[2].minX + 1
+        if !arranged { failures.append("FAIL: the tile is not one wide pane over two side by side") }
+        // Pane switches, typing right after each: down, right, up, then down again.
+        for (index, action) in [NavigationAction.focusPaneBelow, .focusNext, .focusPaneAbove, .focusPaneBelow]
+            .enumerated() {
+            guard await step(action, typeDuring: index.isMultiple(of: 2) ? 4_010 + index : nil) else {
+                return (steps, failures)
+            }
+            await typeAfter(4_020 + index)
         }
-        // Unstack: the bottom member leaves to the right, then the member the stack
-        // keeps focused leaves to the left.
-        _ = await step(.stackNext, typeDuring: 4_030)
-        if await step(.focusPrevious) { _ = await step(.stackPrevious) }
-        if state.currentSpace.tiles.count != 3 { failures.append("FAIL: the stack did not come apart into three tiles") }
+        // The focused bottom-left pane swaps with its right neighbor, then the tile breaks apart.
+        guard await step(.moveWindowRightInTile, typeDuring: 4_030) else { return (steps, failures) }
+        await typeAfter(4_031)
+        _ = await step(.arrangeTile(.single))
+        if state.currentSpace.tiles.count != 3 { failures.append("FAIL: the tile did not come apart into three tiles") }
         return (steps, failures)
     }
 

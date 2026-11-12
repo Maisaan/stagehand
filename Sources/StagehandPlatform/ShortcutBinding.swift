@@ -7,6 +7,7 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
         case windowNavigation
         case spaceNavigation
         case windowOrder
+        case tileLayout
         case spaceSwitching
         case spaceSharing
         case spaceMoving
@@ -135,22 +136,43 @@ public struct ShortcutBinding: Identifiable, Equatable, Sendable {
                 action: .moveToSpace(index: index, follow: true)
             ))
         }
-        // Added with tile stacking. They stay after every older binding: on load a
-        // later duplicate is the one turned off, so a chord a user already recorded
+        // Added with tiles. They stay after every older binding: on load a later
+        // duplicate is the one turned off, so a chord a user already recorded
         // keeps working and a new default that collides with it is turned off.
         bindings += [
-            .init(id: "stackPrevious", title: "Stack or unstack current window left", group: .windowOrder,
+            .init(id: "moveWindowLeftInTile", title: "Move current window left in tile", group: .windowOrder,
                   key: UInt32(kVK_LeftArrow), modifiers: base | shift, keyLabel: "←", isEnabled: true,
-                  action: .stackPrevious),
-            .init(id: "stackNext", title: "Stack or unstack current window right", group: .windowOrder,
+                  action: .moveWindowLeftInTile),
+            .init(id: "moveWindowRightInTile", title: "Move current window right in tile", group: .windowOrder,
                   key: UInt32(kVK_RightArrow), modifiers: base | shift, keyLabel: "→", isEnabled: true,
-                  action: .stackNext),
-            .init(id: "focusMemberAbove", title: "Window above in stack", group: .windowNavigation,
+                  action: .moveWindowRightInTile),
+            .init(id: "focusPaneAbove", title: "Pane above in tile", group: .windowNavigation,
                   key: UInt32(kVK_UpArrow), modifiers: base | shift, keyLabel: "↑", isEnabled: true,
-                  action: .focusMemberAbove),
-            .init(id: "focusMemberBelow", title: "Window below in stack", group: .windowNavigation,
+                  action: .focusPaneAbove),
+            .init(id: "focusPaneBelow", title: "Pane below in tile", group: .windowNavigation,
                   key: UInt32(kVK_DownArrow), modifiers: base | shift, keyLabel: "↓", isEnabled: true,
-                  action: .focusMemberBelow),
+                  action: .focusPaneBelow),
+            .init(id: "moveWindowUpInTile", title: "Move current window up in tile", group: .windowOrder,
+                  key: UInt32(kVK_UpArrow), modifiers: base | command | shift, keyLabel: "↑", isEnabled: true,
+                  action: .moveWindowUpInTile),
+            .init(id: "moveWindowDownInTile", title: "Move current window down in tile", group: .windowOrder,
+                  key: UInt32(kVK_DownArrow), modifiers: base | command | shift, keyLabel: "↓", isEnabled: true,
+                  action: .moveWindowDownInTile),
+            .init(id: "layoutSingle", title: "One window per tile", group: .tileLayout,
+                  key: UInt32(kVK_ANSI_U), modifiers: base, keyLabel: "U", isEnabled: true,
+                  action: .arrangeTile(.single)),
+            .init(id: "layoutSideBySide", title: "Side by side", group: .tileLayout,
+                  key: UInt32(kVK_ANSI_S), modifiers: base, keyLabel: "S", isEnabled: true,
+                  action: .arrangeTile(.sideBySide)),
+            .init(id: "layoutStacked", title: "Stacked", group: .tileLayout,
+                  key: UInt32(kVK_ANSI_T), modifiers: base, keyLabel: "T", isEnabled: true,
+                  action: .arrangeTile(.stacked)),
+            .init(id: "layoutGrid", title: "2×2 grid", group: .tileLayout,
+                  key: UInt32(kVK_ANSI_G), modifiers: base, keyLabel: "G", isEnabled: true,
+                  action: .arrangeTile(.grid)),
+            .init(id: "layoutWideOverTwo", title: "One wide over two", group: .tileLayout,
+                  key: UInt32(kVK_ANSI_W), modifiers: base, keyLabel: "W", isEnabled: true,
+                  action: .arrangeTile(.wideOverTwo)),
         ]
         return bindings
     }()

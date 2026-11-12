@@ -769,11 +769,11 @@ final class NavigationHUDModel: ObservableObject {
 
     @Published var space = 1
     @Published var windows: [WindowRecord] = []
-    /// `windows` grouped by ribbon tile, so a stack shows as one group.
+    /// `windows` grouped by ribbon tile, so a multi-pane tile shows as one group.
     @Published var tiles: [AppBarTile] = []
     @Published var focusedID: String?
     @Published var warning: String?
-    /// The message is a note, such as a refused stack, rather than a warning.
+    /// The message is a note, such as a refused tile change, rather than a warning.
     @Published var warningIsNotice = false
     @Published var reduceMotion = false
     @Published var attachedToNotch = false
@@ -940,7 +940,7 @@ private struct NavigationHUD: View {
                                 if tile.windows.count == 1, let window = tile.windows.first {
                                     windowButton(window, appBarColor: appBarColor)
                                 } else {
-                                    // A stack: its windows side by side on one shared
+                                    // A multi-pane tile: its windows side by side on one shared
                                     // backing, each still its own button.
                                     HStack(spacing: 0) {
                                         ForEach(tile.windows) { window in
@@ -949,7 +949,7 @@ private struct NavigationHUD: View {
                                     }
                                     .background(.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 11))
                                     .accessibilityElement(children: .contain)
-                                    .accessibilityLabel("Stack of \(tile.windows.count) windows")
+                                    .accessibilityLabel("Tile of \(tile.windows.count) windows")
                                 }
                             }
                         }

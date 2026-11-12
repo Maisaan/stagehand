@@ -9,19 +9,21 @@ public struct WindowPlacement: Equatable, Sendable {
 }
 
 public enum WindowLayout {
-    /// The current space's placements, with the tile gap's non-negative part
-    /// between panes.
+    /// The current space's placements. Without a pane gap, the tile gap's
+    /// non-negative part goes between panes.
     public static func placements(
         for state: WorkspaceState,
         availableFrame: CGRect,
         gap: CGFloat = 8,
+        // Optional for StagehandModel+Benchmark.swift until slice B.
+        paneGap: CGFloat? = nil,
         observedWidths: [String: CGFloat] = [:],
         preferredHeights: [String: CGFloat] = [:],
         observedHeights: [String: CGFloat] = [:],
         minimumWidths: [String: CGFloat] = [:],
         minimumHeights: [String: CGFloat] = [:]
     ) -> [WindowPlacement] {
-        placements(for: state.currentSpace, availableFrame: availableFrame, tileGap: gap, paneGap: gap,
+        placements(for: state.currentSpace, availableFrame: availableFrame, tileGap: gap, paneGap: paneGap ?? gap,
                    observedWidths: observedWidths, preferredHeights: preferredHeights,
                    observedHeights: observedHeights, minimumWidths: minimumWidths,
                    minimumHeights: minimumHeights)

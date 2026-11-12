@@ -258,9 +258,9 @@ extension StagehandModel {
     func adjustFocusedWindowHeight(growing: Bool) -> Bool {
         guard let windowID = state.focusedWindowID,
               let availableFrame else { return false }
-        // The height shortcuts set a lone window's preferred height. A stacked
-        // window's height is its share of the stack; changing the preference there
-        // would only change the height it takes when it is alone again.
+        // The height shortcuts set a lone window's preferred height. A pane's
+        // height is its share of the tile; changing the preference there would
+        // only change the height it takes when it is alone again.
         if let tile = state.currentSpace.tileIndex(of: windowID),
            state.currentSpace.tiles[tile].isMultiPane { return false }
         let currentHeight = windowSystem.frame(windowID: windowID)?.height
@@ -444,6 +444,7 @@ extension StagehandModel {
         for pass in 0...maximumPass {
             guard preferenceFocusStillMatches(request) else { return .completed }
             placements = WindowLayout.placements(for: state, availableFrame: availableFrame, gap: gap,
+                                                 paneGap: paneGap,
                                                  observedWidths: observedWidths, preferredHeights: preferredHeights,
                                                  observedHeights: observedHeights,
                                                  minimumWidths: learnedMinimumWidths,
@@ -756,6 +757,7 @@ extension StagehandModel {
             knownFrame(windowID: window.id).map { (window.id, $0) }
         }, uniquingKeysWith: { first, _ in first })
         let placements = WindowLayout.placements(for: state, availableFrame: availableFrame, gap: gap,
+                                                 paneGap: paneGap,
                                                  observedWidths: actual.mapValues(\.width),
                                                  observedHeights: actual.mapValues(\.height))
         var frames = Dictionary(placements.map {

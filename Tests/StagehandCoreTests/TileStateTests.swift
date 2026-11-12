@@ -73,6 +73,10 @@ private let actions: [NavigationAction] = [
     .shareToSpace(index: 0), .shareToSpace(index: 2), .shrinkWidth, .growWidth, .nextWidthPreset,
     .previousWidthPreset, .shrinkHeight, .growHeight, .togglePause, .showSettings, .toggleShortcutHints
 ]
+private let tileActions: [NavigationAction] = [
+    .focusPaneAbove, .focusPaneBelow, .moveWindowLeftInTile, .moveWindowRightInTile, .moveWindowUpInTile,
+    .moveWindowDownInTile
+] + PaneLayout.allCases.map { .arrangeTile($0) }
 private let displayActions: [NavigationAction] = [.moveSpaceToDisplay(direction: -1), .moveSpaceToDisplay(direction: 1)]
 
 /// Applies the same random operation to both models and returns its name and
@@ -336,8 +340,9 @@ private func invariantViolations(_ state: WorkspaceState) -> [String] {
                 state.expel(windowID: id, toTileAt: position, inSpace: space)
                 operation = "expel \(id) to \(position) space \(space)"
             case 4:
-                state.moveFocusedWindowAcrossTiles(by: direction)
-                operation = "across \(direction)"
+                let action = tileActions.randomElement(using: &rng)!
+                state.apply(action)
+                operation = "apply \(action)"
             case 5, 6:
                 state.moveFocusedWindowSideways(by: direction)
                 operation = "sideways \(direction)"
@@ -391,46 +396,70 @@ private func stacked(_ tiles: [[String]], focus: String? = nil, widths: [Double]
     }, focusedWindowID: focus)])
 }
 
-@Test func aLoneWindowJoinsTheNeighboringTileAtTheBottomAndKeepsFocus() {
-    var state = stacked([["a"], ["b", "c"], ["d"]], focus: "d", widths: [0.5, 0.6, 0.8])
-    #expect(state.moveFocusedWindowAcrossTiles(by: -1) == true)
-    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["b", "c", "d"]])
+@Test func aLoneWindowJoinsTheNeighboringTileAtItsFacingEdgeAndKeepsFocus() {
+    var state = stacked([["a"], ["b", "c"], ["d"]], focus: "d", widths: [0.5, 0.6, 0.3])
+    #expect(state.moveFocusedWindowSideways(by: -1) == true)
+    #expect(state.currentSpace.tiles.map(\.panes) == [.p("a"), .h(.v(.p("b"), .p("c")), .p("d"))])
     #expect(state.focusedWindowID == "d")
     #expect(state.currentSpace.tiles[1].activeWindowID == "d")
-    #expect(state.currentSpace.tileWidthFraction(containing: "d") == 0.6)
+    #expect(abs(state.currentSpace.tileWidthFraction(containing: "d") - 0.9) < 1e-9)
 
-    var edge = stacked([["a"], ["b"]], focus: "a")
-    #expect(edge.moveFocusedWindowAcrossTiles(by: -1) == false)
-    #expect(edge.moveFocusedWindowAcrossTiles(by: 1) == true)
-    #expect(edge.currentSpace.tiles.map(\.windowIDs) == [["b", "a"]])
+    var edge = stacked([["a"], ["b"]], focus: "a", widths: [0.7, 0.6])
+    #expect(edge.moveFocusedWindowSideways(by: -1) == false)
+    #expect(edge.moveFocusedWindowSideways(by: 1) == true)
+    #expect(edge.currentSpace.tiles.map(\.panes) == [.h(.p("a"), .p("b"))])
     #expect(edge.currentSpace.tiles[0].id == "b")
+    // A join's width is the sum of both, up to the whole display.
+    #expect(edge.currentSpace.tileWidthFraction(containing: "a") == 1)
 }
 
-@Test func aStackedWindowLeavesAsItsOwnTileOnThatSideWithTheStacksWidth() {
-    var state = stacked([["a"], ["b", "c", "d"], ["e"]], focus: "c", widths: [0.5, 0.6, 0.8])
-    #expect(state.moveFocusedWindowAcrossTiles(by: 1) == true)
+@Test func aWindowSwapsWithinItsTileThenLeavesAtTheEdge() {
+    let row = Tile(panes: .h(.p("b"), .p("c"), .p("d")), widthFraction: 0.6)
+    var state = WorkspaceState(spaces: [SpaceState(tiles: [Tile(windowID: "a", widthFraction: 0.5), row,
+                                                           Tile(windowID: "e", widthFraction: 0.8)],
+                                                   focusedWindowID: "c")])
+    #expect(state.moveFocusedWindowSideways(by: 1) == true)
+    #expect(state.currentSpace.tiles[1].panes == .h(.p("b"), .p("d"), .p("c")))
+    #expect(state.focusedWindowID == "c")
+
+    #expect(state.moveFocusedWindowSideways(by: 1) == true)
     #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["b", "d"], ["c"], ["e"]])
     #expect(state.focusedWindowID == "c")
-    #expect(state.currentSpace.tileWidthFraction(containing: "c") == 0.6)
-    // The stack remembers the member that took the leaver's place.
+    #expect(state.currentSpace.tileWidthFraction(containing: "c") == 0.25)
+    // The tile remembers the pane that took the leaver's place.
     #expect(state.currentSpace.tiles[1].activeWindowID == "d")
 
-    #expect(state.moveFocusedWindowAcrossTiles(by: -1) == true)
-    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["b", "d", "c"], ["e"]])
-    #expect(state.moveFocusedWindowAcrossTiles(by: -1) == true)
-    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["c"], ["b", "d"], ["e"]])
-    #expect(state.focusedWindowID == "c")
+    #expect(state.moveFocusedWindowSideways(by: -1) == true)
+    #expect(state.currentSpace.tiles[1].panes == .h(.p("b"), .p("d"), .p("c")))
+    #expect(abs(state.currentSpace.tileWidthFraction(containing: "c") - 0.85) < 1e-9)
+
+    // A stacked window has no pane beside it, so it leaves with the stack's width.
+    var stack = stacked([["a"], ["b", "c"]], focus: "c", widths: [0.5, 0.6])
+    #expect(stack.moveFocusedWindowSideways(by: -1) == true)
+    #expect(stack.currentSpace.tiles.map(\.windowIDs) == [["a"], ["c"], ["b"]])
+    #expect(stack.currentSpace.tileWidthFraction(containing: "c") == 0.6)
+}
+
+@Test func aWindowSwapsVerticallyAndStopsAtTheEdge() {
+    var state = WorkspaceState(spaces: [SpaceState(tiles: [
+        Tile(panes: .v(.h(.p("a"), .p("b")), .h(.p("c"), .p("d")), weights: [2, 1]))
+    ], focusedWindowID: "b")])
+    #expect(state.moveFocusedWindowVertically(by: -1) == false)
+    #expect(state.moveFocusedWindowVertically(by: 1) == true)
+    #expect(state.currentSpace.tiles[0].panes == .v(.h(.p("a"), .p("d")), .h(.p("c"), .p("b")), weights: [2, 1]))
+    #expect(state.focusedWindowID == "b")
+    #expect(state.moveFocusedWindowVertically(by: 1) == false)
 }
 
 @Test func tileIDsStayWithTheTileAndStayUnique() {
     var state = stacked([["a"], ["b"]], focus: "b")
-    #expect(state.moveFocusedWindowAcrossTiles(by: -1) == true)
+    #expect(state.moveFocusedWindowSideways(by: -1) == true)
     #expect(state.currentSpace.tiles.map(\.id) == ["a"])
     state.focus(windowID: "a")
     // The founder leaves; the tile keeps its ID and the leaver gets a new one.
-    #expect(state.moveFocusedWindowAcrossTiles(by: 1) == true)
-    #expect(state.currentSpace.tiles.map(\.id) == ["a", "a#2"])
-    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["b"], ["a"]])
+    #expect(state.moveFocusedWindowSideways(by: -1) == true)
+    #expect(state.currentSpace.tiles.map(\.id) == ["a#2", "a"])
+    #expect(state.currentSpace.tiles.map(\.windowIDs) == [["a"], ["b"]])
 }
 
 @Test func memberFocusMovesWithinTheTileWithoutWrapping() {

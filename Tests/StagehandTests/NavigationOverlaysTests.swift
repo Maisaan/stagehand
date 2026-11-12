@@ -39,7 +39,7 @@ import StagehandCore
 
 @Test func shortcutRibbonFollowsTheCurrentBindings() throws {
     let sections = ShortcutHintSection.sections(for: ShortcutBinding.defaults)
-    #expect(sections.map(\.title) == ["Navigate", "Move window", "Size", "Stagehand"])
+    #expect(sections.map(\.title) == ["Navigate", "Move window", "Tile", "Size", "Stagehand"])
     let hints = sections.flatMap(\.hints)
     #expect(hints.contains(ShortcutHint(title: "Window", modifiers: "⌃ ⌥", keys: ["←", "→"])))
     #expect(hints.contains(ShortcutHint(title: "Go to space", modifiers: "⌃ ⌥", keys: ["1–9"])))

@@ -595,11 +595,11 @@ public final class FocusInputGate {
 }
 
 private extension NavigationAction {
-    /// Actions a held chord may repeat. Space switches and window moves, stacking
-    /// moves included, run once per press.
+    /// Actions a held chord may repeat. Space switches, window moves within and
+    /// across tiles, and tile layouts run once per press.
     var repeatsWhileHeld: Bool {
         switch self {
-        case .focusPrevious, .focusNext, .focusMemberAbove, .focusMemberBelow,
+        case .focusPrevious, .focusNext, .focusPaneAbove, .focusPaneBelow,
              .shrinkWidth, .growWidth, .shrinkHeight, .growHeight: true
         default: false
         }

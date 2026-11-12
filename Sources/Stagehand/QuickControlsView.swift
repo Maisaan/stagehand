@@ -67,7 +67,7 @@ struct QuickControlsView: View {
                     }
                     Slider(
                         value: Binding(get: { gapInput }, set: { gapInput = $0.rounded() }),
-                        in: GapInput.bounds
+                        in: GapInput.tileGapBounds
                     ) { editing in
                         if !editing, gapInput != model.gap { model.gap = gapInput }
                     }

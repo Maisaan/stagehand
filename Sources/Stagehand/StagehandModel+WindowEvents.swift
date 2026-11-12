@@ -362,6 +362,7 @@ extension StagehandModel {
                 pointerInteraction = PointerInteraction(
                     windowID: focused.id,
                     placements: WindowLayout.placements(for: oldState, availableFrame: frame, gap: gap,
+                                                        paneGap: paneGap,
                                                         minimumWidths: learnedMinimumWidths,
                                                         minimumHeights: learnedMinimumHeights),
                     needsLayout: oldState != state
@@ -412,6 +413,7 @@ extension StagehandModel {
                         placements = interaction.placements
                     } else {
                         placements = WindowLayout.placements(for: oldState, availableFrame: frame, gap: gap,
+                                                             paneGap: paneGap,
                                                              minimumWidths: learnedMinimumWidths,
                                                              minimumHeights: learnedMinimumHeights)
                     }

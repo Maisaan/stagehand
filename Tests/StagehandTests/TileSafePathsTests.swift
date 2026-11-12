@@ -32,7 +32,7 @@ private func layout(_ state: WorkspaceState) -> [[String]] {
     #expect(shouldSlideRibbon(from: before, to: across, source: .managed, hadPreview: false, reduceMotion: false))
     // A join keeps focus on the moved window: it snaps, as any unchanged focus does.
     var joined = tiles([["a"], ["b"]], focus: "a")
-    joined.moveFocusedWindowAcrossTiles(by: 1)
+    joined.moveFocusedWindowSideways(by: 1)
     #expect(!shouldSlideRibbon(from: tiles([["a"], ["b"]], focus: "a"), to: joined, source: .managed,
                                hadPreview: false, reduceMotion: false))
     // Leaving a tile and entering another member's tile is not within one tile.
@@ -525,21 +525,21 @@ struct TileScenarioTests {
         #expect(noPause(harness))
     }
 
-    @Test func aJoinThatFitsSnapsIntoTheStackAndMemberFocusFollows() async throws {
+    @Test func aStackThatFitsSnapsIntoPlaceAndPaneFocusFollows() async throws {
         let harness = await harness([["a"], ["b"]], focus: "a")
         defer { harness.cleanUp() }
         let available = try #require(harness.model.availableFrame)
 
-        harness.model.changeTiles(.moveFocusedWindowAcrossTiles(direction: 1))
+        harness.model.changeTiles(.arrange(.stacked))
         await harness.settle()
 
-        #expect(layout(harness.model.state) == [["b", "a"]])
+        #expect(layout(harness.model.state) == [["a", "b"]])
         #expect(harness.model.state.focusedWindowID == "a")
         #expect(details(harness, "navigation_motion_planned").last?["slideEnabled"] == "false")
-        #expect(frame(harness, "a").minY > frame(harness, "b").maxY)
-        #expect(abs(frame(harness, "a").maxY - available.maxY) <= 1)
+        #expect(frame(harness, "b").minY > frame(harness, "a").maxY)
+        #expect(abs(frame(harness, "b").maxY - available.maxY) <= 1)
 
-        harness.model.changeTiles(.focusMember(direction: -1))
+        harness.model.changeTiles(.focusPane(.down))
         await harness.settle()
         #expect(harness.model.state.focusedWindowID == "b")
         #expect(harness.windows.focusedWindowID() == "b")
@@ -558,7 +558,7 @@ struct TileScenarioTests {
         let before = harness.model.state
         let writes = harness.windows.setFrameCalls.count
 
-        harness.model.changeTiles(.moveFocusedWindowAcrossTiles(direction: 1))
+        harness.model.changeTiles(.arrange(.stacked))
         await harness.settle()
 
         #expect(harness.model.state == before)
@@ -567,7 +567,7 @@ struct TileScenarioTests {
         let event = try #require(details(harness, "tile_change_refused").last)
         #expect(event["decided"] == "before_change")
         #expect(event["reason"] == "tile_does_not_fit")
-        #expect(details(harness, "change_queued").last?["operation"] == "tiles.stackRight")
+        #expect(details(harness, "change_queued").last?["operation"] == "tiles.arrange.stacked")
         #expect(noPause(harness))
         #expect(harness.model.warning == nil)
     }
@@ -584,7 +584,7 @@ struct TileScenarioTests {
         ]
         let a = frame(harness, "a")
 
-        harness.model.changeTiles(.moveFocusedWindowAcrossTiles(direction: 1))
+        harness.model.changeTiles(.arrange(.stacked))
         await harness.settle()
 
         #expect(layout(harness.model.state) == [["a"], ["b"]])
@@ -595,7 +595,7 @@ struct TileScenarioTests {
         #expect(harness.model.learnedMinimumHeights.keys.sorted() == ["a", "b"])
         #expect(noPause(harness))
 
-        harness.model.changeTiles(.moveFocusedWindowAcrossTiles(direction: 1))
+        harness.model.changeTiles(.arrange(.stacked))
         await harness.settle()
 
         #expect(layout(harness.model.state) == [["a"], ["b"]])
@@ -750,7 +750,7 @@ struct TileScenarioTests {
         let available = try #require(harness.model.availableFrame)
         harness.model.learnedMinimumHeights = ["b": available.height * 0.6, "c": available.height * 0.6]
 
-        harness.model.changeTiles(.moveFocusedWindowAcrossTiles(direction: 1))
+        harness.model.changeTiles(.moveWindowSideways(direction: 1))
         await harness.settle()
 
         #expect(layout(harness.model.state) == [["b", "c"], ["a"]])

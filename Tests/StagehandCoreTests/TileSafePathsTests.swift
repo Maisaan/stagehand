@@ -135,6 +135,25 @@ private func stacked(_ tiles: [[String]], focus: String? = nil, widths: [Double]
     #expect(stacked.currentSpace.tileWidthFraction(containing: "d") == 0.5)
 }
 
+@Test func aRejoiningWindowAddsItsShareToTheTilesCurrentWidth() {
+    let saved = Tile(panes: .h(.p("a"), .p("b")), widthFraction: 0.6)
+    // b was away and the tile kept its width: b adds its 0.3, not a doubling.
+    var kept = WorkspaceState(spaces: [SpaceState(tiles: [Tile(windowID: "a", widthFraction: 0.6)])])
+    #expect(kept.rejoin(windowID: "b", savedTile: saved, inSpace: 0) == true)
+    #expect(abs(kept.currentSpace.tileWidthFraction(containing: "b") - 0.9) < 1e-9)
+
+    // The user narrowed the tile while b was away: the resize stays and b adds its share.
+    var resized = WorkspaceState(spaces: [SpaceState(tiles: [Tile(windowID: "a", widthFraction: 0.4)])])
+    #expect(resized.rejoin(windowID: "b", savedTile: saved, inSpace: 0) == true)
+    #expect(abs(resized.currentSpace.tileWidthFraction(containing: "b") - 0.7) < 1e-9)
+
+    // Above or below its mates it adds no width.
+    var below = WorkspaceState(spaces: [SpaceState(tiles: [Tile(windowID: "a", widthFraction: 0.4)])])
+    #expect(below.rejoin(windowID: "b", savedTile: Tile(panes: .v(.p("a"), .p("b")), widthFraction: 0.6),
+                         inSpace: 0) == true)
+    #expect(below.currentSpace.tileWidthFraction(containing: "b") == 0.4)
+}
+
 // MARK: - Drops and resizes
 
 @Test func aStackedWindowDroppedOutsideItsTileBecomesItsOwnTileThere() {
@@ -192,7 +211,7 @@ private func stacked(_ tiles: [[String]], focus: String? = nil, widths: [Double]
                 let returning = "n\(Int.random(in: 0..<3, using: &generator))"
                 state.rejoin(windowID: returning, savedTile: Tile(stacking: ["w1", "n0", "w4", "n1", "n2"]),
                              inSpace: 0)
-            default: state.moveFocusedWindowAcrossTiles(by: Bool.random(using: &generator) ? 1 : -1)
+            default: state.moveFocusedWindowSideways(by: Bool.random(using: &generator) ? 1 : -1)
             }
             for space in state.spaces {
                 let flat = space.tiles.flatMap(\.windowIDs)

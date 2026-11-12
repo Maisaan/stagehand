@@ -47,6 +47,7 @@ struct SettingsView: View {
     @Environment(\.controlActiveState) private var controlActiveState
     @State private var page: SettingsPage
     @State private var gapInput: Double
+    @State private var paneGapInput: Double
     @State private var selectedSpaceIndex: Int
     @State private var shortcutPage = ShortcutPage.navigation
     @State private var shortcutError: String?
@@ -65,6 +66,7 @@ struct SettingsView: View {
         self.expandAboutDetails = expandAboutDetails
         _page = State(initialValue: initialTab)
         _gapInput = State(initialValue: GapInput.clamped(model.gap))
+        _paneGapInput = State(initialValue: GapInput.clamped(model.paneGap, to: GapInput.paneGapBounds))
         _selectedSpaceIndex = State(initialValue: model.state.activeSpaceIndex)
     }
 
@@ -125,6 +127,9 @@ struct SettingsView: View {
         // Sync at the root so the Windows page never shows, then re-commits, a stale value.
         .onChange(of: model.gap) { _, value in
             gapInput = GapInput.clamped(value)
+        }
+        .onChange(of: model.paneGap) { _, value in
+            paneGapInput = GapInput.clamped(value, to: GapInput.paneGapBounds)
         }
         .alert("Shortcut unavailable", isPresented: Binding(
             get: { shortcutError != nil },
@@ -367,12 +372,36 @@ struct SettingsView: View {
                                 .frame(width: 76, height: TextInputMetrics.height)
                             Text("pt").foregroundStyle(.secondary)
                         }
-                        Slider(value: Binding(get: { gapInput }, set: { gapInput = $0.rounded() }), in: GapInput.bounds) { editing in
+                        Slider(value: Binding(get: { gapInput }, set: { gapInput = $0.rounded() }), in: GapInput.tileGapBounds) { editing in
                             if !editing, gapInput != model.gap { model.gap = gapInput }
                         }
                         .accessibilityLabel("Gap between tiles")
                         HStack {
                             Text("−200 pt overlap")
+                            Spacer()
+                            Text("40 pt gap")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    .padding(14)
+                    Divider()
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 10) {
+                            Text("Pane gap")
+                            Spacer()
+                            GapInput(value: $paneGapInput, bounds: GapInput.paneGapBounds,
+                                     accessibilityLabel: "Gap between panes in points") { model.paneGap = $0 }
+                                .frame(width: 76, height: TextInputMetrics.height)
+                            Text("pt").foregroundStyle(.secondary)
+                        }
+                        Slider(value: Binding(get: { paneGapInput }, set: { paneGapInput = $0.rounded() }),
+                               in: GapInput.paneGapBounds) { editing in
+                            if !editing, paneGapInput != model.paneGap { model.paneGap = paneGapInput }
+                        }
+                        .accessibilityLabel("Gap between panes")
+                        HStack {
+                            Text("0 pt")
                             Spacer()
                             Text("40 pt gap")
                         }
@@ -541,7 +570,7 @@ struct SettingsView: View {
                     case .navigation:
                         shortcutRows(groups: [.windowNavigation, .spaceNavigation])
                     case .arrange:
-                        shortcutRows(groups: [.windowOrder, .windowSize])
+                        shortcutRows(groups: [.windowOrder, .tileLayout, .windowSize])
                     case .spaces:
                         spaceShortcutGroup("Switch spaces", group: .spaceSwitching)
                         Divider()

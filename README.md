@@ -37,8 +37,10 @@ Each space keeps its own window order, focus, and widths for the session. A wind
 | Previous / next space | ⌃⌥ ↑ / ↓ |
 | Move window left / right | ⌃⌥⌘ ← / → |
 | Move window up / down a space | ⌃⌥⌘ ↑ / ↓ |
-| Stack or unstack window left / right | ⌃⌥⇧ ← / → |
-| Window above / below in a stack | ⌃⌥⇧ ↑ / ↓ |
+| Move window left / right in its tile | ⌃⌥⇧ ← / → |
+| Move window up / down in its tile | ⌃⌥⌘⇧ ↑ / ↓ |
+| Pane above / below in a tile | ⌃⌥⇧ ↑ / ↓ |
+| Tile layout: one window per tile, side by side, stacked, 2×2, one wide over two | ⌃⌥ U, S, T, G, W |
 | Go to space 1–9 | ⌃⌥ 1–9 |
 | Move window to space 1–9 | ⌃⌥⌘ 1–9 |
 | Share window with space 1–9 | ⌃⌥⇧ 1–9 |
@@ -51,20 +53,22 @@ Each space keeps its own window order, focus, and widths for the session. A wind
 
 Every shortcut can be changed or turned off in Settings > Controls.
 
-### Stacks
+### Tiles
 
-A tile, one place in the ribbon, can hold several windows, one above the other: a stack. The ribbon scrolls by tile, so a stack comes into view as one.
+A tile is one place in the ribbon. It can hold several windows, each in a pane: side by side, stacked, a 2×2 grid, or one wide window over two. The ribbon scrolls by tile, so a tile comes into view as one. A lone window is a tile with one pane and behaves as it always did.
 
-- ⌃⌥⇧ ← / → moves the current window sideways. Alone in its tile, it joins the stack (or window) on that side, at the bottom. In a stack, it leaves and becomes its own tile on that side. It keeps focus.
-- ⌃⌥⇧ ↑ / ↓ focuses the window above or below in the same stack. It stops at the ends; hold the keys to keep going.
-- ⌃⌥ ← / → enters the next tile at the window you last used there. ⌃⌥⌘ ← / → moves the whole stack.
-- The windows share the screen's height and the tile's width. Drag the edge between two windows to trade height, or a side edge to set the stack's width; the stack's own top and bottom edges stay at the screen's edges. Drag a window by its title bar onto another window of its stack to swap them, or out of the stack to make it its own tile.
-- If the windows can't get small enough to fit (some apps have a minimum size), Stagehand leaves them as they were and says so in the app bar. It keeps running.
+- ⌃⌥ S, T, G and W lay out the current window's tile side by side, stacked, as a 2×2 grid, or as one wide window over two. A tile that needs more windows takes the next ones in the ribbon, then the ones before it; extra windows become tiles of their own just after it. Side by side, the grid and wide over two take the whole screen width. ⌃⌥ U breaks the tile back into one tile per window.
+- ⌃⌥ ← / → moves focus by position: to the pane on that side in the tile, then into the neighboring tile at its facing edge. Going right and back left returns to the pane you left. ⌃⌥⇧ ↑ / ↓ moves to the pane above or below and never leaves the tile. Hold either to keep going.
+- ⌃⌥⇧ ← / → moves the current window: it swaps with the pane on that side; at the tile's edge it leaves as its own tile on that side; alone, it joins the neighboring tile at its facing edge, and the tile widens by its width (up to the whole screen). ⌃⌥⌘⇧ ↑ / ↓ swaps it with the pane above or below. It keeps focus. ⌃⌥⌘ ← / → moves the whole tile.
+- Panes fill the screen's height and the tile's width, with the Pane gap (Settings > Layout, 0 to 40 pt) between them. The Tile gap sets the space between tiles; a negative Tile gap overlaps tiles but never panes. Panes in a row share their top and bottom edges.
+- Drag the edge between two panes to trade space, or a side edge to set the tile's width; the tile's top and bottom edges stay at the screen's edges. Drag a window by its title bar onto another pane of its tile to swap them, or out of the tile to make it its own tile.
+- When a window closes, the panes next to it grow into its space. A window that comes back, or an app that relaunches, returns to its pane; the tile keeps its current width and widens only by the returning window's share.
+- If the windows can't get small enough to fit (some apps have a minimum size), or the space has too few windows for a layout, Stagehand leaves them as they were and says so in the app bar. It keeps running.
 - New and restored windows always get their own tile. With Arrow shortcut swipes on, the same keys work with a three-finger swipe.
 
 **Gestures** are off by default; turn them on in Settings > General > Gestures. Three-finger swipes move between windows (left/right) and spaces (up/down). You can keep swiping with two fingers while a third holds a drag-and-drop. Set macOS's own navigation gestures to four fingers to avoid overlap.
 
-The **app bar** appears under the notch (or top center) when you navigate or hover there. It shows the active app and space; click an app or space number to jump to it. A stack's apps sit together on one shared backing, and each can still be clicked. Each space can have its own accent color.
+The **app bar** appears under the notch (or top center) when you navigate or hover there. It shows the active app and space; click an app or space number to jump to it. A tile's apps sit together on one shared backing, and each can still be clicked. Each space can have its own accent color.
 
 ## Limitations
 

@@ -12,6 +12,7 @@ enum PreferenceKey {
     static let reverseShortcutSwipeDirection = "reverseShortcutSwipeDirection"
     // The stored key keeps its old name, so saved gaps carry over.
     static let tileGap = "windowGap"
+    static let paneGap = "paneGap"
     static let diagnosticLoggingEnabled = "diagnosticLoggingEnabled"
     static let legacyFocusBorderColor = "focusBorderColor"
     static let focusBorderColors = "focusBorderColors"
@@ -64,6 +65,14 @@ final class StagehandModel: ObservableObject {
     @Published var gap: Double {
         didSet {
             preferences.set(gap, forKey: PreferenceKey.tileGap)
+            if isRunning && !isSuspended { enqueue(.preferences) }
+        }
+    }
+    @Published var paneGap: Double {
+        didSet {
+            let clamped = GapInput.clamped(paneGap, to: GapInput.paneGapBounds)
+            if clamped != paneGap { paneGap = clamped; return }
+            preferences.set(paneGap, forKey: PreferenceKey.paneGap)
             if isRunning && !isSuspended { enqueue(.preferences) }
         }
     }
@@ -275,7 +284,7 @@ final class StagehandModel: ObservableObject {
         case reorderWindow(windowID: String, toIndex: Int, spaceIndex: Int)
         case focusInSpace(windowID: String, spaceIndex: Int)
         /// A change to the active space's tiles that is refused, without
-        /// pausing, when a stack would not fit.
+        /// pausing, when a tile would not fit.
         case tiles(TileChange)
         case observedFocus(String)
         case windowRemoval
@@ -382,6 +391,8 @@ final class StagehandModel: ObservableObject {
         shortcutSwipesEnabled = preferences.bool(forKey: PreferenceKey.shortcutSwipesEnabled)
         reverseShortcutSwipeDirection = preferences.object(forKey: PreferenceKey.reverseShortcutSwipeDirection) as? Bool ?? true
         gap = GapInput.clamped(preferences.object(forKey: PreferenceKey.tileGap) as? Double ?? 8)
+        paneGap = GapInput.clamped(preferences.object(forKey: PreferenceKey.paneGap) as? Double ?? 8,
+                                   to: GapInput.paneGapBounds)
         widthPresets = SpaceState.normalizedWidthPresets(
             preferences.array(forKey: PreferenceKey.widthPresets) as? [Double] ?? SpaceState.defaultWidthPresets
         )
@@ -990,7 +1001,7 @@ final class StagehandModel: ObservableObject {
         case .togglePause: isRunning ? pause() : start()
         case .toggleShortcutHints: overlays.toggleShortcutHints()
         default:
-            // Stacking goes through the tile change queue, which refuses a stack
+            // Tile changes go through the tile change queue, which refuses a tile
             // that would not fit instead of pausing.
             if let tileChange = TileChange(action) {
                 changeTiles(tileChange)

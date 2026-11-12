@@ -22,7 +22,7 @@ protocol NavigationPresenting: AnyObject {
     func showNavigation(state: WorkspaceState, windows: [WindowRecord])
     func updateNavigation(state: WorkspaceState, windows: [WindowRecord])
     func showWarning(_ message: String)
-    /// A brief note in the app bar, such as a refused stack: shorter-lived than a
+    /// A brief note in the app bar, such as a refused tile change: shorter-lived than a
     /// warning, never takes focus, and the next navigation replaces it.
     func showNotice(_ message: String)
     func setShortcutHints(_ bindings: [ShortcutBinding], swipeTip: String?)

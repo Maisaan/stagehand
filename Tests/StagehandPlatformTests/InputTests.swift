@@ -28,65 +28,98 @@ private func contacts(count: Int = 3, dx: Double = 0, dy: Double = 0) -> [Gestur
     #expect(shortcutGestureModifiers(for: commandFlags, bindings: bindings) == UInt32(controlKey | optionKey | cmdKey))
     #expect(shortcutGestureModifiers(for: [], bindings: bindings) == nil)
     #expect(shortcutGestureModifiers(for: [.maskControl], bindings: bindings) == nil)
-    // The stacking chords bind ⌃⌥⇧ with the arrows, so that combination swipes too.
+    // The tile chords bind ⌃⌥⇧ and ⌃⌥⌘⇧ with the arrows, so those combinations swipe too.
     #expect(shortcutGestureModifiers(for: baseFlags.union(.maskShift), bindings: bindings)
         == UInt32(controlKey | optionKey | shiftKey))
+    #expect(shortcutGestureModifiers(for: commandFlags.union(.maskShift), bindings: bindings)
+        == UInt32(controlKey | optionKey | cmdKey | shiftKey))
     #expect(shortcutGestureModifiers(for: [.maskControl, .maskShift], bindings: bindings) == nil)
 }
 
-@Test func stackingChordsResolveAndSwipeThroughTheirArrows() throws {
-    let shifted = UInt32(controlKey | optionKey | shiftKey)
-    for (key, action) in [(kVK_LeftArrow, NavigationAction.stackPrevious), (kVK_RightArrow, .stackNext),
-                          (kVK_UpArrow, .focusMemberAbove), (kVK_DownArrow, .focusMemberBelow)] {
-        let event = try #require(CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(key), keyDown: true))
-        event.flags = [.maskControl, .maskAlternate, .maskShift]
-        #expect(ShortcutBinding.action(for: event) == action)
+@Test func tileChordsResolveAndSwipeThroughTheirArrows() throws {
+    let base = UInt32(controlKey | optionKey)
+    let shifted = base | UInt32(shiftKey)
+    let commandShifted = shifted | UInt32(cmdKey)
+    let chords: [(Int, UInt32, NavigationAction)] = [
+        (kVK_LeftArrow, shifted, .moveWindowLeftInTile), (kVK_RightArrow, shifted, .moveWindowRightInTile),
+        (kVK_UpArrow, shifted, .focusPaneAbove), (kVK_DownArrow, shifted, .focusPaneBelow),
+        (kVK_UpArrow, commandShifted, .moveWindowUpInTile), (kVK_DownArrow, commandShifted, .moveWindowDownInTile),
+        (kVK_ANSI_U, base, .arrangeTile(.single)), (kVK_ANSI_S, base, .arrangeTile(.sideBySide)),
+        (kVK_ANSI_T, base, .arrangeTile(.stacked)), (kVK_ANSI_G, base, .arrangeTile(.grid)),
+        (kVK_ANSI_W, base, .arrangeTile(.wideOverTwo)),
+    ]
+    for (key, modifiers, action) in chords {
+        #expect(ShortcutBinding.action(forKey: UInt32(key), modifiers: modifiers,
+                                       in: ShortcutBinding.defaults) == action)
     }
-    // Arrow shortcut swipes look the arrow up under the held modifiers, so ⌃⌥⇧
-    // swipes reach the stacking actions with no change to the recognizer.
+    // Arrow shortcut swipes look the arrow up under the held modifiers, so ⌃⌥⇧ and
+    // ⌃⌥⌘⇧ swipes reach the tile actions with no change to the recognizer.
     let bindings = ShortcutBinding.defaults
-    #expect(gestureShortcutAction(axis: .horizontal, displacement: -0.1, modifiers: shifted,
-                                  bindings: bindings) == .stackNext)
-    #expect(gestureShortcutAction(axis: .horizontal, displacement: 0.1, modifiers: shifted,
-                                  bindings: bindings) == .stackPrevious)
-    #expect(gestureShortcutAction(axis: .vertical, displacement: 0.1, modifiers: shifted,
-                                  bindings: bindings) == .focusMemberBelow)
-    #expect(gestureShortcutAction(axis: .vertical, displacement: -0.1, modifiers: shifted,
-                                  bindings: bindings) == .focusMemberAbove)
-    #expect(gestureShortcutAction(axis: .vertical, displacement: -0.1, modifiers: shifted,
-                                  bindings: bindings, reverseDirection: false) == .focusMemberBelow)
+    for reversed in [true, false] {
+        let sign = reversed ? -1.0 : 1.0
+        #expect(gestureShortcutAction(axis: .horizontal, displacement: 0.1 * sign, modifiers: shifted,
+                                      bindings: bindings, reverseDirection: reversed) == .moveWindowRightInTile)
+        #expect(gestureShortcutAction(axis: .horizontal, displacement: -0.1 * sign, modifiers: shifted,
+                                      bindings: bindings, reverseDirection: reversed) == .moveWindowLeftInTile)
+        #expect(gestureShortcutAction(axis: .vertical, displacement: -0.1 * sign, modifiers: shifted,
+                                      bindings: bindings, reverseDirection: reversed) == .focusPaneBelow)
+        #expect(gestureShortcutAction(axis: .vertical, displacement: 0.1 * sign, modifiers: shifted,
+                                      bindings: bindings, reverseDirection: reversed) == .focusPaneAbove)
+        #expect(gestureShortcutAction(axis: .vertical, displacement: -0.1 * sign, modifiers: commandShifted,
+                                      bindings: bindings, reverseDirection: reversed) == .moveWindowDownInTile)
+        #expect(gestureShortcutAction(axis: .vertical, displacement: 0.1 * sign, modifiers: commandShifted,
+                                      bindings: bindings, reverseDirection: reversed) == .moveWindowUpInTile)
+        // No ⌃⌥⌘⇧ ←/→ default until spaces move between displays.
+        #expect(gestureShortcutAction(axis: .horizontal, displacement: 0.1 * sign, modifiers: commandShifted,
+                                      bindings: bindings, reverseDirection: reversed) == nil)
+    }
 }
 
-@Test func defaultShortcutsNeverShareAChordAndStackingComesLast() {
+@Test func defaultShortcutsNeverShareAChordAndTileBindingsComeLast() {
     let defaults = ShortcutBinding.defaults
     #expect(Set(defaults.map(\.chordIgnoringCapsLock)).count == defaults.count)
     #expect(Set(defaults.map(\.id)).count == defaults.count)
     // Load turns off the later of two equal chords, so bindings added later must
-    // come last for a user's recorded chord to win over a new default.
-    #expect(defaults.suffix(4).map(\.id) == ["stackPrevious", "stackNext", "focusMemberAbove", "focusMemberBelow"])
+    // come last for a user's recorded chord to win over a new default. The four
+    // stack bindings were replaced in place.
+    #expect(defaults.suffix(11).map(\.id) == [
+        "moveWindowLeftInTile", "moveWindowRightInTile", "focusPaneAbove", "focusPaneBelow",
+        "moveWindowUpInTile", "moveWindowDownInTile",
+        "layoutSingle", "layoutSideBySide", "layoutStacked", "layoutGrid", "layoutWideOverTwo",
+    ])
+    #expect(defaults.filter { $0.group == .tileLayout }.count == 5)
 }
 
 @Test func aNewDefaultThatCollidesWithARecordedChordIsTurnedOffAndReportedOnce() throws {
     let suiteName = "ShortcutBindingNewDefaultTests.\(UUID().uuidString)"
     let defaults = try #require(UserDefaults(suiteName: suiteName))
     defer { defaults.removePersistentDomain(forName: suiteName) }
-    // Saved before the stacking bindings existed, with Previous window recorded on ⌃⌥⇧←.
-    let newIDs: Set = ["stackPrevious", "stackNext", "focusMemberAbove", "focusMemberBelow"]
-    var bindings = ShortcutBinding.defaults.filter { !newIDs.contains($0.id) }
+    // Saved before tiles, with Previous window recorded on ⌃⌥⇧← and the old stack
+    // bindings, whose ids no longer exist.
+    let tileGroupIDs: Set = ["moveWindowLeftInTile", "moveWindowRightInTile", "focusPaneAbove", "focusPaneBelow",
+                             "moveWindowUpInTile", "moveWindowDownInTile", "layoutSingle", "layoutSideBySide",
+                             "layoutStacked", "layoutGrid", "layoutWideOverTwo"]
+    var bindings = ShortcutBinding.defaults.filter { !tileGroupIDs.contains($0.id) }
     let previous = try #require(bindings.firstIndex { $0.id == "focusPrevious" })
     bindings[previous].modifiers = UInt32(controlKey | optionKey | shiftKey)
-    let saved = bindings.map {
+    var saved = bindings.map {
         ["id": $0.id, "key": $0.key, "modifiers": $0.modifiers,
          "keyLabel": $0.keyLabel, "isEnabled": $0.isEnabled] as [String: Any]
+    }
+    for (id, key) in [("stackPrevious", kVK_LeftArrow), ("stackNext", kVK_RightArrow),
+                      ("focusMemberAbove", kVK_UpArrow), ("focusMemberBelow", kVK_DownArrow)] {
+        saved.append(["id": id, "key": key, "modifiers": controlKey | optionKey | shiftKey,
+                      "keyLabel": "x", "isEnabled": true])
     }
     defaults.set(try JSONSerialization.data(withJSONObject: saved), forKey: ShortcutBinding.preferenceKey)
     defaults.set(1, forKey: "shortcutBindingsVersion")
 
     let first = ShortcutBinding.loadReportingIssues(from: defaults)
+    #expect(first.bindings.map(\.id) == ShortcutBinding.defaults.map(\.id))
     #expect(first.bindings.first { $0.id == "focusPrevious" }?.isEnabled == true)
     #expect(first.bindings.first { $0.id == "focusPrevious" }?.modifiers == UInt32(controlKey | optionKey | shiftKey))
-    #expect(first.bindings.first { $0.id == "stackPrevious" }?.isEnabled == false)
-    #expect(first.bindings.first { $0.id == "stackNext" }?.isEnabled == true)
+    #expect(first.bindings.first { $0.id == "moveWindowLeftInTile" }?.isEnabled == false)
+    #expect(first.bindings.first { $0.id == "moveWindowRightInTile" }?.isEnabled == true)
     #expect(first.issues.count == 1)
     #expect(first.issues.first?.contains("Previous window") == true)
 
@@ -790,7 +823,7 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     #expect(actions == [.nextSpace, .focusNext, .focusNext])
 }
 
-@MainActor @Test func heldStackChordsRepeatMemberFocusButNotStackMoves() throws {
+@MainActor @Test func heldTileChordsRepeatPaneFocusButNotWindowMoves() throws {
     let gate = FocusInputGate(postEvent: { _, _ in })
     defer { gate.cancelAll() }
     var actions: [NavigationAction] = []
@@ -803,10 +836,10 @@ func shortcutValidationRequiresARealModifierAndSparesSystemChords(key: Int, modi
     }
     #expect(gate.processKeyboardEvent(type: .keyDown, event: try chord(kVK_RightArrow, repeated: false)))
     #expect(gate.processKeyboardEvent(type: .keyDown, event: try chord(kVK_RightArrow, repeated: true)))
-    #expect(actions == [.stackNext])
+    #expect(actions == [.moveWindowRightInTile])
     #expect(gate.processKeyboardEvent(type: .keyDown, event: try chord(kVK_DownArrow, repeated: false)))
     #expect(gate.processKeyboardEvent(type: .keyDown, event: try chord(kVK_DownArrow, repeated: true)))
-    #expect(actions == [.stackNext, .focusMemberBelow, .focusMemberBelow])
+    #expect(actions == [.moveWindowRightInTile, .focusPaneBelow, .focusPaneBelow])
 }
 
 @MainActor @Test func transfersWithoutTypingAreCappedOldestFirst() throws {

@@ -20,7 +20,7 @@ struct ShortcutHintSection: Equatable, Identifiable {
     /// Disabled bindings are left out, and a section with nothing enabled disappears.
     static func sections(for bindings: [ShortcutBinding]) -> [Self] {
         let byID = Dictionary(bindings.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        func hints(_ title: String, _ ids: [String]) -> [ShortcutHint] {
+        func hints(_ title: String, _ ids: [String], collapsingRuns: Bool = false) -> [ShortcutHint] {
             let enabled = ids.compactMap { byID[$0] }.filter(\.isEnabled)
             // A rebound chord may give one entry different modifiers; each gets its own line.
             var groups: [(modifiers: String, bindings: [ShortcutBinding])] = []
@@ -32,7 +32,7 @@ struct ShortcutHintSection: Equatable, Identifiable {
                 }
             }
             return groups.map { group in
-                let keys = group.bindings.count > 3
+                let keys = collapsingRuns && group.bindings.count > 3
                     ? ["\(group.bindings[0].keyLabel)–\(group.bindings[group.bindings.count - 1].keyLabel)"]
                     : group.bindings.map(\.keyLabel)
                 return ShortcutHint(title: title, modifiers: group.modifiers, keys: keys)
@@ -42,15 +42,19 @@ struct ShortcutHintSection: Equatable, Identifiable {
         let sections = [
             Self(title: "Navigate", hints:
                 hints("Window", ["focusPrevious", "focusNext"])
-                + hints("In stack", ["focusMemberAbove", "focusMemberBelow"])
+                + hints("In tile", ["focusPaneAbove", "focusPaneBelow"])
                 + hints("Space", ["previousSpace", "nextSpace"])
-                + hints("Go to space", spaces.map { "goToSpace.\($0)" })),
+                + hints("Go to space", spaces.map { "goToSpace.\($0)" }, collapsingRuns: true)),
             Self(title: "Move window", hints:
                 hints("Reorder", ["reorderPrevious", "reorderNext"])
-                + hints("Stack or unstack", ["stackPrevious", "stackNext"])
+                + hints("Move in tile", ["moveWindowLeftInTile", "moveWindowRightInTile",
+                                         "moveWindowUpInTile", "moveWindowDownInTile"])
                 + hints("Up or down", ["moveWindowUpSpace", "moveWindowDownSpace"])
-                + hints("To space", spaces.map { "moveToSpace.\($0)" })
-                + hints("Share with", spaces.map { "shareToSpace.\($0)" })),
+                + hints("To space", spaces.map { "moveToSpace.\($0)" }, collapsingRuns: true)
+                + hints("Share with", spaces.map { "shareToSpace.\($0)" }, collapsingRuns: true)),
+            Self(title: "Tile", hints:
+                hints("Layouts", ["layoutSingle", "layoutSideBySide", "layoutStacked", "layoutGrid",
+                                  "layoutWideOverTwo"])),
             Self(title: "Size", hints:
                 hints("Width", ["shrinkWidth", "growWidth"])
                 + hints("Height", ["shrinkHeight", "growHeight"])
