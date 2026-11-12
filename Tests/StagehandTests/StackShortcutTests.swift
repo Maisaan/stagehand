@@ -71,15 +71,39 @@ private func record(_ id: String) -> WindowRecord {
     #expect(hints.contains(ShortcutHint(title: "Stack or unstack", modifiers: "⌃ ⌥ ⇧", keys: ["←", "→"])))
 }
 
+// The 15:46 busy-columns benchmark: three 640-point probe columns, one stacked, on
+// an 1800-point screen with a -140 gap. The whole ribbon (1640 points) fits, so no
+// switch slid. The benchmark now widens the columns first.
+@MainActor
+@Test func theColumnStackBenchmarkSlidesOnEverySwitch() {
+    let probes = columns([["a1"], ["a0"], ["b", "c"]], focus: "c", width: 640.0 / 1800)
+    let screen = CGRect(x: 0, y: 0, width: 1800, height: 1130)
+    #expect(!StagehandModel.everyColumnSwitchScrolls(probes, availableFrame: screen, gap: -140))
+
+    let widened = StagehandModel.widenedForColumnBenchmark(probes)
+    #expect(widened.currentSpace.columns.allSatisfy {
+        $0.widthFraction == StagehandModel.columnBenchmarkWidthFraction
+    })
+    #expect(layout(widened) == layout(probes))
+    #expect(widened.focusedWindowID == "c")
+    for width in [1024.0, 1280, 1440, 1512, 1728, 1800, 2056, 3008] {
+        for gap in stride(from: GapInput.bounds.lowerBound, through: GapInput.bounds.upperBound, by: 4) {
+            let frame = CGRect(x: 0, y: 25, width: width, height: width * 0.62)
+            #expect(StagehandModel.everyColumnSwitchScrolls(widened, availableFrame: frame, gap: gap),
+                    "screen \(width), gap \(gap)")
+        }
+    }
+}
+
 @MainActor
 @Suite(.serialized)
 struct StackShortcutScenarioTests {
-    private func harness(_ members: [[String]], focus: String) async -> ModelHarness {
+    private func harness(_ members: [[String]], focus: String, width: Double = 0.25) async -> ModelHarness {
         let harness = ModelHarness(windowIDs: members.flatMap { $0 }, focused: focus)
         harness.windows.scansReportLiveFrames = true
         harness.model.start()
         await harness.settle()
-        harness.model.state = columns(members, focus: focus)
+        harness.model.state = columns(members, focus: focus, width: width)
         harness.model.enqueue(.refresh)
         await harness.settle()
         return harness
@@ -162,6 +186,36 @@ struct StackShortcutScenarioTests {
         harness.model.navigate(.focusNext)
         await harness.settle()
         #expect(harness.model.state.focusedWindowID == "b")
+        #expect(noPause(harness))
+    }
+
+    @Test func aStackedColumnSlidesInAndOutOfARibbonWiderThanTheScreen() async throws {
+        let harness = await harness([["a"], ["b", "c"], ["d"]], focus: "a", width: 0.75)
+        defer { harness.cleanUp() }
+        let available = try #require(harness.model.availableFrame)
+
+        // Into the stack: the ribbon slides and both members arrive in one slot.
+        var writes = harness.windows.motionPositionWrites
+        harness.model.navigate(.focusNext)
+        await harness.settle()
+        #expect(harness.model.state.focusedWindowID == "b")
+        #expect(harness.windows.motionPositionWrites > writes)
+        #expect(frame(harness, "b").minX == frame(harness, "c").minX)
+        #expect(frame(harness, "b").intersects(available) && frame(harness, "c").intersects(available))
+        #expect(frame(harness, "b").maxY <= frame(harness, "c").minY)
+
+        // Inside the stack: no slide.
+        writes = harness.windows.motionPositionWrites
+        harness.model.navigate(.focusMemberBelow)
+        await harness.settle()
+        #expect(harness.model.state.focusedWindowID == "c")
+        #expect(harness.windows.motionPositionWrites == writes)
+
+        // Out of the stack: the ribbon slides again.
+        harness.model.navigate(.focusNext)
+        await harness.settle()
+        #expect(harness.model.state.focusedWindowID == "d")
+        #expect(harness.windows.motionPositionWrites > writes)
         #expect(noPause(harness))
     }
 

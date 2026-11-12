@@ -204,8 +204,11 @@ final class FakeWindowSystem: WindowManaging {
         return true
     }
 
+    /// Position writes made by ribbon motion; none means nothing slid.
+    private(set) var motionPositionWrites = 0
     func setMotionPosition(windowID: String, position: CGPoint) -> Bool {
-        setPosition(windowID: windowID, position: position)
+        motionPositionWrites += 1
+        return setPosition(windowID: windowID, position: position)
     }
 
     func finishMotionWrites() async {}

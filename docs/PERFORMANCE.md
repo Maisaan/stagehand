@@ -21,7 +21,7 @@ How to measure Stagehand, find where time goes, and check a change. Live checks 
 - `responsive`: probes answer Accessibility immediately.
 - `busy`: probes load their main thread like Chrome or an Electron app (6 ms per frame, 150 ms on each activation). Most real slowness only shows here.
 - `busy-quiet`: busy with diagnostic logging off, to measure what logging costs.
-- `busy-columns` (or `responsive-columns`): stacks two probe windows in one ribbon column before the switches, so they cross a stacked column (one synchronous frame write per member as it comes into view), and adds a **Member switches in the stack** section. Not related to `-stacking`, which measures window order.
+- `busy-columns` (or `responsive-columns`): stacks two probe windows in one ribbon column before the switches, then sets every column to 0.75 of the screen width so each switch scrolls whatever the gap and screen (three 640-point probe columns fit an 1800-point screen at a -140 gap, and nothing slid), so they cross a stacked column (one synchronous frame write per member as it comes into view), and adds a **Member switches in the stack** section. Not related to `-stacking`, which measures window order.
 
 Set `STAGEHAND_APP` to benchmark another build. To compare against an older commit, check it out in a separate worktree (`git worktree add /tmp/sh-base <commit>`), copy in the current `StagehandModel+Benchmark.swift`, `StagehandModel+Acceptance.swift`, `AppDelegate.swift`, and `scripts/run-benchmark.sh` if they changed, build it, and run both builds back to back. Run each at least twice: single runs vary by 10 to 30 percent, and one-off stalls happen.
 

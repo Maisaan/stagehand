@@ -152,7 +152,8 @@ extension StagehandModel {
         }
 
         var lines = ["Benchmark (\(busy ? "busy" : "responsive") probes, 4 windows, \(switches) switches"
-            + (stacksColumns ? ", two windows stacked in one column" : "")
+            + (stacksColumns ? ", two windows stacked in one column, columns "
+                + String(format: "%.2f", Self.columnBenchmarkWidthFraction) + " of the screen wide" : "")
             + (logging ? ")" : ", diagnostic logging off)")]
         if let launchFinishedMilliseconds { lines.append("Launch to didFinishLaunching: \(launchFinishedMilliseconds) ms") }
         if let modelInitMilliseconds { lines.append("Model init: \(modelInitMilliseconds) ms") }
@@ -179,6 +180,17 @@ extension StagehandModel {
             await benchmarkWaitUntilIdle()
             guard state.currentSpace.columns.contains(where: \.isStack) else {
                 return "FAIL: could not stack two probe windows."
+            }
+            // Stacking leaves three columns at the probes' own 640-point width. With a
+            // negative gap they fit a wide screen (1640 of 1800 points at -140), so no
+            // switch would slide and the run would measure no motion. Columns this wide
+            // overflow the screen for every allowed gap, so each switch scrolls.
+            state = Self.widenedForColumnBenchmark(state)
+            enqueue(.refresh)
+            await benchmarkWaitUntilIdle()
+            guard let availableFrame,
+                  Self.everyColumnSwitchScrolls(state, availableFrame: availableFrame, gap: gap) else {
+                return "FAIL: the stacked probe columns fit on screen, so switches would not slide."
             }
         }
 
@@ -450,6 +462,37 @@ extension StagehandModel {
             try? await Task.sleep(for: .milliseconds(4))
         }
         return (front, reorders)
+    }
+
+    /// The column width the `--column-stacks` run sets, one of the default presets.
+    static let columnBenchmarkWidthFraction = 0.75
+
+    /// Every column in the current space at `columnBenchmarkWidthFraction`. Three
+    /// such columns overflow the screen for any gap in `GapInput.bounds`.
+    static func widenedForColumnBenchmark(_ state: WorkspaceState) -> WorkspaceState {
+        var widened = state
+        for column in state.currentSpace.columns {
+            widened.setWidthFraction(columnBenchmarkWidthFraction, for: column.activeWindowID)
+        }
+        return widened
+    }
+
+    /// Whether focusing each column puts the ribbon at a different offset from its
+    /// neighbors', so every switch between adjacent columns slides. False when the
+    /// whole ribbon fits on screen, or a clamped end leaves two columns at one offset.
+    static func everyColumnSwitchScrolls(_ state: WorkspaceState, availableFrame: CGRect, gap: Double) -> Bool {
+        let columns = state.currentSpace.columns
+        guard columns.count > 1 else { return false }
+        let reference = columns[0].windowIDs[0]
+        var offsets: [CGFloat] = []
+        for column in columns {
+            var focused = state
+            focused.focus(windowID: column.activeWindowID)
+            let placements = WindowLayout.placements(for: focused, availableFrame: availableFrame, gap: CGFloat(gap))
+            guard let x = placements.first(where: { $0.windowID == reference })?.frame.minX else { return false }
+            offsets.append(x)
+        }
+        return zip(offsets, offsets.dropFirst()).allSatisfy { abs($0 - $1) >= 1 }
     }
 
     private func benchmarkWaitUntilIdle(timeout: Duration = .seconds(8)) async {
