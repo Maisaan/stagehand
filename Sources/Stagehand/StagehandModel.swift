@@ -40,14 +40,14 @@ final class StagehandModel: ObservableObject {
     }
     @Published var gesturesEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(gesturesEnabled, forKey: PreferenceKey.gesturesEnabled)
+            preferences.set(gesturesEnabled, forKey: PreferenceKey.gesturesEnabled)
             input.gesturesEnabled = gesturesEnabled && !isSuspended
             updateInputStatus()
         }
     }
     @Published var shortcutSwipesEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(shortcutSwipesEnabled, forKey: PreferenceKey.shortcutSwipesEnabled)
+            preferences.set(shortcutSwipesEnabled, forKey: PreferenceKey.shortcutSwipesEnabled)
             input.shortcutSwipesEnabled = shortcutSwipesEnabled && !isSuspended
             updateShortcutHints()
             updateInputStatus()
@@ -55,7 +55,7 @@ final class StagehandModel: ObservableObject {
     }
     @Published var reverseShortcutSwipeDirection: Bool {
         didSet {
-            UserDefaults.standard.set(reverseShortcutSwipeDirection, forKey: PreferenceKey.reverseShortcutSwipeDirection)
+            preferences.set(reverseShortcutSwipeDirection, forKey: PreferenceKey.reverseShortcutSwipeDirection)
             input.reverseShortcutSwipeDirection = reverseShortcutSwipeDirection
             updateShortcutHints()
             updateInputStatus()
@@ -63,7 +63,7 @@ final class StagehandModel: ObservableObject {
     }
     @Published var gap: Double {
         didSet {
-            UserDefaults.standard.set(gap, forKey: PreferenceKey.tileGap)
+            preferences.set(gap, forKey: PreferenceKey.tileGap)
             if isRunning && !isSuspended { enqueue(.preferences) }
         }
     }
@@ -73,7 +73,7 @@ final class StagehandModel: ObservableObject {
             // Observers re-enter on assignment for a wrapped property; normalize once.
             let normalized = SpaceState.normalizedWidthPresets(widthPresets)
             if normalized != widthPresets { widthPresets = normalized; return }
-            UserDefaults.standard.set(widthPresets, forKey: PreferenceKey.widthPresets)
+            preferences.set(widthPresets, forKey: PreferenceKey.widthPresets)
         }
     }
     /// Apps whose parked windows may keep a strip up to `wideParkedEdgeWidth` visible
@@ -83,7 +83,7 @@ final class StagehandModel: ObservableObject {
             var seen = Set<String>()
             let normalized = wideParkedEdgeBundleIdentifiers.filter { !$0.isEmpty && seen.insert($0).inserted }
             if normalized != wideParkedEdgeBundleIdentifiers { wideParkedEdgeBundleIdentifiers = normalized; return }
-            UserDefaults.standard.set(wideParkedEdgeBundleIdentifiers,
+            preferences.set(wideParkedEdgeBundleIdentifiers,
                                       forKey: PreferenceKey.wideParkedEdgeBundleIdentifiers)
         }
     }
@@ -91,7 +91,7 @@ final class StagehandModel: ObservableObject {
         didSet {
             let clamped = Self.clampedWideParkedEdgeWidth(wideParkedEdgeWidth)
             if clamped != wideParkedEdgeWidth { wideParkedEdgeWidth = clamped; return }
-            UserDefaults.standard.set(wideParkedEdgeWidth, forKey: PreferenceKey.wideParkedEdgeWidth)
+            preferences.set(wideParkedEdgeWidth, forKey: PreferenceKey.wideParkedEdgeWidth)
         }
     }
     @Published private(set) var focusBorderColors: [NSColor]
@@ -118,7 +118,7 @@ final class StagehandModel: ObservableObject {
     let ribbonAnimationConfiguration = RibbonAnimationConfiguration.default
     @Published var diagnosticLoggingEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(diagnosticLoggingEnabled, forKey: PreferenceKey.diagnosticLoggingEnabled)
+            preferences.set(diagnosticLoggingEnabled, forKey: PreferenceKey.diagnosticLoggingEnabled)
             windowSystem.focusDiagnosticsEnabled = diagnosticLoggingEnabled
             mainThreadWatchdog?.setEnabled(diagnosticLoggingEnabled)
             resourceSampler?.setEnabled(diagnosticLoggingEnabled)
@@ -168,7 +168,7 @@ final class StagehandModel: ObservableObject {
     /// How the last session ended: a pause or quit reason, written by stop and cleared by
     /// start, so a crash leaves none. Read at launch to decide startAfterRecovery.
     static let lastSessionEndKey = "StagehandLastSessionEnd"
-    static var lastSessionEnd: String? { UserDefaults.standard.string(forKey: lastSessionEndKey) }
+    var lastSessionEnd: String? { preferences.string(forKey: Self.lastSessionEndKey) }
     /// Which refresh task is reading windows right now, and whether a change arrived
     /// during that read, so it scans once more instead of being cancelled.
     var refreshGeneration = 0
@@ -180,6 +180,7 @@ final class StagehandModel: ObservableObject {
     /// Stale off-main scans before one refresh falls back to a synchronous scan.
     var refreshStaleScanFallback = 3
     let layoutStore: WorkspaceLayoutStore?
+    let preferences: UserDefaults
     var layoutSaveTask: Task<Void, Never>?
     /// The saved layout is applied only to the first start after launch. Later
     /// starts resume the in-memory layout.
@@ -351,8 +352,10 @@ final class StagehandModel: ObservableObject {
         ribbonMotion: RibbonMotion = RibbonMotion(),
         pointer: PointerDragTracker = PointerDragTracker(),
         layoutStore: WorkspaceLayoutStore? = nil,
-        persistence: Persistence = .standard
+        persistence: Persistence = .standard,
+        preferences: UserDefaults = .standard
     ) {
+        self.preferences = preferences
         windowSystem = injectedWindowSystem ?? WindowSystem()
         // An injected window system means a test run and an ephemeral model a
         // diagnostic run; neither may read or replace the user's saved layout
@@ -365,37 +368,36 @@ final class StagehandModel: ObservableObject {
         self.ribbonMotion = ribbonMotion
         self.pointer = pointer
         self.overlays = overlays
-        let defaults = UserDefaults.standard
-        let shortcutLoad = ShortcutBinding.loadReportingIssues(from: defaults)
+        let shortcutLoad = ShortcutBinding.loadReportingIssues(from: preferences)
         let shortcutBindings = shortcutLoad.bindings
         self.shortcutBindings = shortcutBindings
         input = injectedInput ?? InputController(shortcutBindings: shortcutBindings,
                                                  shortcutLoadIssues: shortcutLoad.issues)
-        diagnosticLoggingEnabled = defaults.bool(forKey: PreferenceKey.diagnosticLoggingEnabled)
+        diagnosticLoggingEnabled = preferences.bool(forKey: PreferenceKey.diagnosticLoggingEnabled)
         self.diagnostics = diagnostics ?? DiagnosticLogger(
             logURL: diagnosticLogURL,
-            enabled: defaults.bool(forKey: PreferenceKey.diagnosticLoggingEnabled)
+            enabled: preferences.bool(forKey: PreferenceKey.diagnosticLoggingEnabled)
         )
-        gesturesEnabled = defaults.object(forKey: PreferenceKey.gesturesEnabled) as? Bool ?? false
-        shortcutSwipesEnabled = defaults.bool(forKey: PreferenceKey.shortcutSwipesEnabled)
-        reverseShortcutSwipeDirection = defaults.object(forKey: PreferenceKey.reverseShortcutSwipeDirection) as? Bool ?? true
-        gap = GapInput.clamped(defaults.object(forKey: PreferenceKey.tileGap) as? Double ?? 8)
+        gesturesEnabled = preferences.object(forKey: PreferenceKey.gesturesEnabled) as? Bool ?? false
+        shortcutSwipesEnabled = preferences.bool(forKey: PreferenceKey.shortcutSwipesEnabled)
+        reverseShortcutSwipeDirection = preferences.object(forKey: PreferenceKey.reverseShortcutSwipeDirection) as? Bool ?? true
+        gap = GapInput.clamped(preferences.object(forKey: PreferenceKey.tileGap) as? Double ?? 8)
         widthPresets = SpaceState.normalizedWidthPresets(
-            defaults.array(forKey: PreferenceKey.widthPresets) as? [Double] ?? SpaceState.defaultWidthPresets
+            preferences.array(forKey: PreferenceKey.widthPresets) as? [Double] ?? SpaceState.defaultWidthPresets
         )
-        wideParkedEdgeBundleIdentifiers = defaults.stringArray(forKey: PreferenceKey.wideParkedEdgeBundleIdentifiers) ?? []
+        wideParkedEdgeBundleIdentifiers = preferences.stringArray(forKey: PreferenceKey.wideParkedEdgeBundleIdentifiers) ?? []
         wideParkedEdgeWidth = Self.clampedWideParkedEdgeWidth(
-            defaults.object(forKey: PreferenceKey.wideParkedEdgeWidth) as? Double ?? Self.defaultWideParkedEdgeWidth
+            preferences.object(forKey: PreferenceKey.wideParkedEdgeWidth) as? Double ?? Self.defaultWideParkedEdgeWidth
         )
         let defaultBorderColor = Self.savedColor(
             forKey: PreferenceKey.legacyFocusBorderColor,
-            in: defaults,
+            in: preferences,
             alpha: BorderView.defaultColor.alphaComponent
         ) ?? BorderView.defaultColor
         focusBorderColors = Self.savedColors(
             forKey: PreferenceKey.focusBorderColors,
             count: WorkspaceState.spaceCount,
-            in: defaults,
+            in: preferences,
             alpha: BorderView.defaultColor.alphaComponent
         ) ?? Array(repeating: defaultBorderColor, count: WorkspaceState.spaceCount)
         input.reverseShortcutSwipeDirection = reverseShortcutSwipeDirection
@@ -808,7 +810,7 @@ final class StagehandModel: ObservableObject {
         }
         isRunning = true
         // Running again: no earlier session end applies, and nothing is left to watch for.
-        UserDefaults.standard.removeObject(forKey: Self.lastSessionEndKey)
+        preferences.removeObject(forKey: Self.lastSessionEndKey)
         startAfterRecovery = false
         disarmRecoveryWatch()
         recoveryInProgress = automaticRecovery
@@ -843,7 +845,7 @@ final class StagehandModel: ObservableObject {
         // Away from this Desktop, no window can be read or moved: restore once and let the
         // journal and the recovery watch put them back on return.
         let windowsReachable = !isSuspended
-        UserDefaults.standard.set(reason, forKey: Self.lastSessionEndKey)
+        preferences.set(reason, forKey: Self.lastSessionEndKey)
         isRunning = false
         isSuspended = false
         state = workspaceRestoration.pause(state: state, windowIDs: windows.map(\.id),
@@ -1016,7 +1018,7 @@ final class StagehandModel: ObservableObject {
             alpha: BorderView.defaultColor.alphaComponent
         ) else { return }
         focusBorderColors[index] = normalized
-        Self.saveColors(focusBorderColors, forKey: PreferenceKey.focusBorderColors)
+        saveColors(focusBorderColors, forKey: PreferenceKey.focusBorderColors)
         if index == state.activeSpaceIndex { overlays.setBorderColor(normalized) }
     }
 
@@ -1076,7 +1078,7 @@ final class StagehandModel: ObservableObject {
     }
 
     func saveShortcutBindings() {
-        ShortcutBinding.save(shortcutBindings)
+        ShortcutBinding.save(shortcutBindings, to: preferences)
         input.setShortcutBindings(shortcutBindings)
         updateShortcutHints()
         focusGate.setShortcutBindings(isRecordingShortcut ? [] : shortcutBindings)
@@ -1093,8 +1095,8 @@ final class StagehandModel: ObservableObject {
                        blue: color.blueComponent, alpha: alpha)
     }
 
-    static func saveColors(_ colors: [NSColor], forKey key: String) {
-        UserDefaults.standard.set(colors.map {
+    func saveColors(_ colors: [NSColor], forKey key: String) {
+        preferences.set(colors.map {
             [$0.redComponent, $0.greenComponent, $0.blueComponent]
         }, forKey: key)
     }

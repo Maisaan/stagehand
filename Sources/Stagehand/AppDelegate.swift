@@ -179,7 +179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self?.model?.refreshLaunchAtLogin()
             }
         }
-        let lastSessionEnd = StagehandModel.lastSessionEnd
+        let lastSessionEnd = model.lastSessionEnd
         let interrupted = model.recoverInterruptedSession()
         if !UserDefaults.standard.bool(forKey: Self.onboardingCompleteKey) {
             openOnboarding()

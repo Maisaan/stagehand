@@ -408,6 +408,7 @@ struct ModelHarness {
     let overlays: FakeOverlays
     let pointer = FakePointer()
     let logURL: URL
+    let preferencesSuite = "stagehand-tests-\(UUID().uuidString)"
     let postedEvents: () -> Int
 
     /// The Desktop reported to the model; nil means WindowServer gave no identity.
@@ -444,7 +445,8 @@ struct ModelHarness {
             focusGate: gate,
             ribbonMotion: RibbonMotion(frameDriver: ImmediateFrameDriver()),
             pointer: pointer.tracker,
-            layoutStore: layoutStore
+            layoutStore: layoutStore,
+            preferences: UserDefaults(suiteName: preferencesSuite)!
         )
         // Tests lay out on the first screen; a desktop Mac has no built-in display.
         model.builtInScreenProvider = { NSScreen.screens.first }
@@ -482,5 +484,6 @@ struct ModelHarness {
     func cleanUp() {
         model.pause()
         try? FileManager.default.removeItem(at: logURL)
+        model.preferences.removePersistentDomain(forName: preferencesSuite)
     }
 }

@@ -46,7 +46,7 @@ struct ModelScenarioTests {
         harness.windows.pendingRecoveryWindowIDs = ["a", "b"]
         harness.model.stop(reason: "application_termination", automatic: false)
         #expect(harness.windows.stopsWhileAway == 1)
-        #expect(StagehandModel.lastSessionEnd == "application_termination")
+        #expect(harness.model.lastSessionEnd == "application_termination")
         #expect(harness.events("restore_deferred").count == 1)
         #expect(harness.model.recoveryWatchTask != nil)
 
@@ -63,14 +63,13 @@ struct ModelScenarioTests {
         #expect(harness.model.isRunning)
         #expect(harness.model.recoveryWatchTask == nil)
         #expect(harness.events("recovery_completed_start").count == 1)
-        #expect(StagehandModel.lastSessionEnd == nil)
+        #expect(harness.model.lastSessionEnd == nil)
     }
 
     /// After a pause, recovery on return puts the windows back but Stagehand stays paused.
     @Test func recoveryAfterAPauseWhileAwayDoesNotStart() async {
         let harness = ModelHarness(windowIDs: ["a", "b"], focused: "a")
         defer {
-            UserDefaults.standard.removeObject(forKey: StagehandModel.lastSessionEndKey)
             harness.model.disarmRecoveryWatch()
             harness.cleanUp()
         }
