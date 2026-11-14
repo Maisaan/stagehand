@@ -375,6 +375,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }()
         model.refreshPermissions()
         panel.present(relativeTo: button)
+        button.highlight(true)
         installQuickControlsOutsideClickMonitor()
     }
 
@@ -388,6 +389,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func quickControlsDidDismiss() {
+        statusItem?.button?.highlight(false)
         removeQuickControlsOutsideClickMonitor()
         let completion = quickControlsCloseCompletion
         quickControlsCloseCompletion = nil

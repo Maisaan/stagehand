@@ -94,32 +94,32 @@ struct QuickControlsView: View {
                 }
             }
 
-            VStack(spacing: 8) {
-                Button {
-                    openSettings()
-                } label: {
+            HStack(spacing: 8) {
+                Button(action: openSettings) {
                     HStack(spacing: 7) {
                         PhosphorIcon(.gear)
                             .frame(width: 15, height: 15)
                         Text("Open Settings…")
                     }
-                        .font(.callout.weight(.medium))
-                        .foregroundStyle(.primary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 9)
-                        .background(Color.white.opacity(0.05))
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                        }
-                        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity)
+                    .footerButtonChrome()
                 }
                 .buttonStyle(.plain)
 
-                Button("Quit Stagehand", action: quit)
-                    .buttonStyle(.link)
+                Button(action: quit) {
+                    PhosphorIcon(.power)
+                        .frame(width: 15, height: 15)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 38)
+                        .frame(maxHeight: .infinity)
+                        .footerButtonChrome()
+                }
+                .buttonStyle(.plain)
+                .help("Quit Stagehand")
+                .accessibilityLabel("Quit Stagehand")
             }
+            .fixedSize(horizontal: false, vertical: true)
         }
         .padding(14)
         .frame(width: 340)
@@ -210,5 +210,16 @@ private struct QuickRow<Trailing: View>: View {
         }
         .padding(.horizontal, 12)
         .frame(minHeight: 42)
+    }
+}
+
+private extension View {
+    func footerButtonChrome() -> some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        return font(.callout.weight(.medium))
+            .padding(.vertical, 9)
+            .background(Color.white.opacity(0.05), in: shape)
+            .overlay { shape.stroke(Color.white.opacity(0.08), lineWidth: 1) }
+            .contentShape(shape)
     }
 }

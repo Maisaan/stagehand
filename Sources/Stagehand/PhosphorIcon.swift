@@ -19,6 +19,7 @@ enum PhosphorIconName: String {
     case info = "info-fill"
     case keyboard = "keyboard-fill"
     case personArmsSpread = "person-arms-spread-fill"
+    case power = "power"
     case rectangleDashed = "rectangle-dashed-fill"
     case shieldCheck = "shield-check-fill"
     case warning = "warning-fill"

@@ -46,7 +46,7 @@ final class QuickControlsPanel: NSPanel {
 
         let buttonFrame = window.convertToScreen(button.convert(button.bounds, to: nil))
         let screenFrame = window.screen?.visibleFrame ?? buttonFrame
-        let proposedX = buttonFrame.midX - frame.width / 2
+        let proposedX = buttonFrame.minX
         let minimumX = screenFrame.minX + Self.screenInset
         let maximumX = screenFrame.maxX - Self.screenInset - frame.width
         let origin = CGPoint(
