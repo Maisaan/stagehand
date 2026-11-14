@@ -1156,7 +1156,9 @@ public final class WindowSystem {
                 "slowestMotionWriteMilliseconds": String(statistics.slowestMilliseconds),
                 "largestMotionGapMilliseconds": String(statistics.largestGapMilliseconds.values.max() ?? 0),
                 "focusedMotionGapMilliseconds": String(focusedWindowID.flatMap {
-                    statistics.largestGapMilliseconds[$0] } ?? 0)]
+                    statistics.largestGapMilliseconds[$0] } ?? 0),
+                "enhancedUserInterfacePIDs": statistics.enhancedUserInterfacePIDs.sorted().map(String.init)
+                    .joined(separator: ",")]
     }
 
     public func motionWriteSummary(reset: Bool) -> MotionWriteSummary {

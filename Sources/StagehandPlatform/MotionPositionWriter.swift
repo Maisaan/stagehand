@@ -59,6 +59,8 @@ final class MotionPositionWriter: @unchecked Sendable {
     /// long gap is a visible freeze of that window mid-motion.
     private var lastSent: [String: Double] = [:]
     private var largestGap: [String: Double] = [:]
+    private var enhancedUserInterfaceCheckedPIDs: Set<pid_t> = []
+    private var enhancedUserInterfacePIDs: Set<pid_t> = []
 
     func resetStatistics() {
         lock.withLock {
@@ -67,6 +69,8 @@ final class MotionPositionWriter: @unchecked Sendable {
             slowestWrite = 0
             lastSent = [:]
             largestGap = [:]
+            enhancedUserInterfaceCheckedPIDs = []
+            enhancedUserInterfacePIDs = []
         }
     }
 
@@ -74,12 +78,14 @@ final class MotionPositionWriter: @unchecked Sendable {
         let summary: MotionWriteSummary
         let slowestMilliseconds: Int
         let largestGapMilliseconds: [String: Int]
+        let enhancedUserInterfacePIDs: Set<pid_t>
     }
 
     var statistics: Statistics {
         lock.withLock {
             Statistics(summary: summary, slowestMilliseconds: Int(slowestWrite * 1_000),
-                       largestGapMilliseconds: largestGap.mapValues { Int($0 * 1_000) })
+                       largestGapMilliseconds: largestGap.mapValues { Int($0 * 1_000) },
+                       enhancedUserInterfacePIDs: enhancedUserInterfacePIDs)
         }
     }
 
@@ -164,6 +170,21 @@ final class MotionPositionWriter: @unchecked Sendable {
                     lastSent[item.windowID] = finished
                 }
             }
+            recordEnhancedUserInterface(pid: pid, generation: batch[0].generation)
+        }
+    }
+
+    private func recordEnhancedUserInterface(pid: pid_t, generation requested: UInt64) {
+        let needsCheck = lock.withLock {
+            requested == generation && enhancedUserInterfaceCheckedPIDs.insert(pid).inserted
+        }
+        guard needsCheck else { return }
+        var value: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid),
+                                                   "AXEnhancedUserInterface" as CFString, &value)
+        guard status == .success, (value as? Bool) == true else { return }
+        lock.withLock {
+            if requested == generation { enhancedUserInterfacePIDs.insert(pid) }
         }
     }
 }
