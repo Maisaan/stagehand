@@ -238,7 +238,8 @@ public final class WindowSystem {
     private var windows: [String: TrackedWindow] = [:]
     private var ownedWindows: [OwnedWindow] = []
     private var observers: [pid_t: AXObserver] = [:]
-    private let motionWriter = MotionPositionWriter()
+    private let enhancedUserInterface = EnhancedUserInterfaceSuspension()
+    private lazy var motionWriter = MotionPositionWriter(enhancedUserInterface: enhancedUserInterface)
     private var focusReportInFlight = false
     private var focusReportPending = false
     /// Answers whether an observed focus change would be used now. Reads nobody
@@ -634,6 +635,7 @@ public final class WindowSystem {
     private func applicationTerminated(pid: pid_t) {
         trackedStateGeneration &+= 1
         motionWriter.forget(pid: pid)
+        enhancedUserInterface.forget(pid: pid)
         removeObserver(pid: pid)
         let removedIDs = windows.compactMap { $0.value.record.pid == pid ? $0.key : nil }
         for id in removedIDs {
@@ -659,6 +661,7 @@ public final class WindowSystem {
         lastApplicationInventory = nil
         launchDiscovery.cancelAll()
         restoreAll(retrying: windowsReachable)
+        enhancedUserInterface.restoreAll()
         // A subsequent Start can happen on a different native Desktop. Keep
         // stable identities, but admit only its visible windows again.
         for id in Array(windows.keys) {
@@ -1572,6 +1575,7 @@ public final class WindowSystem {
                 var point = origin
                 var status = AXError.success
                 if !Self.samePosition(origin, frame.origin), let position = AXValueCreate(.cgPoint, &point) {
+                    enhancedUserInterface.prepareForFrameWrite(pid: pid)
                     status = AXUIElementSetAttributeValue(panel, kAXPositionAttribute as CFString, position)
                 }
                 if diagnostics {
@@ -2723,8 +2727,10 @@ public final class WindowSystem {
     private func writePosition(_ element: AXUIElement, position: CGPoint) -> Bool {
         var point = position
         guard let value = AXValueCreate(.cgPoint, &point) else { return false }
-        return MainThreadActivity.during("write position pid=\(Self.pid(of: element))") {
-            AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value)
+        let pid = Self.pid(of: element)
+        return MainThreadActivity.during("write position pid=\(pid)") {
+            enhancedUserInterface.prepareForFrameWrite(pid: pid)
+            return AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value)
         } == .success
     }
 
@@ -2934,8 +2940,10 @@ public final class WindowSystem {
         Self.frameWriteResult(frame: frame, resizeFirst: resizeFirst, readFrame: { self.readFrame(element) }, setSize: { requested in
             var size = requested
             guard let value = AXValueCreate(.cgSize, &size) else { return false }
-            return MainThreadActivity.during("write size pid=\(Self.pid(of: element))") {
-                AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value)
+            let pid = Self.pid(of: element)
+            return MainThreadActivity.during("write size pid=\(pid)") {
+                self.enhancedUserInterface.prepareForFrameWrite(pid: pid)
+                return AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value)
             } == .success
         }, setPosition: { self.writePosition(element, position: $0) })
     }

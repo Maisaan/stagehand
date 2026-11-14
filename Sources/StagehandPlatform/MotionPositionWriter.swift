@@ -44,6 +44,7 @@ final class MotionPositionWriter: @unchecked Sendable {
         let generation: UInt64
     }
 
+    private let enhancedUserInterface: EnhancedUserInterfaceSuspension
     private let lock = NSLock()
     private var pending: [pid_t: [String: Pending]] = [:]
     /// Apps with a drain queued or running.
@@ -59,8 +60,11 @@ final class MotionPositionWriter: @unchecked Sendable {
     /// long gap is a visible freeze of that window mid-motion.
     private var lastSent: [String: Double] = [:]
     private var largestGap: [String: Double] = [:]
-    private var enhancedUserInterfaceCheckedPIDs: Set<pid_t> = []
     private var enhancedUserInterfacePIDs: Set<pid_t> = []
+
+    init(enhancedUserInterface: EnhancedUserInterfaceSuspension) {
+        self.enhancedUserInterface = enhancedUserInterface
+    }
 
     func resetStatistics() {
         lock.withLock {
@@ -69,7 +73,6 @@ final class MotionPositionWriter: @unchecked Sendable {
             slowestWrite = 0
             lastSent = [:]
             largestGap = [:]
-            enhancedUserInterfaceCheckedPIDs = []
             enhancedUserInterfacePIDs = []
         }
     }
@@ -153,6 +156,11 @@ final class MotionPositionWriter: @unchecked Sendable {
                 return Array(windows.values)
             }
             guard let batch else { return }
+            if enhancedUserInterface.prepareForFrameWrite(pid: pid) {
+                lock.withLock {
+                    if batch[0].generation == generation { enhancedUserInterfacePIDs.insert(pid) }
+                }
+            }
             for item in batch {
                 var position = item.position
                 guard let value = AXValueCreate(.cgPoint, &position) else { continue }
@@ -170,21 +178,6 @@ final class MotionPositionWriter: @unchecked Sendable {
                     lastSent[item.windowID] = finished
                 }
             }
-            recordEnhancedUserInterface(pid: pid, generation: batch[0].generation)
-        }
-    }
-
-    private func recordEnhancedUserInterface(pid: pid_t, generation requested: UInt64) {
-        let needsCheck = lock.withLock {
-            requested == generation && enhancedUserInterfaceCheckedPIDs.insert(pid).inserted
-        }
-        guard needsCheck else { return }
-        var value: CFTypeRef?
-        let status = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid),
-                                                   "AXEnhancedUserInterface" as CFString, &value)
-        guard status == .success, (value as? Bool) == true else { return }
-        lock.withLock {
-            if requested == generation { enhancedUserInterfacePIDs.insert(pid) }
         }
     }
 }
