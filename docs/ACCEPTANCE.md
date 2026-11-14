@@ -104,7 +104,7 @@ Use ordinary apps with Diagnostic logging on and the Tile gap at your usual valu
 - Drag the edge between two panes: the pair trades space and the other panes keep theirs. Drag the tile's side edge: the whole tile takes that width. Drag the tile's own top or bottom edge: the window returns to the screen's edge.
 - Change the Pane gap in Settings > Layout, including to 0: the panes move apart or touch; negative values are not accepted.
 - Quit and relaunch an app with a window in a tile; pause and resume; switch spaces and back. The tile comes back whole. A window that returns after you resized the tile keeps your width plus its own share.
-- Open a sheet or confirmation dialog on a pane's window. The border follows the window and its sheet; the dialog does not get a tile and keeps focus when its window is active.
+- Open a sheet or confirmation dialog on a pane's window. The border stays on the window's edges and stops where a sheet crosses them, never drawing over the sheet; the dialog does not get a tile and keeps focus when its window is active.
 - With Arrow shortcut swipes on, hold Control + Option + Shift and swipe with three fingers: left/right moves the window in its tile, up/down moves between panes.
 - Run `BENCHMARK_MODES="busy busy-tiles" ./scripts/run-benchmark.sh` (hands off) and compare the switch lines: switches that reveal a multi-pane tile write each pane's frame once.
 
@@ -181,6 +181,7 @@ With only the built-in display, everything above behaves as before, the app bar 
 - In menu bar quick actions, change the active space color with both the color picker and a typed hex value. The picker stays in front, the focus border and app bar update, and the value remains after reopening quick actions.
 - With only one active or occupied space, open Settings and assign different colors to empty spaces. Close and reopen Settings and confirm the values remain. Move a window into each configured space and switch to it; the saved color appears on the focus border and app bar.
 - Neither bar nor border shifts or resizes any window.
+- In the App Store, click Get on a free app (or open Apple Pay in Safari). The sheet offers Touch ID with Stagehand running; cancel instead of buying. With Diagnostic logging, `/usr/bin/log show --last 2m --predicate 'process CONTAINS "PaymentAuthorization"' | grep occluded` ends in `occluded: false`.
 - The current application owns the macOS menu bar, except while Stagehand settings or an empty-space placeholder is active.
 - Open Settings and confirm Stagehand appears in the Dock. Close Settings and confirm its Dock icon disappears while the menu bar item remains.
 - Settings stay usable at the built-in display's current scaling.

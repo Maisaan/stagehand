@@ -79,7 +79,7 @@ struct NavigationHUDGeometry {
 
 @MainActor
 final class NavigationOverlays {
-    private(set) var border: OverlayPanel?
+    private(set) var borderPanels: [OverlayPanel] = []
     private(set) var hud: OverlayPanel?
     private var hudGeneration: UInt64 = 0
     private var hudIsExiting = false
@@ -124,23 +124,22 @@ final class NavigationOverlays {
         }
     }
 
-    private func borderPanel() -> OverlayPanel {
-        if let border { return border }
+    private func borderPanel(at index: Int) -> OverlayPanel {
+        if borderPanels.indices.contains(index) { return borderPanels[index] }
         // Stay above clicked normal windows and below floating windows such as picture-in-picture.
         let panel = OverlayPanel(level: NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue + 1))
         let borderView = BorderView()
         borderView.strokeColor = borderColor
         panel.contentView = borderView
-        panel.contentView?.wantsLayer = true
         panel.hasShadow = false
-        border = panel
+        borderPanels.append(panel)
         return panel
     }
 
     func setBorderColor(_ color: NSColor) {
         guard !borderColor.isEqual(color) || !hudModel.appBarColor.isEqual(color) else { return }
         borderColor = color
-        (border?.contentView as? BorderView)?.strokeColor = color
+        for panel in borderPanels { (panel.contentView as? BorderView)?.strokeColor = color }
         hudModel.appBarColor = color
     }
 
@@ -165,45 +164,55 @@ final class NavigationOverlays {
         raiseBorder: Bool = false
     ) {
         guard visible, let primary = NSScreen.screens.first else {
-            MainThreadActivity.during("borderWindow orderOut") { border?.orderOut(nil) }
+            orderOutBorder()
             return
         }
-        let border = borderPanel()
-        let borderView = border.contentView as? BorderView
-        let radiusChanged = borderView?.cornerRadius != cornerRadius
-        borderView?.cornerRadius = cornerRadius
-        let outline = sheet.map { frame.union($0) } ?? frame
-        let converted = CGRect(x: outline.minX, y: primary.frame.maxY - outline.maxY,
-                               width: outline.width, height: outline.height)
-        // Both rectangles in the view's bottom-left coordinates.
-        func local(_ rect: CGRect) -> CGRect {
-            CGRect(x: rect.minX - outline.minX, y: outline.maxY - rect.maxY,
-                   width: rect.width, height: rect.height)
+        let radius = BorderView.resolvedCornerRadius(cornerRadius, window: frame)
+        let pieces = FocusOutlineGeometry.panelFrames(window: frame, cornerRadius: radius, cutout: sheet)
+        func appKitFrame(_ rect: CGRect) -> CGRect {
+            CGRect(x: rect.minX, y: primary.frame.maxY - rect.maxY, width: rect.width, height: rect.height)
         }
-        // Frame/path changes remain synchronous, including throughout a native live resize.
-        // Draw inward so the complete stroke remains visible at display edges.
-        // Both are WindowServer round trips, which queue behind a slow window-list call.
+        let panels = pieces.indices.map(borderPanel(at:))
+        // Frame changes remain synchronous, including throughout a native live resize.
+        // Each is a WindowServer round trip, which queues behind a slow window-list call.
         MainThreadActivity.during("borderWindow setFrame") {
-            border.setFrame(converted, display: radiusChanged || border.frame.size != converted.size)
+            for (panel, piece) in zip(panels, pieces) {
+                let converted = appKitFrame(piece)
+                if panel.frame != converted { panel.setFrame(converted, display: false) }
+                (panel.contentView as? BorderView)?.showOutline(of: frame, radius: radius, from: piece)
+            }
         }
-        // After the resize, so the sheet mask covers the panel's new bounds.
-        borderView?.silhouette = sheet.map { (window: local(frame), sheet: local($0)) }
-        if !border.isVisible || focusChanged || raiseBorder {
+        let unused = borderPanels.dropFirst(pieces.count).filter(\.isVisible)
+        if !unused.isEmpty {
+            MainThreadActivity.during("borderWindow orderOut") { unused.forEach { $0.orderOut(nil) } }
+        }
+        let raised = panels.filter { !$0.isVisible || focusChanged || raiseBorder }
+        if !raised.isEmpty {
             // Relative ordering does not reliably raise a panel above another app's
             // window. Front ordering is confined to the border's window level.
-            MainThreadActivity.during("borderWindow orderFront") { border.orderFrontRegardless() }
+            MainThreadActivity.during("borderWindow orderFront") { raised.forEach { $0.orderFrontRegardless() } }
         }
-        if focusChanged, let layer = border.contentView?.layer {
-            let configuration = hudModel.interfaceAnimationConfiguration
-            let reveal = CABasicAnimation(keyPath: "opacity")
-            reveal.fromValue = layer.animation(forKey: "focusReveal") == nil
-                ? configuration.focusRevealOpacity
-                : (layer.presentation()?.opacity ?? Float(configuration.focusRevealOpacity))
-            reveal.toValue = 1
-            reveal.duration = configuration.focusRevealDuration
-            reveal.timingFunction = RibbonAnimationCurve.ease.mediaTimingFunction
-            layer.add(reveal, forKey: "focusReveal")
+        if focusChanged {
+            for layer in panels.compactMap({ $0.contentView?.layer }) { addFocusReveal(to: layer) }
         }
+    }
+
+    private func orderOutBorder() {
+        let visible = borderPanels.filter(\.isVisible)
+        guard !visible.isEmpty else { return }
+        MainThreadActivity.during("borderWindow orderOut") { visible.forEach { $0.orderOut(nil) } }
+    }
+
+    private func addFocusReveal(to layer: CALayer) {
+        let configuration = hudModel.interfaceAnimationConfiguration
+        let reveal = CABasicAnimation(keyPath: "opacity")
+        reveal.fromValue = layer.animation(forKey: "focusReveal") == nil
+            ? configuration.focusRevealOpacity
+            : (layer.presentation()?.opacity ?? Float(configuration.focusRevealOpacity))
+        reveal.toValue = 1
+        reveal.duration = configuration.focusRevealDuration
+        reveal.timingFunction = RibbonAnimationCurve.ease.mediaTimingFunction
+        layer.add(reveal, forKey: "focusReveal")
     }
 
     func showNavigation(state: WorkspaceState, windows: [WindowRecord]) {
@@ -444,12 +453,12 @@ final class NavigationOverlays {
     func hide() {
         suspend()
         MainThreadActivity.during("overlays close") {
-            border?.close()
+            borderPanels.forEach { $0.close() }
             hud?.close()
         }
         // Recreate on the next presentation so an explicit Start on a different native
         // Desktop binds the panels there without making them visible on every Desktop.
-        border = nil
+        borderPanels = []
         hud = nil
     }
 
@@ -472,7 +481,7 @@ final class NavigationOverlays {
         hudIsExiting = false
         shortcutHints.hide()
         MainThreadActivity.during("overlays orderOut") {
-            border?.orderOut(nil)
+            borderPanels.forEach { $0.orderOut(nil) }
             hud?.orderOut(nil)
         }
     }
@@ -654,41 +663,27 @@ final class OverlayPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// One piece of the focus outline: the window's whole native-corner border, offset so
+/// only the part inside this panel shows.
 final class BorderView: NSView {
     static let defaultColor = NSColor(srgbRed: 0.44, green: 0.85, blue: 0.71, alpha: 0.95)
     static var fallbackCornerRadius: CGFloat {
         ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26 ? 16 : 9
     }
 
+    static func resolvedCornerRadius(_ native: CGFloat?, window: CGRect) -> CGFloat {
+        let radius = native.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil } ?? fallbackCornerRadius
+        return min(radius, max(0, min(window.width, window.height) / 2))
+    }
+
     var strokeColor = defaultColor {
         didSet {
             guard oldValue != strokeColor else { return }
-            applyStrokeColor()
+            outline.borderColor = strokeColor.cgColor
         }
     }
 
-    var cornerRadius: CGFloat? {
-        didSet {
-            guard oldValue != cornerRadius else { return }
-            updateLayerStyle()
-        }
-    }
-
-    /// A window and its attached sheet, in view coordinates. When set, the sheet gets its
-    /// own outline and the window's dimmed outline stops at the sheet's edge, instead of
-    /// one rectangle that crosses the empty space beside a sheet hanging past its window.
-    var silhouette: (window: CGRect, sheet: CGRect)? {
-        didSet {
-            guard oldValue?.window != silhouette?.window || oldValue?.sheet != silhouette?.sheet else { return }
-            updateLayerStyle()
-        }
-    }
-
-    /// The window's outline beside a sheet, drawn fainter so the sheet reads as focused.
-    static let sheetOwnerOpacity: CGFloat = 0.45
-    private let ownerOutline = CAShapeLayer()
-    private let ownerMask = CAShapeLayer()
-    private let sheetOutline = CAShapeLayer()
+    private let outline = CALayer()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -702,68 +697,22 @@ final class BorderView: NSView {
 
     private func configureLayers() {
         wantsLayer = true
-        for outline in [ownerOutline, sheetOutline] {
-            outline.fillColor = nil
-            outline.lineWidth = 2
-            layer?.addSublayer(outline)
-        }
-        ownerMask.fillRule = .evenOdd
-        ownerOutline.mask = ownerMask
-        updateLayerStyle()
+        layer?.masksToBounds = true
+        outline.borderWidth = FocusOutlineGeometry.strokeWidth
+        outline.borderColor = strokeColor.cgColor
+        outline.cornerCurve = .continuous
+        layer?.addSublayer(outline)
     }
 
-    override func layout() {
-        super.layout()
-        updateLayerStyle()
-    }
-
-    private func applyStrokeColor() {
-        layer?.borderColor = strokeColor.cgColor
-        sheetOutline.strokeColor = strokeColor.cgColor
-        ownerOutline.strokeColor = strokeColor
-            .withAlphaComponent(strokeColor.alphaComponent * Self.sheetOwnerOpacity).cgColor
-    }
-
-    private func updateLayerStyle() {
-        let nativeRadius = cornerRadius.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
-            ?? Self.fallbackCornerRadius
-        layer?.cornerCurve = .continuous
-        layer?.cornerRadius = min(nativeRadius, max(0, min(bounds.width, bounds.height) / 2))
+    /// `window` and `piece` in screen coordinates with y growing downward; the stroke
+    /// lies inside the window so it stays visible at display edges.
+    func showOutline(of window: CGRect, radius: CGFloat, from piece: CGRect) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        defer { CATransaction.commit() }
-        applyStrokeColor()
-        guard let silhouette else {
-            layer?.borderWidth = 2
-            ownerOutline.path = nil
-            sheetOutline.path = nil
-            return
-        }
-        layer?.borderWidth = 0
-        let paths = Self.sheetOutlines(window: silhouette.window, sheet: silhouette.sheet,
-                                       bounds: bounds, radius: nativeRadius)
-        ownerOutline.frame = bounds
-        ownerMask.frame = bounds
-        sheetOutline.frame = bounds
-        ownerOutline.path = paths.owner
-        ownerMask.path = paths.ownerMask
-        sheetOutline.path = paths.sheet
-    }
-
-    /// Stroke centerlines inset by half the 2-point line so each stroke lies inside its
-    /// window, as the layer border does. `ownerMask` keeps everything outside the sheet,
-    /// so the window's outline never crosses it.
-    static func sheetOutlines(window: CGRect, sheet: CGRect, bounds: CGRect,
-                              radius: CGFloat) -> (owner: CGPath, ownerMask: CGPath, sheet: CGPath) {
-        func rounded(_ rect: CGRect, inset: CGFloat) -> CGPath {
-            let rect = rect.insetBy(dx: inset, dy: inset)
-            let corner = min(max(0, radius - inset), max(0, min(rect.width, rect.height) / 2))
-            return CGPath(roundedRect: rect, cornerWidth: corner, cornerHeight: corner, transform: nil)
-        }
-        let mask = CGMutablePath()
-        mask.addRect(bounds)
-        mask.addPath(rounded(sheet, inset: 0))
-        return (rounded(window, inset: 1), mask, rounded(sheet, inset: 1))
+        outline.frame = CGRect(x: window.minX - piece.minX, y: piece.maxY - window.maxY,
+                               width: window.width, height: window.height)
+        outline.cornerRadius = radius
+        CATransaction.commit()
     }
 }
 

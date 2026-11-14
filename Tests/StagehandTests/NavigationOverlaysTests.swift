@@ -11,30 +11,55 @@ import StagehandCore
 
     overlays.updateBorder(frame: CGRect(x: 0, y: 0, width: 100, height: 100), visible: true)
 
-    let border = try #require(overlays.border)
-    #expect(border.level.rawValue > NSWindow.Level.normal.rawValue)
-    #expect(border.level.rawValue < NSWindow.Level.floating.rawValue)
+    #expect(!overlays.borderPanels.isEmpty)
+    for border in overlays.borderPanels {
+        #expect(border.level.rawValue > NSWindow.Level.normal.rawValue)
+        #expect(border.level.rawValue < NSWindow.Level.floating.rawValue)
+    }
+}
+
+/// PassKit withholds Touch ID while another process's window covers its payment sheet.
+@MainActor
+@Test func focusBorderPanelsLeaveTheWindowsContentAndSheetUncovered() throws {
+    let overlays = NavigationOverlays()
+    defer { overlays.hide() }
+    let primaryTop = try #require(NSScreen.screens.first).frame.maxY
+    let window = CGRect(x: 100, y: 100, width: 800, height: 600)
+    let sheet = CGRect(x: 300, y: 128, width: 400, height: 300)
+
+    overlays.updateBorder(frame: window, sheet: sheet, visible: true, cornerRadius: 16,
+                          focusChanged: true, raiseBorder: false)
+
+    let shown = overlays.borderPanels.filter(\.isVisible).map {
+        CGRect(x: $0.frame.minX, y: primaryTop - $0.frame.maxY, width: $0.frame.width, height: $0.frame.height)
+    }
+    #expect(shown.count == 4)
+    for frame in shown {
+        #expect(!frame.intersects(sheet))
+        #expect(!frame.intersects(window.insetBy(dx: 16, dy: 16)))
+    }
 }
 
 /// A lock or a trip to another Desktop keeps the panels, so the first presentation after
-/// unlock does not build and draw a new one on the main thread. Stop releases them.
+/// unlock does not build and draw new ones on the main thread. Stop releases them.
 @MainActor
 @Test func suspendKeepsThePanelsAndHideReleasesThem() throws {
     let overlays = NavigationOverlays()
     defer { overlays.hide() }
     let frame = CGRect(x: 0, y: 0, width: 100, height: 100)
     overlays.updateBorder(frame: frame, visible: true)
-    let border = try #require(overlays.border)
+    let panels = overlays.borderPanels
+    #expect(!panels.isEmpty)
 
     overlays.suspend()
-    #expect(!border.isVisible)
-    #expect(overlays.border === border)
+    #expect(panels.allSatisfy { !$0.isVisible })
     overlays.updateBorder(frame: frame, visible: true)
-    #expect(overlays.border === border)
-    #expect(border.isVisible)
+    let reused = overlays.borderPanels.elementsEqual(panels, by: ===)
+    #expect(reused)
+    #expect(panels.allSatisfy { $0.isVisible })
 
     overlays.hide()
-    #expect(overlays.border == nil)
+    #expect(overlays.borderPanels.isEmpty)
 }
 
 @Test func shortcutRibbonFollowsTheCurrentBindings() throws {
@@ -202,21 +227,4 @@ import StagehandCore
     pointer = CGPoint(x: hud.frame.midX, y: bar.midY)
     overlays.showWarning("Stagehand paused")
     #expect(hud.ignoresMouseEvents)
-}
-
-/// A sheet hanging below a short window gets its own outline, and the window's
-/// outline is masked off wherever the sheet covers it.
-@MainActor
-@Test func borderOutlinesKeepTheWindowsStrokeOffItsSheet() {
-    let window = CGRect(x: 0, y: 600, width: 1_000, height: 400)
-    let sheet = CGRect(x: 200, y: 0, width: 600, height: 960)
-    let paths = BorderView.sheetOutlines(window: window, sheet: sheet,
-                                         bounds: CGRect(x: 0, y: 0, width: 1_000, height: 1_000), radius: 16)
-    #expect(paths.owner.boundingBoxOfPath == CGRect(x: 1, y: 601, width: 998, height: 398))
-    #expect(paths.sheet.boundingBoxOfPath == CGRect(x: 201, y: 1, width: 598, height: 958))
-    // The window's bottom edge, beside and under the sheet.
-    #expect(paths.ownerMask.contains(CGPoint(x: 100, y: 601), using: .evenOdd))
-    #expect(!paths.ownerMask.contains(CGPoint(x: 500, y: 601), using: .evenOdd))
-    // The window's top edge, which the sheet does not reach.
-    #expect(paths.ownerMask.contains(CGPoint(x: 500, y: 999), using: .evenOdd))
 }
