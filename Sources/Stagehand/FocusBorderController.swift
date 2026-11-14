@@ -21,7 +21,7 @@ final class FocusBorderController {
 
     /// `refreshShape` re-reads the corner radius when the size changed or it is still
     /// unresolved. A new window identity always reads it. `sheet` is an attached sheet
-    /// the outline must not cross.
+    /// that gets its own ring.
     func show(windowID: String, frame: CGRect, sheet: CGRect? = nil, color: NSColor,
               refreshShape: Bool = true, raise: Bool = false) {
         overlays.setBorderColor(color)

@@ -29,7 +29,7 @@ protocol NavigationPresenting: AnyObject {
     var onPointerMoved: (() -> Void)? { get set }
 
     func setBorderColor(_ color: NSColor)
-    /// `sheet` is an attached sheet; the outline stops at its edge instead of crossing it.
+    /// `sheet` is an attached sheet; it gets its own ring just outside it, never over it.
     func updateBorder(frame: CGRect, sheet: CGRect?, visible: Bool, cornerRadius: CGFloat?,
                       focusChanged: Bool, raiseBorder: Bool)
     func showNavigation(state: WorkspaceState, windows: [WindowRecord])

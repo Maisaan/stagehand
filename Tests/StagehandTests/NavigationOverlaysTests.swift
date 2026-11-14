@@ -20,7 +20,7 @@ import StagehandCore
 
 /// PassKit withholds Touch ID while another process's window covers its payment sheet.
 @MainActor
-@Test func focusBorderPanelsLeaveTheWindowsContentAndSheetUncovered() throws {
+@Test func focusBorderRingsTheSheetWithoutCoveringIt() throws {
     let overlays = NavigationOverlays()
     defer { overlays.hide() }
     let primaryTop = try #require(NSScreen.screens.first).frame.maxY
@@ -33,11 +33,9 @@ import StagehandCore
     let shown = overlays.borderPanels.filter(\.isVisible).map {
         CGRect(x: $0.frame.minX, y: primaryTop - $0.frame.maxY, width: $0.frame.width, height: $0.frame.height)
     }
-    #expect(shown.count == 4)
-    for frame in shown {
-        #expect(!frame.intersects(sheet))
-        #expect(!frame.intersects(window.insetBy(dx: 16, dy: 16)))
-    }
+    #expect(shown.count == 12)
+    #expect(shown.allSatisfy { !$0.intersects(sheet) })
+    #expect(shown.contains(CGRect(x: 296, y: 124, width: 408, height: 4)))
 }
 
 /// A lock or a trip to another Desktop keeps the panels, so the first presentation after

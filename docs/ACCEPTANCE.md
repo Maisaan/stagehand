@@ -104,7 +104,7 @@ Use ordinary apps with Diagnostic logging on and the Tile gap at your usual valu
 - Drag the edge between two panes: the pair trades space and the other panes keep theirs. Drag the tile's side edge: the whole tile takes that width. Drag the tile's own top or bottom edge: the window returns to the screen's edge.
 - Change the Pane gap in Settings > Layout, including to 0: the panes move apart or touch; negative values are not accepted.
 - Quit and relaunch an app with a window in a tile; pause and resume; switch spaces and back. The tile comes back whole. A window that returns after you resized the tile keeps your width plus its own share.
-- Open a sheet or confirmation dialog on a pane's window. The border stays on the window's edges and stops where a sheet crosses them, never drawing over the sheet; the dialog does not get a tile and keeps focus when its window is active.
+- Open a sheet or confirmation dialog on a pane's window. The sheet gets its own ring 2pt outside its edges, never over it, and the window's outline dims and stops where that ring starts; the dialog does not get a tile and keeps focus when its window is active.
 - With Arrow shortcut swipes on, hold Control + Option + Shift and swipe with three fingers: left/right moves the window in its tile, up/down moves between panes.
 - Run `BENCHMARK_MODES="busy busy-tiles" ./scripts/run-benchmark.sh` (hands off) and compare the switch lines: switches that reveal a multi-pane tile write each pane's frame once.
 

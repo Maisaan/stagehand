@@ -7,6 +7,37 @@ import CoreGraphics
 /// is several thin panels along the window's edges, never one panel over its content.
 public enum FocusOutlineGeometry {
     public static let strokeWidth: CGFloat = 2
+    public static let sheetGap: CGFloat = 2
+
+    /// One panel of the outline: the part of `outline`, a rounded rectangle, that `panel` shows.
+    public struct Segment: Equatable, Sendable {
+        public let panel: CGRect
+        public let outline: CGRect
+        public let cornerRadius: CGFloat
+        public let isSheet: Bool
+    }
+
+    /// The window's outline, and with an attached sheet a ring around the sheet. The ring
+    /// stays outside the sheet's rectangle, so its corners are tighter than the sheet's;
+    /// the window's outline stops where the ring starts.
+    public static func segments(window: CGRect, cornerRadius: CGFloat, sheet: CGRect?) -> [Segment] {
+        guard let sheet, sheet.width > 0, sheet.height > 0 else {
+            return panelFrames(window: window, cornerRadius: cornerRadius)
+                .map { Segment(panel: $0, outline: window, cornerRadius: cornerRadius, isSheet: false) }
+        }
+        let ring = sheetRing(around: sheet)
+        let windowSegments = panelFrames(window: window, cornerRadius: cornerRadius, cutout: ring.frame)
+            .map { Segment(panel: $0, outline: window, cornerRadius: cornerRadius, isSheet: false) }
+        let ringSegments = panelFrames(window: ring.frame, cornerRadius: ring.cornerRadius, cutout: sheet)
+            .map { Segment(panel: $0, outline: ring.frame, cornerRadius: ring.cornerRadius, isSheet: true) }
+        return windowSegments + ringSegments
+    }
+
+    /// The largest inner corner radius whose arc clears the sheet's corner is gap·(2+√2).
+    static func sheetRing(around sheet: CGRect) -> (frame: CGRect, cornerRadius: CGFloat) {
+        let inset = sheetGap + strokeWidth
+        return (sheet.insetBy(dx: -inset, dy: -inset), sheetGap * (2 + 2.squareRoot()) + strokeWidth)
+    }
 
     /// The top and bottom bands are as deep as the corner radius so they hold the corner
     /// arcs; the sides are one stroke wide. Nothing overlaps `cutout`, the window's

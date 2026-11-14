@@ -35,3 +35,28 @@ import Testing
     #expect(panels == [CGRect(x: 0, y: 0, width: 20, height: 5), CGRect(x: 0, y: 5, width: 20, height: 5)])
     #expect(FocusOutlineGeometry.panelFrames(window: .zero, cornerRadius: 16).isEmpty)
 }
+
+@Test func sheetRingSitsJustOutsideTheSheetAndNeverOverIt() {
+    let window = CGRect(x: 0, y: 0, width: 1_000, height: 800)
+    let sheet = CGRect(x: 300, y: 28, width: 400, height: 300)
+    let segments = FocusOutlineGeometry.segments(window: window, cornerRadius: 16, sheet: sheet)
+    let ring = segments.filter(\.isSheet)
+    let ringFrame = sheet.insetBy(dx: -4, dy: -4)
+
+    #expect(!ring.isEmpty && ring.allSatisfy { $0.outline == ringFrame })
+    #expect(segments.allSatisfy { !$0.panel.intersects(sheet) })
+    #expect(segments.filter { !$0.isSheet }.allSatisfy { !$0.panel.intersects(ringFrame) })
+
+    let stroke = FocusOutlineGeometry.strokeWidth
+    let innerRadius = ring[0].cornerRadius - stroke
+    let arcCenter = CGPoint(x: ringFrame.minX + stroke + innerRadius, y: ringFrame.minY + stroke + innerRadius)
+    let toSheetCorner = hypot(arcCenter.x - sheet.minX, arcCenter.y - sheet.minY)
+    #expect(toSheetCorner >= innerRadius - 0.001)
+}
+
+@Test func withoutASheetOnlyTheWindowIsOutlined() {
+    let window = CGRect(x: 0, y: 0, width: 800, height: 600)
+    let segments = FocusOutlineGeometry.segments(window: window, cornerRadius: 16, sheet: nil)
+    #expect(segments.map(\.panel) == FocusOutlineGeometry.panelFrames(window: window, cornerRadius: 16))
+    #expect(segments.allSatisfy { !$0.isSheet && $0.outline == window })
+}

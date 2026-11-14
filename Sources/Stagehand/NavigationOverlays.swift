@@ -168,7 +168,8 @@ final class NavigationOverlays {
             return
         }
         let radius = BorderView.resolvedCornerRadius(cornerRadius, window: frame)
-        let pieces = FocusOutlineGeometry.panelFrames(window: frame, cornerRadius: radius, cutout: sheet)
+        let pieces = FocusOutlineGeometry.segments(window: frame, cornerRadius: radius, sheet: sheet)
+        let windowOpacity: CGFloat = sheet == nil ? 1 : BorderView.sheetOwnerOpacity
         func appKitFrame(_ rect: CGRect) -> CGRect {
             CGRect(x: rect.minX, y: primary.frame.maxY - rect.maxY, width: rect.width, height: rect.height)
         }
@@ -177,9 +178,11 @@ final class NavigationOverlays {
         // Each is a WindowServer round trip, which queues behind a slow window-list call.
         MainThreadActivity.during("borderWindow setFrame") {
             for (panel, piece) in zip(panels, pieces) {
-                let converted = appKitFrame(piece)
+                let converted = appKitFrame(piece.panel)
                 if panel.frame != converted { panel.setFrame(converted, display: false) }
-                (panel.contentView as? BorderView)?.showOutline(of: frame, radius: radius, from: piece)
+                (panel.contentView as? BorderView)?.showOutline(
+                    of: piece.outline, radius: piece.cornerRadius, from: piece.panel,
+                    opacity: piece.isSheet ? 1 : windowOpacity)
             }
         }
         let unused = borderPanels.dropFirst(pieces.count).filter(\.isVisible)
@@ -683,6 +686,9 @@ final class BorderView: NSView {
         }
     }
 
+    /// The window's outline beside its sheet, fainter so the sheet's ring reads as focused.
+    static let sheetOwnerOpacity: CGFloat = 0.45
+
     private let outline = CALayer()
 
     override init(frame frameRect: NSRect) {
@@ -706,12 +712,13 @@ final class BorderView: NSView {
 
     /// `window` and `piece` in screen coordinates with y growing downward; the stroke
     /// lies inside the window so it stays visible at display edges.
-    func showOutline(of window: CGRect, radius: CGFloat, from piece: CGRect) {
+    func showOutline(of window: CGRect, radius: CGFloat, from piece: CGRect, opacity: CGFloat = 1) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         outline.frame = CGRect(x: window.minX - piece.minX, y: piece.maxY - window.maxY,
                                width: window.width, height: window.height)
         outline.cornerRadius = radius
+        outline.opacity = Float(opacity)
         CATransaction.commit()
     }
 }
